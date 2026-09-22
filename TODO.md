@@ -15,22 +15,22 @@ Checkboxes are updated only after implementation and verification. Approval gate
 
 ### 1.1 Shell and visual system
 
-- [ ] Repurpose the AIBOS shell, typography, spacing, icons, surfaces, and interaction patterns
-- [ ] Add Venture Studio navigation and venture/group context
-- [ ] Make the dashboard responsive at desktop, tablet, and mobile widths
+- [x] Repurpose the AIBOS shell, typography, spacing, icons, surfaces, and interaction patterns
+- [x] Add Venture Studio navigation and venture/group context
+- [x] Make the dashboard responsive at desktop, tablet, and mobile widths
 
 ### 1.2 Dashboard content
 
-- [ ] Build a high-fidelity home/dashboard page using realistic dummy data
-- [ ] Show assigned work, urgency/deadline signals, venture health, mentions, and recent activity
-- [ ] Expose clear entry points for focus mode, chat/channels, and the Kanban board
-- [ ] Cover empty/loading/error-like presentation states where useful for approval
+- [x] Build a high-fidelity home/dashboard page using realistic dummy data
+- [x] Show assigned work, urgency/deadline signals, venture health, mentions, and recent activity
+- [x] Expose clear entry points for focus mode, chat/channels, and the Kanban board
+- [x] Cover empty/loading/error-like presentation states where useful for approval
 
 ### 1.3 Verification and approval
 
-- [ ] Run lint and production build smoke tests
-- [ ] Perform a visual pass for overflow, accessibility, and responsive behavior
-- [ ] Present the dashboard to the user
+- [x] Run lint and production build smoke tests
+- [x] Perform a visual pass for overflow, accessibility, and responsive behavior
+- [x] Present the dashboard to the user
 - [ ] **Approval gate: user approves the dashboard direction**
 
 ## Phase 2 — Complete dummy product UI

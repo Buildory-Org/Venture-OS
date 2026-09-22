@@ -1,123 +1,59 @@
 "use client";
 
 import { useState } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { AiMagicIcon, Cancel01Icon, SentIcon } from "@hugeicons/core-free-icons";
+import { Check, Pause, Play, TimerReset, X } from "lucide-react";
 import clsx from "clsx";
 
-const initialMessages = [
-  {
-    role: "ai" as const,
-    text: "Good morning Rajesh. Sales are up 8% vs last month. Watch Sharma Traders — 45 days late, ₹1.2L pending. Payroll run is due in 2 days. Cash position is OK for ~6 weeks.",
-    time: "10:42",
-  },
-  { role: "user" as const, text: "What changed vs August?", time: "10:44" },
-  {
-    role: "ai" as const,
-    text: "Collections improved +₹3.4L, driven by Gupta & Sons settling 2 invoices. Expenses fell ₹0.9L — mostly logistics. Pending payments rose 12% to ₹4.2L; Sharma Traders is the biggest contributor.",
-    time: "10:44",
-  },
-];
-
-const canned =
-  "Here's what I found: collections improved +₹3.4L this week, driven by Gupta & Sons settling 2 invoices. Pending payments rose 12% to ₹4.2L — Sharma Traders is the biggest contributor.";
-
-export function AiDock({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [messages, setMessages] = useState(initialMessages);
-  const [input, setInput] = useState("");
-
-  const send = () => {
-    const t = input.trim();
-    if (!t) return;
-    setMessages((m) => [
-      ...m,
-      { role: "user" as const, text: t, time: "now" },
-      { role: "ai" as const, text: canned, time: "now" },
-    ]);
-    setInput("");
-  };
+export function FocusDock({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [running, setRunning] = useState(false);
 
   return (
-    <aside
-      aria-hidden={!open}
-      className={clsx(
-        "absolute bottom-0 right-0 top-14 z-50 flex w-[370px] max-w-[92vw] flex-col bg-white",
-        "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-        open ? "translate-x-0" : "translate-x-full"
-      )}
-    >
-      {/* Header */}
-      <div className="flex items-center gap-2.5 px-4 py-3.5">
-        <span className="grid h-8 w-8 place-items-center rounded-xl bg-ai-surface">
-          <HugeiconsIcon icon={AiMagicIcon} size={15} strokeWidth={1.75} className="text-ai" />
-        </span>
-        <div className="flex-1">
-          <p className="text-[13px] font-bold text-neutral-900">AI Assistant</p>
-          <p className="text-[10px] font-medium text-neutral-400">
-            Context: CEO Dashboard
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close AI assistant"
-          className="grid h-8 w-8 place-items-center rounded-full text-neutral-400 transition-[color,background-color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"
-        >
-          <HugeiconsIcon icon={Cancel01Icon} size={16} strokeWidth={1.5} />
-        </button>
-      </div>
-
-      {/* Messages */}
-      <div className="thin-scroll flex-1 space-y-4 overflow-y-auto bg-neutral-50/50 p-4">
-        {messages.map((m, i) =>
-          m.role === "ai" ? (
-            <div key={i} className="flex gap-2.5">
-              <span className="mt-0.5 grid h-6.5 w-6.5 shrink-0 place-items-center rounded-lg bg-ai-surface">
-                <HugeiconsIcon icon={AiMagicIcon} size={12} strokeWidth={1.75} className="text-ai" />
-              </span>
-              <div className="rounded-2xl rounded-tl-md bg-white px-3.5 py-2.5">
-                <p className="text-[12.5px] leading-5.5 text-neutral-700">
-                  {m.text}
-                </p>
-                <p className="mt-1.5 text-[10px] font-medium text-ai-text/60 tnum">
-                  {m.time} · sources: finance, CRM
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div key={i} className="flex justify-end">
-              <div className="rounded-2xl rounded-tr-md bg-neutral-900 px-3.5 py-2.5">
-                <p className="text-[12.5px] leading-5.5 text-white">{m.text}</p>
-              </div>
-            </div>
-          )
+    <>
+      <button
+        type="button"
+        aria-label="Close focus mode"
+        onClick={onClose}
+        className={clsx("fixed inset-0 z-40 bg-neutral-900/15 backdrop-blur-[1px] transition-opacity duration-150", open ? "opacity-100" : "pointer-events-none opacity-0")}
+      />
+      <aside
+        aria-hidden={!open}
+        aria-label="Focus mode"
+        className={clsx(
+          "fixed bottom-0 right-0 top-0 z-50 flex w-[390px] max-w-[94vw] flex-col bg-white p-5 shadow-e4 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
+          open ? "translate-x-0" : "translate-x-full"
         )}
-      </div>
+      >
+        <header className="flex items-center gap-3">
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-primary-50 text-primary-700"><TimerReset size={19} /></span>
+          <div className="flex-1"><h2 className="text-base font-extrabold text-neutral-900">Focus mode</h2><p className="text-xs text-neutral-400">Northstar Labs · Builder group</p></div>
+          <button type="button" onClick={onClose} aria-label="Close focus mode" className="grid h-10 w-10 place-items-center rounded-full text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"><X size={18} /></button>
+        </header>
 
-      {/* Composer */}
-      <div className="p-3.5">
-        <div className="flex items-center gap-2 rounded-full bg-neutral-100 px-4 py-1.5 transition-[background-color] duration-150 focus-within:bg-white focus-within:ring-2 focus-within:ring-primary-600/25">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && send()}
-            placeholder="Ask about your business…"
-            className="flex-1 bg-transparent py-1 text-[13px] text-neutral-800 placeholder:text-neutral-400 focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={send}
-            aria-label="Send"
-            className="grid h-8 w-8 place-items-center rounded-full bg-primary-600 text-white transition-[background-color,transform] duration-150 hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"
-          >
-            <HugeiconsIcon icon={SentIcon} size={14} strokeWidth={1.75} />
+        <div className="mt-8 rounded-2xl bg-neutral-900 p-5 text-white shadow-e3">
+          <p className="text-xs font-bold uppercase tracking-[0.1em] text-white/50">Current focus</p>
+          <h3 className="mt-3 text-lg font-extrabold leading-6">Finalize onboarding experiment</h3>
+          <p className="mt-2 text-sm leading-6 text-white/60">Prepare the decision brief before today’s growth review.</p>
+          <div className="my-7 text-center font-mono text-5xl font-medium tracking-[-0.06em] tnum">24:38</div>
+          <button type="button" onClick={() => setRunning((value) => !value)} className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-white text-sm font-extrabold text-neutral-900 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900 active:scale-[0.96]">
+            {running ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
+            {running ? "Pause session" : "Start 25-minute session"}
           </button>
         </div>
-        <p className="mt-2 text-center text-[10px] text-neutral-400">
-          AI answers are advisory — verify before acting. Ctrl+/ to toggle.
-        </p>
-      </div>
-    </aside>
+
+        <div className="mt-7">
+          <div className="flex items-center justify-between"><h3 className="text-sm font-extrabold text-neutral-900">Session plan</h3><span className="font-mono text-xs font-medium text-neutral-400">1 / 3</span></div>
+          <div className="mt-3 space-y-2">
+            {["Review the latest activation data", "Write the recommendation", "Share in #product"].map((step, index) => (
+              <div key={step} className="flex min-h-12 items-center gap-3 rounded-xl bg-neutral-50 px-3.5">
+                <span className={clsx("grid h-6 w-6 place-items-center rounded-full border text-xs", index === 0 ? "border-primary-600 bg-primary-600 text-white" : "border-neutral-300 text-neutral-400")}>{index === 0 ? <Check size={13} strokeWidth={2.5} /> : index + 1}</span>
+                <span className="text-sm font-semibold text-neutral-700">{step}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <p className="mt-auto rounded-xl bg-primary-50 px-4 py-3 text-center text-xs font-medium leading-5 text-primary-700">Press <kbd className="rounded bg-white px-1.5 py-0.5 font-mono">Ctrl /</kbd> anytime to toggle focus mode.</p>
+      </aside>
+    </>
   );
 }

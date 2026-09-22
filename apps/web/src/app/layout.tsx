@@ -15,9 +15,9 @@ const jbMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AIBOS — AI Business Operations System",
+  title: "Venture Studio OS",
   description:
-    "AI-assisted business operations: sales, inventory, finance, HR and an AI CEO dashboard — built by Buildory.",
+    "A shared operating system for ventures, groups, channels, and focused execution.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

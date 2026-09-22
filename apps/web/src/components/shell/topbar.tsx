@@ -28,7 +28,7 @@ type TopbarProps = {
   onToggleFocus: () => void;
 };
 
-const iconButton = "grid h-10 w-10 shrink-0 place-items-center rounded-full text-neutral-500 transition-[color,background-color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]";
+const iconButton = "grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[color,background-color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]";
 
 export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen, onToggleFocus }: TopbarProps) {
   const [searchOpen, setSearchOpen] = useState(false);
@@ -59,7 +59,7 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
         {collapsed ? <PanelLeftOpen size={19} strokeWidth={1.8} /> : <PanelLeftClose size={19} strokeWidth={1.8} />}
       </button>
 
-      <button type="button" className="ml-0.5 hidden min-h-10 items-center gap-2 rounded-full bg-neutral-100 px-3.5 text-sm font-bold text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] sm:flex">
+      <button type="button" className="ml-0.5 hidden min-h-10 items-center gap-2 rounded-xl bg-neutral-100 px-3.5 text-sm font-bold text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] sm:flex">
         Northstar Labs
         <ChevronDown size={15} className="text-neutral-400" />
       </button>
@@ -71,7 +71,7 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
             setSearchOpen(true);
             requestAnimationFrame(() => searchRef.current?.focus());
           }}
-          className="flex h-10 w-full items-center gap-2.5 rounded-full bg-neutral-100 px-3.5 text-sm text-neutral-400 transition-[background-color,transform] duration-150 hover:bg-neutral-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]"
+          className="flex h-10 w-full items-center gap-2.5 rounded-xl bg-neutral-100 px-3.5 text-sm text-neutral-400 transition-[background-color,transform] duration-150 hover:bg-neutral-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]"
         >
           <Search size={16} strokeWidth={1.8} />
           <span className="min-w-0 flex-1 truncate text-left">Search work, people, channels…</span>
@@ -84,7 +84,7 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
         onClick={onToggleFocus}
         aria-pressed={focusOpen}
         className={clsx(
-          "hidden h-10 items-center gap-2 rounded-full px-3.5 text-sm font-bold transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] sm:flex",
+          "hidden h-10 items-center gap-2 rounded-xl px-3.5 text-sm font-bold transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] sm:flex",
           focusOpen ? "bg-primary-100 text-primary-800" : "bg-primary-50 text-primary-700 hover:bg-primary-100"
         )}
       >

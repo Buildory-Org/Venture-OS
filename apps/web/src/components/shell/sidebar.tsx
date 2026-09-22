@@ -72,7 +72,7 @@ export function Sidebar({ collapsed, mobileOpen, onCloseMobile }: SidebarProps) 
             type="button"
             onClick={onCloseMobile}
             aria-label="Close navigation"
-            className="grid h-10 w-10 place-items-center rounded-full text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] lg:hidden"
+            className="grid h-10 w-10 place-items-center rounded-xl text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96] lg:hidden"
           >
             <X size={18} />
           </button>
@@ -137,7 +137,7 @@ export function Sidebar({ collapsed, mobileOpen, onCloseMobile }: SidebarProps) 
           <div className={clsx("border-t border-neutral-100 pt-5", collapsed && "lg:hidden")}>
             <div className="mb-2 flex items-center justify-between px-3">
               <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-neutral-400">Builder group</p>
-              <button type="button" aria-label="Add channel" className="grid h-9 w-9 place-items-center rounded-full text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"><Plus size={15} /></button>
+              <button type="button" aria-label="Add channel" className="grid h-9 w-9 place-items-center rounded-xl text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"><Plus size={15} /></button>
             </div>
             <div className="space-y-1">
               {channels.map((channel) => (

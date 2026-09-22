@@ -26,7 +26,7 @@ export function FocusDock({ open, onClose }: { open: boolean; onClose: () => voi
         <header className="flex items-center gap-3">
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-primary-50 text-primary-700"><TimerReset size={19} /></span>
           <div className="flex-1"><h2 className="text-base font-extrabold text-neutral-900">Focus mode</h2><p className="text-xs text-neutral-400">Northstar Labs · Builder group</p></div>
-          <button type="button" onClick={onClose} aria-label="Close focus mode" className="grid h-10 w-10 place-items-center rounded-full text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"><X size={18} /></button>
+          <button type="button" onClick={onClose} aria-label="Close focus mode" className="grid h-10 w-10 place-items-center rounded-xl text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]"><X size={18} /></button>
         </header>
 
         <div className="mt-8 rounded-2xl bg-neutral-900 p-5 text-white shadow-e3">

@@ -22,7 +22,7 @@ import {
 
 export const metadata = { title: "Home — Venture Studio OS" };
 
-const buttonBase = "inline-flex min-h-10 items-center justify-center gap-2 rounded-full px-4 text-sm font-bold transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 active:scale-[0.96]";
+const buttonBase = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 active:scale-[0.96]";
 
 const priorities = [
   {
@@ -81,7 +81,7 @@ function SectionHeader({ title, eyebrow, action }: { title: string; eyebrow?: st
         <h2 className="text-base font-extrabold tracking-tight text-neutral-900">{title}</h2>
       </div>
       {action && (
-        <button type="button" className="flex min-h-10 items-center gap-1 rounded-full px-2 text-sm font-bold text-primary-600 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]">
+        <button type="button" className="flex min-h-10 items-center gap-1 rounded-lg px-2 text-sm font-bold text-primary-600 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]">
           {action}<ChevronRight size={15} />
         </button>
       )}
@@ -131,7 +131,7 @@ export default function DashboardPage() {
           <div className="mt-4 space-y-2">
             {priorities.map((item, index) => (
               <article key={item.title} className="group grid gap-3 rounded-xl bg-neutral-50 p-3.5 transition-[background-color,transform] duration-150 hover:bg-neutral-100/80 active:scale-[0.99] sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
-                <button type="button" aria-label={`Mark ${item.title} complete`} className="grid h-10 w-10 place-items-center rounded-full border border-neutral-300 bg-white text-transparent transition-[color,border-color,background-color] duration-150 hover:border-success hover:bg-success-surface hover:text-success focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><Check size={16} strokeWidth={2.5} /></button>
+                <button type="button" aria-label={`Mark ${item.title} complete`} className="grid h-10 w-10 place-items-center rounded-xl border border-neutral-300 bg-white text-transparent transition-[color,border-color,background-color] duration-150 hover:border-success hover:bg-success-surface hover:text-success focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><Check size={16} strokeWidth={2.5} /></button>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="truncate text-sm font-extrabold text-neutral-900 sm:text-base">{item.title}</h3>
@@ -145,7 +145,7 @@ export default function DashboardPage() {
                     {item.initials.map((initial) => <span key={initial} className="grid h-7 w-7 place-items-center rounded-full bg-white text-[10px] font-extrabold text-neutral-600 ring-2 ring-neutral-50">{initial}</span>)}
                   </div>
                   <time className={`min-w-32 text-right text-sm font-bold ${item.urgency === "critical" ? "text-danger-text" : item.urgency === "soon" ? "text-warning-text" : "text-neutral-500"}`}>{item.due}</time>
-                  <button type="button" aria-label={`More options for ${item.title}`} className="grid h-10 w-10 place-items-center rounded-full text-neutral-400 hover:bg-white hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><MoreHorizontal size={18} /></button>
+                  <button type="button" aria-label={`More options for ${item.title}`} className="grid h-10 w-10 place-items-center rounded-xl text-neutral-400 hover:bg-white hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><MoreHorizontal size={18} /></button>
                 </div>
               </article>
             ))}

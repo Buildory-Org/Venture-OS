@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { AppDb } from "../db.js";
 import { commandExecuteSchema, commandPreviewRequestSchema, commandPreviewSchema } from "@venture-studio/contracts";
-import { can, previewCommand } from "@venture-studio/core";
+import { can, CommandSyntaxError, previewCommand } from "@venture-studio/core";
 import type { Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
@@ -17,7 +17,9 @@ export function commandRoutes(database: Database): Router {
     const input = commandPreviewRequestSchema.parse(req.body);
     const actor = req.actor!;
     const channel = await accessibleChannel(db, actor, input.channelId);
-    const preview = previewCommand(input.input);
+    let preview;
+    try { preview = previewCommand(input.input); }
+    catch (error) { if (error instanceof CommandSyntaxError) throw new AppError(400, "BAD_REQUEST", error.message); throw error; }
     const action = preview.command.kind === "assign" ? "task:create" : "message:write";
     if (!can(actor.membership, action, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) })) throw new AppError(403, "FORBIDDEN", "Command access denied");
     await db.collection("command_previews").insertOne({ _id: preview.previewId, workspaceId: actor.membership.workspaceId, actorId: actor.id, channelId: input.channelId, ventureId: channel.ventureId, groupId: channel.groupId, ...preview, expiresAt: new Date(preview.expiresAt), createdAt: new Date() });
@@ -28,7 +30,10 @@ export function commandRoutes(database: Database): Router {
     const input = commandExecuteSchema.parse(req.body);
     const actor = req.actor!;
     const previous = await db.collection("command_executions").findOne({ workspaceId: actor.membership.workspaceId, actorId: actor.id, idempotencyKey: input.idempotencyKey });
-    if (previous) return void res.json({ ok: true, data: jsonValue(previous.result) });
+    if (previous) {
+      if (previous.preview?.previewId !== input.previewId) throw new AppError(409, "CONFLICT", "Idempotency key was used for another preview");
+      return void res.json({ ok: true, data: jsonValue(previous.result) });
+    }
     const stored = await db.collection("command_previews").findOne({ _id: input.previewId, workspaceId: actor.membership.workspaceId, actorId: actor.id });
     if (!stored || (stored.expiresAt as Date).getTime() <= Date.now()) throw new AppError(409, "STALE_PREVIEW", "Command preview expired; preview it again");
     const preview = commandPreviewSchema.parse({ ...stored, previewId: stored._id, expiresAt: (stored.expiresAt as Date).toISOString() });
@@ -38,6 +43,8 @@ export function commandRoutes(database: Database): Router {
     if (!can(actor.membership, action, { ventureId: String(stored.ventureId), groupId: String(stored.groupId) })) throw new AppError(403, "FORBIDDEN", "Command access denied");
     const target = await resolveUser(db, actor.membership.workspaceId, String(stored.ventureId), String(stored.groupId), preview.command.kind === "assign" ? preview.command.assignee : preview.command.recipient);
     const now = new Date();
+    const scheduledAt = preview.command.kind === "assign" ? preview.command.dueAt : preview.command.scheduledAt;
+    if (new Date(scheduledAt).getTime() <= now.getTime()) throw new AppError(409, "STALE_PREVIEW", "Command time has passed; preview it again");
     let result: Record<string, unknown>;
     if (preview.command.kind === "assign") {
       const taskId = randomUUID();

@@ -106,7 +106,7 @@ export const commandPreviewRequestSchema = z.object({
 
 export const assignCommandSchema = z.object({
   kind: z.literal("assign"), assignee: z.string(), title: z.string(), dueAt: isoDateSchema,
-  estimatedMinutes: z.number().int().positive(), timezone: timezoneSchema,
+  estimatedMinutes: z.number().int().min(1).max(100_800), timezone: timezoneSchema,
 });
 export const notifyCommandSchema = z.object({
   kind: z.literal("notify"), recipient: z.string(), message: z.string(), scheduledAt: isoDateSchema, timezone: timezoneSchema,

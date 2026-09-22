@@ -18,7 +18,7 @@ The Phase 2 demo UI runs on browser-local records under `apps/web/src/lib/studio
 
 - Task create/update/accept, evidence attachment, blocker, status, reminder, snooze, and completion. Completion must reject missing evidence unless a recorded exception is permitted.
 - Group/venture/channel creation and membership/role changes with server checks and audit identity.
-- Message/thread send, mention resolution, reactions, pins, and saves. `/assign` and `/notify` require typed server preview followed by execution with an idempotency key; the client command preview is only a demo.
+- Message/thread send, mention resolution, reactions, pins, and saves. `/assign` and `/notify` require typed server preview followed by execution with an idempotency key; the client command preview is only a demo. The connected composer can show `/notify @person 1h "message"` and `/assign @person "task" 90m <ISO deadline>` alongside the older `at=`, `due=`, and `estimate=` forms; display the server's 400 timing/syntax message and `STALE_PREVIEW` response without guessing a schedule locally.
 - Knowledge create/edit/import/export. Version increments and sensitivity enforcement must be server-owned.
 - Decision, class, outcome, request, and pipeline edits return the canonical updated record.
 - Invite issuance/acceptance, notification preferences, scoped PAT creation/revocation, and focus-session recovery require backend services; corresponding UI surfaces are explicitly labelled unavailable or demo-only until connected.

@@ -2,234 +2,181 @@ import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight,
   AtSign,
+  CalendarClock,
   Check,
   ChevronRight,
   CircleAlert,
   Clock3,
   Columns3,
-  Flame,
   Hash,
   HeartPulse,
-  MessageCircle,
+  MessageSquareText,
   MoreHorizontal,
   Play,
-  Rocket,
   Sparkles,
   Target,
   TimerReset,
+  TrendingUp,
   Users,
 } from "lucide-react";
+import clsx from "clsx";
+import { FocusSprintTrigger } from "@/components/dashboard/focus-sprint-trigger";
 
-export const metadata = { title: "Home — Venture Studio OS" };
-
-const buttonBase = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 active:scale-[0.96]";
+export const metadata = { title: "Dashboard — Venture Studio OS" };
 
 const priorities = [
-  {
-    title: "Finalize onboarding experiment",
-    venture: "Northstar Labs",
-    group: "Builder",
-    due: "Due today · 4:00 PM",
-    urgency: "critical",
-    progress: 72,
-    initials: ["MC", "AM"],
-  },
-  {
-    title: "Review clinic partner shortlist",
-    venture: "Lattice Health",
-    group: "Partnerships",
-    due: "Due tomorrow",
-    urgency: "soon",
-    progress: 45,
-    initials: ["JP"],
-  },
-  {
-    title: "Approve September research budget",
-    venture: "Fieldnote",
-    group: "Operations",
-    due: "Fri, Sep 25",
-    urgency: "normal",
-    progress: 18,
-    initials: ["RK", "AM"],
-  },
+  { title: "Finalize onboarding decision", context: "Northstar Labs · Builder", due: "Today · 4:00 PM", status: "In review", tone: "danger", owners: ["AM", "MC"] },
+  { title: "Review clinic partner shortlist", context: "Lattice Health · Partnerships", due: "Tomorrow", status: "Blocked", tone: "warning", owners: ["JP"] },
+  { title: "Approve research budget", context: "Fieldnote · Operations", due: "Fri · Sep 25", status: "Ready", tone: "neutral", owners: ["RK", "AM"] },
+  { title: "Write weekly venture update", context: "Meridian Studio · Leadership", due: "Mon · Sep 28", status: "Draft", tone: "neutral", owners: ["AM"] },
 ];
 
-const ventureHealth = [
-  { name: "Northstar Labs", stage: "Validate", score: 86, color: "bg-primary-600", status: "On track", tone: "text-success-text bg-success-surface" },
-  { name: "Lattice Health", stage: "Discover", score: 68, color: "bg-emerald-600", status: "Watch", tone: "text-warning-text bg-warning-surface" },
-  { name: "Fieldnote", stage: "Explore", score: 42, color: "bg-amber-500", status: "Needs input", tone: "text-danger-text bg-danger-surface" },
+const ventures = [
+  { name: "Northstar Labs", stage: "Validate", health: 86, signal: "+6", tone: "bg-primary-600", note: "Activation is moving" },
+  { name: "Lattice Health", stage: "Discover", health: 68, signal: "−4", tone: "bg-emerald-600", note: "Partner signal delayed" },
+  { name: "Fieldnote", stage: "Explore", health: 42, signal: "+1", tone: "bg-amber-500", note: "Awaiting first interviews" },
 ];
 
 const mentions = [
-  { initials: "MC", name: "Maya Chen", channel: "product", text: "Can you review the retention cut before the growth review?", time: "18m", unread: true },
-  { initials: "JP", name: "Jon Patel", channel: "partnerships", text: "I added the two clinics we discussed to the shortlist.", time: "1h", unread: true },
-  { initials: "RK", name: "Rina Kim", channel: "general", text: "The weekly venture notes are ready for your comments.", time: "3h", unread: false },
+  { initials: "MC", name: "Maya Chen", channel: "product", message: "Can you sign off on the retention read before the review?", time: "18m" },
+  { initials: "JP", name: "Jon Patel", channel: "partnerships", message: "Two clinics confirmed calls for next week.", time: "1h" },
 ];
 
 const activity = [
-  { icon: Check, label: "Maya completed", subject: "Activation event spec", meta: "Northstar Labs · 12m" },
-  { icon: MessageCircle, label: "Jon replied in", subject: "#partnerships", meta: "Lattice Health · 34m" },
-  { icon: Target, label: "Milestone updated", subject: "10 design partners", meta: "Northstar Labs · 2h" },
-  { icon: Users, label: "Rina added Arjun to", subject: "Research group", meta: "Fieldnote · 4h" },
+  { icon: Check, text: "Activation event spec completed", meta: "Northstar Labs · 12m" },
+  { icon: Target, text: "Design-partner milestone updated", meta: "Northstar Labs · 2h" },
+  { icon: Users, text: "Arjun joined Research", meta: "Fieldnote · 4h" },
 ];
 
-function SectionHeader({ title, eyebrow, action }: { title: string; eyebrow?: string; action?: string }) {
+const pressable = "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]";
+
+function Card({ children, className, delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
+  return <section className={clsx("animate-widget-in rounded-2xl bg-white shadow-card", className)} style={{ animationDelay: `${delay}ms` }}>{children}</section>;
+}
+
+function CardHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: string }) {
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div>
-        {eyebrow && <p className="mb-1 text-xs font-bold uppercase tracking-[0.1em] text-neutral-400">{eyebrow}</p>}
-        <h2 className="text-base font-extrabold tracking-tight text-neutral-900">{title}</h2>
-      </div>
-      {action && (
-        <button type="button" className="flex min-h-10 items-center gap-1 rounded-lg px-2 text-sm font-bold text-primary-600 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]">
-          {action}<ChevronRight size={15} />
-        </button>
-      )}
+    <header className="flex items-start justify-between gap-3 px-5 pt-5">
+      <div><p className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-neutral-400">{eyebrow}</p><h2 className="mt-1 text-[15px] font-extrabold tracking-tight text-neutral-900">{title}</h2></div>
+      {action && <button type="button" className={clsx("flex min-h-9 items-center gap-1 rounded-lg px-2 text-xs font-extrabold text-primary-600 hover:bg-primary-50", pressable)}>{action}<ChevronRight size={14} /></button>}
     </header>
   );
 }
 
-function PulseStat({ icon: Icon, label, value, detail, tone }: { icon: LucideIcon; label: string; value: string; detail: string; tone: string }) {
+function Metric({ icon: Icon, label, value, detail, tone }: { icon: LucideIcon; label: string; value: string; detail: string; tone: string }) {
   return (
-    <div className="flex min-w-0 items-center gap-3 border-b border-neutral-100 px-4 py-4 last:border-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
-      <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${tone}`}><Icon size={18} strokeWidth={1.9} /></span>
-      <div className="min-w-0">
-        <p className="text-xl font-extrabold tracking-tight text-neutral-900 tnum">{value}</p>
-        <p className="truncate text-xs font-semibold text-neutral-500">{label} · <span className="font-medium text-neutral-400">{detail}</span></p>
+    <section className="animate-widget-in rounded-2xl bg-white px-4 py-4 shadow-card transition-colors duration-150 hover:bg-neutral-50/70">
+      <div className="flex items-start gap-3">
+        <span className={clsx("grid h-9 w-9 shrink-0 place-items-center rounded-xl", tone)}><Icon size={16} strokeWidth={2} /></span>
+        <div className="min-w-0"><p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-neutral-400">{label}</p><p className="mt-0.5 text-xl font-extrabold tracking-tight text-neutral-900 tnum">{value}</p><p className="mt-1 truncate text-[11px] font-semibold text-neutral-400">{detail}</p></div>
       </div>
-    </div>
+    </section>
   );
 }
 
 export default function DashboardPage() {
   return (
-    <div className="mx-auto w-full max-w-[1540px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className="mx-auto w-full max-w-[1580px] px-4 py-5 sm:px-6 lg:px-7 lg:py-6">
+      <header className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-neutral-400">
-            <span>Meridian Studio</span><ChevronRight size={13} /><span>Northstar Labs</span><ChevronRight size={13} /><span className="text-neutral-600">Builder</span>
-          </div>
-          <h1 className="text-[clamp(1.5rem,3vw,2rem)] font-extrabold tracking-[-0.035em] text-neutral-900">Good morning, Alex.</h1>
-          <p className="mt-1 text-sm font-medium text-neutral-500 sm:text-base">Three decisions need your attention today.</p>
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-neutral-400"><span>Meridian Studio</span><ChevronRight size={12} /><span>Northstar Labs</span><ChevronRight size={12} /><span className="text-neutral-600">Builder</span></div>
+          <h1 className="text-[clamp(1.45rem,2.6vw,1.9rem)] font-extrabold tracking-[-0.04em] text-neutral-900">Good morning, Alex.</h1>
+          <p className="mt-1 text-sm font-medium text-neutral-500">Wednesday, 23 September · Three decisions need you.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={`${buttonBase} bg-white text-neutral-700 shadow-sm ring-1 ring-neutral-900/5 hover:bg-neutral-50`}><Hash size={16} />Open channel</button>
-          <button type="button" className={`${buttonBase} bg-neutral-900 text-white hover:bg-neutral-800`}><Rocket size={16} />New work item</button>
+          <button type="button" className={clsx("flex min-h-10 items-center gap-2 rounded-xl bg-white px-3.5 text-xs font-extrabold text-neutral-700 shadow-sm ring-1 ring-neutral-900/5 hover:bg-neutral-50", pressable)}><CalendarClock size={15} />Weekly review</button>
+          <FocusSprintTrigger className={clsx("flex min-h-10 items-center gap-2 rounded-xl bg-neutral-900 px-3.5 text-xs font-extrabold text-white hover:bg-neutral-800", pressable)}><Play size={14} fill="currentColor" />Start focus sprint</FocusSprintTrigger>
         </div>
-      </div>
+      </header>
 
-      <section aria-label="Today at a glance" className="animate-widget-in mb-5 grid overflow-hidden rounded-2xl bg-white shadow-card sm:grid-cols-2 xl:grid-cols-4">
-        <PulseStat icon={Flame} label="Due today" value="3" detail="1 urgent" tone="bg-danger-surface text-danger-text" />
-        <PulseStat icon={AtSign} label="Mentions" value="3" detail="2 unread" tone="bg-primary-50 text-primary-700" />
-        <PulseStat icon={HeartPulse} label="Venture health" value="78" detail="+4 this week" tone="bg-success-surface text-success-text" />
-        <PulseStat icon={Clock3} label="Focus time" value="2h 35m" detail="this week" tone="bg-ai-surface text-ai-text" />
+      <section aria-label="Studio metrics" className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Metric icon={CalendarClock} label="Due today" value="3" detail="1 decision is urgent" tone="bg-danger-surface text-danger-text" />
+        <Metric icon={AtSign} label="Mentions" value="3" detail="2 still unread" tone="bg-primary-50 text-primary-700" />
+        <Metric icon={HeartPulse} label="Portfolio health" value="78" detail="Up 4 points this week" tone="bg-success-surface text-success-text" />
+        <Metric icon={Clock3} label="Focus time" value="2h 35m" detail="Across 6 sessions" tone="bg-ai-surface text-ai-text" />
       </section>
 
-      <div className="grid grid-cols-12 gap-5">
-        <section className="animate-widget-in col-span-12 rounded-2xl bg-white p-5 shadow-card lg:col-span-8" style={{ animationDelay: "70ms" }}>
-          <SectionHeader title="Your priority queue" eyebrow="Assigned to you" action="Open Kanban" />
-          <div className="mt-4 space-y-2">
-            {priorities.map((item, index) => (
-              <article key={item.title} className="group grid gap-3 rounded-xl bg-neutral-50 p-3.5 transition-[background-color,transform] duration-150 hover:bg-neutral-100/80 active:scale-[0.99] sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
-                <button type="button" aria-label={`Mark ${item.title} complete`} className="grid h-10 w-10 place-items-center rounded-xl border border-neutral-300 bg-white text-transparent transition-[color,border-color,background-color] duration-150 hover:border-success hover:bg-success-surface hover:text-success focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><Check size={16} strokeWidth={2.5} /></button>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-sm font-extrabold text-neutral-900 sm:text-base">{item.title}</h3>
-                    {index === 0 && <span className="rounded-full bg-danger-surface px-2 py-1 text-xs font-bold text-danger-text">Urgent</span>}
-                  </div>
-                  <p className="mt-1 text-xs font-medium text-neutral-400">{item.venture} · {item.group}</p>
-                  <div className="mt-2 h-1.5 max-w-xs overflow-hidden rounded-full bg-neutral-200"><div className="h-full rounded-full bg-primary-600" style={{ width: `${item.progress}%` }} /></div>
-                </div>
-                <div className="flex items-center justify-between gap-4 sm:justify-end">
-                  <div className="flex -space-x-1.5">
-                    {item.initials.map((initial) => <span key={initial} className="grid h-7 w-7 place-items-center rounded-full bg-white text-[10px] font-extrabold text-neutral-600 ring-2 ring-neutral-50">{initial}</span>)}
-                  </div>
-                  <time className={`min-w-32 text-right text-sm font-bold ${item.urgency === "critical" ? "text-danger-text" : item.urgency === "soon" ? "text-warning-text" : "text-neutral-500"}`}>{item.due}</time>
-                  <button type="button" aria-label={`More options for ${item.title}`} className="grid h-10 w-10 place-items-center rounded-xl text-neutral-400 hover:bg-white hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><MoreHorizontal size={18} /></button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="animate-widget-in col-span-12 rounded-2xl bg-white p-5 shadow-card lg:col-span-4" style={{ animationDelay: "140ms" }}>
-          <SectionHeader title="Venture health" eyebrow="Portfolio pulse" action="View all" />
-          <div className="mt-4 space-y-3">
-            {ventureHealth.map((venture) => (
-              <article key={venture.name} className="rounded-xl bg-neutral-50 p-3.5">
-                <div className="flex items-center gap-3">
-                  <span className={`h-9 w-1.5 rounded-full ${venture.color}`} />
-                  <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-extrabold text-neutral-800">{venture.name}</h3><p className="text-xs font-medium text-neutral-400">{venture.stage} stage</p></div>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${venture.tone}`}>{venture.status}</span>
-                </div>
-                <div className="mt-3 flex items-center gap-3"><div className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200"><div className={venture.color + " h-full rounded-full"} style={{ width: `${venture.score}%` }} /></div><span className="w-7 text-right font-mono text-xs font-bold text-neutral-500 tnum">{venture.score}</span></div>
-              </article>
-            ))}
-          </div>
-          <div className="mt-3 flex items-start gap-2.5 rounded-xl bg-warning-surface px-3.5 py-3 text-warning-text">
-            <CircleAlert size={16} className="mt-0.5 shrink-0" />
-            <p className="text-xs font-semibold leading-5">Lattice’s customer signal is 12 minutes behind. Last good sync: 10:30 AM.</p>
-          </div>
-        </section>
-
-        <section className="animate-widget-in col-span-12 rounded-2xl bg-neutral-900 p-5 text-white shadow-e3" style={{ animationDelay: "210ms" }}>
-          <div className="grid gap-5 lg:grid-cols-[1.1fr_1fr] lg:items-center">
-            <div className="max-w-xl">
-              <div className="mb-4 flex items-center gap-2 text-primary-300"><Sparkles size={16} /><p className="text-xs font-bold uppercase tracking-[0.1em]">Suggested next move</p></div>
-              <h2 className="text-xl font-extrabold tracking-tight sm:text-2xl">Turn the onboarding result into a decision.</h2>
-              <p className="mt-2 text-sm leading-6 text-white/60">Activation improved 14%, but week-two retention is flat. Capture the tradeoff before today’s 4 PM review.</p>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
-              <button type="button" className={`${buttonBase} bg-white/10 text-white hover:bg-white/15`}><MessageCircle size={16} />Discuss in chat</button>
-              <button type="button" className={`${buttonBase} bg-white text-neutral-900 hover:bg-neutral-100`}><Play size={15} fill="currentColor" />Start focus session</button>
-            </div>
-          </div>
-        </section>
-
-        <section className="animate-widget-in col-span-12 rounded-2xl bg-white p-5 shadow-card lg:col-span-7" style={{ animationDelay: "280ms" }}>
-          <SectionHeader title="Mentions that need you" eyebrow="Conversations" action="Open all" />
-          <div className="mt-4 divide-y divide-neutral-100">
-            {mentions.map((mention) => (
-              <article key={mention.name} className="flex gap-3 py-3 first:pt-0 last:pb-0">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-primary-50 text-xs font-extrabold text-primary-700">{mention.initials}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><h3 className="text-sm font-extrabold text-neutral-800">{mention.name}</h3><span className="flex items-center gap-1 text-xs font-semibold text-neutral-400"><Hash size={12} />{mention.channel}</span><time className="ml-auto text-xs text-neutral-400">{mention.time}</time></div>
-                  <p className="mt-1 text-sm leading-6 text-neutral-600"><span className="font-bold text-primary-600">@Alex</span> {mention.text}</p>
-                </div>
-                {mention.unread && <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary-600" aria-label="Unread" />}
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="animate-widget-in col-span-12 rounded-2xl bg-white p-5 shadow-card lg:col-span-5" style={{ animationDelay: "350ms" }}>
-          <SectionHeader title="Recent activity" eyebrow="Across your ventures" />
-          <div className="mt-4 space-y-4">
-            {activity.map(({ icon: Icon, label, subject, meta }) => (
-              <div key={subject} className="flex gap-3">
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-neutral-100 text-neutral-500"><Icon size={16} /></span>
-                <div className="min-w-0"><p className="text-sm leading-5 text-neutral-600">{label} <span className="font-extrabold text-neutral-800">{subject}</span></p><p className="mt-0.5 text-xs font-medium text-neutral-400">{meta}</p></div>
+      <div className="grid grid-cols-12 gap-4">
+        <Card className="col-span-12 overflow-hidden lg:col-span-8" delay={45}>
+          <div className="grid min-h-[286px] lg:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="p-5 sm:p-6">
+              <div className="flex items-center gap-2 text-ai-text"><span className="grid h-8 w-8 place-items-center rounded-xl bg-ai-surface"><Sparkles size={15} /></span><span className="text-[10px] font-extrabold uppercase tracking-[0.1em]">Studio briefing</span></div>
+              <h2 className="mt-5 max-w-2xl text-[clamp(1.35rem,2.5vw,1.85rem)] font-extrabold leading-tight tracking-[-0.035em] text-neutral-900">Activation moved. Retention didn’t.</h2>
+              <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-neutral-500">Northstar’s new onboarding lifted activation to 61%, but week-two retention remains flat. The 4 PM review needs a ship, iterate, or stop recommendation—not another data pull.</p>
+              <div className="mt-5 flex flex-wrap gap-2">
+                <span className="rounded-lg bg-success-surface px-2.5 py-1.5 text-[11px] font-extrabold text-success-text">Activation +14%</span>
+                <span className="rounded-lg bg-neutral-100 px-2.5 py-1.5 text-[11px] font-extrabold text-neutral-600">W2 retention 31%</span>
+                <span className="rounded-lg bg-warning-surface px-2.5 py-1.5 text-[11px] font-extrabold text-warning-text">Decision due 4 PM</span>
               </div>
-            ))}
+            </div>
+            <div className="flex flex-col justify-between bg-neutral-900 p-5 text-white">
+              <div><p className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-white/40">Recommended next move</p><p className="mt-3 text-base font-extrabold leading-6">Iterate once on the retention gap.</p><p className="mt-2 text-xs font-medium leading-5 text-white/55">Keep the activation win. Test the week-one habit loop with the same cohort.</p></div>
+              <button type="button" className={clsx("mt-5 flex min-h-10 items-center justify-center gap-2 rounded-xl bg-white px-3 text-xs font-extrabold text-neutral-900 hover:bg-neutral-100", pressable)}>Open decision brief<ArrowRight size={14} /></button>
+            </div>
           </div>
-        </section>
+        </Card>
 
-        <section className="animate-widget-in col-span-12 pb-5" style={{ animationDelay: "420ms" }}>
-          <SectionHeader title="Jump back in" eyebrow="Quick entry points" />
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            {[
-              { icon: TimerReset, title: "Focus mode", detail: "One task, one timer", tone: "bg-primary-50 text-primary-700" },
-              { icon: MessageCircle, title: "Channels & chat", detail: "3 unread mentions", tone: "bg-ai-surface text-ai-text" },
-              { icon: Columns3, title: "Kanban board", detail: "7 items assigned", tone: "bg-success-surface text-success-text" },
-            ].map(({ icon: Icon, title, detail, tone }) => (
-              <button key={title} type="button" className="group flex min-h-20 items-center gap-3 rounded-2xl bg-white p-3.5 text-left shadow-card transition-[box-shadow,transform] duration-150 hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]">
-                <span className={`grid h-11 w-11 place-items-center rounded-xl ${tone}`}><Icon size={19} /></span>
-                <span className="min-w-0 flex-1"><span className="block text-sm font-extrabold text-neutral-900">{title}</span><span className="block text-xs font-medium text-neutral-400">{detail}</span></span>
-                <ArrowRight size={17} className="text-neutral-300 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-neutral-600" />
-              </button>
+        <Card className="col-span-12 lg:col-span-4" delay={90}>
+          <CardHeader eyebrow="Portfolio pulse" title="Studio health" action="Breakdown" />
+          <div className="flex flex-col items-center px-5 pb-5 pt-2">
+            <svg viewBox="0 0 180 110" className="w-full max-w-[220px]" aria-label="Studio health score 78 out of 100" role="img">
+              <path d="M 20 94 A 70 70 0 0 1 160 94" fill="none" stroke="#F1F5F9" strokeWidth="15" strokeLinecap="round" />
+              <path d="M 20 94 A 70 70 0 0 1 160 94" fill="none" stroke="#2453DB" strokeWidth="15" strokeLinecap="round" strokeDasharray="219.9" strokeDashoffset="48.4" />
+              <text x="90" y="78" textAnchor="middle" style={{ fontSize: 35, fontWeight: 800, fill: "#0F172A" }}>78</text>
+              <text x="90" y="97" textAnchor="middle" style={{ fontSize: 9, fontWeight: 700, fill: "#64748B", letterSpacing: "0.08em" }}>GOOD · /100</text>
+            </svg>
+            <div className="grid w-full grid-cols-3 gap-2">
+              {[{ label: "Signal", value: "82" }, { label: "Pace", value: "74" }, { label: "Team", value: "79" }].map((item) => <div key={item.label} className="rounded-xl bg-neutral-50 px-2 py-2.5 text-center"><p className="font-mono text-sm font-bold text-neutral-800 tnum">{item.value}</p><p className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.08em] text-neutral-400">{item.label}</p></div>)}
+            </div>
+            <div className="mt-3 flex w-full items-start gap-2 rounded-xl bg-warning-surface px-3 py-2.5 text-warning-text"><CircleAlert size={14} className="mt-0.5 shrink-0" /><p className="text-[11px] font-semibold leading-4">Lattice’s customer signal is 12 minutes behind.</p></div>
+          </div>
+        </Card>
+
+        <Card className="col-span-12 lg:col-span-8" delay={135}>
+          <CardHeader eyebrow="Assigned to you" title="Priority queue" action="Open board" />
+          <div className="mt-3 px-3 pb-3">
+            {priorities.map((item, index) => (
+              <article key={item.title} className="grid gap-3 rounded-xl px-2 py-3 transition-colors duration-150 hover:bg-neutral-50 sm:grid-cols-[36px_minmax(0,1fr)_auto] sm:items-center">
+                <button type="button" aria-label={`Mark ${item.title} complete`} className={clsx("grid h-9 w-9 place-items-center rounded-xl border border-neutral-200 bg-white text-transparent hover:border-success hover:bg-success-surface hover:text-success", pressable)}><Check size={15} strokeWidth={2.4} /></button>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate text-[13px] font-extrabold text-neutral-800 sm:text-sm">{item.title}</h3><span className={clsx("rounded-md px-2 py-1 text-[9px] font-extrabold uppercase tracking-[0.05em]", item.tone === "danger" ? "bg-danger-surface text-danger-text" : item.tone === "warning" ? "bg-warning-surface text-warning-text" : "bg-neutral-100 text-neutral-500")}>{item.status}</span></div><p className="mt-1 text-[11px] font-semibold text-neutral-400">{item.context}</p></div>
+                <div className="flex items-center justify-between gap-3 sm:justify-end"><div className="flex -space-x-1.5">{item.owners.map((owner) => <span key={owner} className="grid h-7 w-7 place-items-center rounded-full bg-primary-50 text-[9px] font-extrabold text-primary-700 ring-2 ring-white">{owner}</span>)}</div><time className={clsx("min-w-28 text-right text-xs font-extrabold", index === 0 ? "text-danger-text" : index === 1 ? "text-warning-text" : "text-neutral-500")}>{item.due}</time><button type="button" aria-label={`More options for ${item.title}`} className={clsx("grid h-9 w-9 place-items-center rounded-lg text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800", pressable)}><MoreHorizontal size={16} /></button></div>
+              </article>
             ))}
           </div>
-        </section>
+        </Card>
+
+        <Card className="col-span-12 lg:col-span-4" delay={180}>
+          <CardHeader eyebrow="Work modes" title="Move the day forward" />
+          <div className="space-y-2 px-4 pb-4 pt-3">
+            {[
+              { icon: TimerReset, title: "Focus sprint", detail: "Finalize onboarding decision", tone: "bg-primary-50 text-primary-700" },
+              { icon: MessageSquareText, title: "Open #product", detail: "2 unread mentions", tone: "bg-ai-surface text-ai-text" },
+              { icon: Columns3, title: "Kanban board", detail: "7 items assigned to you", tone: "bg-success-surface text-success-text" },
+            ].map(({ icon: Icon, title, detail, tone }) => (
+              <button key={title} type="button" className={clsx("group flex min-h-16 w-full items-center gap-3 rounded-xl bg-neutral-50 px-3 text-left hover:bg-neutral-100", pressable)}><span className={clsx("grid h-9 w-9 shrink-0 place-items-center rounded-xl", tone)}><Icon size={16} /></span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-extrabold text-neutral-800">{title}</span><span className="mt-0.5 block truncate text-[10px] font-semibold text-neutral-400">{detail}</span></span><ArrowRight size={15} className="text-neutral-300 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-neutral-600" /></button>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="col-span-12 xl:col-span-7" delay={225}>
+          <CardHeader eyebrow="Across the studio" title="Venture momentum" action="View portfolio" />
+          <div className="space-y-2 px-4 pb-4 pt-3">
+            {ventures.map((venture) => (
+              <article key={venture.name} className="grid gap-3 rounded-xl bg-neutral-50 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_190px_auto] sm:items-center">
+                <div className="flex min-w-0 items-center gap-3"><span className={clsx("h-9 w-1.5 shrink-0 rounded-full", venture.tone)} /><div className="min-w-0"><h3 className="truncate text-xs font-extrabold text-neutral-800">{venture.name}</h3><p className="mt-0.5 truncate text-[10px] font-semibold text-neutral-400">{venture.stage} · {venture.note}</p></div></div>
+                <div className="flex items-center gap-2"><div className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200"><div className={clsx("h-full rounded-full", venture.tone)} style={{ width: `${venture.health}%` }} /></div><span className="w-7 text-right font-mono text-[10px] font-bold text-neutral-500 tnum">{venture.health}</span></div>
+                <span className={clsx("justify-self-start rounded-md px-2 py-1 text-[10px] font-extrabold sm:justify-self-end", venture.signal.startsWith("+") ? "bg-success-surface text-success-text" : "bg-danger-surface text-danger-text")}>{venture.signal}</span>
+              </article>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="col-span-12 xl:col-span-5" delay={270}>
+          <div className="grid h-full sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+            <div className="p-5"><div className="flex items-center gap-2"><AtSign size={15} className="text-primary-600" /><h2 className="text-sm font-extrabold text-neutral-900">Mentions</h2></div><div className="mt-4 space-y-4">{mentions.map((mention) => <article key={mention.name} className="flex gap-2.5"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary-50 text-[9px] font-extrabold text-primary-700">{mention.initials}</span><div className="min-w-0"><div className="flex items-center gap-1.5"><p className="truncate text-[11px] font-extrabold text-neutral-800">{mention.name}</p><span className="flex items-center gap-0.5 text-[9px] font-bold text-neutral-400"><Hash size={10} />{mention.channel}</span><time className="ml-auto text-[9px] font-semibold text-neutral-400">{mention.time}</time></div><p className="mt-1 text-[11px] font-medium leading-4 text-neutral-500"><span className="font-extrabold text-primary-600">@Alex</span> {mention.message}</p></div></article>)}</div></div>
+            <div className="border-t border-neutral-100 p-5 sm:border-l sm:border-t-0 xl:border-l-0 xl:border-t 2xl:border-l 2xl:border-t-0"><div className="flex items-center gap-2"><TrendingUp size={15} className="text-success" /><h2 className="text-sm font-extrabold text-neutral-900">Recent activity</h2></div><div className="mt-4 space-y-4">{activity.map(({ icon: Icon, text, meta }) => <div key={text} className="flex gap-2.5"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-neutral-100 text-neutral-500"><Icon size={14} /></span><div className="min-w-0"><p className="text-[11px] font-bold leading-4 text-neutral-700">{text}</p><p className="mt-0.5 text-[9px] font-semibold text-neutral-400">{meta}</p></div></div>)}</div></div>
+          </div>
+        </Card>
       </div>
     </div>
   );

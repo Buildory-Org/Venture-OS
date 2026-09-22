@@ -66,6 +66,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Sign-in/invite demo surfaces and founder admin audit/PAT surfaces
 - [x] Document UI-to-backend contract seams
 - [x] Verify a separate connected dashboard preview against session, dashboard, and paged task contracts
+- [x] Verify connected sign-in request, invitation acceptance path, task/board, channel/command preview, inbox, and focus UI slices against the local API and Mongo tests
 - [ ] Integrate shared contracts when the backend publishes them
 
 ### 2.4 Verification

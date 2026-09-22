@@ -69,6 +69,10 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Verify connected sign-in request, invitation acceptance path, task/board, channel/command preview, inbox, and focus UI slices against the local API and Mongo tests
 - [x] Verify connected knowledge search and planning reads for outcomes, decisions, classes, and information requests against the local API
 - [x] Verify planning, sales, and admin connected controls in the browser, and channel action contracts in the Mongo-backed API smoke suite
+- [x] Connect authorized member discovery to task assignment, board filtering, channel mentions, DM recipients, and class reviewers; inspect the pickers in the browser
+- [x] Connect reminder IDs and preferences, focus history, document browse/edit, class applications/review, and DM history/send to the published contracts; verify the new reads in the browser and mutations in Mongo-backed API tests
+- [x] Verify same-origin Socket.IO polling in the browser by receiving another local member's channel message without reloading
+- [ ] Verify browser Socket.IO with a real Better Auth cookie and staging reverse-proxy/sticky-session configuration
 - [ ] Integrate shared contracts when the backend publishes them
 
 ### 2.4 Verification

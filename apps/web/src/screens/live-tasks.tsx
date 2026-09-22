@@ -7,6 +7,7 @@ import { ArrowRight, Database, Plus, RefreshCw } from "lucide-react";
 import type { Task } from "@venture-studio/contracts";
 import { createLiveTask, commentOnLiveTask, getLiveTask, listLiveTasks, loadLiveSession, reviewLiveEvidence, submitLiveEvidence, updateLiveTask } from "@/lib/studio-api";
 import { Badge, DetailDrawer, Empty, Field, inputClass, PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { LiveMemberPicker } from "@/components/studio/live-member-picker";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Detail = Awaited<ReturnType<typeof getLiveTask>>;
@@ -29,6 +30,8 @@ function TaskDetail({ id, session, onClose, onChanged }: { id: string; session: 
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState<Status>("proposed");
+  const [assigneeId, setAssigneeId] = useState("");
+  const [reviewerId, setReviewerId] = useState("");
   const [blocker, setBlocker] = useState("");
   const [evidenceTitle, setEvidenceTitle] = useState("");
   const [evidenceDescription, setEvidenceDescription] = useState("");
@@ -41,6 +44,8 @@ function TaskDetail({ id, session, onClose, onChanged }: { id: string; session: 
       if (!active) return;
       setDetail(result);
       setStatus(result.task.status);
+      setAssigneeId(result.task.assigneeId);
+      setReviewerId(result.task.reviewerId ?? "");
       setBlocker(result.task.blocker ?? "");
       setError("");
     }).catch((cause: unknown) => { if (active) setError(message(cause)); }));
@@ -66,6 +71,7 @@ function TaskDetail({ id, session, onClose, onChanged }: { id: string; session: 
       <div><div className="flex flex-wrap gap-2"><Badge tone={task?.priority === "urgent" || task?.priority === "high" ? "red" : "neutral"}>{task?.priority}</Badge><Badge tone={task?.status === "blocked" ? "red" : task?.status === "done" ? "green" : "blue"}>{label(task?.status ?? "")}</Badge></div><p className="mt-3 text-sm leading-6 text-neutral-700">{task?.outcome}</p><p className="mt-2 text-xs text-neutral-500">{venture?.name ?? "Venture"} · Due {displayDate(task!.dueAt)} · {task!.estimatedMinutes} min · {task!.timezone}</p></div>
       <div className="grid gap-3 rounded-xl bg-neutral-50 p-4 text-sm sm:grid-cols-2"><div><p className="text-xs font-extrabold uppercase tracking-wide text-neutral-400">Definition of done</p><p className="mt-1 leading-5 text-neutral-700">{task!.definitionOfDone}</p></div><div><p className="text-xs font-extrabold uppercase tracking-wide text-neutral-400">Evidence required</p><p className="mt-1 leading-5 text-neutral-700">{task!.evidenceRequirement}</p></div>{task!.blocker && <p className="sm:col-span-2 text-danger-text">Blocked: {task!.blocker}</p>}</div>
       {editable && <form onSubmit={(event) => { event.preventDefault(); if (!task) return; mutate(() => updateLiveTask(task.id, { status, blocker: status === "blocked" ? blocker : null })); }} className="space-y-3 border-t border-neutral-100 pt-5"><h3 className="text-sm font-extrabold text-neutral-900">Update status</h3><div className="grid gap-2 sm:grid-cols-2"><Field label="Status"><select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as Status)}>{statuses.map((item) => <option key={item} value={item}>{label(item)}</option>)}</select></Field><Field label="Blocker, if blocked"><input className={inputClass} value={blocker} onChange={(event) => setBlocker(event.target.value)} placeholder="What is stopping work?" /></Field></div><p className="text-xs leading-5 text-neutral-500">Completion requires accepted evidence or a reviewed exception. The server checks this before marking work done.</p><button type="submit" disabled={busy || (status === "blocked" && !blocker.trim())} className={primaryClass}>Save status</button></form>}
+      {editable && <form onSubmit={(event) => { event.preventDefault(); if (!task || !assigneeId) return; mutate(() => updateLiveTask(task.id, { assigneeId, ...(reviewerId ? { reviewerId } : {}) })); }} className="space-y-3 border-t border-neutral-100 pt-5"><h3 className="text-sm font-extrabold text-neutral-900">People</h3><LiveMemberPicker label="Assignee" value={assigneeId} onChange={setAssigneeId} ventureId={task!.ventureId} groupId={task!.groupId} /><LiveMemberPicker label="Reviewer" value={reviewerId} onChange={setReviewerId} ventureId={task!.ventureId} groupId={task!.groupId} optional /><p className="text-xs text-neutral-500">Both people must be active members of this venture and group. The API does not support removing an existing reviewer.</p><button type="submit" disabled={busy || !assigneeId || (!!task!.reviewerId && !reviewerId)} className={secondaryClass}>Save people</button></form>}
       <section className="border-t border-neutral-100 pt-5"><h3 className="text-sm font-extrabold text-neutral-900">Evidence</h3>{detail.evidence.length ? <ul className="mt-3 space-y-2">{detail.evidence.map((item) => <li key={item.id} className="rounded-xl bg-neutral-50 p-3"><p className="text-sm font-bold text-neutral-800">{item.title}</p><p className="mt-1 text-xs leading-5 text-neutral-500">{item.description}</p>{item.uri && safeHttpUrl(item.uri) && <a href={item.uri} target="_blank" rel="noopener noreferrer" className="mt-1 block break-all text-xs font-bold text-primary-700 underline">Open source</a>}<div className="mt-2 flex flex-wrap items-center gap-2"><Badge tone={item.reviewStatus === "accepted" || item.reviewStatus === "exception" ? "green" : item.reviewStatus === "rejected" ? "red" : "amber"}>{item.reviewStatus}</Badge>{reviewer && item.reviewStatus === "pending" && <><button disabled={busy} onClick={() => mutate(() => reviewLiveEvidence(item.id, "accepted"))} className="text-xs font-bold text-success-text hover:underline">Accept</button><button disabled={busy} onClick={() => mutate(() => reviewLiveEvidence(item.id, "rejected"))} className="text-xs font-bold text-danger-text hover:underline">Reject</button><button disabled={busy} onClick={() => mutate(() => reviewLiveEvidence(item.id, "exception"))} className="text-xs font-bold text-primary-700 hover:underline">Exception</button></>}</div></li>)}</ul> : <p className="mt-2 text-xs text-neutral-500">No evidence submitted yet.</p>}
         <form onSubmit={(event) => { event.preventDefault(); if (!task) return; if (evidenceUrl && !safeHttpUrl(evidenceUrl)) { setError("Evidence links must use http:// or https://."); return; } mutate(() => submitLiveEvidence(task.id, { title: evidenceTitle, description: evidenceDescription, ...(evidenceUrl ? { uri: evidenceUrl } : {}) }), () => { setEvidenceTitle(""); setEvidenceDescription(""); setEvidenceUrl(""); }); }} className="mt-4 grid gap-2"><Field label="Evidence title"><input required className={inputClass} value={evidenceTitle} onChange={(event) => setEvidenceTitle(event.target.value)} /></Field><Field label="Description"><textarea required className={`${inputClass} min-h-20 py-3`} value={evidenceDescription} onChange={(event) => setEvidenceDescription(event.target.value)} /></Field><Field label="Source URL, optional"><input type="url" className={inputClass} value={evidenceUrl} onChange={(event) => setEvidenceUrl(event.target.value)} /></Field><button disabled={busy} className={secondaryClass}>Submit evidence for review</button></form>
       </section>
@@ -79,6 +85,8 @@ function NewTask({ session, onClose, onCreated }: { session: Session; onClose: (
   const [ventureId, setVentureId] = useState(firstVenture?.id ?? "");
   const [groupId, setGroupId] = useState(firstVenture?.groups[0]?.id ?? "");
   const [title, setTitle] = useState("");
+  const [assigneeId, setAssigneeId] = useState("");
+  const [reviewerId, setReviewerId] = useState("");
   const [outcome, setOutcome] = useState("");
   const [priority, setPriority] = useState<Task["priority"]>("medium");
   const [dueDate, setDueDate] = useState(tomorrow);
@@ -94,16 +102,17 @@ function NewTask({ session, onClose, onCreated }: { session: Session; onClose: (
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const task = await createLiveTask({ ventureId, groupId, title, outcome, assigneeId: session.user.id, priority, dueAt: new Date(`${dueDate}T17:00:00`).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", estimatedMinutes: minutes, definitionOfDone: definition, evidenceRequirement, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), dependencies: [], evidenceLinks: [] });
+      const task = await createLiveTask({ ventureId, groupId, title, outcome, assigneeId, ...(reviewerId ? { reviewerId } : {}), priority, dueAt: new Date(`${dueDate}T17:00:00`).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", estimatedMinutes: minutes, definitionOfDone: definition, evidenceRequirement, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), dependencies: [], evidenceLinks: [] });
       onCreated(task);
     } catch (cause) { setError(message(cause)); }
     finally { setBusy(false); }
   }
 
-  return <DetailDrawer title="Create connected task" subtitle="Self-assigned task · canonical API" onClose={onClose}><form onSubmit={save} className="grid gap-4 sm:grid-cols-2">
-    <div className="sm:col-span-2 rounded-xl bg-primary-50 p-3 text-xs leading-5 text-primary-800">The API does not yet provide a searchable member directory. This form assigns the task to your authenticated account; it never uses demo people IDs.</div>
-    <Field label="Venture"><select className={inputClass} value={ventureId} onChange={(event) => { const next = session.hierarchy.ventures.find((item) => item.id === event.target.value); setVentureId(event.target.value); setGroupId(next?.groups[0]?.id ?? ""); }}>{session.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-    <Field label="Group"><select className={inputClass} value={groupId} onChange={(event) => setGroupId(event.target.value)}>{groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+  return <DetailDrawer title="Create connected task" subtitle="Authorized member assignment · canonical API" onClose={onClose}><form onSubmit={save} className="grid gap-4 sm:grid-cols-2">
+    <Field label="Venture"><select className={inputClass} value={ventureId} onChange={(event) => { const next = session.hierarchy.ventures.find((item) => item.id === event.target.value); setVentureId(event.target.value); setGroupId(next?.groups[0]?.id ?? ""); setAssigneeId(""); setReviewerId(""); }}>{session.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+    <Field label="Group"><select className={inputClass} value={groupId} onChange={(event) => { setGroupId(event.target.value); setAssigneeId(""); setReviewerId(""); }}>{groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+    <LiveMemberPicker label="Assignee" value={assigneeId} onChange={setAssigneeId} ventureId={ventureId} groupId={groupId} />
+    <LiveMemberPicker label="Reviewer" value={reviewerId} onChange={setReviewerId} ventureId={ventureId} groupId={groupId} optional />
     <div className="sm:col-span-2"><Field label="Task title"><input required maxLength={200} className={inputClass} value={title} onChange={(event) => setTitle(event.target.value)} /></Field></div>
     <div className="sm:col-span-2"><Field label="Desired outcome"><textarea required className={`${inputClass} min-h-20 py-3`} value={outcome} onChange={(event) => setOutcome(event.target.value)} /></Field></div>
     <Field label="Priority"><select className={inputClass} value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])}>{(["low", "medium", "high", "urgent"] as const).map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>
@@ -113,7 +122,7 @@ function NewTask({ session, onClose, onCreated }: { session: Session; onClose: (
     <div className="sm:col-span-2"><Field label="Definition of done"><textarea required className={`${inputClass} min-h-20 py-3`} value={definition} onChange={(event) => setDefinition(event.target.value)} /></Field></div>
     <div className="sm:col-span-2"><Field label="Evidence requirement"><textarea required className={`${inputClass} min-h-20 py-3`} value={evidenceRequirement} onChange={(event) => setEvidenceRequirement(event.target.value)} /></Field></div>
     {error && <p role="alert" className="sm:col-span-2 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
-    <div className="sm:col-span-2 flex justify-end gap-2"><button type="button" onClick={onClose} className={secondaryClass}>Cancel</button><button disabled={busy || !groupId} className={primaryClass}>{busy ? "Creating…" : "Create task"}</button></div>
+    <div className="sm:col-span-2 flex justify-end gap-2"><button type="button" onClick={onClose} className={secondaryClass}>Cancel</button><button disabled={busy || !groupId || !assigneeId} className={primaryClass}>{busy ? "Creating…" : "Create task"}</button></div>
   </form></DetailDrawer>;
 }
 

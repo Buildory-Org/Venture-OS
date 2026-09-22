@@ -2,6 +2,7 @@ import {
   createTaskSchema,
   channelSchema,
   createChannelMessageSchema,
+  createDirectMessageSchema,
   createChannelSchema,
   commandExecuteSchema,
   commandPreviewRequestSchema,
@@ -11,10 +12,14 @@ import {
   errorEnvelopeSchema,
   eventEnvelopeSchema,
   focusSessionSchema,
+  classApplicationSchema,
+  reviewClassApplicationSchema,
   informationRequestSchema,
   knowledgeSearchResponseSchema,
   knowledgeSearchSchema,
   messageSchema,
+  memberDirectoryItemSchema,
+  memberDirectoryQuerySchema,
   membershipSchema,
   opportunityInputSchema,
   opportunitySchema,
@@ -24,15 +29,18 @@ import {
   reactionUpdateSchema,
   saveUpdateSchema,
   notificationSchema,
+  notificationPreferencesSchema,
   outcomeSchema,
   pagedSuccessEnvelope,
   reminderSchema,
+  documentListQuerySchema,
   snoozeSchema,
   startFocusSchema,
   classSchema,
   decisionSchema,
   documentSchema,
   documentVersionSchema,
+  updateDocumentSchema,
   sessionBootstrapResponseSchema,
   successEnvelope,
   taskListQuerySchema,
@@ -93,6 +101,13 @@ export async function loadLiveSession() {
   return sessionBootstrapResponseSchema.parse(await request("/v1/session/bootstrap")).data;
 }
 
+export async function listLiveMembers(input: { ventureId?: string; groupId?: string; q?: string; handle?: string; cursor?: string; limit?: number } = {}) {
+  const query = memberDirectoryQuerySchema.parse(input);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+  return pagedSuccessEnvelope(memberDirectoryItemSchema).parse(await request(`/v1/members?${params}`)).data;
+}
+
 type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string };
 
 export async function listLiveTasks(cursor?: string, filters: TaskFilters = {}) {
@@ -151,6 +166,21 @@ export async function sendLiveChannelMessage(channelId: string, input: unknown) 
   return { message: messageSchema.parse(result.data.message), event: eventEnvelopeSchema.parse(result.data.event) };
 }
 
+export async function listLiveDirectMessages(userId: string) {
+  return successEnvelope(messageSchema.array()).parse(await request(`/v1/direct-messages/${encodeURIComponent(userId)}`)).data;
+}
+
+export async function listLiveEvents(after?: string) {
+  const params = new URLSearchParams();
+  if (after) params.set("after", after);
+  return successEnvelope(eventEnvelopeSchema.array()).parse(await request(`/v1/events${params.size ? `?${params}` : ""}`)).data;
+}
+
+export async function sendLiveDirectMessage(input: unknown) {
+  const valid = createDirectMessageSchema.parse(input);
+  return successEnvelope(messageSchema).parse(await request("/v1/direct-messages", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
 export async function updateLiveMessageReaction(id: string, emoji: string, active: boolean) {
   const valid = reactionUpdateSchema.parse({ emoji, active });
   return successEnvelope(messageSchema).parse(await request(`/v1/messages/${encodeURIComponent(id)}/reaction`, { method: "PUT", body: JSON.stringify(valid) })).data;
@@ -184,6 +214,21 @@ export async function listLiveNotifications() {
   return successEnvelope(notificationSchema.array()).parse(await request("/v1/notifications")).data;
 }
 
+export async function getLiveNotificationPreferences() {
+  return successEnvelope(notificationPreferencesSchema).parse(await request("/v1/notification-preferences")).data;
+}
+
+export async function updateLiveNotificationPreferences(input: unknown) {
+  const valid = notificationPreferencesSchema.parse(input);
+  return successEnvelope(notificationPreferencesSchema).parse(await request("/v1/notification-preferences", { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+export async function listLiveReminders(cursor?: string) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  return pagedSuccessEnvelope(reminderSchema).parse(await request(`/v1/reminders?${params}`)).data;
+}
+
 export async function readLiveNotification(id: string) {
   const result = await request(`/v1/notifications/${encodeURIComponent(id)}/read`, { method: "POST" });
   if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) throw new StudioApiError("The notification response was invalid.");
@@ -196,6 +241,12 @@ export async function snoozeLiveReminder(id: string, minutes: 10 | 20 | 30 | "ne
 
 export async function getCurrentLiveFocus() {
   return successEnvelope(focusSessionSchema.nullable()).parse(await request("/v1/focus/current")).data;
+}
+
+export async function listLiveFocusHistory(cursor?: string) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  return pagedSuccessEnvelope(focusSessionSchema).parse(await request(`/v1/focus/history?${params}`)).data;
 }
 
 export async function startLiveFocus(input: unknown) {
@@ -216,7 +267,19 @@ export async function searchLiveKnowledge(q: string, ventureId?: string) {
 
 export async function getLiveDocument(id: string) {
   const data = successEnvelope(documentSchema.passthrough()).parse(await request(`/v1/documents/${encodeURIComponent(id)}`)).data;
-  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(data.currentVersion) };
+  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(data.currentVersion), versions: documentVersionSchema.omit({ markdown: true }).array().parse(data.versions) };
+}
+
+export async function listLiveDocuments(cursor?: string, filters: { ventureId?: string; status?: "draft" | "approved" | "stale" } = {}) {
+  const query = documentListQuerySchema.parse({ limit: 50, cursor, ...filters });
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
+  return pagedSuccessEnvelope(documentSchema).parse(await request(`/v1/documents?${params}`)).data;
+}
+
+export async function updateLiveDocument(id: string, input: unknown) {
+  const valid = updateDocumentSchema.parse(input);
+  return successEnvelope(documentVersionSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
 }
 
 export async function listLiveOutcomes() {
@@ -244,6 +307,22 @@ export async function listLiveClasses() {
 export async function updateLiveClass(id: string, input: unknown) {
   const valid = updateClassSchema.parse(input);
   return successEnvelope(classSchema).parse(await request(`/v1/classes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
+export async function listLiveClassApplications(classId: string, cursor?: string) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  return pagedSuccessEnvelope(classApplicationSchema).parse(await request(`/v1/classes/${encodeURIComponent(classId)}/applications?${params}`)).data;
+}
+
+export async function createLiveClassApplication(classId: string, input: unknown) {
+  const valid = classApplicationSchema.pick({ taskId: true, exercise: true, evidenceItemId: true, reviewerId: true }).parse(input);
+  return successEnvelope(classApplicationSchema).parse(await request(`/v1/classes/${encodeURIComponent(classId)}/applications`, { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+export async function reviewLiveClassApplication(classId: string, applicationId: string, input: unknown) {
+  const valid = reviewClassApplicationSchema.parse(input);
+  return successEnvelope(classApplicationSchema).parse(await request(`/v1/classes/${encodeURIComponent(classId)}/applications/${encodeURIComponent(applicationId)}/review`, { method: "PATCH", body: JSON.stringify(valid) })).data;
 }
 
 export async function listLiveInformationRequests() {

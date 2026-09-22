@@ -14,6 +14,7 @@ const pages = [
   { href: "/board/live", label: "Board" },
   { href: "/planning/live", label: "Planning" },
   { href: "/channels/live", label: "Channels" },
+  { href: "/messages/live", label: "Messages" },
   { href: "/knowledge/live", label: "Knowledge" },
   { href: "/sales/live", label: "Sales" },
   { href: "/notifications/live", label: "Inbox" },

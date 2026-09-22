@@ -65,6 +65,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Settings, notification preferences, and integration surfaces in the demo UI
 - [x] Sign-in/invite demo surfaces and founder admin audit/PAT surfaces
 - [x] Document UI-to-backend contract seams
+- [x] Verify a separate connected dashboard preview against session, dashboard, and paged task contracts
 - [ ] Integrate shared contracts when the backend publishes them
 
 ### 2.4 Verification

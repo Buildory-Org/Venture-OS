@@ -24,3 +24,5 @@ The Phase 2 UI currently runs on browser-local demo records under `apps/web/src/
 - Invite issuance/acceptance, notification preferences, scoped PAT creation/revocation, and focus-session recovery require backend services; corresponding UI surfaces are explicitly labelled unavailable or demo-only until connected.
 
 The first integration point should use the shared Zod envelope and error format from `packages/contracts` when the backend task publishes it. Do not derive API field names from the temporary demo types without a contract review.
+
+The web app reserves same-origin `/v1/*` and `/api/auth/*` rewrites for the API, using server-side `VSO_API_ORIGIN` (default `http://localhost:4000`). This proxy does not enable live data by itself. The browser remains on the explicitly labelled demo store until the reviewed contracts, authenticated bootstrap, canonical mutations, and failure states are connected.

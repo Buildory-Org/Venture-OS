@@ -10,5 +10,5 @@
 
 ## Phase gate
 
-Phase 1 is dashboard-only. Do not implement the rest of the dummy product or production backend features until the user approves the dashboard direction.
+The dashboard direction and whole-app implementation were explicitly approved on 2026-09-23. Continue to update `TODO.md` only after implementation and verification.
 

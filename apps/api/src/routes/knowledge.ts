@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Filter } from "mongodb";
 import type { AppDb, AppDocument } from "../db.js";
-import { classSchema, createDocumentSchema, decisionSchema, idSchema, informationRequestSchema, knowledgeSearchSchema, updateDocumentSchema } from "@venture-studio/contracts";
+import { classSchema, createDocumentSchema, decisionSchema, idSchema, informationRequestSchema, knowledgeSearchSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
 import { z } from "zod";
 import type { Database } from "../db.js";
@@ -111,11 +111,34 @@ export function knowledgeRoutes(database: Database): Router {
     await createSimple(db, req, res, "decisions", decisionSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }), "decision.create");
   });
   router.get("/decisions", async (req, res) => listScoped(db, req, res, "decisions"));
+  router.patch("/decisions/:id", async (req, res) => {
+    const actor = req.actor!; const id = idSchema.parse(req.params.id);
+    const item = await db.collection("decisions").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
+    if (!item) throw new AppError(404, "NOT_FOUND", "Decision not found");
+    assertLeadScope(actor, item.ventureId);
+    const input = updateDecisionSchema.parse(req.body);
+    await db.collection("decisions").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.decidedAt ? { decidedAt: new Date(input.decidedAt) } : {}), updatedAt: new Date() } });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "decision.update", objectType: "decision", objectId: id, ventureId: item.ventureId ? String(item.ventureId) : undefined, result: "success" });
+    res.json({ ok: true, data: jsonValue(await db.collection("decisions").findOne({ _id: id })) });
+  });
   router.post("/classes", async (req, res) => {
     if (!isLead(req.actor!)) throw new AppError(403, "FORBIDDEN", "Only admins or venture heads may schedule classes");
+    const input = classSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }).parse(req.body);
+    await assertClassPeople(db, req.actor!.membership.workspaceId, input.ventureId, input.facilitatorId, input.participantIds);
     await createSimple(db, req, res, "classes", classSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }), "class.create");
   });
   router.get("/classes", async (req, res) => listScoped(db, req, res, "classes", { $or: [{ participantIds: req.actor!.id }, { facilitatorId: req.actor!.id }, ...(req.actor!.membership.role === "admin" ? [{}] : [])] }));
+  router.patch("/classes/:id", async (req, res) => {
+    const actor = req.actor!; const id = idSchema.parse(req.params.id);
+    const item = await db.collection("classes").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
+    if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
+    assertLeadScope(actor, item.ventureId);
+    const input = updateClassSchema.parse(req.body);
+    await assertClassPeople(db, actor.membership.workspaceId, item.ventureId, input.facilitatorId ?? String(item.facilitatorId), input.participantIds ?? item.participantIds);
+    await db.collection("classes").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.scheduledAt ? { scheduledAt: new Date(input.scheduledAt) } : {}), updatedAt: new Date() } });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "class.update", objectType: "class", objectId: id, ventureId: item.ventureId ? String(item.ventureId) : undefined, result: "success" });
+    res.json({ ok: true, data: jsonValue(await db.collection("classes").findOne({ _id: id })) });
+  });
   router.post("/information-requests", async (req, res) => createSimple(db, req, res, "information_requests", informationRequestSchema.omit({ id: true, workspaceId: true, requesterId: true, status: true, responseMarkdown: true, sourceRefs: true, reviewedBy: true, createdAt: true, updatedAt: true }), "information_request.create", { requesterId: req.actor!.id, status: "open", sourceRefs: [] }));
   router.get("/information-requests", async (req, res) => listScoped(db, req, res, "information_requests", { $or: [{ requesterId: req.actor!.id }, { respondentId: req.actor!.id }, { reviewedBy: req.actor!.id }] }));
   router.patch("/information-requests/:id", async (req, res) => {
@@ -129,7 +152,7 @@ export function knowledgeRoutes(database: Database): Router {
   });
   router.post("/classes/:id/applications", async (req, res) => {
     const actor = req.actor!; const classId = idSchema.parse(req.params.id);
-    const item = await db.collection("classes").findOne({ _id: classId, workspaceId: actor.membership.workspaceId, participantIds: actor.id });
+    const item = await db.collection("classes").findOne({ _id: classId, workspaceId: actor.membership.workspaceId, participantIds: actor.id, ...(actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: actor.membership.ventureIds } }] }) });
     if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
     const input = z.object({ taskId: idSchema.optional(), exercise: z.string().trim().min(1).max(5_000), evidenceItemId: idSchema.optional(), reviewerId: idSchema }).parse(req.body);
     const application = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, classId, userId: actor.id, ...input, createdAt: new Date(), updatedAt: new Date() };
@@ -140,6 +163,16 @@ export function knowledgeRoutes(database: Database): Router {
 }
 
 function isLead(actor: Actor): boolean { return actor.membership.role === "admin" || actor.membership.role === "venture_head"; }
+function assertLeadScope(actor: Actor, ventureId: unknown): void {
+  if (actor.membership.role === "admin") return;
+  if (actor.membership.role !== "venture_head" || typeof ventureId !== "string" || !actor.membership.ventureIds.includes(ventureId)) throw new AppError(403, "FORBIDDEN", "Venture lead access required");
+}
+async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unknown, facilitatorId: string, participantIds: string[]): Promise<void> {
+  const people = [...new Set([facilitatorId, ...participantIds])];
+  if (new Set(participantIds).size !== participantIds.length) throw new AppError(400, "BAD_REQUEST", "Class participants must be unique");
+  const count = await db.collection("memberships").countDocuments({ workspaceId, userId: { $in: people }, status: "active", ...(typeof ventureId === "string" ? { ventureIds: ventureId } : {}) });
+  if (count !== people.length) throw new AppError(400, "BAD_REQUEST", "Class people must be active members of the class venture");
+}
 
 function authorizedDocumentFilter(actor: Actor, ventureId?: string): Filter<AppDocument> {
   const sensitivities = actor.membership.role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : actor.membership.role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
@@ -170,6 +203,7 @@ async function createSimple(db: AppDb, req: Request, res: Response, collection: 
   const actor = req.actor!;
   const input = schema.parse(req.body);
   const ventureId = typeof input.ventureId === "string" ? input.ventureId : undefined;
+  if ((collection === "decisions" || collection === "classes") && !ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create workspace-wide records");
   if (ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(ventureId)) throw new AppError(403, "FORBIDDEN", "Venture access denied");
   const now = new Date();
   const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, ...extra, createdAt: now, updatedAt: now };
@@ -181,6 +215,6 @@ async function createSimple(db: AppDb, req: Request, res: Response, collection: 
 async function listScoped(db: AppDb, req: Request, res: Response, collection: string, extra: Record<string, unknown> = {}) {
   const actor = req.actor!;
   const ventureScope = actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: actor.membership.ventureIds } }] };
-  const items = await db.collection(collection).find({ workspaceId: actor.membership.workspaceId, ...ventureScope, ...extra }).sort({ updatedAt: -1 }).limit(100).toArray();
+  const items = await db.collection(collection).find({ workspaceId: actor.membership.workspaceId, $and: [ventureScope, extra] }).sort({ updatedAt: -1 }).limit(100).toArray();
   res.json({ ok: true, data: jsonValue(items) });
 }

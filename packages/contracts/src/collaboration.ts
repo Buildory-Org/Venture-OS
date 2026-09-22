@@ -12,7 +12,16 @@ export const messageSchema = z.object({
   threadRootId: idSchema.optional(),
   createdAt: isoDateSchema,
   editedAt: isoDateSchema.optional(),
+  pinnedAt: isoDateSchema.optional(),
+  pinnedBy: idSchema.optional(),
+  pinned: z.boolean().optional(),
+  savedByMe: z.boolean().optional(),
+  reactions: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  myReactions: z.array(z.string()).optional(),
 });
+export const reactionUpdateSchema = z.object({ emoji: z.string().trim().min(1).max(32), active: z.boolean() });
+export const saveUpdateSchema = z.object({ saved: z.boolean() });
+export const pinUpdateSchema = z.object({ pinned: z.boolean() });
 
 export const createChannelMessageSchema = z.object({
   body: z.string().trim().min(1).max(10_000),

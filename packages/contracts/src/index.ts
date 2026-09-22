@@ -5,3 +5,4 @@ export * from "./work.js";
 export * from "./files.js";
 export * from "./knowledge.js";
 export * from "./dashboard.js";
+export * from "./sales.js";

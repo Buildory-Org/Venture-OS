@@ -37,6 +37,7 @@ export const decisionSchema = z.object({
   reason: z.string().min(1).max(5_000), affectedWork: z.array(idSchema).max(100), reviewTrigger: z.string().max(1_000),
   status: z.enum(["draft", "approved", "superseded", "stale"]), createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
+export const updateDecisionSchema = decisionSchema.omit({ id: true, workspaceId: true, ventureId: true, createdAt: true, updatedAt: true }).partial().refine((value) => Object.keys(value).length > 0);
 
 export const informationRequestSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, requesterId: idSchema, respondentId: idSchema,
@@ -51,6 +52,7 @@ export const classSchema = z.object({
   facilitatorId: idSchema, materialDocumentId: idSchema.optional(), participantIds: z.array(idSchema).max(100),
   status: z.enum(["scheduled", "completed", "cancelled"]), createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
+export const updateClassSchema = classSchema.omit({ id: true, workspaceId: true, ventureId: true, createdAt: true, updatedAt: true }).partial().refine((value) => Object.keys(value).length > 0);
 
 export const classApplicationSchema = z.object({
   id: idSchema, workspaceId: idSchema, classId: idSchema, userId: idSchema, taskId: idSchema.optional(),

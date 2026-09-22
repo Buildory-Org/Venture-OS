@@ -34,6 +34,8 @@ export const channelSchema = z.object({
   name: z.string().min(1).max(80).regex(/^[a-z0-9-]+$/),
   createdAt: isoDateSchema,
 });
+export const createChannelSchema = z.object({ groupId: idSchema, name: z.string().trim().min(1).max(80) });
+export const updateMembershipSchema = z.object({ role: appRoleSchema, ventureIds: z.array(idSchema).max(100), groupIds: z.array(idSchema).max(500) });
 
 export const membershipSchema = z.object({
   id: idSchema,

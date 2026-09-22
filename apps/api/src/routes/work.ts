@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createOutcomeSchema, createTaskSchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createOutcomeSchema, createTaskSchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
@@ -149,6 +149,16 @@ export function workRoutes(database: Database): Router {
     const allowed = actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } };
     const items = await db.collection("outcomes").find({ workspaceId: actor.membership.workspaceId, ...allowed, ...(ventureId ? { ventureId } : {}) }).sort({ reviewAt: 1 }).toArray();
     res.json({ ok: true, data: jsonValue(items) });
+  });
+  router.patch("/outcomes/:id", async (req, res) => {
+    const actor = req.actor!; const id = idSchema.parse(req.params.id);
+    const existing = await db.collection("outcomes").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
+    if (!existing || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(existing.ventureId)))) throw new AppError(404, "NOT_FOUND", "Outcome not found");
+    if (!can(actor.membership, "outcome:write", { ventureId: String(existing.ventureId) })) throw new AppError(403, "FORBIDDEN", "You cannot edit this outcome");
+    const input = updateOutcomeSchema.parse(req.body);
+    await db.collection("outcomes").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.startAt ? { startAt: new Date(input.startAt) } : {}), ...(input.reviewAt ? { reviewAt: new Date(input.reviewAt) } : {}), updatedAt: new Date() } });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "outcome.update", objectType: "outcome", objectId: id, ventureId: String(existing.ventureId), result: "success" });
+    res.json({ ok: true, data: jsonValue(await db.collection("outcomes").findOne({ _id: id })) });
   });
 
   router.post("/focus", async (req, res) => {

@@ -39,6 +39,10 @@ export class McpReadService {
     const ids = this.actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
     return ids ? { ventureId: { $in: ids } } : {};
   }
+  private classes(ventureId?: string): Record<string, unknown> {
+    const ids = this.actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
+    return ids ? { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: ids } }] } : {};
+  }
   private groups(): Record<string, unknown> {
     return this.actor.membership.role === "admin" ? {} : { groupId: { $in: this.actor.membership.groupIds } };
   }
@@ -62,7 +66,7 @@ export class McpReadService {
     const start = new Date(`${date}T00:00:00.000Z`); const end = new Date(start.getTime() + 86_400_000);
     const [tasks, classes] = await Promise.all([
       this.db.collection("tasks").find({ workspaceId: this.actor.workspaceId, assigneeId: this.actor.id, ...this.ventures(ventureId), ...this.groups(), dueAt: { $lt: end }, status: { $nin: ["done", "cancelled"] } }).sort({ dueAt: 1 }).toArray(),
-      this.db.collection("classes").find({ workspaceId: this.actor.workspaceId, participantIds: this.actor.id, scheduledAt: { $gte: start, $lt: end }, ...this.ventures(ventureId) }).sort({ scheduledAt: 1 }).toArray(),
+      this.db.collection("classes").find({ workspaceId: this.actor.workspaceId, participantIds: this.actor.id, scheduledAt: { $gte: start, $lt: end }, ...this.classes(ventureId) }).sort({ scheduledAt: 1 }).toArray(),
     ]);
     return this.result("get_my_today", { tasks, classes }, [...tasks.map((item) => `task:${item._id}`), ...classes.map((item) => `class:${item._id}`)], ventureId);
   }
@@ -105,7 +109,7 @@ export class McpReadService {
   }
   async classSchedule() {
     await this.scope("classes:read", "get_class_schedule");
-    const items = await this.db.collection("classes").find({ workspaceId: this.actor.workspaceId, participantIds: this.actor.id, scheduledAt: { $gte: new Date() } }).sort({ scheduledAt: 1 }).limit(50).toArray();
+    const items = await this.db.collection("classes").find({ workspaceId: this.actor.workspaceId, participantIds: this.actor.id, scheduledAt: { $gte: new Date() }, ...this.classes() }).sort({ scheduledAt: 1 }).limit(50).toArray();
     return this.result("get_class_schedule", items, items.map((item) => `class:${item._id}`));
   }
   async decision(id: string) {

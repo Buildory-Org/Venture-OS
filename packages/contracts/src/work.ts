@@ -79,6 +79,7 @@ export const outcomeSchema = z.object({
 });
 
 export const createOutcomeSchema = outcomeSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true });
+export const updateOutcomeSchema = createOutcomeSchema.omit({ ventureId: true }).partial().refine((value) => Object.keys(value).length > 0);
 
 export const evidenceItemSchema = z.object({
   id: idSchema, workspaceId: idSchema, taskId: idSchema, type: z.enum(["link", "file", "note"]),

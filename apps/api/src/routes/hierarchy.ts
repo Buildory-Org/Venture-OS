@@ -18,12 +18,13 @@ export function hierarchyRoutes(db: AppDb): Router {
     const actor = req.actor!;
     const workspaceId = actor.membership.workspaceId;
     const ventureFilter = actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } };
+    const classFilter = actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, ventureFilter] };
     const taskFilter = actor.membership.role === "admin" ? {} : { ...ventureFilter, groupId: { $in: actor.membership.groupIds } };
     const [tasks, reviews, blockers, classes, outcomes, mentions] = await Promise.all([
       db.collection("tasks").find({ workspaceId, ...taskFilter, assigneeId: actor.id, status: { $nin: ["done", "cancelled"] } }).sort({ dueAt: 1 }).limit(10).toArray(),
       db.collection("tasks").find({ workspaceId, ...taskFilter, reviewerId: actor.id, status: "review" }).sort({ reviewAt: 1 }).limit(10).toArray(),
       db.collection("tasks").find({ workspaceId, ...taskFilter, blocker: { $exists: true, $ne: "" }, status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(10).toArray(),
-      db.collection("classes").find({ workspaceId, participantIds: actor.id, scheduledAt: { $gte: new Date() } }).sort({ scheduledAt: 1 }).limit(3).toArray(),
+      db.collection("classes").find({ workspaceId, ...classFilter, participantIds: actor.id, scheduledAt: { $gte: new Date() } }).sort({ scheduledAt: 1 }).limit(3).toArray(),
       db.collection("outcomes").find({ workspaceId, ...ventureFilter, status: { $in: ["approved", "active", "at_risk"] } }).sort({ reviewAt: 1 }).limit(10).toArray(),
       db.collection("notifications").find({ workspaceId, userId: actor.id, type: "mention", readAt: { $exists: false } }).sort({ createdAt: -1 }).limit(10).toArray(),
     ]);

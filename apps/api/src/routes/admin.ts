@@ -3,7 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Database } from "../db.js";
 import { atomic } from "../db.js";
-import { appRoleSchema, idSchema } from "@venture-studio/contracts";
+import { appRoleSchema, createChannelSchema, idSchema, updateMembershipSchema } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, slug } from "../json.js";
@@ -51,10 +51,46 @@ export function adminRoutes(database: Database): Router {
     await atomic(database, async (session) => { await db.collection("groups").insertOne(group, { session }); await db.collection("channels").insertOne(channel, { session }); });
     res.status(201).json({ ok: true, data: jsonValue({ ...group, channels: [channel] }) });
   });
+  router.post("/admin/channels", async (req, res) => {
+    const actor = req.actor!;
+    if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create channels");
+    const input = createChannelSchema.parse(req.body);
+    const group = await db.collection("groups").findOne({ _id: input.groupId, workspaceId: actor.membership.workspaceId });
+    if (!group) throw new AppError(404, "NOT_FOUND", "Group not found");
+    const name = slug(input.name);
+    if (!name || name.length > 80) throw new AppError(400, "BAD_REQUEST", "Channel name must produce a valid slug of at most 80 characters");
+    const channel = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: group.ventureId, groupId: input.groupId, name, createdAt: new Date() };
+    try { await atomic(database, async (session) => {
+      await db.collection("channels").insertOne(channel, { session });
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "channel.create", objectType: "channel", objectId: channel._id, ventureId: String(group.ventureId), result: "success" }, session);
+    }); }
+    catch (error) { if ((error as { code?: number }).code === 11000) throw new AppError(409, "CONFLICT", "Channel name already exists in this group"); throw error; }
+    res.status(201).json({ ok: true, data: jsonValue(channel) });
+  });
   router.get("/admin/memberships", async (req, res) => {
     const actor = req.actor!;
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may list memberships");
     res.json({ ok: true, data: jsonValue(await db.collection("memberships").find({ workspaceId: actor.membership.workspaceId }).toArray()) });
+  });
+  router.put("/admin/memberships/:id", async (req, res) => {
+    const actor = req.actor!;
+    if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may change memberships");
+    const id = idSchema.parse(req.params.id);
+    const input = updateMembershipSchema.parse(req.body);
+    const current = await db.collection("memberships").findOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active" });
+    if (!current) throw new AppError(404, "NOT_FOUND", "Active membership not found");
+    if (current.userId === actor.id) throw new AppError(403, "FORBIDDEN", "Admins cannot change their own membership");
+    if (new Set(input.ventureIds).size !== input.ventureIds.length || new Set(input.groupIds).size !== input.groupIds.length) throw new AppError(400, "BAD_REQUEST", "Membership scopes must not contain duplicates");
+    const ventures = await db.collection("ventures").countDocuments({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId });
+    const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
+    if (ventures !== input.ventureIds.length || groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Membership scopes must be valid groups within assigned ventures");
+    const updatedAt = new Date();
+    await atomic(database, async (session) => {
+      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active" }, { $set: { ...input, updatedAt } }, { session });
+      if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success" }, session);
+    });
+    res.json({ ok: true, data: jsonValue(await db.collection("memberships").findOne({ _id: id, workspaceId: actor.membership.workspaceId })) });
   });
   return router;
 }

@@ -1,6 +1,8 @@
 import {
   createTaskSchema,
+  channelSchema,
   createChannelMessageSchema,
+  createChannelSchema,
   commandExecuteSchema,
   commandPreviewRequestSchema,
   commandPreviewSchema,
@@ -13,6 +15,14 @@ import {
   knowledgeSearchResponseSchema,
   knowledgeSearchSchema,
   messageSchema,
+  membershipSchema,
+  opportunityInputSchema,
+  opportunitySchema,
+  pipelineInputSchema,
+  pipelineSchema,
+  pinUpdateSchema,
+  reactionUpdateSchema,
+  saveUpdateSchema,
   notificationSchema,
   outcomeSchema,
   pagedSuccessEnvelope,
@@ -30,6 +40,12 @@ import {
   taskUpdateSchema,
   updateTaskSchema,
   updateInformationRequestSchema,
+  updateClassSchema,
+  updateDecisionSchema,
+  updateMembershipSchema,
+  updateOpportunitySchema,
+  updateOutcomeSchema,
+  updatePipelineSchema,
   type Task,
 } from "@venture-studio/contracts";
 
@@ -135,6 +151,21 @@ export async function sendLiveChannelMessage(channelId: string, input: unknown) 
   return { message: messageSchema.parse(result.data.message), event: eventEnvelopeSchema.parse(result.data.event) };
 }
 
+export async function updateLiveMessageReaction(id: string, emoji: string, active: boolean) {
+  const valid = reactionUpdateSchema.parse({ emoji, active });
+  return successEnvelope(messageSchema).parse(await request(`/v1/messages/${encodeURIComponent(id)}/reaction`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLiveMessageSave(id: string, saved: boolean) {
+  const valid = saveUpdateSchema.parse({ saved });
+  return successEnvelope(messageSchema).parse(await request(`/v1/messages/${encodeURIComponent(id)}/save`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLiveMessagePin(id: string, pinned: boolean) {
+  const valid = pinUpdateSchema.parse({ pinned });
+  return successEnvelope(messageSchema).parse(await request(`/v1/messages/${encodeURIComponent(id)}/pin`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
 export async function previewLiveCommand(input: unknown) {
   const valid = commandPreviewRequestSchema.parse(input);
   return successEnvelope(commandPreviewSchema).parse(await request("/v1/commands/preview", { method: "POST", body: JSON.stringify(valid) })).data;
@@ -192,12 +223,27 @@ export async function listLiveOutcomes() {
   return successEnvelope(outcomeSchema.array()).parse(await request("/v1/outcomes")).data;
 }
 
+export async function updateLiveOutcome(id: string, input: unknown) {
+  const valid = updateOutcomeSchema.parse(input);
+  return successEnvelope(outcomeSchema).parse(await request(`/v1/outcomes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
 export async function listLiveDecisions() {
   return successEnvelope(decisionSchema.array()).parse(await request("/v1/decisions")).data;
 }
 
+export async function updateLiveDecision(id: string, input: unknown) {
+  const valid = updateDecisionSchema.parse(input);
+  return successEnvelope(decisionSchema).parse(await request(`/v1/decisions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
 export async function listLiveClasses() {
   return successEnvelope(classSchema.array()).parse(await request("/v1/classes")).data;
+}
+
+export async function updateLiveClass(id: string, input: unknown) {
+  const valid = updateClassSchema.parse(input);
+  return successEnvelope(classSchema).parse(await request(`/v1/classes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
 }
 
 export async function listLiveInformationRequests() {
@@ -207,4 +253,46 @@ export async function listLiveInformationRequests() {
 export async function updateLiveInformationRequest(id: string, input: unknown) {
   const valid = updateInformationRequestSchema.parse(input);
   return successEnvelope(informationRequestSchema).parse(await request(`/v1/information-requests/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
+export async function listLivePipelines() {
+  return successEnvelope(pipelineSchema.array()).parse(await request("/v1/pipelines")).data;
+}
+
+export async function createLivePipeline(input: unknown) {
+  const valid = pipelineInputSchema.parse(input);
+  return successEnvelope(pipelineSchema).parse(await request("/v1/pipelines", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLivePipeline(id: string, input: unknown) {
+  const valid = updatePipelineSchema.parse(input);
+  return successEnvelope(pipelineSchema).parse(await request(`/v1/pipelines/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
+export async function listLiveOpportunities() {
+  return successEnvelope(opportunitySchema.array()).parse(await request("/v1/opportunities")).data;
+}
+
+export async function createLiveOpportunity(input: unknown) {
+  const valid = opportunityInputSchema.parse(input);
+  return successEnvelope(opportunitySchema).parse(await request("/v1/opportunities", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLiveOpportunity(id: string, input: unknown) {
+  const valid = updateOpportunitySchema.parse(input);
+  return successEnvelope(opportunitySchema).parse(await request(`/v1/opportunities/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
+export async function listLiveMemberships() {
+  return successEnvelope(membershipSchema.array()).parse(await request("/v1/admin/memberships")).data;
+}
+
+export async function updateLiveMembership(id: string, input: unknown) {
+  const valid = updateMembershipSchema.parse(input);
+  return successEnvelope(membershipSchema).parse(await request(`/v1/admin/memberships/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+export async function createLiveChannel(input: unknown) {
+  const valid = createChannelSchema.parse(input);
+  return successEnvelope(channelSchema).parse(await request("/v1/admin/channels", { method: "POST", body: JSON.stringify(valid) })).data;
 }

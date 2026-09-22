@@ -1,6 +1,6 @@
 # Backend delivery sequence
 
-Backend implementation remains blocked until the dashboard direction is approved. Do not create routes, schemas, models, queues, or infrastructure merely to reserve future shape. After approval, derive the first contracts from the approved UI flows and add only the code needed by the current milestone.
+Backend implementation was unblocked by explicit user approval on 2026-09-23. Derive contracts from approved UI flows and add only the code needed by the current milestone.
 
 ## Sequence from Phase 3
 

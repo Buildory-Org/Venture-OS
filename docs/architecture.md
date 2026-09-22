@@ -20,7 +20,16 @@
 - Cloudflare R2 stores uploaded objects; MongoDB stores their metadata and authorization links
 - Resend and Web Push deliver outbound notifications
 - MCP begins read-only, authenticated with revocable scoped local PATs
+- Hosted MCP authentication must use OAuth; local PATs are restricted to local development
 - JEV may be used for research, but is not a V1 runtime dependency
+
+## Recorded implementation decisions
+
+- MongoDB transactions are mandatory for mutation fan-out; local development therefore uses the dedicated `ventureStudio` replica set on port `27018` and does not alter the user's default MongoDB instance.
+- Browser clients should use the web application's same-origin proxy for `/v1` and Socket.IO. `API_ORIGIN` names the Express origin and `APP_ORIGIN` is the trusted web origin used by Better Auth and realtime CORS.
+- Upload intents write to a staging object. Completion copies to the immutable final key and deletes staging so a still-valid upload URL cannot overwrite a ready file.
+- Event replay is ordered by `(occurredAt, eventId)` and the cursor itself must still be visible to the caller.
+- One active app membership per user is enforced until a workspace-selection flow is deliberately designed.
 
 ## Reliability and security invariants
 

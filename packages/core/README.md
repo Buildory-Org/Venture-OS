@@ -1,4 +1,4 @@
 # Core
 
-Framework-independent domain logic will be added only as concrete use cases require it.
+Framework-independent authorization, command parsing, reminder/deadline rules, DM keys, and scoped PAT primitives.
 

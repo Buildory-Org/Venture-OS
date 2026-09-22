@@ -1,0 +1,34 @@
+import type { AppDb } from "./db.js";
+
+export async function ensureIndexes(db: AppDb): Promise<void> {
+  await Promise.all([
+    db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
+    db.collection("memberships").createIndex({ workspaceId: 1, userId: 1 }, { unique: true }),
+    db.collection("memberships").createIndex({ userId: 1 }, { unique: true, partialFilterExpression: { status: "active" } }),
+    db.collection("ventures").createIndex({ workspaceId: 1, name: 1 }, { unique: true }),
+    db.collection("groups").createIndex({ ventureId: 1, name: 1 }, { unique: true }),
+    db.collection("channels").createIndex({ groupId: 1, name: 1 }, { unique: true }),
+    db.collection("messages").createIndex({ channelId: 1, createdAt: -1 }),
+    db.collection("messages").createIndex({ dmKey: 1, createdAt: -1 }),
+    db.collection("messages").createIndex({ body: "text" }),
+    db.collection("messages").createIndex({ workspaceId: 1, authorId: 1, clientId: 1 }, { unique: true }),
+    db.collection("tasks").createIndex({ workspaceId: 1, assigneeId: 1, status: 1, dueAt: 1 }),
+    db.collection("tasks").createIndex({ ventureId: 1, groupId: 1, status: 1 }),
+    db.collection("tasks").createIndex({ title: "text", outcome: "text", definitionOfDone: "text", tags: "text" }),
+    db.collection("command_executions").createIndex({ workspaceId: 1, actorId: 1, idempotencyKey: 1 }, { unique: true }),
+    db.collection("reminders").createIndex({ state: 1, scheduledAt: 1, leaseUntil: 1 }),
+    db.collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true }),
+    db.collection("notification_outbox").createIndex({ state: 1, nextAttemptAt: 1, leaseUntil: 1 }),
+    db.collection("notifications").createIndex({ outboxId: 1 }, { unique: true }),
+    db.collection("documents").createIndex({ workspaceId: 1, ventureId: 1, sensitivity: 1 }),
+    db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
+    db.collection("document_chunks").createIndex({ plainText: "text", headingPath: "text" }),
+    db.collection("files").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
+    db.collection("files").createIndex({ name: "text" }),
+    db.collection("pats").createIndex({ tokenHash: 1 }, { unique: true }),
+    db.collection("pats").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    db.collection("events").createIndex({ workspaceId: 1, occurredAt: 1, _id: 1 }),
+    db.collection("audit_events").createIndex({ workspaceId: 1, occurredAt: -1 }),
+    db.collection("api_rate_limits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+  ]);
+}

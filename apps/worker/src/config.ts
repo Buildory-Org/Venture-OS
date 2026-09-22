@@ -1,0 +1,20 @@
+import { z } from "zod";
+
+const schema = z.object({
+  APP_MODE: z.enum(["local", "production"]).default("local"),
+  MONGODB_URI: z.string().min(1).default("mongodb://127.0.0.1:27017/venture_studio"),
+  MONGODB_DB: z.string().min(1).default("venture_studio"),
+  WORKER_ID: z.string().default(`worker-${process.pid}`),
+  POLL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default("Venture Studio <noreply@example.invalid>"),
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default("mailto:admin@example.invalid"),
+});
+export type WorkerConfig = z.infer<typeof schema>;
+export function loadConfig(source: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  const value = schema.parse(source);
+  if (value.APP_MODE === "production" && (!value.RESEND_API_KEY || !value.VAPID_PUBLIC_KEY || !value.VAPID_PRIVATE_KEY)) throw new Error("Production notification credentials are required");
+  return value;
+}

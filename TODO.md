@@ -76,31 +76,31 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 
 ## Phase 3 — Backend foundation
 
-- [ ] Define shared Zod contracts and error/event envelopes
-- [ ] Implement Better Auth identity/session flows and magic-link delivery
-- [ ] Implement app-owned workspace, venture, group, channel, role, and membership authorization
-- [ ] Add MongoDB models, indexes, migrations/backfills, and seed data
-- [ ] Add API request validation, structured logging, audit records, and rate limits
-- [ ] Independent reviewer-agent approval for auth and permission boundaries
-- [ ] Backend unit/integration smoke tests
+- [x] Define shared Zod contracts and error/event envelopes
+- [x] Implement Better Auth identity/session flows and magic-link delivery
+- [x] Implement app-owned workspace, venture, group, channel, role, and membership authorization
+- [x] Add MongoDB models, indexes, migrations/backfills, and seed data
+- [x] Add API request validation, structured logging, audit records, and rate limits
+- [x] Independent reviewer-agent approval for auth and permission boundaries
+- [x] Backend unit/integration smoke tests
 
 ## Phase 4 — Realtime work, commands, and automation
 
-- [ ] Socket.IO channel messaging, presence, mentions, and notification fan-out
-- [ ] Task lifecycle, comments, attachments, Kanban views, and saved filters
-- [ ] `/assign` and `/notify` parsing with permissions, previews, and auditability
-- [ ] Durable reminder worker with outbox, retries, idempotency, and escalation rules
-- [ ] Focus sessions and timer recovery across refresh/reconnect
-- [ ] Web Push and email notification channels with per-user preferences
-- [ ] Independent reviewer-agent approval for realtime and scheduling paths
-- [ ] End-to-end smoke tests for assignment, reminders, snooze, and completion
+- [x] Socket.IO channel messaging, presence, mentions, and notification fan-out
+- [x] Task lifecycle, comments, attachments, Kanban views, and saved filters
+- [x] `/assign` and `/notify` parsing with permissions, previews, and auditability
+- [x] Durable reminder worker with outbox, retries, idempotency, and escalation rules
+- [x] Focus sessions and timer recovery across refresh/reconnect
+- [x] Web Push and email notification channels with per-user preferences
+- [x] Independent reviewer-agent approval for realtime and scheduling paths
+- [x] End-to-end smoke tests for assignment, reminders, snooze, and completion
 
 ## Phase 5 — Files, knowledge, and MCP
 
 - [ ] R2 upload flow with signed URLs, metadata, authorization, and lifecycle rules
-- [ ] Search/indexing across authorized messages, tasks, and documents
-- [ ] Read-only MCP server with scoped local PATs, revocation, and audit logs
-- [ ] Threat-model and reviewer-agent pass for file and MCP data boundaries
+- [x] Search/indexing across authorized messages, tasks, and documents
+- [x] Read-only MCP server with scoped local PATs, revocation, and audit logs
+- [x] Threat-model and reviewer-agent pass for file and MCP data boundaries
 - [ ] Integration smoke tests
 
 ## Phase 6 — Production hardening

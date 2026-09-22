@@ -1,12 +1,14 @@
 node_modules/
 .next/
+**/.next/
 dist/
-coverage/
+**/dist/
 .env
 .env.*
 !.env.example
+.data/
+coverage/
 *.tsbuildinfo
 *.log
 .DS_Store
 Thumbs.db
-

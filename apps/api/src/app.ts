@@ -1,0 +1,48 @@
+import express from "express";
+import { toNodeHandler } from "better-auth/node";
+import type { Database } from "./db.js";
+import type { AppConfig } from "./config.js";
+import type { Auth } from "./auth.js";
+import type { ObjectStore } from "./storage.js";
+import { LocalObjectStore } from "./storage.js";
+import { createActorResolver, createIdentityResolver, rateLimit, requestContext, requireActor, requireIdentity } from "./middleware.js";
+import { createErrorHandler } from "./errors.js";
+import { hierarchyRoutes } from "./routes/hierarchy.js";
+import { workRoutes } from "./routes/work.js";
+import { collaborationRoutes } from "./collaboration.js";
+import { commandRoutes } from "./routes/commands.js";
+import { knowledgeRoutes } from "./routes/knowledge.js";
+import { fileRoutes, localObjectRoutes } from "./routes/files.js";
+import { patRoutes } from "./routes/pats.js";
+import { adminRoutes, invitationAcceptanceRoutes } from "./routes/admin.js";
+import { notificationRoutes } from "./routes/notifications.js";
+import { salesRoutes } from "./routes/sales.js";
+import { searchRoutes } from "./routes/search.js";
+
+export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
+  const app = express();
+  const resolveIdentity = createIdentityResolver(auth, database.db, config);
+  const resolveActor = createActorResolver(auth, database.db, config);
+  app.use(requestContext);
+  app.all("/api/auth/*splat", toNodeHandler(auth));
+  if (store instanceof LocalObjectStore) app.use("/v1", localObjectRoutes(database.db, store));
+  app.use(express.json({ limit: "2mb" }));
+  app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
+  app.use("/v1", rateLimit(database.db, 300, 60_000));
+  app.use("/v1", requireIdentity(resolveIdentity), invitationAcceptanceRoutes(database));
+  app.use("/v1", requireActor(resolveActor), rateLimit(database.db, 120, 60_000));
+  app.use("/v1", hierarchyRoutes(database.db));
+  app.use("/v1", workRoutes(database));
+  app.use("/v1", collaborationRoutes(database));
+  app.use("/v1", commandRoutes(database));
+  app.use("/v1", knowledgeRoutes(database));
+  app.use("/v1", fileRoutes(database.db, store));
+  app.use("/v1", patRoutes(database.db, config));
+  app.use("/v1", adminRoutes(database));
+  app.use("/v1", notificationRoutes(database.db));
+  app.use("/v1", salesRoutes(database.db));
+  app.use("/v1", searchRoutes(database.db));
+  app.use((_req, res) => res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Route not found", requestId: res.getHeader("x-request-id") } }));
+  app.use(createErrorHandler(database.db));
+  return { app, resolveActor };
+}

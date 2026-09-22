@@ -72,11 +72,15 @@ async function accessibleChannel(db: AppDb, actor: NonNullable<Express.Request["
 }
 
 async function resolveUser(db: AppDb, workspaceId: string, ventureId: string, groupId: string, handle: string) {
-  const user = await db.collection("users").findOne({ workspaceId, $or: [{ handle }, { email: handle }, { name: { $regex: `^${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } }], status: "active" });
-  if (!user) throw new AppError(404, "NOT_FOUND", "Command recipient not found");
-  const membership = await db.collection("memberships").findOne({ workspaceId, userId: user._id, status: "active", ventureIds: ventureId, groupIds: groupId });
-  if (!membership) throw new AppError(404, "NOT_FOUND", "Command recipient not found in this venture and group");
-  return user;
+  const members = await db.collection("memberships").find({ workspaceId, status: "active", ventureIds: ventureId, groupIds: groupId }).project({ userId: 1 }).toArray();
+  const ids = members.map((member) => member.userId);
+  const exact = { $regex: `^${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" };
+  for (const field of ["handle", "email", "name"] as const) {
+    const users = await db.collection("users").find({ workspaceId, status: "active", _id: { $in: ids }, [field]: exact }).limit(2).toArray();
+    if (users.length > 1) throw new AppError(409, "CONFLICT", "Command recipient is ambiguous in this group");
+    if (users[0]) return users[0];
+  }
+  throw new AppError(404, "NOT_FOUND", "Command recipient not found in this venture and group");
 }
 
 async function recordExecution(db: AppDb, actor: NonNullable<Express.Request["actor"]>, idempotencyKey: string, preview: unknown, result: unknown, session: import("mongodb").ClientSession | undefined) {

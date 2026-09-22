@@ -94,6 +94,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] UX-parity API slice: additional channels, membership role/scope replacement, message reactions/pins/saves, and planning/sales edits
 - [x] Independent auth/realtime review of the UX-parity slice and real-Mongo backend smoke verification
 - [x] Reviewed backend contract slice: member directory, browser socket authentication, reminder IDs and reads, focus history, document browse, and class application review; real-Mongo smoke verification
+- [x] Backfill legacy handles without overwriting existing values; verify seeded @commands and mentions with real Mongo and independent authorization review
 
 ## Phase 4 — Realtime work, commands, and automation
 

@@ -9,6 +9,7 @@ export function hierarchyRoutes(db: AppDb): Router {
   router.get("/members", async (req, res) => {
     const actor = req.actor!;
     const query = memberDirectoryQuerySchema.parse(req.query);
+    if (query.handle && (query.cursor || query.q)) throw new AppError(400, "BAD_REQUEST", "Exact handle lookup cannot be combined with search or a cursor");
     const workspaceId = actor.membership.workspaceId;
     let ventureId = query.ventureId;
     if (query.groupId) {
@@ -22,7 +23,9 @@ export function hierarchyRoutes(db: AppDb): Router {
     const memberships = await db.collection("memberships").find({ workspaceId, status: "active", ...(ventureId ? { ventureIds: ventureId } : {}), ...(query.groupId ? { groupIds: query.groupId } : {}) }).project({ userId: 1, role: 1 }).toArray();
     const byUser = new Map(memberships.map((item) => [String(item.userId), item]));
     const escaped = query.q?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const users = await db.collection("users").find({ workspaceId, status: "active", _id: { $in: [...byUser.keys()], ...(query.cursor ? { $gt: idSchema.parse(query.cursor) } : {}) }, ...(query.handle ? { handle: query.handle.toLowerCase() } : {}), ...(escaped ? { $or: [{ name: { $regex: escaped, $options: "i" } }, { handle: { $regex: escaped, $options: "i" } }] } : {}) }).sort({ _id: 1 }).limit(query.limit + 1).toArray();
+    const exactHandle = query.handle?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const users = await db.collection("users").find({ workspaceId, status: "active", _id: { $in: [...byUser.keys()], ...(!query.handle && query.cursor ? { $gt: idSchema.parse(query.cursor) } : {}) }, ...(exactHandle ? { handle: { $regex: `^${exactHandle}$`, $options: "i" } } : {}), ...(escaped ? { $or: [{ name: { $regex: escaped, $options: "i" } }, { handle: { $regex: escaped, $options: "i" } }] } : {}) }).sort({ _id: 1 }).limit(query.handle ? 2 : query.limit + 1).toArray();
+    if (query.handle && users.length > 1) throw new AppError(409, "CONFLICT", "Member handle is ambiguous in this scope");
     const items = users.slice(0, query.limit).map((user) => ({ id: user._id, name: user.name, ...(user.handle ? { handle: user.handle } : {}), role: byUser.get(String(user._id))!.role }));
     res.json({ ok: true, data: { items: jsonValue(items), nextCursor: users.length > query.limit ? String(users[query.limit - 1]?._id) : undefined } });
   });

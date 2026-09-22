@@ -11,6 +11,7 @@ import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import { LocalObjectStore } from "../src/storage.js";
 import { attachRealtime } from "../src/collaboration.js";
+import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
 import { dashboardResponseSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
 
@@ -137,6 +138,45 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(silenced.status, 200, await silenced.text());
     const terminalSnooze = await fetch(`${origin}/v1/reminders/${taskReminder?._id}/snooze`, { method: "POST", headers, body: JSON.stringify({ minutes: 10 }) });
     assert.equal(terminalSnooze.status, 409);
+
+    await database.db.collection("users").insertMany([
+      { _id: "user-ashutosh", workspaceId: "workspace-a", email: "ashutosh@example.invalid", name: "Ashutosh", status: "active" },
+      { _id: "user-reserved", workspaceId: "workspace-a", email: "reserved@example.invalid", name: "Reserved", handle: "alex", status: "active" },
+      { _id: "user-reserved-suffix", workspaceId: "workspace-a", email: "reserved-suffix@example.invalid", name: "Reserved Suffix", handle: `alex-${createHash("sha256").update("user-alex").digest("hex").slice(0, 8)}`, status: "active" },
+      { _id: "user-alex", workspaceId: "workspace-a", email: "alex@example.invalid", name: "Alex", status: "active" },
+      { _id: "user-dupe-a", workspaceId: "workspace-a", email: "dupe-a@example.invalid", name: "Duplicate A", handle: "dupe", status: "active" },
+      { _id: "user-dupe-b", workspaceId: "workspace-a", email: "dupe-b@example.invalid", name: "Duplicate B", handle: "DUPE", status: "active" },
+    ]);
+    await database.db.collection("memberships").insertMany(["user-ashutosh", "user-alex", "user-dupe-a", "user-dupe-b"].map((userId) => ({ _id: `membership-${userId}`, workspaceId: "workspace-a", userId, role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now })));
+    assert.equal(await backfillMissingHandles(database), 2);
+    assert.equal(await backfillMissingHandles(database), 0);
+    assert.equal((await database.db.collection("users").findOne({ _id: "user-ashutosh" }))?.handle, "ashutosh");
+    assert.equal((await database.db.collection("users").findOne({ _id: "user-alex" }))?.handle, `alex-${createHash("sha256").update("user-alex").digest("hex").slice(0, 12)}`);
+    assert.equal((await database.db.collection("users").findOne({ _id: "user-reserved" }))?.handle, "alex");
+    assert.equal(await database.db.collection("audit_events").countDocuments({ action: "user.handle.backfill" }), 2);
+    const memberLookup = await fetch(`${origin}/v1/members?groupId=group-a&handle=ashutosh`, { headers });
+    assert.equal(memberLookup.status, 200);
+    const mentionId = ((await memberLookup.json()) as any).data.items[0].id;
+    assert.equal(mentionId, "user-ashutosh");
+    const mentioned = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Please review @ashutosh", mentionUserIds: [mentionId], clientId: "mention-ashutosh-0001" }) });
+    assert.equal(mentioned.status, 201, await mentioned.clone().text());
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ type: "mention", userId: "user-ashutosh" }), 1);
+    assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe`, { headers })).status, 409);
+    assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe&q=Duplicate%20A`, { headers })).status, 400);
+
+    const assignPreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/assign @ashutosh "Review evidence" due=${new Date(Date.now() + 3_600_000).toISOString()} estimate=30 timezone=UTC` }) });
+    assert.equal(assignPreview.status, 201, await assignPreview.clone().text());
+    const assigned = await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: ((await assignPreview.json()) as any).data.previewId, idempotencyKey: "assign-ashutosh-0001" }) });
+    assert.equal(assigned.status, 201, await assigned.clone().text());
+    assert.equal(((await assigned.json()) as any).data.task.assigneeId, "user-ashutosh");
+    const notifyPreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @ashutosh "Review evidence" at=${new Date(Date.now() + 3_600_000).toISOString()} timezone=UTC` }) });
+    assert.equal(notifyPreview.status, 201, await notifyPreview.clone().text());
+    const notified = await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: ((await notifyPreview.json()) as any).data.previewId, idempotencyKey: "notify-ashutosh-0001" }) });
+    assert.equal(notified.status, 201, await notified.clone().text());
+    assert.equal(((await notified.json()) as any).data.reminder.userId, "user-ashutosh");
+    const duplicatePreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @dupe "Unsafe" at=${new Date(Date.now() + 3_600_000).toISOString()} timezone=UTC` }) });
+    assert.equal(duplicatePreview.status, 201);
+    assert.equal((await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: ((await duplicatePreview.json()) as any).data.previewId, idempotencyKey: "notify-dupe-0001" }) })).status, 409);
 
     const previewResponse = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @test "Check evidence" at=${new Date(Date.now() + 60_000).toISOString()} timezone=UTC` }) });
     assert.equal(previewResponse.status, 201);

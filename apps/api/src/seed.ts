@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { connectDatabase } from "./db.js";
 import { ensureIndexes } from "./indexes.js";
+import { backfillMissingHandles } from "./handles.js";
 
 const config = loadConfig();
 const database = await connectDatabase(config);
@@ -29,7 +30,7 @@ try {
     await db.collection("channels").updateOne({ _id: channelId }, { $set: { workspaceId, ventureId: venture._id, groupId, name: "general", createdAt: now } }, { upsert: true });
   }
   for (const user of users) {
-    await db.collection("users").updateOne({ _id: user._id }, { $set: { workspaceId, email: user.email, name: user.name, handle: user.handle, status: "active", createdAt: now, updatedAt: now } }, { upsert: true });
+    await db.collection("users").updateOne({ _id: user._id }, { $set: { workspaceId, email: user.email, name: user.name, status: "active", updatedAt: now }, $setOnInsert: { createdAt: now } }, { upsert: true });
     const userVentures = user.role === "admin" ? ventures.map((venture) => venture._id) : user._id === "user-adarsh" ? ["venture-buildory", "venture-spotlyst"] : user._id === "user-ashutosh" ? ["venture-edithood"] : user._id === "user-abhinav" ? ["venture-buildory"] : ["venture-buildory"];
     await db.collection("memberships").updateOne({ workspaceId, userId: user._id }, { $set: { _id: `membership-${user.handle}`, workspaceId, userId: user._id, role: user.role, ventureIds: userVentures, groupIds: userVentures.map((id) => `group-${ventures.find((venture) => venture._id === id)!.slug}`), status: "active", createdAt: now, updatedAt: now } }, { upsert: true });
   }
@@ -48,5 +49,6 @@ try {
   await db.collection("decisions").updateOne({ _id: "decision-chatgpt-primary" }, { $set: { workspaceId, title: "ChatGPT and Codex remain the primary AI surface", text: "Venture Studio owns data and permissions; MCP exposes bounded read tools.", ownerId: "user-divyansh", decidedAt: now, evidence: ["architecture-pack"], reason: "Avoid duplicating a general AI chat product.", affectedWork: [], reviewTrigger: "Evidence of a workflow that cannot be delivered through MCP and the dashboard", status: "approved", createdAt: now, updatedAt: now } }, { upsert: true });
   await db.collection("information_requests").updateOne({ _id: "request-buildory-proof" }, { $set: { workspaceId, ventureId: "venture-buildory", requesterId: "user-divyansh", respondentId: "user-adarsh", question: "What current evidence supports the first Buildory offer?", purpose: "Close a known context gap without inventing proof.", dueAt: new Date("2026-09-28T10:00:00.000Z"), status: "open", sourceRefs: [], createdAt: now, updatedAt: now } }, { upsert: true });
   await db.collection("pipelines").updateOne({ _id: "pipeline-buildory" }, { $set: { workspaceId, ventureId: "venture-buildory", name: "Buildory opportunities", offerName: "Validated offer", status: "active", createdAt: now, updatedAt: now } }, { upsert: true });
+  await backfillMissingHandles(database, Object.fromEntries(users.map((user) => [user._id, user.handle])));
   console.info(`Seeded sanitized workspace. Demo header: x-dev-user-id=user-divyansh`);
 } finally { await database.client.close(); }

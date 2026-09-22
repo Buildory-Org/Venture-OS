@@ -1,0 +1,85 @@
+import { randomUUID } from "node:crypto";
+import { Router } from "express";
+import type { AppDb } from "../db.js";
+import { commandExecuteSchema, commandPreviewRequestSchema, commandPreviewSchema } from "@venture-studio/contracts";
+import { can, previewCommand } from "@venture-studio/core";
+import type { Database } from "../db.js";
+import { atomic } from "../db.js";
+import { audit } from "../audit.js";
+import { AppError } from "../errors.js";
+import { jsonValue } from "../json.js";
+
+export function commandRoutes(database: Database): Router {
+  const db = database.db;
+  const router = Router();
+
+  router.post("/commands/preview", async (req, res) => {
+    const input = commandPreviewRequestSchema.parse(req.body);
+    const actor = req.actor!;
+    const channel = await accessibleChannel(db, actor, input.channelId);
+    const preview = previewCommand(input.input);
+    const action = preview.command.kind === "assign" ? "task:create" : "message:write";
+    if (!can(actor.membership, action, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) })) throw new AppError(403, "FORBIDDEN", "Command access denied");
+    await db.collection("command_previews").insertOne({ _id: preview.previewId, workspaceId: actor.membership.workspaceId, actorId: actor.id, channelId: input.channelId, ventureId: channel.ventureId, groupId: channel.groupId, ...preview, expiresAt: new Date(preview.expiresAt), createdAt: new Date() });
+    res.status(201).json({ ok: true, data: preview });
+  });
+
+  router.post("/commands/execute", async (req, res) => {
+    const input = commandExecuteSchema.parse(req.body);
+    const actor = req.actor!;
+    const previous = await db.collection("command_executions").findOne({ workspaceId: actor.membership.workspaceId, actorId: actor.id, idempotencyKey: input.idempotencyKey });
+    if (previous) return void res.json({ ok: true, data: jsonValue(previous.result) });
+    const stored = await db.collection("command_previews").findOne({ _id: input.previewId, workspaceId: actor.membership.workspaceId, actorId: actor.id });
+    if (!stored || (stored.expiresAt as Date).getTime() <= Date.now()) throw new AppError(409, "STALE_PREVIEW", "Command preview expired; preview it again");
+    const preview = commandPreviewSchema.parse({ ...stored, previewId: stored._id, expiresAt: (stored.expiresAt as Date).toISOString() });
+    const channel = await accessibleChannel(db, actor, String(stored.channelId));
+    if (String(channel.ventureId) !== String(stored.ventureId) || String(channel.groupId) !== String(stored.groupId)) throw new AppError(409, "STALE_PREVIEW", "Command scope changed; preview it again");
+    const action = preview.command.kind === "assign" ? "task:create" : "message:write";
+    if (!can(actor.membership, action, { ventureId: String(stored.ventureId), groupId: String(stored.groupId) })) throw new AppError(403, "FORBIDDEN", "Command access denied");
+    const target = await resolveUser(db, actor.membership.workspaceId, String(stored.ventureId), String(stored.groupId), preview.command.kind === "assign" ? preview.command.assignee : preview.command.recipient);
+    const now = new Date();
+    let result: Record<string, unknown>;
+    if (preview.command.kind === "assign") {
+      const taskId = randomUUID();
+      const dueAt = new Date(preview.command.dueAt);
+      const latestStartAt = new Date(dueAt.getTime() - preview.command.estimatedMinutes * 60_000);
+      const task = { _id: taskId, workspaceId: actor.membership.workspaceId, ventureId: stored.ventureId, groupId: stored.groupId, channelId: stored.channelId, title: preview.command.title, outcome: preview.command.title, assigneeId: target._id, creatorId: actor.id, priority: "medium", status: "proposed", dueAt, timezone: preview.command.timezone, estimatedMinutes: preview.command.estimatedMinutes, definitionOfDone: preview.command.title, evidenceRequirement: "Evidence link or reviewed exception", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: latestStartAt <= now, createdAt: now, updatedAt: now };
+      const reminder = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: target._id, taskId, message: `Start: ${task.title}`, scheduledAt: latestStartAt > now ? latestStartAt : now, timezone: preview.command.timezone, repeatMinutes: 10, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now };
+      result = { task, reminder };
+      await atomic(database, async (session) => {
+        await db.collection("tasks").insertOne(task, { session });
+        await db.collection("reminders").insertOne(reminder, { session });
+        await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: target._id, type: "assignment", title: task.title, body: task.outcome, resourceType: "task", resourceId: taskId, idempotencyKey: `task:${taskId}:assigned`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
+        await recordExecution(db, actor, input.idempotencyKey, preview, result, session);
+      });
+    } else {
+      const reminder = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: target._id, message: preview.command.message, scheduledAt: new Date(preview.command.scheduledAt), timezone: preview.command.timezone, repeatMinutes: null, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now };
+      result = { reminder };
+      await atomic(database, async (session) => {
+        await db.collection("reminders").insertOne(reminder, { session });
+        await recordExecution(db, actor, input.idempotencyKey, preview, result, session);
+      });
+    }
+    res.status(201).json({ ok: true, data: jsonValue(result) });
+  });
+  return router;
+}
+
+async function accessibleChannel(db: AppDb, actor: NonNullable<Express.Request["actor"]>, id: string) {
+  const channel = await db.collection("channels").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
+  if (!channel || (actor.membership.role !== "admin" && !actor.membership.groupIds.includes(String(channel.groupId)))) throw new AppError(404, "NOT_FOUND", "Channel not found");
+  return channel;
+}
+
+async function resolveUser(db: AppDb, workspaceId: string, ventureId: string, groupId: string, handle: string) {
+  const user = await db.collection("users").findOne({ workspaceId, $or: [{ handle }, { email: handle }, { name: { $regex: `^${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } }], status: "active" });
+  if (!user) throw new AppError(404, "NOT_FOUND", "Command recipient not found");
+  const membership = await db.collection("memberships").findOne({ workspaceId, userId: user._id, status: "active", ventureIds: ventureId, groupIds: groupId });
+  if (!membership) throw new AppError(404, "NOT_FOUND", "Command recipient not found in this venture and group");
+  return user;
+}
+
+async function recordExecution(db: AppDb, actor: NonNullable<Express.Request["actor"]>, idempotencyKey: string, preview: unknown, result: unknown, session: import("mongodb").ClientSession | undefined) {
+  await db.collection("command_executions").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, actorId: actor.id, idempotencyKey, preview, result, createdAt: new Date() }, { session });
+  await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "command.execute", objectType: "command", objectId: idempotencyKey, result: "success" }, session);
+}

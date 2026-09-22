@@ -1,5 +1,5 @@
-import { DocumentsScreen } from "@/screens/documents";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <DocumentsScreen />;
+  redirect("/knowledge");
 }

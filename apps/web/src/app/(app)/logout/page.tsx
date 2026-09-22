@@ -1,5 +1,5 @@
-import { LogoutScreen } from "@/screens/logout";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <LogoutScreen />;
+  redirect("/sign-in");
 }

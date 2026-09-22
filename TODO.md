@@ -9,9 +9,9 @@ Checkboxes are updated only after implementation and verification. Approval gate
 - [x] Create the npm/TypeScript monorepo skeleton
 - [x] Seed `apps/web` from the approved AIBOS UI reference
 - [x] Install and verify the Ponytail backend skill
-- [ ] Create persistent Frontend and Backend Codex tasks in the Venture Studio project
+- [x] Create persistent Frontend and Backend Codex tasks in the Venture Studio project
 
-## Phase 1 — Dashboard design prototype (current)
+## Phase 1 — Dashboard design prototype (approved)
 
 ### 1.1 Shell and visual system
 
@@ -31,36 +31,47 @@ Checkboxes are updated only after implementation and verification. Approval gate
 - [x] Run lint and production build smoke tests
 - [x] Perform a visual pass for overflow, accessibility, and responsive behavior
 - [x] Present the dashboard to the user
-- [ ] **Approval gate: user approves the dashboard direction**
+- [x] **Approval gate: user approved the dashboard direction on 2026-09-23**
 
 ## Phase 2 — Complete dummy product UI
 
-_Blocked by the Phase 1 approval gate._
+Approved on 2026-09-23. The full interface is being built against shared demo records; backend integration is tracked by contract seams and remains a separate verification gate.
+
+### 2.0 Studio command center
+
+- [x] Today, venture overview, 30-day outcomes, and weekly timeline
+- [x] Decisions register and structured questions/information requests
+- [x] Classes with objectives, applied assignments, and assessment evidence
+- [x] Venture-specific sales pipeline
 
 ### 2.1 Collaboration
 
-- [ ] Venture/group/channel navigation and channel chat
-- [ ] `@mentions`, threads, reactions, pins, saved items, and search
-- [ ] Direct messages and notification center
+- [x] Venture/group/channel navigation and channel chat
+- [x] `@mentions`, threads, reactions, pins, saved items, and search
+- [x] Direct messages and notification center
 
 ### 2.2 Work management
 
-- [ ] Task detail and assignment flows
-- [ ] Kanban board with people, tag, venture, group, status, and deadline filters
-- [ ] Focus-mode timer popup and session history
-- [ ] Reminder/snooze/completion interaction states
+- [x] Task detail and assignment flows
+- [x] Kanban board with people, tag, venture, group, status, and deadline filters
+- [x] Focus-mode timer popup and session history
+- [x] Reminder/snooze/completion interaction states
 
 ### 2.3 Admin and knowledge
 
-- [ ] Group/venture creation and member/role management
-- [ ] Slash-command composer and admin command feedback
+- [x] Group/venture creation and member/role management in the demo UI
+- [x] Slash-command composer and admin command feedback
 - [ ] Files, links, notes, and lightweight knowledge search
-- [ ] Settings, notification preferences, and integration surfaces
+- [x] Settings, notification preferences, and integration surfaces in the demo UI
+- [x] Sign-in/invite demo surfaces and founder admin audit/PAT surfaces
+- [x] Document UI-to-backend contract seams
+- [ ] Integrate shared contracts when the backend publishes them
 
 ### 2.4 Verification
 
-- [ ] Route-level UI smoke tests
-- [ ] Responsive and keyboard-accessibility pass
+- [x] Route-level UI smoke tests
+- [x] Responsive pass at 390px and 320px for all studio routes
+- [ ] Keyboard-accessibility pass
 - [ ] User approval of the complete dummy UI
 
 ## Phase 3 — Backend foundation

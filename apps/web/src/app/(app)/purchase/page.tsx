@@ -1,5 +1,5 @@
-import { PurchaseScreen } from "@/screens/purchase";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <PurchaseScreen />;
+  redirect("/sales");
 }

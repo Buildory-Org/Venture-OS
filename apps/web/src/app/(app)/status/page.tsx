@@ -1,5 +1,5 @@
-import { StatusScreen } from "@/screens/status";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <StatusScreen />;
+  redirect("/today");
 }

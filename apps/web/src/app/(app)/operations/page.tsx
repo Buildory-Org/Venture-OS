@@ -1,5 +1,5 @@
-import { OperationsScreen } from "@/screens/operations";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <OperationsScreen />;
+  redirect("/tasks");
 }

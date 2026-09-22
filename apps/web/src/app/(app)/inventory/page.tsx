@@ -1,5 +1,5 @@
-import { InventoryScreen } from "@/screens/inventory";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <InventoryScreen />;
+  redirect("/ventures");
 }

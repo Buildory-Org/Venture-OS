@@ -1,5 +1,5 @@
-import { FinanceScreen } from "@/screens/finance";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <FinanceScreen />;
+  redirect("/sales");
 }

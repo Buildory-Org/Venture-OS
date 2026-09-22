@@ -1,5 +1,5 @@
-import { HrScreen } from "@/screens/hr";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <HrScreen />;
+  redirect("/classes");
 }

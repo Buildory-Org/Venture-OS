@@ -1,5 +1,5 @@
-import { AiChatScreen } from "@/screens/ai-chat";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <AiChatScreen />;
+  redirect("/knowledge");
 }

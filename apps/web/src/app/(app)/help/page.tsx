@@ -1,5 +1,5 @@
-import { HelpScreen } from "@/screens/help";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <HelpScreen />;
+  redirect("/settings");
 }

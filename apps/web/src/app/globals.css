@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/* ── AIBOS Design Language v1.1 — soft-premium SaaS surface ── */
+@theme {
+  /* Fonts */
+  --font-sans: var(--font-jakarta), "Inter", "Noto Sans Devanagari", "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono: var(--font-jbmono), "JetBrains Mono", ui-monospace, monospace;
+
+  /* Brand — AIBOS Indigo */
+  --color-primary-50: #eef4ff;
+  --color-primary-100: #dfe9ff;
+  --color-primary-200: #c2d6fe;
+  --color-primary-300: #97bbfd;
+  --color-primary-400: #6396fa;
+  --color-primary-500: #3b6ff0;
+  --color-primary-600: #2453db;
+  --color-primary-700: #1d41b0;
+  --color-primary-800: #1c388c;
+  --color-primary-900: #1c3270;
+
+  /* Semantic — surface / accent / text triples */
+  --color-success-surface: #ecfdf3;
+  --color-success: #16a34a;
+  --color-success-text: #15803d;
+  --color-warning-surface: #fffaeb;
+  --color-warning: #f59e0b;
+  --color-warning-text: #b45309;
+  --color-danger-surface: #fef3f2;
+  --color-danger: #dc2626;
+  --color-danger-text: #b42318;
+  --color-info-surface: #f0f9ff;
+  --color-info: #0284c7;
+  --color-info-text: #075985;
+
+  /* AI accent — reserved for AI-generated content only */
+  --color-ai-surface: #f5f3ff;
+  --color-ai: #7c3aed;
+  --color-ai-text: #5b21b6;
+
+  /* Neutrals — cool slate */
+  --color-neutral-0: #ffffff;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+
+  /* App canvas — cool tinted gray like the references */
+  --color-canvas: #f4f6fb;
+
+  /* Radius — softer, rounder system */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  /* Elevation — layered soft shadows over hairline borders */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 8px 24px -12px rgb(16 24 40 / 0.1);
+  --shadow-card-hover: 0 2px 4px rgb(16 24 40 / 0.06), 0 12px 32px -12px rgb(16 24 40 / 0.16);
+  --shadow-e2: 0 4px 12px rgb(15 23 42 / 0.1);
+  --shadow-e3: 0 8px 24px rgb(15 23 42 / 0.14);
+  --shadow-e4: 0 16px 48px rgb(15 23 42 / 0.18);
+
+  /* Motion */
+  --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --animate-widget-in: widget-in 340ms var(--ease-snappy) both;
+}
+
+@keyframes widget-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+:root {
+  --background: var(--color-canvas);
+  --foreground: var(--color-neutral-900);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular numerals on every figure */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Thin scrollbars inside panels */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-neutral-300) transparent;
+}
+
+/* Reduced motion: keep color/opacity cues, drop movement */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

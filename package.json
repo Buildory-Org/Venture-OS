@@ -1,0 +1,15 @@
+{
+  "name": "venture-studio-os",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @venture-studio/web",
+    "build:web": "npm run build --workspace @venture-studio/web",
+    "lint:web": "npm run lint --workspace @venture-studio/web",
+    "smoke:web": "npm run lint:web && npm run build:web"
+  }
+}

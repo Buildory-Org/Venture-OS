@@ -101,7 +101,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Search/indexing across authorized messages, tasks, and documents
 - [x] Read-only MCP server with scoped local PATs, revocation, and audit logs
 - [x] Threat-model and reviewer-agent pass for file and MCP data boundaries
-- [ ] Integration smoke tests
+- [x] Integration smoke tests
 
 ## Phase 6 — Production hardening
 

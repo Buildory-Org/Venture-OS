@@ -12,7 +12,9 @@ const pages = [
   { href: "/dashboard/live", label: "Dashboard" },
   { href: "/tasks/live", label: "Tasks" },
   { href: "/board/live", label: "Board" },
+  { href: "/planning/live", label: "Planning" },
   { href: "/channels/live", label: "Channels" },
+  { href: "/knowledge/live", label: "Knowledge" },
   { href: "/notifications/live", label: "Inbox" },
   { href: "/focus/live", label: "Focus" },
 ];

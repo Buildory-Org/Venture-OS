@@ -9,18 +9,27 @@ import {
   errorEnvelopeSchema,
   eventEnvelopeSchema,
   focusSessionSchema,
+  informationRequestSchema,
+  knowledgeSearchResponseSchema,
+  knowledgeSearchSchema,
   messageSchema,
   notificationSchema,
+  outcomeSchema,
   pagedSuccessEnvelope,
   reminderSchema,
   snoozeSchema,
   startFocusSchema,
+  classSchema,
+  decisionSchema,
+  documentSchema,
+  documentVersionSchema,
   sessionBootstrapResponseSchema,
   successEnvelope,
   taskListQuerySchema,
   taskSchema,
   taskUpdateSchema,
   updateTaskSchema,
+  updateInformationRequestSchema,
   type Task,
 } from "@venture-studio/contracts";
 
@@ -165,4 +174,37 @@ export async function startLiveFocus(input: unknown) {
 
 export async function completeLiveFocus(id: string) {
   return successEnvelope(focusSessionSchema).parse(await request(`/v1/focus/${encodeURIComponent(id)}/complete`, { method: "POST" })).data;
+}
+
+export async function searchLiveKnowledge(q: string, ventureId?: string) {
+  const query = knowledgeSearchSchema.parse({ q, ventureId, limit: 25 });
+  const params = new URLSearchParams({ q: query.q, limit: String(query.limit) });
+  if (query.ventureId) params.set("ventureId", query.ventureId);
+  return knowledgeSearchResponseSchema.parse(await request(`/v1/knowledge/search?${params}`)).data;
+}
+
+export async function getLiveDocument(id: string) {
+  const data = successEnvelope(documentSchema.passthrough()).parse(await request(`/v1/documents/${encodeURIComponent(id)}`)).data;
+  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(data.currentVersion) };
+}
+
+export async function listLiveOutcomes() {
+  return successEnvelope(outcomeSchema.array()).parse(await request("/v1/outcomes")).data;
+}
+
+export async function listLiveDecisions() {
+  return successEnvelope(decisionSchema.array()).parse(await request("/v1/decisions")).data;
+}
+
+export async function listLiveClasses() {
+  return successEnvelope(classSchema.array()).parse(await request("/v1/classes")).data;
+}
+
+export async function listLiveInformationRequests() {
+  return successEnvelope(informationRequestSchema.array()).parse(await request("/v1/information-requests")).data;
+}
+
+export async function updateLiveInformationRequest(id: string, input: unknown) {
+  const valid = updateInformationRequestSchema.parse(input);
+  return successEnvelope(informationRequestSchema).parse(await request(`/v1/information-requests/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
 }

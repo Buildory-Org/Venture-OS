@@ -1,4 +1,4 @@
 # Contracts
 
-Shared schemas and API/event contracts will be introduced when backend implementation begins.
+Shared Zod schemas for envelopes, hierarchy, memberships, messages, tasks, outcomes, commands, reminders, focus sessions, knowledge, files, search, PATs, decisions, information requests, and classes.
 

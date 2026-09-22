@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { cursorQuerySchema, idSchema, isoDateSchema } from "./common.js";
+import { cursorQuerySchema, idSchema, isoDateSchema, successEnvelope } from "./common.js";
 
 export const evidenceClassSchema = z.enum(["verified_fact", "founder_reported", "approved_decision", "planning_assumption", "hypothesis", "open_question", "historical"]);
 export const sensitivitySchema = z.enum(["team", "venture_restricted", "manager", "founder_private"]);
@@ -31,6 +31,15 @@ export const knowledgeSearchSchema = cursorQuerySchema.extend({
   q: z.string().trim().min(2).max(200), ventureId: idSchema.optional(), evidenceClasses: z.array(evidenceClassSchema).optional(),
 });
 
+export const knowledgeSearchHitSchema = z.object({
+  documentId: idSchema, title: z.string(), versionId: idSchema, headingPath: z.string(), excerpt: z.string(),
+  evidenceClass: evidenceClassSchema, ownerId: idSchema, lastReviewedAt: isoDateSchema.optional(),
+  sourceRef: z.string(), sensitivity: sensitivitySchema,
+});
+export const knowledgeSearchResponseSchema = successEnvelope(z.object({
+  items: z.array(knowledgeSearchHitSchema), asOf: isoDateSchema, evidenceBoundary: z.string(), warnings: z.array(z.string()),
+}));
+
 export const decisionSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema.optional(), title: z.string().min(1).max(200),
   text: z.string().min(1).max(10_000), ownerId: idSchema, decidedAt: isoDateSchema, evidence: z.array(z.string()).max(100),
@@ -44,6 +53,10 @@ export const informationRequestSchema = z.object({
   question: z.string().min(1).max(5_000), purpose: z.string().min(1).max(2_000), dueAt: isoDateSchema,
   status: z.enum(["open", "answered", "reviewed", "closed"]), responseMarkdown: z.string().max(100_000).optional(),
   sourceRefs: z.array(z.string()).max(100), reviewedBy: idSchema.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
+});
+export const updateInformationRequestSchema = z.object({
+  status: z.enum(["open", "answered", "reviewed", "closed"]),
+  responseMarkdown: z.string().max(100_000).optional(), sourceRefs: z.array(z.string()).max(100).optional(),
 });
 
 export const classSchema = z.object({

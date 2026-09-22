@@ -39,7 +39,7 @@ export function workRoutes(database: Database): Router {
     const [updates, evidence, attachments] = await Promise.all([
       db.collection("task_updates").find({ taskId: id }).sort({ createdAt: 1 }).toArray(),
       db.collection("evidence_items").find({ taskId: id }).sort({ submittedAt: 1 }).toArray(),
-      db.collection("files").find({ taskId: id, status: "ready" }).sort({ createdAt: 1 }).toArray(),
+      db.collection("files").find({ taskId: id, workspaceId: task.workspaceId, ventureId: task.ventureId, groupId: task.groupId, status: "ready" }).sort({ createdAt: 1 }).toArray(),
     ]);
     res.json({ ok: true, data: jsonValue({ ...task, updates, evidence, attachments }) });
   });

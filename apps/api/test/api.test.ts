@@ -42,10 +42,12 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   await database.db.collection("users").insertMany([
     { _id: "user-test", workspaceId: "workspace-a", email: "test@example.invalid", name: "Test User", handle: "test", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-hidden", workspaceId: "workspace-a", email: "hidden@example.invalid", name: "Hidden User", handle: "hidden", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-peer", workspaceId: "workspace-a", email: "peer@example.invalid", name: "Peer User", handle: "peer", status: "active", createdAt: now, updatedAt: now },
   ]);
   await database.db.collection("memberships").insertMany([
     { _id: "membership-test", workspaceId: "workspace-a", userId: "user-test", role: "venture_head", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
     { _id: "membership-hidden", workspaceId: "workspace-a", userId: "user-hidden", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-hidden"], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-peer", workspaceId: "workspace-a", userId: "user-peer", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
   ]);
   await database.db.collection("workspaces").insertOne({ _id: "workspace-a", name: "Test", slug: "test", createdAt: now });
   await database.db.collection("ventures").insertMany([{ _id: "venture-a", workspaceId: "workspace-a", name: "Allowed", status: "active", goal30Day: "", createdAt: now }, { _id: "venture-b", workspaceId: "workspace-a", name: "Hidden", status: "active", goal30Day: "", createdAt: now }]);
@@ -148,8 +150,9 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const download = await fetch(`${origin}/v1/files/${intent.data.file.id}/download`, { headers });
     const downloadBody = (await download.json()) as any;
     assert.equal(await (await fetch(downloadBody.data.downloadUrl)).text(), "yes");
+    await database.db.collection("files").insertOne({ _id: "file-malformed-cross-tenant", workspaceId: "workspace-other", ventureId: "venture-other", groupId: "group-other", taskId: createdBody.data.id, ownerId: "other", name: "leak.txt", contentType: "text/plain", size: 1, objectKey: "other", status: "ready", storage: "local", createdAt: new Date() });
     const taskWithAttachment = await (await fetch(`${origin}/v1/tasks/${createdBody.data.id}`, { headers })).json() as any;
-    assert.equal(taskWithAttachment.data.attachments.some((file: any) => file.id === intent.data.file.id), true);
+    assert.deepEqual(taskWithAttachment.data.attachments.map((file: any) => file.id), [intent.data.file.id]);
 
     const recoveryIntentResponse = await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", name: "recover.txt", contentType: "text/plain", size: 3 }) });
     const recoveryIntent = await recoveryIntentResponse.json() as any;
@@ -244,6 +247,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { groupIds: [], updatedAt: new Date() } });
     const revokedSend = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Denied", mentionUserIds: [], clientId: "revoked-message-0001" } }, resolve));
     assert.equal(revokedSend.ok, false);
+    let leakedPresence = false;
+    socket.once("presence:update", () => { leakedPresence = true; });
+    const peerSocket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-peer" }, transports: ["websocket"] });
+    await new Promise<void>((resolve, reject) => { peerSocket.once("connect", resolve); peerSocket.once("connect_error", reject); });
+    assert.equal((await new Promise<any>((resolve) => peerSocket.emit("channel:join", "channel-a", resolve))).ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(leakedPresence, false);
+    peerSocket.close();
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { groupIds: ["group-a"], updatedAt: new Date() } });
     const sent = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
     assert.equal(sent.ok, true);

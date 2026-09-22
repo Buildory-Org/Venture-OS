@@ -133,7 +133,7 @@ export function attachRealtime(server: HttpServer, database: Database, resolveAc
     const actor = socket.data.actor as Actor;
     socket.join(`user:${actor.membership.workspaceId}:${actor.id}`);
     socket.on("channel:join", async (channelId: string, reply: (value: unknown) => void) => {
-      try { const fresh = await resolveActor(socket.request.headers); if (!fresh) throw new Error("UNAUTHENTICATED"); await channelScope(database.db, fresh, idSchema.parse(channelId)); const room = `channel:${channelId}`; await socket.join(room); io.to(room).emit("presence:update", { userId: fresh.id, state: "online" }); reply({ ok: true }); }
+      try { const fresh = await resolveActor(socket.request.headers); if (!fresh) throw new Error("UNAUTHENTICATED"); await channelScope(database.db, fresh, idSchema.parse(channelId)); const room = `channel:${channelId}`; await socket.join(room); await emitAuthorizedPresence(io, database.db, resolveActor, channelId, fresh.id, "online"); reply({ ok: true }); }
       catch { reply({ ok: false, error: { code: "FORBIDDEN", message: "Channel access denied" } }); }
     });
     socket.on("message:create", async (input: { channelId: string; body: unknown }, reply: (value: unknown) => void) => {
@@ -151,8 +151,19 @@ export function attachRealtime(server: HttpServer, database: Database, resolveAc
     socket.on("disconnecting", async () => {
       for (const room of socket.rooms) {
         if (!room.startsWith("channel:")) continue;
+        const channelId = room.slice("channel:".length);
         const peers = await io.in(room).fetchSockets();
-        if (!peers.some((peer) => peer.id !== socket.id && (peer.data.actor as Actor | undefined)?.id === actor.id)) io.to(room).emit("presence:update", { userId: actor.id, state: "offline" });
+        let hasAuthorizedSameUserPeer = false;
+        for (const peer of peers) {
+          if (peer.id === socket.id) continue;
+          try {
+            const fresh = await resolveActor(peer.data.authHeaders);
+            if (!fresh) throw new Error("UNAUTHENTICATED");
+            await channelScope(database.db, fresh, channelId);
+            if (fresh.id === actor.id) hasAuthorizedSameUserPeer = true;
+          } catch { await peer.leave(room); }
+        }
+        if (!hasAuthorizedSameUserPeer) await emitAuthorizedPresence(io, database.db, resolveActor, channelId, actor.id, "offline");
       }
     });
   });
@@ -174,5 +185,18 @@ async function emitAuthorizedToChannel(io: Server, db: AppDb, resolveActor: Retu
       await channelScope(db, actor, channelId);
       socket.emit("event", value);
     } catch { await socket.leave(`channel:${channelId}`); }
+  }
+}
+
+async function emitAuthorizedPresence(io: Server, db: AppDb, resolveActor: ReturnType<typeof createActorResolver>, channelId: string, userId: string, state: "online" | "offline"): Promise<void> {
+  const room = `channel:${channelId}`;
+  const sockets = await io.in(room).fetchSockets();
+  for (const socket of sockets) {
+    try {
+      const actor = await resolveActor(socket.data.authHeaders);
+      if (!actor) throw new Error("UNAUTHENTICATED");
+      await channelScope(db, actor, channelId);
+      socket.emit("presence:update", { userId, state });
+    } catch { await socket.leave(room); }
   }
 }

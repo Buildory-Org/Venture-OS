@@ -121,6 +121,21 @@ button {
   cursor: pointer;
 }
 
+/* Main product surfaces stay deliberately flat across every page. */
+#main-content,
+#main-content *,
+#main-content *::before,
+#main-content *::after {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Preserve a clear keyboard cue without reintroducing borders or shadows. */
+#main-content :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-primary-600) !important;
+  outline-offset: 2px !important;
+}
+
 /* Tabular numerals on every figure */
 .tnum {
   font-variant-numeric: tabular-nums;

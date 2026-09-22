@@ -1,6 +1,6 @@
 # Frontend contract seams
 
-The Phase 2 UI currently runs on browser-local demo records under `apps/web/src/lib/studio-demo.ts` and `studio-store.tsx`. This is a reviewable interaction prototype, not an authorization layer or an API cache. The demo identity selector, activity log, reminders, and notification preferences do not prove backend behavior. Replace the demo source only after the backend publishes shared contracts and representative authorization tests.
+The Phase 2 UI runs on browser-local demo records under `apps/web/src/lib/studio-demo.ts` and `studio-store.tsx`. This is a reviewable interaction prototype, not an authorization layer or an API cache. The demo identity selector, activity log, reminders, and notification preferences do not prove backend behavior. The separate `/dashboard/live` preview uses the published session, dashboard, and task contracts; it does not make the other pages live.
 
 ## Read models needed
 
@@ -23,4 +23,6 @@ The Phase 2 UI currently runs on browser-local demo records under `apps/web/src/
 - Decision, class, outcome, request, and pipeline edits return the canonical updated record.
 - Invite issuance/acceptance, notification preferences, scoped PAT creation/revocation, and focus-session recovery require backend services; corresponding UI surfaces are explicitly labelled unavailable or demo-only until connected.
 
-The first integration point should use the shared Zod envelope and error format from `packages/contracts` when the backend task publishes it. Do not derive API field names from the temporary demo types without a contract review.
+The first integration point now uses the shared Zod envelope and error format from `packages/contracts`. Do not derive API field names from the temporary demo types without a contract review.
+
+The web app reserves same-origin `/v1/*` and `/api/auth/*` rewrites for the API, using server-side `VSO_API_ORIGIN` (default `http://localhost:4000`). The `/dashboard/live` preview reads authenticated bootstrap, dashboard, and paged tasks, validates the responses, shows API errors instead of demo fallback, and can move an authorized task to `in_progress` through the canonical task PATCH endpoint. For local development only, it sends the backend's opt-in `x-dev-user-id: user-divyansh` header on `localhost`; production uses the session cookie. The sidebar and all other screens remain on the explicitly labelled demo store. Their mutations, auth screens, and failure states still require per-screen integration.

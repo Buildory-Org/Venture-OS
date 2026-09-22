@@ -86,6 +86,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Add API request validation, structured logging, audit records, and rate limits
 - [x] Independent reviewer-agent approval for auth and permission boundaries
 - [x] Backend unit/integration smoke tests
+- [x] UX-parity API slice: additional channels, membership role/scope replacement, message reactions/pins/saves, and planning/sales edits
+- [x] Independent auth/realtime review of the UX-parity slice and real-Mongo backend smoke verification
 
 ## Phase 4 — Realtime work, commands, and automation
 

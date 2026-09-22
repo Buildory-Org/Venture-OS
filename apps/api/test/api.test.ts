@@ -40,14 +40,18 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   await ensureIndexes(database.db);
   const now = new Date();
   await database.db.collection("users").insertMany([
+    { _id: "user-admin", workspaceId: "workspace-a", email: "admin@example.invalid", name: "Admin", handle: "admin", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-test", workspaceId: "workspace-a", email: "test@example.invalid", name: "Test User", handle: "test", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-hidden", workspaceId: "workspace-a", email: "hidden@example.invalid", name: "Hidden User", handle: "hidden", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-peer", workspaceId: "workspace-a", email: "peer@example.invalid", name: "Peer User", handle: "peer", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-b", workspaceId: "workspace-a", email: "b@example.invalid", name: "Venture B User", handle: "b", status: "active", createdAt: now, updatedAt: now },
   ]);
   await database.db.collection("memberships").insertMany([
+    { _id: "membership-admin", workspaceId: "workspace-a", userId: "user-admin", role: "admin", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now },
     { _id: "membership-test", workspaceId: "workspace-a", userId: "user-test", role: "venture_head", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
     { _id: "membership-hidden", workspaceId: "workspace-a", userId: "user-hidden", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-hidden"], status: "active", createdAt: now, updatedAt: now },
     { _id: "membership-peer", workspaceId: "workspace-a", userId: "user-peer", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-b", workspaceId: "workspace-a", userId: "user-b", role: "contributor", ventureIds: ["venture-b"], groupIds: ["group-b"], status: "active", createdAt: now, updatedAt: now },
   ]);
   await database.db.collection("workspaces").insertOne({ _id: "workspace-a", name: "Test", slug: "test", createdAt: now });
   await database.db.collection("ventures").insertMany([{ _id: "venture-a", workspaceId: "workspace-a", name: "Allowed", status: "active", goal30Day: "", createdAt: now }, { _id: "venture-b", workspaceId: "workspace-a", name: "Hidden", status: "active", goal30Day: "", createdAt: now }]);
@@ -70,6 +74,8 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   const address = server.address();
   const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
   config.API_ORIGIN = origin;
+  let activeSocket: ReturnType<typeof socketClient> | undefined;
+  let activePeerSocket: ReturnType<typeof socketClient> | undefined;
   try {
     const unauthenticated = await fetch(`${origin}/v1/session/bootstrap`);
     assert.equal(unauthenticated.status, 401);
@@ -183,10 +189,10 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
 
     const sameTime = new Date();
     await database.db.collection("events").insertMany([
-      { _id: "event-cursor-a", eventId: "event-cursor-a", version: 1, occurredAt: sameTime, actorId: "user-test", workspaceId: "workspace-a", groupId: "group-a", type: "test.first", payload: {} },
-      { _id: "event-cursor-b", eventId: "event-cursor-b", version: 1, occurredAt: sameTime, actorId: "user-test", workspaceId: "workspace-a", groupId: "group-a", type: "test.second", payload: {} },
+      { _id: "event-cursor-a", eventId: "event-cursor-a", version: 1, occurredAt: sameTime, actorId: "user-test", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", type: "test.first", payload: {} },
+      { _id: "event-cursor-b", eventId: "event-cursor-b", version: 1, occurredAt: sameTime, actorId: "user-test", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", type: "test.second", payload: {} },
       { _id: "event-private", eventId: "event-private", version: 1, occurredAt: sameTime, actorId: "user-hidden", workspaceId: "workspace-a", audienceUserIds: ["user-hidden"], type: "direct_message.created", payload: {} },
-      { _id: "event-hidden-group", eventId: "event-hidden-group", version: 1, occurredAt: sameTime, actorId: "user-hidden", workspaceId: "workspace-a", groupId: "group-hidden", type: "message.created", payload: {} },
+      { _id: "event-hidden-group", eventId: "event-hidden-group", version: 1, occurredAt: sameTime, actorId: "user-hidden", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-hidden", type: "message.created", payload: {} },
     ]);
     const afterCursor = await fetch(`${origin}/v1/events?after=event-cursor-a`, { headers });
     const afterEvents = (await afterCursor.json()) as any;
@@ -196,6 +202,38 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
 
     const invalidMention = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Cross-boundary mention", mentionUserIds: ["user-hidden"], clientId: "invalid-mention-0001" }) });
     assert.equal(invalidMention.status, 400);
+    const adminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
+    assert.equal((await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers, body: JSON.stringify({ groupId: "group-a", name: "Launch Plan" }) })).status, 403);
+    const newChannel = await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ groupId: "group-a", name: "Launch Plan" }) });
+    assert.equal(newChannel.status, 201, await newChannel.clone().text());
+    assert.equal(((await newChannel.json()) as any).data.name, "launch-plan");
+    assert.equal((await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ groupId: "group-a", name: "Launch Plan" }) })).status, 409);
+    const membershipBody = { role: "reviewer", ventureIds: ["venture-a"], groupIds: ["group-a"] };
+    assert.equal((await fetch(`${origin}/v1/admin/memberships/membership-peer`, { method: "PUT", headers: adminHeaders, body: JSON.stringify({ ...membershipBody, groupIds: ["group-b"] }) })).status, 400);
+    assert.equal((await fetch(`${origin}/v1/admin/memberships/membership-admin`, { method: "PUT", headers: adminHeaders, body: JSON.stringify(membershipBody) })).status, 403);
+    const updatedMember = await fetch(`${origin}/v1/admin/memberships/membership-peer`, { method: "PUT", headers: adminHeaders, body: JSON.stringify(membershipBody) });
+    assert.equal(updatedMember.status, 200, await updatedMember.clone().text());
+    assert.equal(((await updatedMember.json()) as any).data.role, "reviewer");
+    await database.db.collection("decisions").insertOne({ _id: "decision-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", status: "draft", updatedAt: now });
+    await database.db.collection("classes").insertOne({ _id: "class-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", objective: "Learn", scheduledAt: new Date(Date.now() + 86_400_000), durationMinutes: 30, facilitatorId: "user-test", participantIds: ["user-peer"], status: "scheduled", createdAt: now, updatedAt: now });
+    assert.equal((await fetch(`${origin}/v1/classes/class-a`, { method: "PATCH", headers, body: JSON.stringify({ participantIds: ["user-b"] }) })).status, 400);
+    assert.equal((await fetch(`${origin}/v1/classes`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", title: "Cross venture", objective: "No", scheduledAt: new Date(Date.now() + 86_400_000).toISOString(), durationMinutes: 30, facilitatorId: "user-test", participantIds: ["user-b"], status: "scheduled" }) })).status, 400);
+    await database.db.collection("classes").insertOne({ _id: "class-legacy-leak", workspaceId: "workspace-a", ventureId: "venture-a", title: "Legacy cross-scope", objective: "Never visible", scheduledAt: new Date(Date.now() + 86_400_000), durationMinutes: 30, facilitatorId: "user-test", participantIds: ["user-b"], status: "scheduled", createdAt: now, updatedAt: now });
+    await database.db.collection("classes").insertOne({ _id: "class-global", workspaceId: "workspace-a", title: "Workspace lesson", objective: "Visible to members", scheduledAt: new Date(Date.now() + 86_400_000), durationMinutes: 30, facilitatorId: "user-test", participantIds: ["user-b"], status: "scheduled", createdAt: now, updatedAt: now });
+    const bHeaders = { "content-type": "application/json", "x-dev-user-id": "user-b" };
+    assert.deepEqual(((await (await fetch(`${origin}/v1/dashboard`, { headers: bHeaders })).json()) as any).data.classes.map((item: any) => item.id), ["class-global"]);
+    assert.deepEqual(((await (await fetch(`${origin}/v1/classes`, { headers: bHeaders })).json()) as any).data.map((item: any) => item.id), ["class-global"]);
+    assert.equal((await fetch(`${origin}/v1/classes/class-legacy-leak/applications`, { method: "POST", headers: bHeaders, body: JSON.stringify({ exercise: "Should not submit", reviewerId: "user-test" }) })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/classes/class-global/applications`, { method: "POST", headers: bHeaders, body: JSON.stringify({ exercise: "Completed", reviewerId: "user-test" }) })).status, 201);
+    await database.db.collection("outcomes").insertOne({ _id: "outcome-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", updatedAt: now });
+    await database.db.collection("pipelines").insertOne({ _id: "pipeline-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Initial", updatedAt: now });
+    await database.db.collection("opportunities").insertOne({ _id: "opportunity-a", workspaceId: "workspace-a", ventureId: "venture-a", pipelineId: "pipeline-a", ownerId: "user-peer", stage: "identified", updatedAt: now });
+    for (const [path, body] of [["decisions/decision-a", { status: "approved" }], ["classes/class-a", { status: "completed" }], ["outcomes/outcome-a", { status: "active" }], ["pipelines/pipeline-a", { status: "paused" }], ["opportunities/opportunity-a", { stage: "qualified" }]] as const) {
+      const response = await fetch(`${origin}/v1/${path}`, { method: "PATCH", headers, body: JSON.stringify(body) });
+      assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
+      assert.equal((await response.json() as any).data.status ?? (await database.db.collection("opportunities").findOne({ _id: "opportunity-a" }))?.stage, "status" in body ? body.status : body.stage);
+    }
+    assert.equal((await fetch(`${origin}/v1/decisions/decision-a`, { method: "PATCH", headers: { "content-type": "application/json", "x-dev-user-id": "user-hidden" }, body: JSON.stringify({ status: "approved" }) })).status, 403);
 
     let magicLinkUrl = "";
     const originalInfo = console.info;
@@ -237,6 +275,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(await database.db.collection("audit_events").countDocuments({ actorId: verifiedUser.id, result: "failure" }), 3);
 
     const socket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-test" }, transports: ["websocket"] });
+    activeSocket = socket;
     await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("connect_error", reject); });
     const hiddenJoin = await new Promise<any>((resolve) => socket.emit("channel:join", "channel-hidden", resolve));
     assert.equal(hiddenJoin.ok, false);
@@ -250,12 +289,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     let leakedPresence = false;
     socket.once("presence:update", () => { leakedPresence = true; });
     const peerSocket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-peer" }, transports: ["websocket"] });
+    activePeerSocket = peerSocket;
     await new Promise<void>((resolve, reject) => { peerSocket.once("connect", resolve); peerSocket.once("connect_error", reject); });
     assert.equal((await new Promise<any>((resolve) => peerSocket.emit("channel:join", "channel-a", resolve))).ok, true);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(leakedPresence, false);
     peerSocket.close();
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { groupIds: ["group-a"], updatedAt: new Date() } });
+    assert.equal((await new Promise<any>((resolve) => socket.emit("channel:join", "channel-a", resolve))).ok, true);
     const sent = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
     assert.equal(sent.ok, true);
     const replayedMessage = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
@@ -263,6 +304,54 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(replayedMessage.data.id, sent.data.id);
     assert.equal(await database.db.collection("messages").countDocuments({ clientId: "smoke-message-0001" }), 1);
     assert.equal(await database.db.collection("events").countDocuments({ _id: sent.data.id, type: "message.created" }), 1);
+    const messageId = sent.data.id;
+    const restPush = new Promise<any>((resolve) => socket.once("event", resolve));
+    const restMessage = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "REST live", clientId: "rest-live-0001" }) });
+    assert.equal(restMessage.status, 201);
+    const restBody = (await restMessage.json()) as any;
+    assert.equal((await restPush).eventId, restBody.data.message.id);
+    const reactionPush = new Promise<any>((resolve) => socket.once("event", resolve));
+    const reaction = await fetch(`${origin}/v1/messages/${messageId}/reaction`, { method: "PUT", headers, body: JSON.stringify({ emoji: "👍", active: true }) });
+    assert.equal(reaction.status, 200);
+    assert.equal((await reactionPush).payload.messageId, messageId);
+    const reactionBody = (await reaction.json()) as any;
+    assert.equal(reactionBody.data.reactions["👍"], 1);
+    assert.deepEqual(reactionBody.data.myReactions, ["👍"]);
+    assert.equal((await fetch(`${origin}/v1/messages/${messageId}/reaction`, { method: "PUT", headers, body: JSON.stringify({ emoji: "👍", active: true }) })).status, 200);
+    assert.equal(await database.db.collection("message_reactions").countDocuments({ messageId }), 1);
+    assert.equal(((await (await fetch(`${origin}/v1/messages/${messageId}/reaction`, { method: "PUT", headers, body: JSON.stringify({ emoji: "toString", active: true }) })).json()) as any).data.reactions.toString, 1);
+    const saved = await fetch(`${origin}/v1/messages/${messageId}/save`, { method: "PUT", headers, body: JSON.stringify({ saved: true }) });
+    assert.equal(((await saved.json()) as any).data.savedByMe, true);
+    assert.equal(((await (await fetch(`${origin}/v1/messages/saved`, { headers })).json()) as any).data[0].id, messageId);
+    assert.equal((await fetch(`${origin}/v1/messages/${messageId}/pin`, { method: "PUT", headers: { "content-type": "application/json", "x-dev-user-id": "user-peer" }, body: JSON.stringify({ pinned: true }) })).status, 403);
+    const pinPush = new Promise<any>((resolve) => socket.once("event", resolve));
+    const pinned = await fetch(`${origin}/v1/messages/${messageId}/pin`, { method: "PUT", headers, body: JSON.stringify({ pinned: true }) });
+    assert.equal(((await pinned.json()) as any).data.pinned, true);
+    assert.equal((await pinPush).payload.messageId, messageId);
+    const originalPinTime = (await database.db.collection("messages").findOne({ _id: messageId }))?.pinnedAt;
+    assert.equal((await fetch(`${origin}/v1/messages/${messageId}/pin`, { method: "PUT", headers, body: JSON.stringify({ pinned: true }) })).status, 200);
+    assert.deepEqual((await database.db.collection("messages").findOne({ _id: messageId }))?.pinnedAt, originalPinTime);
+    assert.equal(((await (await fetch(`${origin}/v1/channels/channel-a/messages?pinned=true`, { headers })).json()) as any).data.items[0].id, messageId);
+    assert.equal((await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Bad thread", clientId: "bad-thread-0001", threadRootId: "missing-root" }) })).status, 400);
+    assert.equal((await fetch(`${origin}/v1/messages/${messageId}/save`, { method: "PUT", headers: { "content-type": "application/json", "x-dev-user-id": "user-hidden" }, body: JSON.stringify({ saved: true }) })).status, 404);
+    const dmRequest = { recipientId: "user-peer", body: "Private hello", clientId: "private-hello-0001" };
+    const dmPush = new Promise<any>((resolve) => socket.once("event", resolve));
+    const dmResponse = await fetch(`${origin}/v1/direct-messages`, { method: "POST", headers, body: JSON.stringify(dmRequest) });
+    assert.equal(dmResponse.status, 201, await dmResponse.clone().text());
+    const dmId = ((await dmResponse.json()) as any).data.id;
+    assert.equal((await dmPush).payload.id, dmId);
+    assert.equal((await fetch(`${origin}/v1/direct-messages`, { method: "POST", headers, body: JSON.stringify(dmRequest) })).status, 200);
+    assert.equal((await fetch(`${origin}/v1/messages/${dmId}/pin`, { method: "PUT", headers, body: JSON.stringify({ pinned: true }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/messages/${dmId}/reaction`, { method: "PUT", headers: { "content-type": "application/json", "x-dev-user-id": "user-hidden" }, body: JSON.stringify({ emoji: "👍", active: true }) })).status, 404);
+    const learnerBody = { role: "learner", ventureIds: ["venture-a"], groupIds: ["group-a"] };
+    assert.equal((await fetch(`${origin}/v1/admin/memberships/membership-peer`, { method: "PUT", headers: adminHeaders, body: JSON.stringify(learnerBody) })).status, 200);
+    const peerHeaders = { "content-type": "application/json", "x-dev-user-id": "user-peer" };
+    assert.equal((await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers: peerHeaders, body: JSON.stringify({ body: "Read only", clientId: "learner-denied-0001" }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/messages/${messageId}/reaction`, { method: "PUT", headers: peerHeaders, body: JSON.stringify({ emoji: "👍", active: true }) })).status, 403);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { ventureIds: [], updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/events?after=event-cursor-a`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/channels/channel-a/messages`, { headers })).status, 404);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { ventureIds: ["venture-a"], updatedAt: new Date() } });
     const orderedAt = new Date();
     await database.db.collection("messages").insertMany([
       { _id: "message-order-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-test", body: "Order A", mentionUserIds: [], clientId: "message-order-client-a", createdAt: orderedAt },
@@ -271,11 +360,18 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     ]);
     const firstPage = (await (await fetch(`${origin}/v1/channels/channel-a/messages?limit=2`, { headers })).json()) as any;
     const secondPage = (await (await fetch(`${origin}/v1/channels/channel-a/messages?limit=2&cursor=${firstPage.data.nextCursor}`, { headers })).json()) as any;
-    const orderedIds = [...firstPage.data.items, ...secondPage.data.items].map((item: any) => item.id);
+    const thirdPage = (await (await fetch(`${origin}/v1/channels/channel-a/messages?limit=2&cursor=${secondPage.data.nextCursor}`, { headers })).json()) as any;
+    const orderedIds = [...firstPage.data.items, ...secondPage.data.items, ...thirdPage.data.items].map((item: any) => item.id);
     assert.equal(orderedIds.indexOf("message-order-a") < orderedIds.indexOf("message-order-b"), true);
     assert.equal(orderedIds.indexOf("message-order-b") < orderedIds.indexOf("message-order-c"), true);
+    socket.emit("channel:join", "channel-a");
+    socket.emit("message:create", { channelId: "channel-a", body: { body: "No ack", clientId: "no-ack-0001" } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await fetch(`${origin}/health`)).status, 200);
     socket.close();
   } finally {
+    activeSocket?.close();
+    activePeerSocket?.close();
     await ioServer.close();
     server.close();
     await once(server, "close");

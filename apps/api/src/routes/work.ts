@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createOutcomeSchema, createTaskSchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createOutcomeSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
@@ -176,6 +176,15 @@ export function workRoutes(database: Database): Router {
     const session = await db.collection("focus_sessions").findOne({ workspaceId: actor.membership.workspaceId, userId: actor.id, completedAt: { $exists: false }, cancelledAt: { $exists: false } }, { sort: { startedAt: -1 } });
     res.json({ ok: true, data: jsonValue(session) });
   });
+  router.get("/focus/history", async (req, res) => {
+    const actor = req.actor!; const query = cursorQuerySchema.parse(req.query);
+    const scope = { workspaceId: actor.membership.workspaceId, userId: actor.id };
+    const cursor = query.cursor ? await db.collection("focus_sessions").findOne({ _id: idSchema.parse(query.cursor), ...scope, completedAt: { $exists: true } }) : null;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Focus cursor not found");
+    const after = cursor ? { $or: [{ startedAt: { $lt: cursor.startedAt } }, { startedAt: cursor.startedAt, _id: { $lt: cursor._id } }] } : {};
+    const rows = await db.collection("focus_sessions").find({ ...scope, completedAt: { $exists: true }, ...after }).sort({ startedAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
+  });
 
   router.post("/focus/:id/complete", async (req, res) => {
     const actor = req.actor!; const id = idSchema.parse(req.params.id);
@@ -194,6 +203,21 @@ export function workRoutes(database: Database): Router {
     res.json({ ok: true, data: jsonValue(await db.collection("task_filters").findOne({ _id: id })) });
   });
 
+  router.get("/reminders", async (req, res) => {
+    const actor = req.actor!; const query = cursorQuerySchema.parse(req.query);
+    const scope = { workspaceId: actor.membership.workspaceId, userId: actor.id };
+    const cursor = query.cursor ? await db.collection("reminders").findOne({ _id: idSchema.parse(query.cursor), ...scope }) : null;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Reminder cursor not found");
+    const after = cursor ? { $or: [{ scheduledAt: { $lt: cursor.scheduledAt } }, { scheduledAt: cursor.scheduledAt, _id: { $lt: cursor._id } }] } : {};
+    const rows = await db.collection("reminders").find({ ...scope, ...after }).sort({ scheduledAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
+  });
+  router.get("/reminders/:id", async (req, res) => {
+    const actor = req.actor!;
+    const item = await db.collection("reminders").findOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, userId: actor.id });
+    if (!item) throw new AppError(404, "NOT_FOUND", "Reminder not found");
+    res.json({ ok: true, data: jsonValue(item) });
+  });
   router.post("/reminders/:id/snooze", async (req, res) => {
     const id = idSchema.parse(req.params.id);
     const { minutes } = snoozeSchema.parse(req.body);

@@ -30,7 +30,7 @@ export class Worker {
       const updated = await this.db.collection("reminders").updateOne({ _id: reminder._id, state: "claimed", claimedBy: this.config.WORKER_ID }, { $set: { state: transition.state, completionReason: transition.state === "completed" ? transition.reason : undefined, sequence: transition.nextSequence, ...(transition.nextAt ? { scheduledAt: transition.nextAt } : {}), updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
       if (!updated.matchedCount || !transition.shouldDeliver) return;
       const key = `reminder:${reminder._id}:${reminder.sequence}`;
-      await this.db.collection("notification_outbox").updateOne({ idempotencyKey: key }, { $setOnInsert: { _id: randomUUID(), workspaceId: reminder.workspaceId, userId: reminder.userId, type: "reminder", title: "Reminder", body: reminder.message, resourceType: reminder.taskId ? "task" : "reminder", resourceId: reminder.taskId ?? reminder._id, idempotencyKey: key, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, { upsert: true, session });
+      await this.db.collection("notification_outbox").updateOne({ idempotencyKey: key }, { $setOnInsert: { _id: randomUUID(), workspaceId: reminder.workspaceId, userId: reminder.userId, type: "reminder", title: "Reminder", body: reminder.message, resourceType: reminder.taskId ? "task" : "reminder", resourceId: reminder.taskId ?? reminder._id, reminderId: reminder._id, idempotencyKey: key, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, { upsert: true, session });
     });
   }
   private async processOutbox(item: Record<string, any>, now: Date): Promise<void> {

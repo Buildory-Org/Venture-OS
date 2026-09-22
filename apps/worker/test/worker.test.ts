@@ -39,9 +39,11 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal(reminder?.state, "scheduled");
     assert.equal(reminder?.scheduledAt.toISOString(), "2026-09-23T10:10:00.000Z");
     assert.equal(await collection("notification_outbox").countDocuments({ idempotencyKey: "reminder:reminder-a:0" }), 1);
+    assert.equal((await collection("notification_outbox").findOne({ idempotencyKey: "reminder:reminder-a:0" }))?.reminderId, "reminder-a");
     assert.equal(await worker.tick(now), true);
     assert.equal((await collection("notification_outbox").findOne({ idempotencyKey: "reminder:reminder-a:0" }))?.state, "delivered");
     assert.equal(await collection("notifications").countDocuments({ outboxId: { $exists: true } }), 1);
+    assert.equal((await collection("notifications").findOne({ outboxId: { $exists: true } }))?.reminderId, "reminder-a");
     await collection("notification_outbox").insertOne({ _id: "outbox-fail", workspaceId: "workspace-a", userId: "missing-user", type: "reminder", title: "Fail", body: "Fail", resourceType: "task", resourceId: "task-a", idempotencyKey: "failure-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);
     const failed = await collection("notification_outbox").findOne({ _id: "outbox-fail" });

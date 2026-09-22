@@ -1,10 +1,31 @@
 import { Router } from "express";
 import type { AppDb } from "../db.js";
 import { jsonValue } from "../json.js";
-import { dashboardReadModelSchema } from "@venture-studio/contracts";
+import { dashboardReadModelSchema, idSchema, memberDirectoryQuerySchema } from "@venture-studio/contracts";
+import { AppError } from "../errors.js";
 
 export function hierarchyRoutes(db: AppDb): Router {
   const router = Router();
+  router.get("/members", async (req, res) => {
+    const actor = req.actor!;
+    const query = memberDirectoryQuerySchema.parse(req.query);
+    const workspaceId = actor.membership.workspaceId;
+    let ventureId = query.ventureId;
+    if (query.groupId) {
+      const group = await db.collection("groups").findOne({ _id: query.groupId, workspaceId });
+      if (!group || (actor.membership.role !== "admin" && (!actor.membership.groupIds.includes(query.groupId) || !actor.membership.ventureIds.includes(String(group.ventureId))))) throw new AppError(404, "NOT_FOUND", "Group not found");
+      if (ventureId && ventureId !== group.ventureId) throw new AppError(400, "BAD_REQUEST", "Group does not belong to the selected venture");
+      ventureId = String(group.ventureId);
+    }
+    if (ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(ventureId)) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    if (ventureId && !await db.collection("ventures").findOne({ _id: ventureId, workspaceId })) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    const memberships = await db.collection("memberships").find({ workspaceId, status: "active", ...(ventureId ? { ventureIds: ventureId } : {}), ...(query.groupId ? { groupIds: query.groupId } : {}) }).project({ userId: 1, role: 1 }).toArray();
+    const byUser = new Map(memberships.map((item) => [String(item.userId), item]));
+    const escaped = query.q?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const users = await db.collection("users").find({ workspaceId, status: "active", _id: { $in: [...byUser.keys()], ...(query.cursor ? { $gt: idSchema.parse(query.cursor) } : {}) }, ...(query.handle ? { handle: query.handle.toLowerCase() } : {}), ...(escaped ? { $or: [{ name: { $regex: escaped, $options: "i" } }, { handle: { $regex: escaped, $options: "i" } }] } : {}) }).sort({ _id: 1 }).limit(query.limit + 1).toArray();
+    const items = users.slice(0, query.limit).map((user) => ({ id: user._id, name: user.name, ...(user.handle ? { handle: user.handle } : {}), role: byUser.get(String(user._id))!.role }));
+    res.json({ ok: true, data: { items: jsonValue(items), nextCursor: users.length > query.limit ? String(users[query.limit - 1]?._id) : undefined } });
+  });
   router.get("/session/bootstrap", async (req, res) => {
     const actor = req.actor!;
     const hierarchy = await loadHierarchy(db, actor.membership.workspaceId, actor.membership.role === "admin" ? undefined : actor.membership.ventureIds, actor.membership.role === "admin" ? undefined : actor.membership.groupIds);

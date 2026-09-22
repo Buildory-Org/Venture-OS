@@ -1,11 +1,11 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { AppDb } from "../db.js";
-import { idSchema } from "@venture-studio/contracts";
+import { idSchema, notificationPreferencesSchema } from "@venture-studio/contracts";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 
-const preferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean().default(true), assignments: z.boolean(), reminders: z.boolean() });
+const defaultPreferences = { email: true, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
 const subscriptionSchema = z.object({ endpoint: z.url(), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
 
 export function notificationRoutes(db: AppDb): Router {
@@ -21,8 +21,13 @@ export function notificationRoutes(db: AppDb): Router {
     if (!result.matchedCount) throw new AppError(404, "NOT_FOUND", "Notification not found");
     res.json({ ok: true, data: { read: true } });
   });
+  router.get("/notification-preferences", async (req, res) => {
+    const actor = req.actor!;
+    const stored = await db.collection("notification_preferences").findOne({ workspaceId: actor.membership.workspaceId, userId: actor.id });
+    res.json({ ok: true, data: notificationPreferencesSchema.parse({ ...defaultPreferences, ...stored }) });
+  });
   router.put("/notification-preferences", async (req, res) => {
-    const actor = req.actor!; const preferences = preferencesSchema.parse(req.body);
+    const actor = req.actor!; const preferences = notificationPreferencesSchema.parse(req.body);
     await db.collection("notification_preferences").updateOne({ workspaceId: actor.membership.workspaceId, userId: actor.id }, { $set: { ...preferences, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
     res.json({ ok: true, data: preferences });
   });

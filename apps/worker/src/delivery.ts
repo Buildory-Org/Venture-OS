@@ -19,7 +19,7 @@ export class Delivery {
       return;
     }
     if (!item.delivery?.inAppAt) {
-      await this.db.collection("notifications").updateOne({ outboxId: item._id }, { $setOnInsert: { _id: item._id, outboxId: item._id, workspaceId: item.workspaceId, userId: item.userId, type: item.type, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, createdAt: new Date() } }, { upsert: true });
+      await this.db.collection("notifications").updateOne({ outboxId: item._id }, { $setOnInsert: { _id: item._id, outboxId: item._id, workspaceId: item.workspaceId, userId: item.userId, type: item.type, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}), createdAt: new Date() } }, { upsert: true });
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.inAppAt": new Date() } });
     }
     if (this.mode === "local") { console.info(JSON.stringify({ level: "info", adapter: "local", event: "notification", outboxId: item._id, userId: item.userId, type: item.type })); return; }
@@ -33,7 +33,7 @@ export class Delivery {
       for (const subscription of subscriptions) {
         const endpointKey = createHash("sha256").update(String(subscription.endpoint)).digest("hex");
         if (item.delivery?.push?.[endpointKey]) continue;
-        await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
+        await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
         await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { [`delivery.push.${endpointKey}`]: new Date() } });
       }
     }

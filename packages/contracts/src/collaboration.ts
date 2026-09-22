@@ -45,8 +45,10 @@ export const notificationSchema = z.object({
   body: z.string(),
   resourceType: z.string(),
   resourceId: idSchema,
+  reminderId: idSchema.optional(),
   readAt: isoDateSchema.optional(),
   createdAt: isoDateSchema,
 });
+export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean() });
 
 export type Message = z.infer<typeof messageSchema>;

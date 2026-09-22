@@ -14,7 +14,7 @@ const auth = createAuth(database.native, config);
 const store = createObjectStore(config);
 const { app, resolveActor } = createApp(database, config, auth, store);
 const server = createServer(app);
-attachRealtime(server, database, resolveActor, config.APP_ORIGIN);
+attachRealtime(server, database, resolveActor, config.APP_ORIGIN, config.APP_MODE === "local" && config.ALLOW_DEV_AUTH);
 server.listen(config.PORT, () => console.info(JSON.stringify({ level: "info", event: "api.started", port: config.PORT, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind })));
 async function shutdown() { server.close(); await database.client.close(); }
 process.on("SIGINT", shutdown);

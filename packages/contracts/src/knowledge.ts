@@ -10,6 +10,7 @@ export const documentSchema = z.object({
   evidenceClass: evidenceClassSchema, sensitivity: sensitivitySchema, authoritativeRank: z.number().int().min(0).max(100),
   currentVersionId: idSchema, lastReviewedAt: isoDateSchema.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
+export const documentListQuerySchema = cursorQuerySchema.extend({ ventureId: idSchema.optional(), status: z.enum(["draft", "approved", "stale"]).optional() });
 
 export const documentVersionSchema = z.object({
   id: idSchema, workspaceId: idSchema, documentId: idSchema, version: z.number().int().positive(),
@@ -70,5 +71,6 @@ export const updateClassSchema = classSchema.omit({ id: true, workspaceId: true,
 export const classApplicationSchema = z.object({
   id: idSchema, workspaceId: idSchema, classId: idSchema, userId: idSchema, taskId: idSchema.optional(),
   exercise: z.string().min(1).max(5_000), evidenceItemId: idSchema.optional(), assessment: z.string().max(5_000).optional(),
-  reviewerId: idSchema, nextGap: z.string().max(2_000).optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
+  reviewerId: idSchema, nextGap: z.string().max(2_000).optional(), reviewedBy: idSchema.optional(), reviewedAt: isoDateSchema.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
+export const reviewClassApplicationSchema = z.object({ assessment: z.string().trim().min(1).max(5_000), nextGap: z.string().trim().max(2_000).optional() });

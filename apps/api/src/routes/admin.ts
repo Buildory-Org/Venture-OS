@@ -117,7 +117,9 @@ export function invitationAcceptanceRoutes(database: Database): Router {
       if (activeMembership && activeMembership.workspaceId !== invite.workspaceId) throw new AppError(409, "CONFLICT", "This account already has an active workspace membership");
       const existing = activeMembership?.workspaceId === invite.workspaceId ? activeMembership : null;
       if (existing && (existing.updatedAt as Date).getTime() > (invite.createdAt as Date).getTime()) throw new AppError(409, "CONFLICT", "Membership changed after this invitation was issued");
-      await db.collection("users").updateOne({ _id: identity.id }, { $set: { email: identity.email, name: identity.name, workspaceId: invite.workspaceId, status: "active", updatedAt: now }, $setOnInsert: { createdAt: now } }, { upsert: true, session });
+      const handle = `${slug(identity.name).slice(0, 40) || "member"}-${createHash("sha256").update(identity.id).digest("hex").slice(0, 8)}`;
+      const currentUser = await db.collection("users").findOne({ _id: identity.id }, { session });
+      await db.collection("users").updateOne({ _id: identity.id }, { $set: { email: identity.email, name: identity.name, workspaceId: invite.workspaceId, status: "active", updatedAt: now, ...(!currentUser?.handle ? { handle } : {}) }, $setOnInsert: { createdAt: now } }, { upsert: true, session });
       await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
       const accepted = await db.collection("invitations").updateOne({ _id: invite._id, status: "accepting" }, { $set: { status: "accepted", acceptedAt: now, acceptedBy: identity.id } }, { session });
       if (!accepted.matchedCount) throw new AppError(409, "CONFLICT", "Invitation was already claimed");

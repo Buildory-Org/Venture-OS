@@ -47,6 +47,11 @@ export const membershipSchema = z.object({
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 });
+export const memberDirectoryItemSchema = z.object({ id: idSchema, name: z.string(), handle: z.string().optional(), role: appRoleSchema });
+export const memberDirectoryQuerySchema = z.object({
+  ventureId: idSchema.optional(), groupId: idSchema.optional(), handle: z.string().trim().min(1).max(80).optional(),
+  q: z.string().trim().min(2).max(80).optional(), cursor: idSchema.optional(), limit: z.coerce.number().int().min(1).max(100).default(25),
+});
 
 export const hierarchySchema = z.object({
   workspace: workspaceSchema,

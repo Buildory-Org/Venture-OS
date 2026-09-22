@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Filter } from "mongodb";
 import type { AppDb, AppDocument } from "../db.js";
-import { classSchema, createDocumentSchema, decisionSchema, idSchema, informationRequestSchema, knowledgeSearchSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
+import { classSchema, createDocumentSchema, cursorQuerySchema, decisionSchema, documentListQuerySchema, idSchema, informationRequestSchema, knowledgeSearchSchema, reviewClassApplicationSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
 import { z } from "zod";
 import type { Database } from "../db.js";
@@ -37,6 +37,16 @@ export function knowledgeRoutes(database: Database): Router {
     res.status(201).json({ ok: true, data: jsonValue({ ...document, currentVersion: version }) });
   });
 
+  router.get("/documents", async (req, res) => {
+    const actor = req.actor!; const query = documentListQuerySchema.parse(req.query);
+    const filter = authorizedDocumentFilter(actor, query.ventureId);
+    if (query.status) filter.status = query.status;
+    const cursor = query.cursor ? await db.collection("documents").findOne({ _id: idSchema.parse(query.cursor), ...filter }) : null;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Document cursor not found");
+    const after = cursor ? { $or: [{ updatedAt: { $lt: cursor.updatedAt } }, { updatedAt: cursor.updatedAt, _id: { $lt: cursor._id } }] } : {};
+    const rows = await db.collection("documents").find({ $and: [filter, after] }).sort({ updatedAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
+  });
   router.get("/documents/:id", async (req, res) => {
     const actor = req.actor!;
     const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
@@ -127,7 +137,16 @@ export function knowledgeRoutes(database: Database): Router {
     await assertClassPeople(db, req.actor!.membership.workspaceId, input.ventureId, input.facilitatorId, input.participantIds);
     await createSimple(db, req, res, "classes", classSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }), "class.create");
   });
-  router.get("/classes", async (req, res) => listScoped(db, req, res, "classes", { $or: [{ participantIds: req.actor!.id }, { facilitatorId: req.actor!.id }, ...(req.actor!.membership.role === "admin" ? [{}] : [])] }));
+  router.get("/classes", async (req, res) => {
+    const actor = req.actor!;
+    const assigned = await db.collection("class_applications").find({ workspaceId: actor.membership.workspaceId, reviewerId: actor.id }).project({ classId: 1 }).toArray();
+    await listScoped(db, req, res, "classes", { $or: [{ participantIds: actor.id }, { facilitatorId: actor.id }, { _id: { $in: assigned.map((item) => item.classId) } }, ...(actor.membership.role === "admin" ? [{}] : actor.membership.role === "venture_head" ? [{ ventureId: { $in: actor.membership.ventureIds } }] : [])] });
+  });
+  router.get("/classes/:id", async (req, res) => {
+    const actor = req.actor!; const item = await accessibleClass(db, actor, idSchema.parse(req.params.id));
+    if (!canReadAllApplications(actor, item) && !item.participantIds.includes(actor.id) && !(await db.collection("class_applications").findOne({ workspaceId: actor.membership.workspaceId, classId: item._id, reviewerId: actor.id }))) throw new AppError(404, "NOT_FOUND", "Class not found");
+    res.json({ ok: true, data: jsonValue(item) });
+  });
   router.patch("/classes/:id", async (req, res) => {
     const actor = req.actor!; const id = idSchema.parse(req.params.id);
     const item = await db.collection("classes").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
@@ -155,9 +174,47 @@ export function knowledgeRoutes(database: Database): Router {
     const item = await db.collection("classes").findOne({ _id: classId, workspaceId: actor.membership.workspaceId, participantIds: actor.id, ...(actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: actor.membership.ventureIds } }] }) });
     if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
     const input = z.object({ taskId: idSchema.optional(), exercise: z.string().trim().min(1).max(5_000), evidenceItemId: idSchema.optional(), reviewerId: idSchema }).parse(req.body);
+    if (input.reviewerId === actor.id) throw new AppError(400, "BAD_REQUEST", "An applicant cannot review their own application");
+    if (!(await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: input.reviewerId, status: "active", ...(item.ventureId ? { ventureIds: item.ventureId } : {}) }))) throw new AppError(400, "BAD_REQUEST", "Reviewer must be an active member of the class venture");
+    if (input.evidenceItemId && !input.taskId) throw new AppError(400, "BAD_REQUEST", "Evidence requires a task");
+    if (input.taskId) {
+      const task = await db.collection("tasks").findOne({ _id: input.taskId, workspaceId: actor.membership.workspaceId, ...(item.ventureId ? { ventureId: item.ventureId } : {}), ...(actor.membership.role === "admin" ? {} : { groupId: { $in: actor.membership.groupIds } }) });
+      if (!task) throw new AppError(400, "BAD_REQUEST", "Task is not accessible in this class scope");
+      if (input.evidenceItemId && !(await db.collection("evidence_items").findOne({ _id: input.evidenceItemId, workspaceId: actor.membership.workspaceId, taskId: task._id }))) throw new AppError(400, "BAD_REQUEST", "Evidence is not attached to the task");
+    }
     const application = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, classId, userId: actor.id, ...input, createdAt: new Date(), updatedAt: new Date() };
     await db.collection("class_applications").insertOne(application);
     res.status(201).json({ ok: true, data: jsonValue(application) });
+  });
+  router.get("/classes/:id/applications", async (req, res) => {
+    const actor = req.actor!; const classId = idSchema.parse(req.params.id); const query = cursorQuerySchema.parse(req.query);
+    const item = await accessibleClass(db, actor, classId);
+    const own = canReadAllApplications(actor, item) ? {} : { $or: [{ userId: actor.id }, { reviewerId: actor.id }] };
+    if (!canReadAllApplications(actor, item) && !item.participantIds.includes(actor.id) && !(await db.collection("class_applications").findOne({ workspaceId: actor.membership.workspaceId, classId, reviewerId: actor.id }))) throw new AppError(404, "NOT_FOUND", "Class not found");
+    const filter = { workspaceId: actor.membership.workspaceId, classId, ...own };
+    const cursor = query.cursor ? await db.collection("class_applications").findOne({ _id: idSchema.parse(query.cursor), ...filter }) : null;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Application cursor not found");
+    const rows = await db.collection("class_applications").find({ $and: [filter, cursor ? { $or: [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor._id } }] } : {}] }).sort({ createdAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
+  });
+  router.get("/classes/:id/applications/:applicationId", async (req, res) => {
+    const actor = req.actor!; const classId = idSchema.parse(req.params.id); const item = await accessibleClass(db, actor, classId);
+    const application = await db.collection("class_applications").findOne({ _id: idSchema.parse(req.params.applicationId), workspaceId: actor.membership.workspaceId, classId });
+    if (!application || (!canReadAllApplications(actor, item) && application.userId !== actor.id && application.reviewerId !== actor.id)) throw new AppError(404, "NOT_FOUND", "Application not found");
+    res.json({ ok: true, data: jsonValue(application) });
+  });
+  router.patch("/classes/:id/applications/:applicationId/review", async (req, res) => {
+    const actor = req.actor!; const classId = idSchema.parse(req.params.id); const item = await accessibleClass(db, actor, classId);
+    const applicationId = idSchema.parse(req.params.applicationId);
+    const application = await db.collection("class_applications").findOne({ _id: applicationId, workspaceId: actor.membership.workspaceId, classId });
+    if (!application) throw new AppError(404, "NOT_FOUND", "Application not found");
+    if (!canReadAllApplications(actor, item) && application.reviewerId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the reviewer or class lead may review this application");
+    const input = reviewClassApplicationSchema.parse(req.body); const now = new Date();
+    await atomic(database, async (session) => {
+      await db.collection("class_applications").updateOne({ _id: applicationId, workspaceId: actor.membership.workspaceId, classId }, { $set: { ...input, reviewedBy: actor.id, reviewedAt: now, updatedAt: now } }, { session });
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "class_application.review", objectType: "class_application", objectId: applicationId, ventureId: item.ventureId ? String(item.ventureId) : undefined, result: "success" }, session);
+    });
+    res.json({ ok: true, data: jsonValue(await db.collection("class_applications").findOne({ _id: applicationId })) });
   });
   return router;
 }
@@ -166,6 +223,14 @@ function isLead(actor: Actor): boolean { return actor.membership.role === "admin
 function assertLeadScope(actor: Actor, ventureId: unknown): void {
   if (actor.membership.role === "admin") return;
   if (actor.membership.role !== "venture_head" || typeof ventureId !== "string" || !actor.membership.ventureIds.includes(ventureId)) throw new AppError(403, "FORBIDDEN", "Venture lead access required");
+}
+async function accessibleClass(db: AppDb, actor: Actor, classId: string) {
+  const item = await db.collection("classes").findOne({ _id: classId, workspaceId: actor.membership.workspaceId, ...(actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: actor.membership.ventureIds } }] }) });
+  if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
+  return item;
+}
+function canReadAllApplications(actor: Actor, item: AppDocument): boolean {
+  return actor.membership.role === "admin" || item.facilitatorId === actor.id || (actor.membership.role === "venture_head" && typeof item.ventureId === "string" && actor.membership.ventureIds.includes(item.ventureId));
 }
 async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unknown, facilitatorId: string, participantIds: string[]): Promise<void> {
   const people = [...new Set([facilitatorId, ...participantIds])];

@@ -225,18 +225,21 @@ export function collaborationRoutes(database: Database): Router {
   return router;
 }
 
-export function attachRealtime(server: HttpServer, database: Database, resolveActor: ReturnType<typeof createActorResolver>, appOrigin: string): Server {
-  const io = new Server(server, { cors: { origin: appOrigin, credentials: true } });
+export function attachRealtime(server: HttpServer, database: Database, resolveActor: ReturnType<typeof createActorResolver>, appOrigin: string, allowDevAuth = false): Server {
+  const trustedOrigin = new URL(appOrigin).origin;
+  const io = new Server(server, { cors: { origin: trustedOrigin, credentials: true }, allowRequest: (request, callback) => callback(null, !request.headers.origin || request.headers.origin === trustedOrigin) });
   publishers.set(database, async (value) => {
     if (typeof value.channelId === "string") await emitAuthorizedToChannel(io, database.db, resolveActor, value.channelId, jsonValue(value));
     else if (Array.isArray(value.audienceUserIds)) await emitAuthorizedToUsers(io, resolveActor, value, jsonValue(value));
   });
   io.use(async (socket, next) => {
     try {
-      const actor = await resolveActor(socket.request.headers);
+      const headers = { ...socket.request.headers };
+      if (allowDevAuth && typeof socket.handshake.auth?.devUserId === "string") headers["x-dev-user-id"] = idSchema.parse(socket.handshake.auth.devUserId);
+      const actor = await resolveActor(headers);
       if (!actor) return next(new Error("UNAUTHENTICATED"));
       socket.data.actor = actor;
-      socket.data.authHeaders = socket.request.headers;
+      socket.data.authHeaders = headers;
       next();
     } catch { next(new Error("UNAUTHENTICATED")); }
   });
@@ -244,17 +247,16 @@ export function attachRealtime(server: HttpServer, database: Database, resolveAc
     const actor = socket.data.actor as Actor;
     socket.join(`user:${actor.membership.workspaceId}:${actor.id}`);
     socket.on("channel:join", async (channelId: string, reply: (value: unknown) => void) => {
-      try { const fresh = await resolveActor(socket.request.headers); if (!fresh) throw new Error("UNAUTHENTICATED"); await channelScope(database.db, fresh, idSchema.parse(channelId)); const room = `channel:${channelId}`; await socket.join(room); await emitAuthorizedPresence(io, database.db, resolveActor, channelId, fresh.id, "online"); if (typeof reply === "function") reply({ ok: true }); }
+      try { const fresh = await resolveActor(socket.data.authHeaders); if (!fresh) throw new Error("UNAUTHENTICATED"); await channelScope(database.db, fresh, idSchema.parse(channelId)); const room = `channel:${channelId}`; await socket.join(room); await emitAuthorizedPresence(io, database.db, resolveActor, channelId, fresh.id, "online"); if (typeof reply === "function") reply({ ok: true }); }
       catch { if (typeof reply === "function") reply({ ok: false, error: { code: "FORBIDDEN", message: "Channel access denied" } }); }
     });
     socket.on("message:create", async (input: { channelId: string; body: unknown }, reply: (value: unknown) => void) => {
       try {
-        const fresh = await resolveActor(socket.request.headers);
+        const fresh = await resolveActor(socket.data.authHeaders);
         if (!fresh) throw new AppError(401, "UNAUTHENTICATED", "Authentication required");
         const result = await createChannelMessage(database, fresh, idSchema.parse(input.channelId), input.body, "socket");
         if (!result.replayed) {
           await publish(database, result.event);
-          for (const userId of result.message.mentionUserIds) io.to(`user:${fresh.membership.workspaceId}:${userId}`).emit("notification:pending", { type: "mention", messageId: result.message._id });
         }
         if (typeof reply === "function") reply({ ok: true, data: jsonValue(result.message) });
       } catch (error) { if (typeof reply === "function") reply({ ok: false, error: { code: error instanceof AppError ? error.code : "BAD_REQUEST", message: error instanceof Error ? error.message : "Invalid message" } }); }

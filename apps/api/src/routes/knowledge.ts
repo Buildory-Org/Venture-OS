@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import type { Filter } from "mongodb";
+import type { Document, Filter } from "mongodb";
 import type { AppDb, AppDocument } from "../db.js";
 import { classSchema, createDocumentSchema, cursorQuerySchema, decisionSchema, documentListQuerySchema, idSchema, informationRequestSchema, knowledgeSearchSchema, reviewClassApplicationSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
@@ -27,14 +27,14 @@ export function knowledgeRoutes(database: Database): Router {
     const documentId = randomUUID();
     const versionId = randomUUID();
     const document = { _id: documentId, workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), title: input.title, slug: slug(input.title), ownerId: actor.id, status: "draft", evidenceClass: input.evidenceClass, sensitivity: input.sensitivity, authoritativeRank: input.authoritativeRank, currentVersionId: versionId, createdAt: now, updatedAt: now };
-    const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId, version: 1, markdown: input.markdown, changeSummary: input.changeSummary, createdBy: actor.id, createdAt: now, sourceUri: input.sourceUri };
+    const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId, version: 1, markdown: input.markdown, changeSummary: input.changeSummary, createdBy: actor.id, createdAt: now, ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}) };
     await atomic(database, async (session) => {
       await db.collection("documents").insertOne(document, { session });
       await db.collection("document_versions").insertOne(version, { session });
       await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), documentId, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.create", objectType: "document", objectId: documentId, ventureId: input.ventureId, result: "success" }, session);
     });
-    res.status(201).json({ ok: true, data: jsonValue({ ...document, currentVersion: version }) });
+    res.status(201).json({ ok: true, data: documentJson({ ...document, currentVersion: documentVersionJson(version) }) });
   });
 
   router.get("/documents", async (req, res) => {
@@ -55,7 +55,7 @@ export function knowledgeRoutes(database: Database): Router {
       db.collection("document_versions").find({ documentId: document._id }).sort({ version: -1 }).project({ markdown: 0 }).toArray(),
     ]);
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.read", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" });
-    res.json({ ok: true, data: documentJson({ ...document, currentVersion: version, versions }) });
+    res.json({ ok: true, data: documentJson({ ...document, currentVersion: documentVersionJson(version), versions: versions.map(documentVersionJson) }) });
   });
 
   router.put("/documents/:id", async (req, res) => {
@@ -67,14 +67,14 @@ export function knowledgeRoutes(database: Database): Router {
     const last = await db.collection("document_versions").find({ documentId: document._id }).sort({ version: -1 }).limit(1).next();
     const now = new Date();
     const versionId = randomUUID();
-    const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: input.changeSummary, sourceUri: input.sourceUri, createdBy: actor.id, createdAt: now };
+    const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: input.changeSummary, ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), createdBy: actor.id, createdAt: now };
     await atomic(database, async (session) => {
       await db.collection("document_versions").insertOne(version, { session });
       await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(document.ventureId ? { ventureId: document.ventureId } : {}), documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
       await db.collection("documents").updateOne({ _id: document._id }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now } }, { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.version.create", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" }, session);
     });
-    res.json({ ok: true, data: jsonValue(version) });
+    res.json({ ok: true, data: documentVersionJson(version) });
   });
 
   router.patch("/documents/:id/metadata", async (req, res) => {
@@ -247,6 +247,10 @@ function authorizedDocumentFilter(actor: Actor, ventureId?: string): Filter<AppD
 
 function documentJson(document: AppDocument | null): unknown {
   return document ? jsonValue({ ...document, ventureId: document.ventureId ?? undefined }) : null;
+}
+
+function documentVersionJson(version: Document | null): unknown {
+  return version ? jsonValue({ ...version, sourceUri: version.sourceUri ?? undefined }) : null;
 }
 
 async function accessibleDocument(db: AppDb, actor: Actor, id: string) {

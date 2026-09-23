@@ -30,6 +30,7 @@ Cursor-paginated lists return `{ ok: true, data: { items, nextCursor? } }`; othe
 ## Knowledge, operating records, and search
 
 - Versioned Markdown: `POST /v1/documents`, `GET /v1/documents` (authorized paged metadata, optional `ventureId`/`status`), `GET|PUT /v1/documents/:id`, and metadata approval at `PATCH /v1/documents/:id/metadata`.
+- Version `sourceUri` is omitted when absent; legacy stored `null` values are omitted from document detail responses. Supplied URLs are preserved.
 - Document scope: missing or legacy `null` `ventureId` means workspace-wide; API responses omit the field for either form. Admins see every venture in their workspace without a venture filter; an explicit venture filter includes that venture plus workspace-wide documents. Non-admins see workspace-wide documents plus only their assigned ventures, subject to sensitivity. Only admins may create, edit, or approve workspace-wide documents.
 - Authorized cited retrieval: `GET /v1/knowledge/search`; bounded export: `GET /v1/context-packets/tasks/:id`.
 - Cross-resource authorized search: `GET /v1/search` for tasks, messages, and ready file metadata.

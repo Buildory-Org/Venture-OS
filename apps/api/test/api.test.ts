@@ -13,7 +13,7 @@ import { LocalObjectStore } from "../src/storage.js";
 import { attachRealtime } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
-import { dashboardResponseSchema, documentSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
+import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
   assert.throws(() => loadConfig({ APP_MODE: "production", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
@@ -114,17 +114,28 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const createKnowledge = async (body: Record<string, unknown>) => {
       const response = await fetch(`${origin}/v1/documents`, { method: "POST", headers: scopeAdminHeaders, body: JSON.stringify({ markdown: "# Scope\n\nScopeparity token.", evidenceClass: "verified_fact", sensitivity: "team", ...body }) });
       assert.equal(response.status, 201, await response.clone().text());
-      return ((await response.json()) as any).data.id as string;
+      const data = ((await response.json()) as any).data;
+      assert.equal(Object.hasOwn(data.currentVersion, "sourceUri"), body.sourceUri !== undefined);
+      assert.equal(documentVersionSchema.parse(data.currentVersion).sourceUri, body.sourceUri);
+      return data.id as string;
     };
     const ventureBDoc = await createKnowledge({ ventureId: "venture-b", title: "Venture B scope" });
     const workspaceDoc = await createKnowledge({ title: "Workspace scope" });
-    const managerDoc = await createKnowledge({ ventureId: "venture-a", title: "Manager scope", sensitivity: "manager" });
+    const managerDoc = await createKnowledge({ ventureId: "venture-a", title: "Manager scope", sensitivity: "manager", sourceUri: "https://example.com/manager-source" });
     const privateDoc = await createKnowledge({ ventureId: "venture-a", title: "Founder scope", sensitivity: "founder_private" });
     const savedWorkspaceDoc = await database.db.collection("documents").findOne({ _id: workspaceDoc });
     assert.equal(Object.hasOwn(savedWorkspaceDoc!, "ventureId"), false);
     assert.equal(await database.db.collection("document_chunks").countDocuments({ documentId: workspaceDoc, ventureId: { $exists: false } }), await database.db.collection("document_chunks").countDocuments({ documentId: workspaceDoc }));
+    assert.equal(await database.db.collection("document_versions").countDocuments({ documentId: workspaceDoc, sourceUri: { $exists: false } }), 1);
+    const revisedWorkspace = await fetch(`${origin}/v1/documents/${workspaceDoc}`, { method: "PUT", headers: scopeAdminHeaders, body: JSON.stringify({ markdown: "# Scope\n\nScopeparity token.", changeSummary: "Revised without URL" }) });
+    assert.equal(revisedWorkspace.status, 200, await revisedWorkspace.clone().text());
+    const revisedData = ((await revisedWorkspace.json()) as any).data;
+    assert.equal(Object.hasOwn(revisedData, "sourceUri"), false);
+    const revisedVersion = documentVersionSchema.parse(revisedData);
+    assert.equal(revisedVersion.sourceUri, undefined);
+    assert.equal(await database.db.collection("document_versions").countDocuments({ _id: revisedVersion.id, sourceUri: { $exists: false } }), 1);
     await database.db.collection("documents").insertOne({ _id: "document-legacy-null", workspaceId: "workspace-a", ventureId: null, title: "Legacy workspace scope", slug: "legacy-workspace-scope", ownerId: "user-admin", status: "draft", evidenceClass: "verified_fact", sensitivity: "team", authoritativeRank: 50, currentVersionId: "version-legacy-null", createdAt: now, updatedAt: now });
-    await database.db.collection("document_versions").insertOne({ _id: "version-legacy-null", workspaceId: "workspace-a", documentId: "document-legacy-null", version: 1, markdown: "# Scope\n\nScopeparity token.", changeSummary: "Legacy", createdBy: "user-admin", createdAt: now });
+    await database.db.collection("document_versions").insertOne({ _id: "version-legacy-null", workspaceId: "workspace-a", documentId: "document-legacy-null", version: 1, markdown: "# Scope\n\nScopeparity token.", changeSummary: "Legacy", createdBy: "user-admin", createdAt: now, sourceUri: null });
     await database.db.collection("document_chunks").insertOne({ _id: "chunk-legacy-null", workspaceId: "workspace-a", ventureId: null, documentId: "document-legacy-null", documentVersionId: "version-legacy-null", headingPath: "Scope", ordinal: 0, plainText: "Scopeparity token.", createdAt: now });
     const adminDocs = (await (await fetch(`${origin}/v1/documents`, { headers: scopeAdminHeaders })).json()) as any;
     for (const id of [ventureBDoc, workspaceDoc, "document-legacy-null", managerDoc, privateDoc]) assert.equal(adminDocs.data.items.some((item: any) => item.id === id), true, id);
@@ -135,7 +146,12 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     for (const id of [ventureBDoc, workspaceDoc, "document-legacy-null", managerDoc, privateDoc]) {
       const detail = await fetch(`${origin}/v1/documents/${id}`, { headers: scopeAdminHeaders });
       assert.equal(detail.status, 200, id);
-      documentSchema.parse(((await detail.json()) as any).data);
+      const detailData = ((await detail.json()) as any).data;
+      documentSchema.parse(detailData);
+      documentVersionSchema.parse(detailData.currentVersion);
+      documentVersionSchema.omit({ markdown: true }).array().parse(detailData.versions);
+      if (id === "document-legacy-null") assert.equal(Object.hasOwn(detailData.currentVersion, "sourceUri"), false);
+      if (id === managerDoc) assert.equal(detailData.currentVersion.sourceUri, "https://example.com/manager-source");
       const approval = await fetch(`${origin}/v1/documents/${id}/metadata`, { method: "PATCH", headers: scopeAdminHeaders, body: JSON.stringify({ status: "approved" }) });
       assert.equal(approval.status, 200, `${id}: ${await approval.clone().text()}`);
       documentSchema.parse(((await approval.json()) as any).data);

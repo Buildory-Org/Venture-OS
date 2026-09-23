@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, Database, RefreshCw } from "lucide-react";
 import { getLiveNotificationPreferences, listLiveNotifications, listLiveReminders, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
+import { notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
 import { Badge, Empty, PageFrame, PageTitle, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
@@ -32,9 +33,18 @@ export function LiveNotificationsScreen() {
     return () => { active = false; };
   }, [revision]);
 
+  useEffect(() => {
+    const onSnapshot = (event: Event) => {
+      const snapshot = (event as CustomEvent<Notification[]>).detail;
+      if (Array.isArray(snapshot)) setItems(snapshot);
+    };
+    window.addEventListener(notificationSnapshotEvent, onSnapshot);
+    return () => window.removeEventListener(notificationSnapshotEvent, onSnapshot);
+  }, []);
+
   async function act(id: string, action: () => Promise<unknown>) {
     setBusyId(id); setError(""); setResult("");
-    try { await action(); setRevision((value) => value + 1); }
+    try { await action(); setRevision((value) => value + 1); window.dispatchEvent(new Event(notificationRefreshEvent)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update the record."); }
     finally { setBusyId(null); }
   }

@@ -125,6 +125,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Durable reminder worker with outbox, retries, idempotency, and escalation rules
 - [x] Focus sessions and timer recovery across refresh/reconnect
 - [ ] Complete Web Push browser subscription and credentialed delivery checks; worker adapters and server-side preferences exist, but closed-tab push is not yet verified
+- [x] Show a connected in-app unread bell and new-notification banner with visible-tab polling, no first-load or duplicate toast, inbox refresh, and reminder snooze/open actions; verify desktop/390px/320px behavior in an isolated browser fixture
+- [ ] Add browser permission/subscription UX for push outside an open tab; in-app polling does not deliver closed-tab alerts
 - [x] Independent reviewer-agent approval for realtime and scheduling paths
 - [x] End-to-end smoke tests for assignment, reminders, snooze, and completion
 

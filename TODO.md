@@ -128,7 +128,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [ ] Complete Web Push browser subscription and credentialed delivery checks; worker adapters and server-side preferences exist, but closed-tab push is not yet verified
 - [x] Show a connected in-app unread bell and new-notification banner with visible-tab polling, no first-load or duplicate toast, inbox refresh, and reminder snooze/open actions; verify desktop/390px/320px behavior in an isolated browser fixture
 - [ ] Add browser permission/subscription UX for push outside an open tab; in-app polling does not deliver closed-tab alerts
-  - [x] Add user-initiated browser controls and a task/reminder notification-click route; verify the unavailable state, reminder deep link, worker routing tests, and web lint/build. Live VAPID subscribe/unsubscribe remains unverified.
+  - [x] Add user-initiated browser controls and safe notification-click routing to the authenticated inbox; verify the unavailable state, worker routing tests, and web lint/build. Push text is generic to protect shared-browser account switches. Live VAPID subscribe/unsubscribe remains unverified.
 - [x] Independent reviewer-agent approval for realtime and scheduling paths
 - [x] End-to-end smoke tests for assignment, reminders, snooze, and completion
 

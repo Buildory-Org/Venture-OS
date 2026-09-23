@@ -22,26 +22,27 @@ function worker() {
   return { handlers, notices, opened };
 }
 
-test("push payload opens its task or reminder, with a safe inbox fallback", async () => {
+test("push never displays private payload text or routes across accounts", async () => {
   const { handlers, notices, opened } = worker();
   const push = handlers.get("push");
   const click = handlers.get("notificationclick");
-  for (const [payload, expected] of [
-    [{ title: "Task", resourceType: "task", resourceId: "task_123" }, "/tasks/live?task=task_123"],
-    [{ title: "Reminder", resourceType: "task", resourceId: "task_123", reminderId: "reminder_456" }, "/tasks/live?task=task_123"],
-    [{ title: "Reminder", resourceType: "reminder", resourceId: "reminder_456" }, "/notifications/live?reminder=reminder_456"],
-    [{ title: "Unsafe", resourceType: "task", resourceId: "https://elsewhere.test" }, "/notifications/live"],
+  for (const payload of [
+    { title: "Private task", body: "Confidential details", resourceType: "task", resourceId: "task_123" },
+    { title: "Private reminder", body: "Confidential details", resourceType: "reminder", resourceId: "reminder_456" },
+    { title: "Unsafe", resourceType: "task", resourceId: "https://elsewhere.test" },
   ]) {
     let done;
     push({ data: { json: () => payload }, waitUntil: (promise) => { done = promise; } });
     await done;
     const notice = notices.at(-1);
-    assert.equal(notice.data.url, expected);
+    assert.equal(notice.title, "Venture Studio update");
+    assert.equal(notice.body, "Open your inbox to view the latest update.");
+    assert.equal(notice.data.url, "/notifications/live");
     let closed = false;
     click({ notification: { data: notice.data, close: () => { closed = true; } }, waitUntil: (promise) => { done = promise; } });
     await done;
     assert.equal(closed, true);
-    assert.equal(opened.at(-1), `https://studio.example${expected}`);
+    assert.equal(opened.at(-1), "https://studio.example/notifications/live");
   }
 });
 
@@ -50,6 +51,6 @@ test("malformed push data still shows an inbox notice", async () => {
   let done;
   handlers.get("push")({ data: { json: () => { throw new Error("bad json"); } }, waitUntil: (promise) => { done = promise; } });
   await done;
-  assert.equal(notices[0].title, "Venture Studio notification");
+  assert.equal(notices[0].title, "Venture Studio update");
   assert.equal(notices[0].data.url, "/notifications/live");
 });

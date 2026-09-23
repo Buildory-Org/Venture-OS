@@ -43,7 +43,8 @@ export class Delivery {
         const endpointKey = createHash("sha256").update(String(subscription.endpoint)).digest("hex");
         if (item.delivery?.push?.[endpointKey]) continue;
         try {
-          await webpush.sendNotification({ endpoint: current.endpoint, expirationTime: current.expirationTime, keys: current.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
+          // Push can race a shared-browser account switch. Keep private details in the authenticated inbox.
+          await webpush.sendNotification({ endpoint: current.endpoint, expirationTime: current.expirationTime, keys: current.keys }, JSON.stringify({ notificationId: item._id }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
         } catch (error) {
           if (![404, 410].includes(Number((error as { statusCode?: number }).statusCode))) throw error;
           await this.db.collection("push_subscriptions").updateOne({ _id: subscription._id, workspaceId: item.workspaceId, userId: item.userId, endpoint: current.endpoint, keys: current.keys, active: true }, { $set: { active: false, expiredAt: new Date() } });

@@ -4,6 +4,8 @@ import {
   createChannelMessageSchema,
   createDirectMessageSchema,
   createChannelSchema,
+  groupSchema,
+  ventureSchema,
   commandExecuteSchema,
   commandPreviewRequestSchema,
   commandPreviewSchema,
@@ -434,4 +436,12 @@ export async function updateLiveMembership(id: string, input: unknown) {
 export async function createLiveChannel(input: unknown) {
   const valid = createChannelSchema.parse(input);
   return successEnvelope(channelSchema).parse(await request("/v1/admin/channels", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+export async function createLiveVenture(input: { name: string; ownerId: string; goal30Day: string }) {
+  return successEnvelope(ventureSchema).parse(await request("/v1/admin/ventures", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+export async function createLiveGroup(input: { ventureId: string; name: string }) {
+  return successEnvelope(groupSchema.extend({ channels: channelSchema.array() })).parse(await request("/v1/admin/groups", { method: "POST", body: JSON.stringify(input) })).data;
 }

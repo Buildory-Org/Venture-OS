@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const apiOrigin = process.env.VSO_API_ORIGIN ?? "http://localhost:4000";
 
 const nextConfig: NextConfig = {
+  images: { remotePatterns: [{ protocol: "https", hostname: "api.dicebear.com", pathname: "/10.x/adventurer/svg" }] },
   async redirects() {
     const connected = ["dashboard", "tasks", "board", "channels", "messages", "knowledge", "sales", "notifications", "focus", "planning", "admin"];
     const planning = ["classes", "decisions", "timeline", "requests"];

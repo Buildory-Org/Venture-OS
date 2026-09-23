@@ -49,6 +49,12 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Venture/group/channel navigation and channel chat
 - [x] `@mentions`, threads, reactions, pins, saved items, and search
 - [x] Direct messages and notification center
+- [x] Move connected DMs and channels to independent full-viewport, three-pane messenger routes
+- [x] Add visible admin controls for venture, group, and channel creation in connected Channels
+- [x] Show deterministic DiceBear Adventurer avatars for connected workspace users
+- [x] Smoke-check desktop and 390px chat layouts, admin create dialog, API-backed data, lint, and production build
+- [ ] Decide whether non-admin members or venture heads may create ventures, groups, or channels; update server permissions and reviewer tests only after policy approval
+- [ ] Replace the flattened connected Channels list with venture selection and a selected-group-only Discord-style rail/channel view; automatically collapse group labels when a group opens, then verify navigation and messaging end to end
 
 ### 2.2 Work management
 

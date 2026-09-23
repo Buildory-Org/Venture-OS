@@ -121,6 +121,28 @@ button {
   cursor: pointer;
 }
 
+@layer components {
+.chat-icon {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  place-items: center;
+  border-radius: 9px;
+  color: #8e8f9a;
+  transition: background-color 150ms, color 150ms;
+}
+.chat-icon:hover, .chat-icon-active {
+  background: #fff1e6;
+  color: #ed7d23;
+}
+.chat-icon:focus-visible {
+  outline: 2px solid #f58229;
+  outline-offset: 2px;
+}
+.chat-details { overflow-y: auto; }
+}
+
 /* Tabular numerals on every figure */
 .tnum {
   font-variant-numeric: tabular-nums;

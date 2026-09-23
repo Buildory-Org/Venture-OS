@@ -157,7 +157,7 @@ export async function getLiveTask(id: string) {
   };
 }
 
-type UploadScope = { ventureId: string; groupId?: string; taskId?: string };
+type UploadScope = { ventureId: string; groupId?: string; taskId?: string } | { recipientId: string };
 const fileTypes = new Map<string, string>([
   ["pdf", "application/pdf"], ["md", "text/markdown"], ["txt", "text/plain"],
   ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
@@ -196,12 +196,13 @@ export async function uploadLiveFile(file: File, scope: UploadScope) {
   return successEnvelope(fileSchema).parse(await request(`/v1/uploads/${encodeURIComponent(pending.id)}/complete`, { method: "POST", body: JSON.stringify(complete) })).data;
 }
 
-export async function prepareLiveFileDownload(id: string) {
+export async function prepareLiveFileDownload(id: string, contentType?: string) {
   const body = await request(`/v1/files/${encodeURIComponent(id)}/download`);
   if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("downloadUrl" in body.data) || typeof body.data.downloadUrl !== "string") throw new StudioApiError("The authorized download response was invalid.");
   const response = await fetch(signedObjectTarget(body.data.downloadUrl));
   if (!response.ok) throw new StudioApiError(`The signed download returned HTTP ${response.status}.`);
-  return URL.createObjectURL(await response.blob());
+  const blob = await response.blob();
+  return URL.createObjectURL(contentType ? new Blob([blob], { type: contentType }) : blob);
 }
 
 export type LiveFileSearchHit = { type: "file"; id: string; title: string; excerpt: string; ventureId: string; sourceRef: string };

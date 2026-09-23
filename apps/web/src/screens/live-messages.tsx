@@ -7,6 +7,7 @@ import type { Message } from "@venture-studio/contracts";
 import { listLiveDirectMessages, listLiveMembers, loadLiveSession, sendLiveDirectMessage } from "@/lib/studio-api";
 import { ChatAvatar, ChatCredit, ChatEmpty, ChatNav, ChatSearch, ChatShell } from "@/components/studio/chat-ui";
 import { useLiveRealtime } from "@/lib/use-live-realtime";
+import { AttachmentPicker, MessageAttachmentList, messageAttachments, useChatAttachments } from "@/components/studio/chat-attachments";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Member = Awaited<ReturnType<typeof listLiveMembers>>["items"][number];
@@ -29,8 +30,11 @@ export function LiveMessagesScreen() {
   const [revision, setRevision] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const clientId = useRef<string | null>(null);
+  const activeConversationId = useRef(recipientId);
   const realtime = useLiveRealtime(() => setRevision((value) => value + 1));
   const recipient = members.find((item) => item.id === recipientId) ?? (selectedRecipient?.id === recipientId ? selectedRecipient : undefined);
+  const attachments = useChatAttachments(recipientId, recipientId ? { recipientId } : null);
+  useEffect(() => { activeConversationId.current = recipientId; }, [recipientId]);
 
   useEffect(() => {
     let active = true;
@@ -76,20 +80,17 @@ export function LiveMessagesScreen() {
   async function send(event: React.FormEvent) {
     event.preventDefault();
     const body = composer.trim();
-    if (!recipientId || !body) return;
+    if (!recipientId || busy || (!body && !attachments.items.length) || attachments.uploading) return;
     setBusy(true); setError("");
     try {
-      const handles = [...new Set([...body.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase()))];
-      const mentionUserIds = await Promise.all(handles.map(async (handle) => {
-        const page = await listLiveMembers({ handle, limit: 1 });
-        const member = page.items[0];
-        if (!member || member.handle?.toLowerCase() !== handle) throw new Error(`@${handle} is not an active workspace member.`);
-        return member.id;
-      }));
+      const handles = [...body.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase());
+      const mentionUserIds = recipient?.handle && handles.includes(recipient.handle.toLowerCase()) ? [recipientId] : [];
       clientId.current ??= crypto.randomUUID();
-      const created = await sendLiveDirectMessage({ recipientId, body, mentionUserIds: [...new Set(mentionUserIds)], clientId: clientId.current, ...(replyTo ? { threadRootId: replyTo.id } : {}) });
-      setMessages((items) => items.some((item) => item.id === created.id) ? items : [...items, created]);
-      setComposer(""); setReplyTo(null); clientId.current = null;
+      const created = await sendLiveDirectMessage({ recipientId, body, attachmentFileIds: attachments.items.map((file) => file.id), mentionUserIds: [...new Set(mentionUserIds)], clientId: clientId.current, ...(replyTo ? { threadRootId: replyTo.id } : {}) });
+      if (activeConversationId.current === recipientId) {
+        setMessages((items) => items.some((item) => item.id === created.id) ? items : [...items, created]);
+        setComposer(""); setReplyTo(null); clientId.current = null; attachments.clear();
+      }
     } catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   }
@@ -97,7 +98,7 @@ export function LiveMessagesScreen() {
   const visible = search.trim().length >= 2 ? members : members.filter((item) => `${item.name} ${item.handle ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const detailPanel = <aside className={clsx("chat-details thin-scroll border-l border-[#eeeef1] bg-white p-5 xl:w-[290px] xl:shrink-0", detailsOpen ? "fixed inset-y-0 right-0 z-20 w-[min(320px,92vw)] shadow-2xl xl:static xl:shadow-none" : "hidden xl:block")}>
     <div className="flex items-center justify-between"><p className="text-xs font-bold text-[#3a3a43]">Contact Details</p><button type="button" aria-label="Close details" onClick={() => setDetailsOpen(false)} className="chat-icon xl:!hidden"><X size={17} /></button></div>
-    {recipient ? <><div className="mt-8 flex flex-col items-center text-center"><ChatAvatar id={recipient.id} name={recipient.name} size={78} /><h2 className="mt-3 text-sm font-bold">{recipient.name}</h2><p className="mt-1 text-xs text-[#999aa4]">{recipient.handle ? `@${recipient.handle}` : recipient.role.replaceAll("_", " ")}</p></div><div className="mt-8 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Conversation</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">{messages.length} recent messages with this workspace member. Direct messages are visible only to participants.</p></div><div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Shared media</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">File sharing in direct messages is not available yet.</p></div></> : <p className="mt-6 text-xs text-[#999aa4]">Choose a contact to see their details.</p>}
+    {recipient ? <><div className="mt-8 flex flex-col items-center text-center"><ChatAvatar id={recipient.id} name={recipient.name} size={78} /><h2 className="mt-3 text-sm font-bold">{recipient.name}</h2><p className="mt-1 text-xs text-[#999aa4]">{recipient.handle ? `@${recipient.handle}` : recipient.role.replaceAll("_", " ")}</p></div><div className="mt-8 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Conversation</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">{messages.length} recent messages with this workspace member. Direct messages are visible only to participants.</p></div><div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Shared media</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">Files in this conversation: {messages.reduce((count, item) => count + messageAttachments(item).length, 0)}.</p></div></> : <p className="mt-6 text-xs text-[#999aa4]">Choose a contact to see their details.</p>}
     <div className="mt-8"><ChatCredit /></div>
   </aside>;
 
@@ -111,8 +112,8 @@ export function LiveMessagesScreen() {
     <section className={clsx("relative flex min-w-0 flex-1 flex-col bg-white", !recipientId && "hidden md:flex")}>
       <header className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[#eeeef1] px-4 sm:px-6"><button type="button" aria-label="Back to people" onClick={() => setRecipientId("")} className="chat-icon md:!hidden"><X size={18} /></button>{recipient ? <><ChatAvatar id={recipient.id} name={recipient.name} size={34} /><div className="min-w-0 flex-1"><h2 className="truncate text-[12px] font-bold">{recipient.name}</h2><p className="truncate text-[10px] text-[#a0a1aa]">{recipient.handle ? `@${recipient.handle}` : "Workspace member"}</p></div></> : <h2 className="flex-1 text-sm font-semibold">Select a conversation</h2>}<button type="button" aria-label="Show contact details" title="Contact details" onClick={() => setDetailsOpen(true)} className="chat-icon"><Info size={17} /></button><button type="button" aria-label="Refresh conversation" title="Refresh" onClick={() => setRevision((value) => value + 1)} className="chat-icon"><MoreHorizontal size={18} /></button></header>
       {error && <p role="alert" className="mx-5 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
-      <div className="thin-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-6 sm:px-7">{recipient ? messages.length ? <><div className="my-2 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[#b0b0b8]">Conversation</div>{messages.map((item) => { const mine = item.authorId === session?.user.id; return <article key={item.id} className={clsx("flex items-end gap-2", mine && "flex-row-reverse")}><ChatAvatar id={item.authorId} name={mine ? session?.user.name ?? "You" : recipient.name} size={25} /><div className={clsx("max-w-[min(75%,560px)]", mine && "text-right")}><div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : recipient.name}</span><time className="text-[#aaaab3]">{time(item.createdAt)}</time></div><p className={clsx("inline-block whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[#ff8b25] text-white" : "rounded-bl-[5px] border border-[#f0f0f2] bg-white text-[#444450]")}>{item.body}</p><div><button type="button" onClick={() => setReplyTo(item)} className="mt-1 min-h-7 px-1 text-[10px] text-[#a3a3ac] hover:text-[#f58229]">{item.threadRootId ? "Reply again" : "Reply"}</button></div></div></article>; })}<div ref={bottomRef} /></> : <ChatEmpty title="No messages yet" detail="Start a conversation with a workspace member." /> : <ChatEmpty title="Your conversations, together" detail="Choose someone from the left to send a direct message." />}</div>
-      {recipient && <form onSubmit={send} className="shrink-0 border-t border-[#eeeef1] bg-white p-3 sm:px-6 sm:py-4">{replyTo && <div className="mb-2 flex items-center justify-between rounded-lg bg-[#fff3ea] px-3 py-2 text-[11px] text-[#8d5633]"><span className="truncate">Replying to: {replyTo.body.slice(0, 70)}</span><button type="button" onClick={() => setReplyTo(null)} className="ml-2 font-bold">Cancel</button></div>}<div className="flex items-end gap-2 rounded-xl border border-[#e9e9ed] px-3 py-2 focus-within:border-[#ffb56e]"><label htmlFor="dm-composer" className="sr-only">Message</label><textarea id="dm-composer" required maxLength={10000} rows={1} value={composer} onChange={(event) => { setComposer(event.target.value); clientId.current = null; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[#aaaab3]" placeholder="Type a message..." /><button type="submit" disabled={busy || !composer.trim()} aria-label="Send message" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#ff8b25] text-white transition-colors hover:bg-[#ed7619] disabled:opacity-40"><Send size={15} /></button></div></form>}
+      <div className="thin-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-6 sm:px-7">{recipient ? messages.length ? <><div className="my-2 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[#b0b0b8]">Conversation</div>{messages.map((item) => { const mine = item.authorId === session?.user.id; return <article key={item.id} className={clsx("flex items-end gap-2", mine && "flex-row-reverse")}><ChatAvatar id={item.authorId} name={mine ? session?.user.name ?? "You" : recipient.name} size={25} /><div className={clsx("max-w-[min(75%,560px)]", mine && "text-right")}><div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : recipient.name}</span><time className="text-[#aaaab3]">{time(item.createdAt)}</time></div>{item.body && <p className={clsx("inline-block whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[#ff8b25] text-white" : "rounded-bl-[5px] border border-[#f0f0f2] bg-white text-[#444450]")}>{item.body}</p>}<MessageAttachmentList files={messageAttachments(item)} /><div><button type="button" onClick={() => setReplyTo(item)} className="mt-1 min-h-7 px-1 text-[10px] text-[#a3a3ac] hover:text-[#f58229]">{item.threadRootId ? "Reply again" : "Reply"}</button></div></div></article>; })}<div ref={bottomRef} /></> : <ChatEmpty title="No messages yet" detail="Start a conversation with a workspace member." /> : <ChatEmpty title="Your conversations, together" detail="Choose someone from the left to send a direct message." />}</div>
+      {recipient && <form onSubmit={send} className="shrink-0 border-t border-[#eeeef1] bg-white p-3 sm:px-6 sm:py-4">{replyTo && <div className="mb-2 flex items-center justify-between rounded-lg bg-[#fff3ea] px-3 py-2 text-[11px] text-[#8d5633]"><span className="truncate">Replying to: {replyTo.body.slice(0, 70)}</span><button type="button" onClick={() => setReplyTo(null)} className="ml-2 font-bold">Cancel</button></div>}<div className="mb-2"><AttachmentPicker attachments={attachments} scopeLabel={recipient.name} disabled={busy} /></div><div className="flex items-end gap-2 rounded-xl border border-[#e9e9ed] px-3 py-2 focus-within:border-[#ffb56e]"><label htmlFor="dm-composer" className="sr-only">Message</label><textarea id="dm-composer" maxLength={10000} rows={1} value={composer} onChange={(event) => { setComposer(event.target.value); clientId.current = null; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[#aaaab3]" placeholder="Type a message..." /><button type="submit" disabled={busy || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label="Send message" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#ff8b25] text-white transition-colors hover:bg-[#ed7619] disabled:opacity-40"><Send size={15} /></button></div></form>}
     </section>
     {detailPanel}
   </ChatShell>;

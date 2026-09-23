@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ChevronLeft, ChevronRight, Hash, Layers3, Plus } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Hash, Layers3, Plus } from "@/components/ui/icons";
 import clsx from "clsx";
 import { ChatAvatar, ChatNav, ChatSearch } from "./chat-ui";
 import type { loadLiveSession } from "@/lib/studio-api";

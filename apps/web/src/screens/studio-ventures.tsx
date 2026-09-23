@@ -3,7 +3,7 @@
 import Link from "@/components/shell/demo-link";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { ArrowRight, Clock3, Users } from "lucide-react";
+import { ArrowRight, Clock3, Users } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, ventureName } from "@/lib/studio-demo";

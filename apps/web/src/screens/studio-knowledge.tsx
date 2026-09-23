@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Copy, Download, FilePlus2, Search } from "lucide-react";
+import { Copy, Download, FilePlus2, Search } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, type Knowledge, ventureName } from "@/lib/studio-demo";

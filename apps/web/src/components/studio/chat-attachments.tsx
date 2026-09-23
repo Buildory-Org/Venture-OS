@@ -2,7 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- Authorized blob previews cannot use Next image optimization. */
 
 import { useEffect, useRef, useState } from "react";
-import { Download, FileText, Paperclip, X } from "lucide-react";
+import { Download, FileText, Paperclip, X } from "@/components/ui/icons";
 import type { Message } from "@venture-studio/contracts";
 import { prepareLiveFileDownload, uploadLiveFile } from "@/lib/studio-api";
 

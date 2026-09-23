@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import Link from "@/components/shell/demo-link";
-import type { LucideIcon } from "lucide-react";
-import { ArrowRight, ArrowUpRight, Bell, CalendarDays, CheckCheck, ChevronDown, CircleAlert, Clock3, Database, Focus, FolderOpen, Layers3, MessageSquareText, Plus, Target } from "lucide-react";
+import type { Icon } from "@/components/ui/icons";
+import { ArrowRight, ArrowUpRight, Bell, CalendarDays, CheckCheck, ChevronDown, CircleAlert, Clock3, Database, Focus, FolderOpen, Layers3, MessageSquareText, Plus, Target } from "@/components/ui/icons";
 import clsx from "clsx";
 import { FocusSprintTrigger } from "@/components/dashboard/focus-sprint-trigger";
 import { displayDate, personName, ventureName, type StudioData, type Task } from "@/lib/studio-demo";
@@ -19,7 +19,7 @@ function SectionHead({ eyebrow, title, href, label }: { eyebrow: string; title: 
   </div>;
 }
 
-function Stat({ icon: Icon, label, value, note, tone, href }: { icon: LucideIcon; label: string; value: string; note: string; tone: string; href: string }) {
+function Stat({ icon: Icon, label, value, note, tone, href }: { icon: Icon; label: string; value: string; note: string; tone: string; href: string }) {
   return <Link href={href} className={clsx(card, "group block min-w-0 px-4 py-4 transition-[background-color,transform] duration-150 hover:bg-neutral-50/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]")}>
     <div className="flex items-start justify-between gap-2"><span className={clsx("grid h-9 w-9 place-items-center rounded-xl", tone)}><Icon size={17} strokeWidth={1.9} /></span><ArrowUpRight size={14} className="text-neutral-300 group-hover:text-neutral-600" /></div>
     <p className="mt-3 text-[24px] font-extrabold leading-none tracking-tight text-neutral-900 tnum">{value}</p>
@@ -64,7 +64,7 @@ export function StudioDashboard() {
   return <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6 lg:px-7 lg:py-6">
     <header className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-primary-600">Venture Studio / Dashboard</p><h1 className="mt-1.5 text-[clamp(1.6rem,3vw,2.1rem)] font-extrabold tracking-[-0.045em] text-neutral-900">Good morning, {currentUser?.name.split(" ")[0] ?? "team"}.</h1><p className="mt-1 text-[13px] font-medium text-neutral-500">Your studio at a glance · Demo workspace</p></div>
-      <div className="flex flex-wrap items-center gap-2"><Link href="/dashboard/live" className={clsx(pressable, "inline-flex min-h-10 items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 px-3.5 text-xs font-bold text-primary-700 hover:bg-primary-100")}><Database size={15} />Live API preview</Link><label className="relative"><span className="sr-only">Filter by venture</span><select value={scope} onChange={(event) => setScope(event.target.value)} className={clsx(pressable, "min-h-10 min-w-36 appearance-none rounded-xl border border-neutral-200 bg-white pl-3.5 pr-9 text-left text-xs font-bold text-neutral-700 shadow-sm hover:bg-neutral-50")}><option value="all">All ventures</option>{data.ventures.filter((venture) => venture.status === "active").map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</select><ChevronDown size={14} className="pointer-events-none absolute right-3 top-3 text-neutral-500" /></label><Link href="/tasks?new=1" className={clsx(pressable, "inline-flex min-h-10 items-center gap-2 rounded-xl bg-neutral-900 px-3.5 text-xs font-bold text-white hover:bg-neutral-800")}><Plus size={15} />New task</Link></div>
+      <div className="flex flex-wrap items-center gap-2"><Link href="/dashboard/live" className={clsx(pressable, "inline-flex min-h-10 items-center gap-2 rounded-xl border border-primary-200 bg-primary-50 px-3.5 text-xs font-bold text-primary-700 hover:bg-primary-100")}><Database size={15} />Open workspace</Link><label className="relative"><span className="sr-only">Filter by venture</span><select value={scope} onChange={(event) => setScope(event.target.value)} className={clsx(pressable, "min-h-10 min-w-36 appearance-none rounded-xl border border-neutral-200 bg-white pl-3.5 pr-9 text-left text-xs font-bold text-neutral-700 shadow-sm hover:bg-neutral-50")}><option value="all">All ventures</option>{data.ventures.filter((venture) => venture.status === "active").map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</select><ChevronDown size={14} className="pointer-events-none absolute right-3 top-3 text-neutral-500" /></label><Link href="/tasks?new=1" className={clsx(pressable, "inline-flex min-h-10 items-center gap-2 rounded-xl bg-neutral-900 px-3.5 text-xs font-bold text-white hover:bg-neutral-800")}><Plus size={15} />New task</Link></div>
     </header>
 
     <section aria-label="Studio metrics" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -91,6 +91,6 @@ export function StudioDashboard() {
 
       <section className={clsx(card, "col-span-12 lg:col-span-6")}><SectionHead eyebrow="Recent changes" title="Studio activity" href="/admin" label="Audit log" /><div className="divide-y divide-neutral-100 px-5 pb-3 pt-2 sm:px-6">{data.audit.slice(0, 3).map((entry) => <div key={entry.id} className="flex items-start gap-3 py-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-success-surface text-success-text"><Clock3 size={15} /></span><div className="min-w-0"><p className="text-[11px] font-bold text-neutral-800">{entry.action}</p><p className="mt-1 text-[10px] font-medium text-neutral-400">{entry.scope} · {personName(data, entry.actorId)}</p></div></div>)}<Link href="/classes" className="mt-2 flex items-center justify-between rounded-xl bg-primary-50 px-3 py-3 text-[11px] font-bold text-primary-700 transition-colors hover:bg-primary-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><span className="flex items-center gap-2"><CalendarDays size={15} />{data.classes.filter((item) => ventureIds.has(item.ventureId)).length} upcoming classes</span><ArrowRight size={14} /></Link></div></section>
     </div>
-    <p className="mt-5 text-center text-[10px] font-medium text-neutral-400">Demo workspace · Metrics reflect local sample records, not a connected backend.</p>
+    <p className="mt-5 text-center text-[10px] font-medium text-neutral-400">Demo workspace · Metrics use sample records, not your workspace data.</p>
   </div>;
 }

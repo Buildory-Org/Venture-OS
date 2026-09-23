@@ -48,10 +48,10 @@ export function Dropdown({
         <div
           role="menu"
           className={clsx(
-            "animate-page-in absolute top-full z-50 mt-1.5 min-w-44 rounded-2xl bg-white p-1.5 ring-1 ring-neutral-900/5",
+            "vso-enter-popover absolute top-full z-50 mt-1.5 min-w-44 rounded-2xl bg-white p-1.5 ring-1 ring-neutral-900/5",
             align === "right" ? "right-0" : "left-0"
           )}
-          style={{ animationDuration: "140ms" }}
+          data-align={align}
         >
           {items.map((it, i) =>
             it === "divider" ? (

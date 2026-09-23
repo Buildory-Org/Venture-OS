@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { MailCheck } from "lucide-react";
+import { MailCheck } from "@/components/ui/icons";
 import { acceptLiveInvitation } from "@/lib/studio-api";
 import { primaryClass, secondaryClass } from "@/components/studio/primitives";
 
@@ -22,9 +22,9 @@ function ConnectedInvite() {
     finally { setBusy(false); }
   }
 
-  return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-12 w-12 place-items-center rounded-xl bg-primary-50 text-primary-700"><MailCheck size={22} /></span><h1 className="mt-5 text-2xl font-extrabold text-neutral-900">Join the connected workspace</h1><p className="mt-2 text-sm leading-6 text-neutral-500">Sign in with the invited email address, then accept this invitation. The server checks its token, expiry, email, and workspace scope.</p>
-    {accepted ? <div role="status" className="mt-5 rounded-xl bg-success-surface p-4 text-sm font-semibold text-success-text">Invitation accepted. Your workspace access is now active.</div> : token ? <><button disabled={busy} type="button" onClick={accept} className={`${primaryClass} mt-5 w-full`}>{busy ? "Checking invitation…" : "Accept invitation"}</button>{error && <p role="alert" className="mt-3 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}</> : <p role="alert" className="mt-5 rounded-xl bg-warning-surface p-3 text-sm font-semibold text-warning-text">This link has no invitation token.</p>}
-    <div className="mt-4 flex flex-wrap gap-2"><Link href={signInUrl} className={secondaryClass}>Sign in first</Link><Link href="/dashboard/live" className={secondaryClass}>Connected dashboard</Link></div><p className="mt-4 text-xs leading-5 text-neutral-400">The API does not expose a pre-acceptance invitation preview. No role or venture is shown until the server has accepted the invitation.</p>
+  return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-12 w-12 place-items-center rounded-xl bg-primary-50 text-primary-700"><MailCheck size={22} /></span><h1 className="mt-5 text-2xl font-extrabold text-neutral-900">Join Venture Studio</h1><p className="mt-2 text-sm leading-6 text-neutral-500">Sign in with the invited email address, then accept your invitation. Invitations may expire or be limited to a specific workspace.</p>
+    {accepted ? <div role="status" className="mt-5 rounded-xl bg-success-surface p-4 text-sm font-semibold text-success-text">Invitation accepted. Your workspace access is now active.</div> : token ? <><button disabled={busy} type="button" onClick={accept} className={`${primaryClass} mt-5 w-full`}>{busy ? "Checking invitation…" : "Accept invitation"}</button>{error && <p role="alert" className="mt-3 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}</> : <p role="alert" className="mt-5 rounded-xl bg-warning-surface p-3 text-sm font-semibold text-warning-text">This invitation link is incomplete. Ask the sender for a new link.</p>}
+    <div className="mt-4 flex flex-wrap gap-2"><Link href={signInUrl} className={secondaryClass}>Sign in first</Link><Link href="/dashboard/live" className={secondaryClass}>Go to dashboard</Link></div>
   </section></main>;
 }
 

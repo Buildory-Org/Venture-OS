@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Pause, Play, RotateCcw, TimerReset, X } from "lucide-react";
+import { Check, Pause, Play, RotateCcw, TimerReset, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 

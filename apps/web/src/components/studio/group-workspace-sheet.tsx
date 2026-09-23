@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, Eye, Paperclip, Plus, X } from "lucide-react";
+import { Download, Eye, Paperclip, Plus, X } from "@/components/ui/icons";
 import type { Message, Task } from "@venture-studio/contracts";
 import { listLiveGroupFiles, listLiveGroupSavedMessages, listLiveTasks, prepareLiveFileDownload, updateLiveMessageSave, updateLiveTask, uploadLiveFile } from "@/lib/studio-api";
 
@@ -196,7 +196,7 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
     finally { setBusySavedId(""); }
   }
 
-  return <section role="region" aria-label="Group workspace" className="absolute inset-x-0 bottom-0 z-30 flex h-[80dvh] max-h-full min-h-0 flex-col border-t border-[#e8e8ed] bg-white shadow-[0_-18px_48px_rgba(38,38,55,.12)]">
+  return <section role="region" aria-label="Group workspace" className="vso-enter-bottom absolute inset-x-0 bottom-0 z-30 flex h-[80dvh] max-h-full min-h-0 flex-col border-t border-[#e8e8ed] bg-white shadow-[0_-18px_48px_rgba(38,38,55,.12)]">
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[#eeeef1] px-4 py-3 sm:px-6"><div className="min-w-0"><h2 className="text-sm font-bold text-[#30303b]">Group workspace</h2><p className="truncate text-[11px] text-[#92939e]">{group ? `${ventureName} · ${group.name}` : "Choose a group"}</p></div><button type="button" onClick={onClose} aria-label="Close group workspace" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[#777883] hover:bg-[#f6f6f8]"><X size={18} /></button></header>
     <div role="tablist" aria-label="Group workspace views" onKeyDown={(event) => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); const index = tabs.indexOf(tab); onTabChange(event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[tabs.length - 1] : tabs[(index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length]); }} className="flex shrink-0 gap-1 overflow-x-auto border-b border-[#eeeef1] px-3 sm:px-5">{tabs.map((item) => <button key={item} type="button" role="tab" aria-selected={tab === item} tabIndex={tab === item ? 0 : -1} onClick={() => { setActionError(""); onTabChange(item); }} className={`min-h-11 shrink-0 border-b-2 px-3 text-xs font-semibold capitalize ${tab === item ? "border-[#ff8b25] text-[#e4781f]" : "border-transparent text-[#898a96] hover:text-[#444450]"}`}>{item === "saved" ? "Saved messages" : item}</button>)}</div>
     {actionError && <p role="alert" className="mx-4 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 sm:mx-6">{actionError}</p>}

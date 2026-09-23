@@ -2,7 +2,7 @@
 
 import Link from "./demo-link";
 import { usePathname } from "next/navigation";
-import { Bell, BookOpenText, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, Layers3, ListTodo, MessageSquareText, Scale, Settings, TrendingUp, Users, X } from "lucide-react";
+import { Bell, BookOpenText, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, Layers3, ListTodo, MessageSquareText, Scale, Settings, TrendingUp, Users, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 

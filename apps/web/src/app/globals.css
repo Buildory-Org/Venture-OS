@@ -99,6 +99,48 @@
   }
 }
 
+/* Spatial cues for occasional overlays; content remains visible without animation support. */
+@keyframes vso-enter-right {
+  from { opacity: 0.88; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes vso-enter-left {
+  from { opacity: 0.88; transform: translateX(-16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes vso-enter-bottom {
+  from { opacity: 0.9; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes vso-enter-modal {
+  from { opacity: 0; transform: translateY(5px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes vso-enter-popover {
+  from { opacity: 0; transform: translateY(-4px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes vso-enter-card {
+  from { opacity: 0.86; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.vso-enter-right { animation: vso-enter-right 220ms var(--ease-drawer) both; }
+.vso-enter-left { animation: vso-enter-left 220ms var(--ease-drawer) both; }
+.vso-enter-bottom { animation: vso-enter-bottom 240ms var(--ease-drawer) both; }
+.vso-enter-modal { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+.vso-enter-popover { animation: vso-enter-popover 150ms var(--ease-snappy) both; transform-origin: top right; }
+.vso-enter-popover[data-align="left"] { transform-origin: top left; }
+.vso-stagger > * { animation: vso-enter-card 170ms var(--ease-snappy) both; }
+.vso-stagger > :nth-child(2) { animation-delay: 35ms; }
+.vso-stagger > :nth-child(3) { animation-delay: 70ms; }
+.vso-stagger > :nth-child(4) { animation-delay: 105ms; }
+
 :root {
   --background: var(--color-canvas);
   --foreground: var(--color-neutral-900);
@@ -157,6 +199,14 @@ button {
 
 /* Reduced motion: keep color/opacity cues, drop movement */
 @media (prefers-reduced-motion: reduce) {
+  .vso-enter-right,
+  .vso-enter-left,
+  .vso-enter-bottom,
+  .vso-enter-modal,
+  .vso-enter-popover,
+  .vso-stagger > * {
+    animation: none !important;
+  }
   *,
   *::before,
   *::after {

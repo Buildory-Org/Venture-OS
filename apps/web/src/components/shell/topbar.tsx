@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "./demo-link";
 import { usePathname } from "next/navigation";
-import { Bell, Menu, PanelLeftClose, PanelLeftOpen, Plus, Search, Sparkles, TimerReset } from "lucide-react";
+import { Bell, Menu, PanelLeftClose, PanelLeftOpen, Plus, Search, Sparkles, TimerReset } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 

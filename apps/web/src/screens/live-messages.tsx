@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Info, MoreHorizontal, RefreshCw, Send, X } from "lucide-react";
+import { Info, MoreHorizontal, RefreshCw, Send, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import type { Message } from "@venture-studio/contracts";
 import { listLiveDirectMessages, listLiveMembers, loadLiveSession, sendLiveDirectMessage } from "@/lib/studio-api";
@@ -96,7 +96,7 @@ export function LiveMessagesScreen() {
   }
 
   const visible = search.trim().length >= 2 ? members : members.filter((item) => `${item.name} ${item.handle ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const detailPanel = <aside className={clsx("chat-details thin-scroll border-l border-[#eeeef1] bg-white p-5 xl:w-[290px] xl:shrink-0", detailsOpen ? "fixed inset-y-0 right-0 z-20 w-[min(320px,92vw)] shadow-2xl xl:static xl:shadow-none" : "hidden xl:block")}>
+  const detailPanel = <aside className={clsx("chat-details thin-scroll border-l border-[#eeeef1] bg-white p-5 xl:w-[290px] xl:shrink-0", detailsOpen ? "fixed inset-y-0 right-0 z-20 w-[min(320px,92vw)] shadow-2xl vso-enter-right xl:animate-none! xl:static xl:shadow-none" : "hidden xl:block")}>
     <div className="flex items-center justify-between"><p className="text-xs font-bold text-[#3a3a43]">Contact Details</p><button type="button" aria-label="Close details" onClick={() => setDetailsOpen(false)} className="chat-icon xl:!hidden"><X size={17} /></button></div>
     {recipient ? <><div className="mt-8 flex flex-col items-center text-center"><ChatAvatar id={recipient.id} name={recipient.name} size={78} /><h2 className="mt-3 text-sm font-bold">{recipient.name}</h2><p className="mt-1 text-xs text-[#999aa4]">{recipient.handle ? `@${recipient.handle}` : recipient.role.replaceAll("_", " ")}</p></div><div className="mt-8 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Conversation</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">{messages.length} recent messages with this workspace member. Direct messages are visible only to participants.</p></div><div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Shared media</p><p className="mt-2 text-xs leading-5 text-[#999aa4]">Files in this conversation: {messages.reduce((count, item) => count + messageAttachments(item).length, 0)}.</p></div></> : <p className="mt-6 text-xs text-[#999aa4]">Choose a contact to see their details.</p>}
     <div className="mt-8"><ChatCredit /></div>

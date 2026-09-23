@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "@/components/shell/demo-link";
-import { ArrowRight, CalendarDays, Plus, Search } from "lucide-react";
+import { ArrowRight, CalendarDays, Plus, Search } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, type Decision, type Request, type StudioClass, type Deal, ventureName } from "@/lib/studio-demo";

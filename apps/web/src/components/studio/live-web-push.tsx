@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BellRing } from "lucide-react";
+import { BellRing } from "@/components/ui/icons";
 import { getLivePushConfig, registerLivePushSubscription, unregisterLivePushSubscription } from "@/lib/studio-api";
 import { primaryClass, secondaryClass } from "@/components/studio/primitives";
 
@@ -46,7 +46,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
       if (subscription) {
         // A browser subscription survives sign-out; the server must confirm its current owner.
         try { await registerLivePushSubscription(subscription); }
-        catch (cause) { throw new Error("Could not connect this browser subscription to your current account: " + errorText(cause)); }
+        catch (cause) { throw new Error("Could not reconnect browser notifications to your account: " + errorText(cause)); }
         if (active) setState("enabled");
       } else setState("ready");
     }).catch((cause: unknown) => { if (active) { setError(errorText(cause)); setState("error"); } }));
@@ -62,7 +62,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
       if (permission !== "granted") { setState("denied"); return; }
       const other = await navigator.serviceWorker.getRegistration("/");
       const otherScript = other?.active?.scriptURL ?? other?.waiting?.scriptURL ?? other?.installing?.scriptURL;
-      if (otherScript && new URL(otherScript).pathname !== workerPath) throw new Error("Another service worker already controls this site. Web Push was not enabled.");
+      if (otherScript && new URL(otherScript).pathname !== workerPath) throw new Error("This browser session is using a different notification service. Browser notifications were not enabled.");
       await navigator.serviceWorker.register(workerPath, { scope: "/" });
       const ready = await navigator.serviceWorker.ready;
       const current = await ready.pushManager.getSubscription();
@@ -85,7 +85,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
       const subscription = await registration?.pushManager.getSubscription();
       if (subscription) {
         await unregisterLivePushSubscription(subscription.endpoint);
-        if (!await subscription.unsubscribe()) throw new Error("The server removed this browser, but the browser could not clear its local subscription. Try again from browser settings.");
+        if (!await subscription.unsubscribe()) throw new Error("This browser could not finish turning off notifications. Check this site's notification settings in your browser.");
       }
       setState(Notification.permission === "denied" ? "denied" : "ready");
     } catch (cause) { setError(errorText(cause)); setState("enabled"); }
@@ -93,22 +93,22 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
   }
 
   const message: Record<State, string> = {
-    checking: "Checking whether this browser can receive push notifications…",
-    unavailable: "Web Push is not configured on this server. In-app notifications still work while the site is open.",
-    unsupported: "This browser or connection does not support Web Push. Use a supported browser on a secure origin.",
+    checking: "Checking whether this browser can receive notifications…",
+    unavailable: "Browser notifications aren't available for this workspace yet. You'll still see notifications while the workspace is open.",
+    unsupported: "Browser notifications aren't supported here. Try an up-to-date browser over a secure connection.",
     denied: "Browser notifications are blocked. Change this site’s notification permission in browser settings before enabling push.",
-    ready: "This browser is not subscribed. Enabling is optional and will ask for notification permission.",
-    enabled: "This browser is subscribed for push notifications.",
-    error: "Web Push could not be confirmed. Retry the check from this browser.",
+    ready: "Notifications are off in this browser. Turning them on will ask for your permission.",
+    enabled: "Notifications are on for this browser.",
+    error: "Could not check browser notifications. Please try again.",
   };
 
   return <div className="space-y-3 p-4">
     <div className="flex items-start gap-2"><BellRing size={17} className="mt-0.5 shrink-0 text-primary-700" /><div><p className="text-sm font-bold text-neutral-800">Browser push on this device</p><p role="status" className="mt-1 text-xs leading-5 text-neutral-500">{message[state]}</p></div></div>
-    {preferenceEnabled === false && <p className="text-xs leading-5 text-warning-text">The Web push delivery preference above is off. Save it as on to receive push messages after subscribing.</p>}
+    {preferenceEnabled === false && <p className="text-xs leading-5 text-warning-text">Turn on and save the Browser push preference above to receive alerts here.</p>}
     {error && <p role="alert" className="rounded-lg bg-danger-surface p-2 text-xs text-danger-text">{error}</p>}
     {state === "ready" && <button type="button" disabled={busy || !publicKey || !supported()} onClick={enable} className={primaryClass}>{busy ? "Enabling…" : "Enable on this browser"}</button>}
     {state === "enabled" && <button type="button" disabled={busy} onClick={disable} className={secondaryClass}>{busy ? "Disabling…" : "Disable on this browser"}</button>}
     {state === "error" && <button type="button" onClick={() => { setError(""); setState("checking"); setRevision((value) => value + 1); }} className={secondaryClass}>Retry check</button>}
-    <p className="text-xs leading-5 text-neutral-400">This controls only this browser. The Web push preference above also applies to delivery; neither setting sends a test notification.</p>
+    <p className="text-xs leading-5 text-neutral-400">Applies to this browser only. Keep the preference above enabled to receive alerts.</p>
   </div>;
 }

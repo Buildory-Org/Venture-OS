@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Bell, X } from "lucide-react";
+import { Bell, X } from "@/components/ui/icons";
 import { listLiveNotifications, readLiveNotification, snoozeLiveReminder } from "@/lib/studio-api";
 import { notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
 

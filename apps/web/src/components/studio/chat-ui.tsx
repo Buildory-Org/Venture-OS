@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, Hash, MessageCircle, Search } from "lucide-react";
+import { ArrowLeft, Hash, MessageCircle, Search } from "@/components/ui/icons";
 import clsx from "clsx";
 import type { ReactNode } from "react";
 

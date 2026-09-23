@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "@/components/shell/demo-link";
-import { AlertTriangle, ArrowRight, BookOpenText, CalendarDays, CheckSquare2, FilePlus2, Layers3, Plus, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, BookOpenText, CalendarDays, CheckSquare2, FilePlus2, Layers3, Plus, ShieldCheck } from "@/components/ui/icons";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, ventureName } from "@/lib/studio-demo";
 import { Badge, Empty, PageFrame, PageTitle, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";

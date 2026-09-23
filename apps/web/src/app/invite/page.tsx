@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { MailCheck } from "lucide-react";
 import { primaryClass } from "@/components/studio/primitives";
 

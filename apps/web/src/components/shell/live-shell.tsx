@@ -1,40 +1,78 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowUpRight, Layers3 } from "lucide-react";
+import { ArrowUpRight, Bell, BookOpenText, Columns3, Focus, Hash, LayoutDashboard, Layers3, ListTodo, Menu, MessageSquareText, Scale, TrendingUp, Users, X } from "lucide-react";
 import clsx from "clsx";
 import { loadLiveSession } from "@/lib/studio-api";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 const pages = [
-  { href: "/dashboard/live", label: "Dashboard" },
-  { href: "/tasks/live", label: "Tasks" },
-  { href: "/board/live", label: "Board" },
-  { href: "/planning/live", label: "Planning" },
-  { href: "/channels/live", label: "Channels" },
-  { href: "/messages/live", label: "Messages" },
-  { href: "/knowledge/live", label: "Knowledge" },
-  { href: "/sales/live", label: "Sales" },
-  { href: "/notifications/live", label: "Inbox" },
-  { href: "/focus/live", label: "Focus" },
-  { href: "/admin/live", label: "Admin" },
+  { href: "/dashboard/live", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/tasks/live", label: "Tasks", icon: ListTodo },
+  { href: "/board/live", label: "Board", icon: Columns3 },
+  { href: "/channels/live", label: "Channels", icon: Hash },
+  { href: "/messages/live", label: "Direct messages", icon: MessageSquareText },
+  { href: "/notifications/live", label: "Notifications", icon: Bell },
+  { href: "/focus/live", label: "Focus", icon: Focus },
+  { href: "/knowledge/live", label: "Knowledge", icon: BookOpenText },
+  { href: "/planning/live", label: "Planning", icon: Scale },
+  { href: "/sales/live", label: "Sales", icon: TrendingUp },
+  { href: "/admin/live", label: "People & access", icon: Users },
 ];
+
+function NavContent({ session, path, onNavigate }: { session: Session; path: string; onNavigate?: () => void }) {
+  const initial = session.hierarchy.workspace.name.slice(0, 2).toUpperCase();
+  return <>
+    <Link href="/dashboard/live" onClick={onNavigate} className="flex h-16 items-center gap-2.5 px-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-600"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] bg-gradient-to-br from-primary-500 to-primary-700 text-white shadow-sm"><Layers3 size={16} /></span><span className="min-w-0"><span className="block truncate text-sm font-extrabold tracking-tight text-neutral-900">Venture Studio</span><span className="block truncate text-[11px] font-semibold text-neutral-400">Connected workspace</span></span></Link>
+    <nav aria-label="Connected workspace navigation" className="thin-scroll flex-1 overflow-y-auto px-3 pb-3">
+      <div className="mb-4 flex min-h-11 items-center gap-2 rounded-xl bg-neutral-50 px-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white text-[10px] font-extrabold text-neutral-700 shadow-sm">{initial}</span><span className="min-w-0"><span className="block truncate text-xs font-bold text-neutral-800">{session.hierarchy.workspace.name}</span><span className="block truncate text-[10px] font-medium text-neutral-400">{session.hierarchy.ventures.length} ventures · API connected</span></span></div>
+      <p className="mb-2 px-3 text-[10px] font-extrabold uppercase tracking-[.1em] text-neutral-400">Workspace</p>
+      <div className="space-y-0.5">{pages.map(({ href, label, icon: Icon }) => { const active = path === href; return <Link key={href} href={href} onClick={onNavigate} aria-current={active ? "page" : undefined} className={clsx("flex min-h-10 items-center gap-2.5 rounded-xl px-3 text-[13px] font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600", active ? "bg-neutral-900 text-white shadow-sm" : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900")}><Icon size={17} strokeWidth={active ? 2.1 : 1.8} /><span className="truncate">{label}</span></Link>; })}</div>
+      <div className="mt-5 border-t border-neutral-100 pt-4"><p className="mb-2 px-3 text-[10px] font-extrabold uppercase tracking-[.1em] text-neutral-400">Venture spaces</p>{session.hierarchy.ventures.map((venture) => <div key={venture.id} className="mb-2 rounded-xl bg-neutral-50 px-3 py-2.5"><p className="truncate text-xs font-extrabold text-neutral-800">{venture.name}</p><p className="mt-0.5 text-[10px] font-medium text-neutral-400">{venture.groups.length} groups · {venture.groups.reduce((count, group) => count + group.channels.length, 0)} channels</p></div>)}</div>
+    </nav>
+    <div className="border-t border-neutral-100 p-3"><Link href="/demo" onClick={onNavigate} className="mb-2 flex min-h-10 items-center gap-2 rounded-xl px-2.5 text-xs font-bold text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">Demo prototype <ArrowUpRight size={13} /></Link><div className="flex min-h-11 items-center gap-2.5 rounded-xl bg-neutral-50 px-2.5"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] bg-primary-100 text-[10px] font-extrabold text-primary-700">{session.user.name.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><span className="min-w-0"><span className="block truncate text-xs font-extrabold text-neutral-800">{session.user.name}</span><span className="block truncate text-[10px] font-medium capitalize text-neutral-400">{session.membership.role.replaceAll("_", " ")}{process.env.NODE_ENV === "development" ? " · Local dev" : ""}</span></span></div></div>
+  </>;
+}
 
 export function LiveShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState("");
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let active = true;
     queueMicrotask(() => loadLiveSession().then((value) => { if (active) { setSession(value); setError(""); } }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : "Could not load the connected workspace."); }));
     return () => { active = false; };
   }, []);
+  useEffect(() => {
+    if (!mobileOpen) return;
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setMobileOpen(false); menuRef.current?.focus(); }
+      if (event.key !== "Tab") return;
+      const items = drawerRef.current?.querySelectorAll<HTMLElement>("a[href], button:not([disabled])");
+      if (!items?.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileOpen]);
 
-  if (error) return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-11 w-11 place-items-center rounded-xl bg-danger-surface text-danger-text"><Layers3 size={20} /></span><h1 className="mt-4 text-xl font-extrabold text-neutral-900">Connected workspace unavailable</h1><p role="alert" className="mt-2 text-sm leading-6 text-neutral-500">{error}</p><div className="mt-5 flex flex-wrap gap-2"><Link href="/sign-in/live" className="min-h-10 rounded-xl bg-neutral-900 px-4 py-2.5 text-xs font-bold text-white">Sign in</Link><Link href="/dashboard" className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-bold text-neutral-700">Demo dashboard</Link></div></section></main>;
+  if (error) return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-11 w-11 place-items-center rounded-xl bg-danger-surface text-danger-text"><Layers3 size={20} /></span><h1 className="mt-4 text-xl font-extrabold text-neutral-900">Connected workspace unavailable</h1><p role="alert" className="mt-2 text-sm leading-6 text-neutral-500">{error}</p><div className="mt-5 flex flex-wrap gap-2"><Link href="/sign-in/live" className="min-h-10 rounded-xl bg-neutral-900 px-4 py-2.5 text-xs font-bold text-white">Sign in</Link><Link href="/demo" className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-bold text-neutral-700">Demo prototype</Link></div></section></main>;
   if (!session) return <main className="grid min-h-dvh place-items-center bg-canvas text-sm font-medium text-neutral-500">Loading connected workspace…</main>;
 
-  return <div className="min-h-dvh bg-canvas"><header className="sticky top-0 z-30 border-b border-neutral-200/80 bg-white/95 backdrop-blur"><div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-7"><Link href="/dashboard/live" className="flex min-w-0 items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary-600 text-white shadow-sm"><Layers3 size={17} /></span><span className="min-w-0"><span className="block truncate text-sm font-extrabold tracking-tight text-neutral-900">Venture Studio</span><span className="block truncate text-[11px] font-medium text-neutral-400">{session.hierarchy.workspace.name} · Connected</span></span></Link><div className="flex items-center gap-3"><span className="hidden text-right text-xs sm:block"><span className="block font-extrabold text-neutral-800">{session.user.name}</span><span className="block capitalize text-neutral-400">{session.membership.role.replaceAll("_", " ")}{process.env.NODE_ENV === "development" ? " · Local dev" : ""}</span></span><Link href="/dashboard" className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-neutral-200 px-3 text-xs font-bold text-neutral-600 hover:bg-neutral-50">Demo UI<ArrowUpRight size={13} /></Link></div></div><nav aria-label="Connected workspace navigation" className="thin-scroll mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 pb-2 sm:px-6 lg:px-7">{pages.map((page) => <Link key={page.href} href={page.href} aria-current={path === page.href ? "page" : undefined} className={clsx("inline-flex min-h-9 shrink-0 items-center rounded-xl px-3 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600", path === page.href ? "bg-neutral-900 text-white" : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900")}>{page.label}</Link>)}</nav></header><main id="main-content" className="min-w-0">{children}</main></div>;
+  return <div className="flex h-dvh overflow-hidden bg-white">
+    <aside aria-label="Workspace sidebar" className="hidden w-[248px] shrink-0 flex-col border-r border-neutral-100 bg-white lg:flex"><NavContent session={session} path={path} /></aside>
+    {mobileOpen && <div className="fixed inset-0 z-40 lg:hidden"><button type="button" aria-label="Close navigation overlay" className="absolute inset-0 bg-neutral-900/25" onClick={() => { setMobileOpen(false); menuRef.current?.focus(); }} /><aside ref={drawerRef} role="dialog" aria-modal="true" aria-label="Mobile workspace sidebar" className="relative flex h-full w-[min(292px,88vw)] flex-col bg-white shadow-e4"><button ref={closeRef} type="button" aria-label="Close navigation" onClick={() => { setMobileOpen(false); menuRef.current?.focus(); }} className="absolute right-2 top-2 z-10 grid h-10 w-10 place-items-center rounded-xl text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><X size={18} /></button><NavContent session={session} path={path} onNavigate={() => setMobileOpen(false)} /></aside></div>}
+    <div className="flex min-w-0 flex-1 flex-col"><header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-neutral-100 bg-white px-3 sm:px-5"><div className="flex min-w-0 items-center gap-2"><button ref={menuRef} type="button" aria-label="Open navigation" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-600 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 lg:hidden"><Menu size={18} /></button><span className="truncate text-sm font-extrabold text-neutral-900">{pages.find((page) => page.href === path)?.label ?? "Connected workspace"}</span><span className="hidden rounded-md bg-success-surface px-2 py-1 text-[10px] font-extrabold text-success-text sm:inline">LIVE DATA</span></div><div className="flex items-center gap-2"><Link href="/notifications/live" aria-label="Open notifications" className="grid h-10 w-10 place-items-center rounded-xl text-neutral-500 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><Bell size={18} /></Link><Link href="/focus/live" className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-neutral-200 px-3 text-xs font-bold text-neutral-700 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><Focus size={15} />Focus</Link></div></header><main id="main-content" className="min-w-0 flex-1 overflow-y-auto rounded-tl-[22px] bg-canvas">{children}</main></div>
+  </div>;
 }

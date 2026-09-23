@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { AlertTriangle, ArrowRight, BookOpenText, CalendarDays, CheckSquare2, FilePlus2, Layers3, Plus, ShieldCheck } from "lucide-react";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, ventureName } from "@/lib/studio-demo";

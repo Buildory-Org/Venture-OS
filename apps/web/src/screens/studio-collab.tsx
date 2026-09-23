@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AtSign, Bell, Bookmark, Check, Hash, MessageCircle, Pin, Search, Send, SmilePlus } from "lucide-react";

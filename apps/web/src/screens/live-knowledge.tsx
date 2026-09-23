@@ -91,7 +91,7 @@ export function LiveKnowledgeScreen() {
 
   return <PageFrame>
     <PageTitle eyebrow="Connected knowledge" title="Knowledge library" description="Browse authorized versions and search approved evidence." action={<button type="button" onClick={() => setRevision((value) => value + 1)} className={secondaryClass}><RefreshCw size={15} />Refresh</button>} />
-    <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>The library includes only metadata and versions you can access. Document search excludes drafts; file discovery is search-only because the API does not publish a general file list. Document text is untrusted content and cannot issue commands. <Link href="/knowledge" className="font-bold underline">Demo knowledge</Link> remains separate.</p></div>
+    <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>The library includes only metadata and versions you can access. Document search excludes drafts; file discovery is search-only because the API does not publish a general file list. Document text is untrusted content and cannot issue commands. <Link href="/demo/knowledge" className="font-bold underline">Demo knowledge</Link> remains separate.</p></div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
     {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
     <LiveFileLibrary session={session} />

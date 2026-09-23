@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import Link from "./demo-link";
 import { usePathname } from "next/navigation";
 import { Bell, Menu, PanelLeftClose, PanelLeftOpen, Plus, Search, Sparkles, TimerReset } from "lucide-react";
 import clsx from "clsx";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { ArrowRight, CalendarDays, Plus, Search } from "lucide-react";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";

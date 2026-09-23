@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "./demo-link";
 import { usePathname } from "next/navigation";
 import { Bell, BookOpenText, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, Layers3, ListTodo, MessageSquareText, Scale, Settings, TrendingUp, Users, X } from "lucide-react";
 import clsx from "clsx";
@@ -26,7 +26,7 @@ const press = "transition-[color,background-color,transform] duration-150 ease-[
 type Props = { collapsed: boolean; mobileOpen: boolean; onCloseMobile: () => void };
 
 export function Sidebar({ collapsed, mobileOpen, onCloseMobile }: Props) {
-  const path = usePathname();
+  const path = usePathname().replace(/^\/demo(?=\/|$)/, "") || "/dashboard";
   const { data, currentUserId } = useStudio();
   const currentUser = data.people.find((person) => person.id === currentUserId) ?? data.people[0];
   const unread = data.notices.filter((notice) => !notice.read).length;

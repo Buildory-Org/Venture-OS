@@ -74,6 +74,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Verify same-origin Socket.IO polling in the browser by receiving another local member's channel message without reloading
 - [x] Connect signed file upload/completion, authorized file-name search/download preparation, and task-scoped attachments; verify a synthetic local browser upload and downloaded bytes by SHA-256
 - [x] Verify scoped venture-head document approval in the browser on a synthetic local record
+- [x] Make the connected workspace the default at `/` and `/dashboard`, route the main navigation to API-backed pages, and isolate the sample-only prototype under `/demo`; verify desktop/mobile navigation and keyboard behavior
 - [ ] Verify physical browser save/download in a browser that exposes a download event or saved file
 - [ ] Repair and verify admin document list/detail scope for venture and workspace records in the backend
 - [ ] Verify browser Socket.IO with a real Better Auth cookie and staging reverse-proxy/sticky-session configuration

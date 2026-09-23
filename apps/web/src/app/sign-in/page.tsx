@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { Layers3, LockKeyhole } from "lucide-react";
 import { StudioProvider, useStudio } from "@/lib/studio-store";
 import { inputClass, primaryClass } from "@/components/studio/primitives";

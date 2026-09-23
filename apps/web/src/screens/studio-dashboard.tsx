@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import type { LucideIcon } from "lucide-react";
 import { ArrowRight, ArrowUpRight, Bell, CalendarDays, CheckCheck, ChevronDown, CircleAlert, Clock3, Database, Focus, FolderOpen, Layers3, MessageSquareText, Plus, Target } from "lucide-react";
 import clsx from "clsx";

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
+import Link from "@/components/shell/demo-link";
 import { Clock3, Filter, Plus, Search } from "lucide-react";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";

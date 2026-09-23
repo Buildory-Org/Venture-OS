@@ -59,7 +59,7 @@ export function LiveNotificationsScreen() {
   const visible = items.filter((item) => !unreadOnly || !item.readAt);
   return <PageFrame>
     <PageTitle eyebrow="Connected inbox" title="Live notifications" description="Server-owned messages, reminders, and delivery preferences." action={<button type="button" className={secondaryClass} onClick={() => { setLoading(true); setRevision((value) => value + 1); }}><RefreshCw size={15} />Refresh</button>} />
-    <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>Task-reminder notices now carry an actionable reminder ID; snooze always targets that ID, not the task. <Link href="/notifications" className="font-bold underline">Demo notifications</Link> remain separate.</p></div>
+    <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>Task-reminder notices now carry an actionable reminder ID; snooze always targets that ID, not the task. <Link href="/demo/notifications" className="font-bold underline">Demo notifications</Link> remain separate.</p></div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
     {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">

@@ -12,6 +12,7 @@ import {
   dashboardResponseSchema,
   evidenceItemSchema,
   fileSchema,
+  groupFileSchema,
   uploadIntentSchema,
   uploadCompleteSchema,
   searchQuerySchema,
@@ -137,7 +138,17 @@ type UploadScope = { ventureId: string; groupId?: string; taskId?: string };
 const fileTypes = new Map<string, string>([
   ["pdf", "application/pdf"], ["md", "text/markdown"], ["txt", "text/plain"],
   ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
+  ["webp", "image/webp"], ["gif", "image/gif"], ["mp4", "video/mp4"], ["mov", "video/quicktime"], ["webm", "video/webm"],
+  ["mp3", "audio/mpeg"], ["m4a", "audio/mp4"], ["ogg", "audio/ogg"], ["wav", "audio/wav"],
 ]);
+
+export async function listLiveGroupFiles(groupId: string, cursor?: string) {
+  const params = new URLSearchParams({ limit: "100" });
+  if (cursor) params.set("cursor", cursor);
+  const page = pagedSuccessEnvelope(groupFileSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/files?${params}`)).data;
+  if (page.items.some((file) => file.groupId !== groupId || file.status !== "ready")) throw new StudioApiError("The group file response included an item outside this group.");
+  return page;
+}
 
 function signedObjectTarget(raw: string) {
   const url = new URL(raw);
@@ -148,7 +159,7 @@ function signedObjectTarget(raw: string) {
 
 export async function uploadLiveFile(file: File, scope: UploadScope) {
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
-  const contentType = fileTypes.get(extension) ?? file.type;
+  const contentType = file.type || fileTypes.get(extension) || "";
   const intent = uploadIntentSchema.parse({ ...scope, name: file.name, contentType, size: file.size });
   const body = await request("/v1/uploads", { method: "POST", body: JSON.stringify(intent) });
   if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("file" in body.data) || !("uploadUrl" in body.data) || typeof body.data.uploadUrl !== "string") throw new StudioApiError("The upload intent response was invalid.");
@@ -214,6 +225,14 @@ export async function listLiveChannelMessages(channelId: string, cursor?: string
   const params = new URLSearchParams({ limit: "100" });
   if (cursor) params.set("cursor", cursor);
   return pagedSuccessEnvelope(messageSchema).parse(await request(`/v1/channels/${encodeURIComponent(channelId)}/messages?${params}`)).data;
+}
+
+export async function listLiveGroupSavedMessages(groupId: string, cursor?: string) {
+  const params = new URLSearchParams({ limit: "100" });
+  if (cursor) params.set("cursor", cursor);
+  const page = pagedSuccessEnvelope(messageSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/messages/saved?${params}`)).data;
+  if (page.items.some((message) => message.groupId !== groupId || !message.channelId)) throw new StudioApiError("The saved message response included an item outside this group.");
+  return page;
 }
 
 export async function sendLiveChannelMessage(channelId: string, input: unknown) {

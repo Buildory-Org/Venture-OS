@@ -56,6 +56,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Smoke-check desktop and 390px chat layouts, admin create dialog, API-backed data, lint, and production build
 - [ ] Decide whether non-admin members or venture heads may create ventures, groups, or channels; update server permissions and reviewer tests only after policy approval
 - [x] Replace the flattened connected Channels list with a venture selector, expandable group rail, and selected-group-only channel list; verify desktop and 390px/320px navigation, deep links, and keyboard focus
+- [x] Dock Channels details beside chat and open a group-scoped Kanban/Attachments/Saved workspace sheet; verify paged feeds, authorized status moves, image preview and invalid-media fallback, desktop/320px layout, scope switching, and Escape/focus return in an isolated browser fixture
 - [ ] Verify a browser-originated channel message in an isolated UI fixture; the Mongo-backed API smoke test covers a real send, but the current browser points to shared seed data
 
 ### 2.2 Work management

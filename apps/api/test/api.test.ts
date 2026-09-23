@@ -13,7 +13,7 @@ import { LocalObjectStore } from "../src/storage.js";
 import { attachRealtime } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
-import { dashboardResponseSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
+import { dashboardResponseSchema, documentSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
   assert.throws(() => loadConfig({ APP_MODE: "production", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
@@ -109,6 +109,59 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     await database.db.collection("documents").insertOne({ _id: "document-b", workspaceId: "workspace-a", ventureId: "venture-b", title: "Hidden venture note", status: "approved", sensitivity: "team", updatedAt: now });
     const documentBrowse = (await (await fetch(`${origin}/v1/documents`, { headers })).json()) as any;
     assert.deepEqual(documentBrowse.data.items.map((item: any) => item.id), ["document-global"]);
+    const scopeAdminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
+    const scopePeerHeaders = { "content-type": "application/json", "x-dev-user-id": "user-peer" };
+    const createKnowledge = async (body: Record<string, unknown>) => {
+      const response = await fetch(`${origin}/v1/documents`, { method: "POST", headers: scopeAdminHeaders, body: JSON.stringify({ markdown: "# Scope\n\nScopeparity token.", evidenceClass: "verified_fact", sensitivity: "team", ...body }) });
+      assert.equal(response.status, 201, await response.clone().text());
+      return ((await response.json()) as any).data.id as string;
+    };
+    const ventureBDoc = await createKnowledge({ ventureId: "venture-b", title: "Venture B scope" });
+    const workspaceDoc = await createKnowledge({ title: "Workspace scope" });
+    const managerDoc = await createKnowledge({ ventureId: "venture-a", title: "Manager scope", sensitivity: "manager" });
+    const privateDoc = await createKnowledge({ ventureId: "venture-a", title: "Founder scope", sensitivity: "founder_private" });
+    const savedWorkspaceDoc = await database.db.collection("documents").findOne({ _id: workspaceDoc });
+    assert.equal(Object.hasOwn(savedWorkspaceDoc!, "ventureId"), false);
+    assert.equal(await database.db.collection("document_chunks").countDocuments({ documentId: workspaceDoc, ventureId: { $exists: false } }), await database.db.collection("document_chunks").countDocuments({ documentId: workspaceDoc }));
+    await database.db.collection("documents").insertOne({ _id: "document-legacy-null", workspaceId: "workspace-a", ventureId: null, title: "Legacy workspace scope", slug: "legacy-workspace-scope", ownerId: "user-admin", status: "draft", evidenceClass: "verified_fact", sensitivity: "team", authoritativeRank: 50, currentVersionId: "version-legacy-null", createdAt: now, updatedAt: now });
+    await database.db.collection("document_versions").insertOne({ _id: "version-legacy-null", workspaceId: "workspace-a", documentId: "document-legacy-null", version: 1, markdown: "# Scope\n\nScopeparity token.", changeSummary: "Legacy", createdBy: "user-admin", createdAt: now });
+    await database.db.collection("document_chunks").insertOne({ _id: "chunk-legacy-null", workspaceId: "workspace-a", ventureId: null, documentId: "document-legacy-null", documentVersionId: "version-legacy-null", headingPath: "Scope", ordinal: 0, plainText: "Scopeparity token.", createdAt: now });
+    const adminDocs = (await (await fetch(`${origin}/v1/documents`, { headers: scopeAdminHeaders })).json()) as any;
+    for (const id of [ventureBDoc, workspaceDoc, "document-legacy-null", managerDoc, privateDoc]) assert.equal(adminDocs.data.items.some((item: any) => item.id === id), true, id);
+    documentSchema.parse(adminDocs.data.items.find((item: any) => item.id === "document-legacy-null"));
+    const filteredAdminDocs = (await (await fetch(`${origin}/v1/documents?ventureId=venture-b`, { headers: scopeAdminHeaders })).json()) as any;
+    for (const id of [ventureBDoc, workspaceDoc, "document-legacy-null"]) assert.equal(filteredAdminDocs.data.items.some((item: any) => item.id === id), true, id);
+    assert.equal(filteredAdminDocs.data.items.some((item: any) => item.id === managerDoc), false);
+    for (const id of [ventureBDoc, workspaceDoc, "document-legacy-null", managerDoc, privateDoc]) {
+      const detail = await fetch(`${origin}/v1/documents/${id}`, { headers: scopeAdminHeaders });
+      assert.equal(detail.status, 200, id);
+      documentSchema.parse(((await detail.json()) as any).data);
+      const approval = await fetch(`${origin}/v1/documents/${id}/metadata`, { method: "PATCH", headers: scopeAdminHeaders, body: JSON.stringify({ status: "approved" }) });
+      assert.equal(approval.status, 200, `${id}: ${await approval.clone().text()}`);
+      documentSchema.parse(((await approval.json()) as any).data);
+    }
+    const searchedIds = async (userHeaders: Record<string, string>, ventureId = "") => {
+      const response = await fetch(`${origin}/v1/knowledge/search?q=Scopeparity&limit=20${ventureId ? `&ventureId=${ventureId}` : ""}`, { headers: userHeaders });
+      assert.equal(response.status, 200, await response.clone().text());
+      return ((await response.json()) as any).data.items.map((item: any) => item.documentId) as string[];
+    };
+    assert.deepEqual(new Set(await searchedIds(scopeAdminHeaders)), new Set([ventureBDoc, workspaceDoc, "document-legacy-null", managerDoc, privateDoc]));
+    assert.deepEqual(new Set(await searchedIds(scopeAdminHeaders, "venture-b")), new Set([ventureBDoc, workspaceDoc, "document-legacy-null"]));
+    const headDocs = (await (await fetch(`${origin}/v1/documents`, { headers })).json()) as any;
+    for (const id of [workspaceDoc, "document-legacy-null", managerDoc]) assert.equal(headDocs.data.items.some((item: any) => item.id === id), true, id);
+    for (const id of [ventureBDoc, privateDoc]) assert.equal(headDocs.data.items.some((item: any) => item.id === id), false, id);
+    assert.equal((await fetch(`${origin}/v1/documents/${ventureBDoc}`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/documents/${privateDoc}`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/documents/document-legacy-null`, { headers })).status, 200);
+    assert.equal((await fetch(`${origin}/v1/documents/document-legacy-null/metadata`, { method: "PATCH", headers, body: JSON.stringify({ status: "stale" }) })).status, 403);
+    assert.deepEqual(new Set(await searchedIds(headers)), new Set([workspaceDoc, "document-legacy-null", managerDoc]));
+    const peerDocs = (await (await fetch(`${origin}/v1/documents`, { headers: scopePeerHeaders })).json()) as any;
+    for (const id of [workspaceDoc, "document-legacy-null"]) assert.equal(peerDocs.data.items.some((item: any) => item.id === id), true, id);
+    for (const id of [ventureBDoc, managerDoc, privateDoc]) assert.equal(peerDocs.data.items.some((item: any) => item.id === id), false, id);
+    assert.equal((await fetch(`${origin}/v1/documents/${managerDoc}`, { headers: scopePeerHeaders })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/documents/${ventureBDoc}`, { headers: scopePeerHeaders })).status, 404);
+    assert.deepEqual(new Set(await searchedIds(scopePeerHeaders)), new Set([workspaceDoc, "document-legacy-null"]));
+    assert.equal((await fetch(`${origin}/v1/documents/${ventureBDoc}/metadata`, { method: "PATCH", headers, body: JSON.stringify({ status: "stale" }) })).status, 404);
     const created = await fetch(`${origin}/v1/tasks`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", title: "Ship the slice", outcome: "A verified slice", assigneeId: "user-test", priority: "high", dueAt: new Date(Date.now() + 3_600_000).toISOString(), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Smoke passes", evidenceRequirement: "Attach smoke output", dependencies: [], evidenceLinks: [], tags: ["smoke"] }) });
     assert.equal(created.status, 201, await created.clone().text());
     const createdBody = await created.json() as any;
@@ -280,6 +333,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal((ventures.data as any[]).length, 1);
     const globalKnowledge = await mcpService.searchKnowledge("globalparity", "venture-a");
     assert.equal((globalKnowledge.data as any[]).some((item: any) => item.documentId === "document-global"), true);
+    assert.deepEqual(new Set(((await mcpService.searchKnowledge("scopeparity", "venture-a", 20)).data as any[]).map((item: any) => item.documentId)), new Set([workspaceDoc, "document-legacy-null", managerDoc]));
     assert.equal((await database.db.collection("pats").findOne({ _id: patBody.data.pat.id }))?.lastUsedAt instanceof Date, true);
     await fetch(`${origin}/v1/pats/${patBody.data.pat.id}/revoke`, { method: "POST", headers });
     await assert.rejects(() => authenticatePat(database.db, patBody.data.token));

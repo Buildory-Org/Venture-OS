@@ -47,9 +47,9 @@ export class McpReadService {
     return this.actor.membership.role === "admin" ? {} : { groupId: { $in: this.actor.membership.groupIds } };
   }
   private documents(ventureId?: string): Record<string, unknown> {
-    if (this.actor.membership.role === "admin") return ventureId ? { $or: [{ ventureId: { $exists: false } }, { ventureId }] } : {};
+    if (this.actor.membership.role === "admin") return ventureId ? { $or: [{ ventureId: null }, { ventureId }] } : {};
     const ventures = ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
-    return { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: ventures } }] };
+    return { $or: [{ ventureId: null }, { ventureId: { $in: ventures } }] };
   }
   private async result(tool: string, data: unknown, sourceRefs: string[], ventureId?: string) {
     await audit(this.db, { workspaceId: this.actor.workspaceId, actorId: this.actor.id, channel: "mcp", action: `mcp.${tool}`, objectType: "tool", objectId: sourceRefs[0], ventureId, result: "success", metadata: { sourceCount: sourceRefs.length, sourceRefs: sourceRefs.slice(0, 20).join(",") } });

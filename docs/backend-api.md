@@ -30,6 +30,7 @@ Cursor-paginated lists return `{ ok: true, data: { items, nextCursor? } }`; othe
 ## Knowledge, operating records, and search
 
 - Versioned Markdown: `POST /v1/documents`, `GET /v1/documents` (authorized paged metadata, optional `ventureId`/`status`), `GET|PUT /v1/documents/:id`, and metadata approval at `PATCH /v1/documents/:id/metadata`.
+- Document scope: missing or legacy `null` `ventureId` means workspace-wide; API responses omit the field for either form. Admins see every venture in their workspace without a venture filter; an explicit venture filter includes that venture plus workspace-wide documents. Non-admins see workspace-wide documents plus only their assigned ventures, subject to sensitivity. Only admins may create, edit, or approve workspace-wide documents.
 - Authorized cited retrieval: `GET /v1/knowledge/search`; bounded export: `GET /v1/context-packets/tasks/:id`.
 - Cross-resource authorized search: `GET /v1/search` for tasks, messages, and ready file metadata.
 - Decisions, classes/applied assignments, information requests, outcomes/timeline records, pipelines, and opportunities use their named `/v1` route groups. `PATCH /v1/decisions/:id`, `/classes/:id`, `/outcomes/:id`, `/pipelines/:id`, and `/opportunities/:id` accept non-empty partial updates from the exported `update*Schema` contracts. Venture scope is immutable; decisions/classes/outcomes/pipelines require an admin or venture head in scope, while an opportunity owner may also update their own record. All updates return the updated record.

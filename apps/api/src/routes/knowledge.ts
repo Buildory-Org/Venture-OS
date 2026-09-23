@@ -26,12 +26,12 @@ export function knowledgeRoutes(database: Database): Router {
     const now = new Date();
     const documentId = randomUUID();
     const versionId = randomUUID();
-    const document = { _id: documentId, workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, title: input.title, slug: slug(input.title), ownerId: actor.id, status: "draft", evidenceClass: input.evidenceClass, sensitivity: input.sensitivity, authoritativeRank: input.authoritativeRank, currentVersionId: versionId, createdAt: now, updatedAt: now };
+    const document = { _id: documentId, workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), title: input.title, slug: slug(input.title), ownerId: actor.id, status: "draft", evidenceClass: input.evidenceClass, sensitivity: input.sensitivity, authoritativeRank: input.authoritativeRank, currentVersionId: versionId, createdAt: now, updatedAt: now };
     const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId, version: 1, markdown: input.markdown, changeSummary: input.changeSummary, createdBy: actor.id, createdAt: now, sourceUri: input.sourceUri };
     await atomic(database, async (session) => {
       await db.collection("documents").insertOne(document, { session });
       await db.collection("document_versions").insertOne(version, { session });
-      await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, documentId, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
+      await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), documentId, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.create", objectType: "document", objectId: documentId, ventureId: input.ventureId, result: "success" }, session);
     });
     res.status(201).json({ ok: true, data: jsonValue({ ...document, currentVersion: version }) });
@@ -45,7 +45,7 @@ export function knowledgeRoutes(database: Database): Router {
     if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Document cursor not found");
     const after = cursor ? { $or: [{ updatedAt: { $lt: cursor.updatedAt } }, { updatedAt: cursor.updatedAt, _id: { $lt: cursor._id } }] } : {};
     const rows = await db.collection("documents").find({ $and: [filter, after] }).sort({ updatedAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
-    res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
+    res.json({ ok: true, data: { items: rows.slice(0, query.limit).map(documentJson), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
   });
   router.get("/documents/:id", async (req, res) => {
     const actor = req.actor!;
@@ -55,7 +55,7 @@ export function knowledgeRoutes(database: Database): Router {
       db.collection("document_versions").find({ documentId: document._id }).sort({ version: -1 }).project({ markdown: 0 }).toArray(),
     ]);
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.read", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" });
-    res.json({ ok: true, data: jsonValue({ ...document, currentVersion: version, versions }) });
+    res.json({ ok: true, data: documentJson({ ...document, currentVersion: version, versions }) });
   });
 
   router.put("/documents/:id", async (req, res) => {
@@ -70,7 +70,7 @@ export function knowledgeRoutes(database: Database): Router {
     const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: input.changeSummary, sourceUri: input.sourceUri, createdBy: actor.id, createdAt: now };
     await atomic(database, async (session) => {
       await db.collection("document_versions").insertOne(version, { session });
-      await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: document.ventureId, documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
+      await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(document.ventureId ? { ventureId: document.ventureId } : {}), documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
       await db.collection("documents").updateOne({ _id: document._id }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now } }, { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.version.create", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" }, session);
     });
@@ -85,7 +85,7 @@ export function knowledgeRoutes(database: Database): Router {
     const input = z.object({ status: z.enum(["draft", "approved", "stale", "archived"]).optional(), lastReviewedAt: z.iso.datetime({ offset: true }).optional(), authoritativeRank: z.number().int().min(0).max(100).optional() }).refine((value) => Object.keys(value).length > 0).parse(req.body);
     await db.collection("documents").updateOne({ _id: document._id }, { $set: { ...input, ...(input.lastReviewedAt ? { lastReviewedAt: new Date(input.lastReviewedAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.metadata.update", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" });
-    res.json({ ok: true, data: jsonValue(await db.collection("documents").findOne({ _id: document._id })) });
+    res.json({ ok: true, data: documentJson(await db.collection("documents").findOne({ _id: document._id })) });
   });
 
   router.get("/knowledge/search", async (req, res) => {
@@ -242,7 +242,11 @@ async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unkn
 function authorizedDocumentFilter(actor: Actor, ventureId?: string): Filter<AppDocument> {
   const sensitivities = actor.membership.role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : actor.membership.role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
   const ventures = actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : actor.membership.ventureIds;
-  return { workspaceId: actor.membership.workspaceId, sensitivity: { $in: sensitivities }, status: { $ne: "archived" }, $or: [{ ventureId: { $exists: false } }, ...(ventures ? [{ ventureId: { $in: ventures } }] : [])] };
+  return { workspaceId: actor.membership.workspaceId, sensitivity: { $in: sensitivities }, status: { $ne: "archived" }, ...(ventures ? { $or: [{ ventureId: null }, { ventureId: { $in: ventures } }] } : {}) };
+}
+
+function documentJson(document: AppDocument | null): unknown {
+  return document ? jsonValue({ ...document, ventureId: document.ventureId ?? undefined }) : null;
 }
 
 async function accessibleDocument(db: AppDb, actor: Actor, id: string) {

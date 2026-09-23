@@ -117,6 +117,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 
 - [ ] R2 upload flow with signed URLs, metadata, authorization, and lifecycle rules
 - [x] Search/indexing across authorized messages, tasks, and documents
+- [x] Repair missing/legacy-null workspace document scope and admin all-venture visibility across REST and MCP; verify role/sensitivity boundaries in real Mongo and independent review
 - [x] Read-only MCP server with scoped local PATs, revocation, and audit logs
 - [x] Threat-model and reviewer-agent pass for file and MCP data boundaries
 - [x] Integration smoke tests

@@ -325,10 +325,40 @@ export async function updateLiveNotificationPreferences(input: unknown) {
   return successEnvelope(notificationPreferencesSchema).parse(await request("/v1/notification-preferences", { method: "PUT", body: JSON.stringify(valid) })).data;
 }
 
+export async function getLivePushConfig(): Promise<{ available: boolean; publicKey?: string }> {
+  let body: unknown;
+  try { body = await request("/v1/push-config"); }
+  catch (cause) {
+    if (cause instanceof StudioApiError && cause.code === "NOT_FOUND") return { available: false };
+    throw cause;
+  }
+  if (!body || typeof body !== "object" || !("ok" in body) || body.ok !== true || !("data" in body) || !body.data || typeof body.data !== "object") throw new StudioApiError("The Web Push configuration response was invalid.");
+  const config = body.data as { available?: unknown; publicKey?: unknown };
+  if (typeof config.available !== "boolean") throw new StudioApiError("The Web Push configuration response was invalid.");
+  if (config.available && (typeof config.publicKey !== "string" || !config.publicKey)) throw new StudioApiError("Web Push is configured without a public key.");
+  return { available: config.available, ...(config.available ? { publicKey: config.publicKey as string } : {}) };
+}
+
+export async function registerLivePushSubscription(subscription: PushSubscription) {
+  const data = subscription.toJSON();
+  if (!data.endpoint || !data.keys?.p256dh || !data.keys.auth) throw new StudioApiError("The browser did not provide complete push subscription details.");
+  const response = await request("/v1/push-subscriptions", { method: "POST", body: JSON.stringify({ endpoint: data.endpoint, expirationTime: data.expirationTime ?? null, keys: { p256dh: data.keys.p256dh, auth: data.keys.auth } }) });
+  if (!response || typeof response !== "object" || !("ok" in response) || response.ok !== true || !("data" in response) || !response.data || typeof response.data !== "object" || !("subscribed" in response.data) || response.data.subscribed !== true) throw new StudioApiError("The server did not confirm the push subscription.");
+}
+
+export async function unregisterLivePushSubscription(endpoint: string) {
+  const response = await request("/v1/push-subscriptions", { method: "DELETE", body: JSON.stringify({ endpoint }) });
+  if (!response || typeof response !== "object" || !("ok" in response) || response.ok !== true || !("data" in response) || !response.data || typeof response.data !== "object" || !("unsubscribed" in response.data) || response.data.unsubscribed !== true) throw new StudioApiError("The server did not confirm push subscription removal.");
+}
+
 export async function listLiveReminders(cursor?: string) {
   const params = new URLSearchParams({ limit: "50" });
   if (cursor) params.set("cursor", cursor);
   return pagedSuccessEnvelope(reminderSchema).parse(await request(`/v1/reminders?${params}`)).data;
+}
+
+export async function getLiveReminder(id: string) {
+  return successEnvelope(reminderSchema).parse(await request(`/v1/reminders/${encodeURIComponent(id)}`)).data;
 }
 
 export async function readLiveNotification(id: string) {

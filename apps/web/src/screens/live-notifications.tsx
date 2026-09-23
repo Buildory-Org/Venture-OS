@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, Database, RefreshCw } from "lucide-react";
-import { getLiveNotificationPreferences, listLiveNotifications, listLiveReminders, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
+import { getLiveNotificationPreferences, getLiveReminder, listLiveNotifications, listLiveReminders, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
 import { notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
 import { Badge, Empty, PageFrame, PageTitle, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { LiveWebPush } from "@/components/studio/live-web-push";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 type Preferences = Awaited<ReturnType<typeof getLiveNotificationPreferences>>;
@@ -24,14 +25,35 @@ export function LiveNotificationsScreen() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [linkedReminderId, setLinkedReminderId] = useState("");
+  const [linkedReminderError, setLinkedReminderError] = useState("");
 
   useEffect(() => {
     let active = true;
     queueMicrotask(() => Promise.all([listLiveNotifications(), listLiveReminders(), getLiveNotificationPreferences()]).then(([nextItems, page, nextPreferences]) => {
-      if (active) { setItems(nextItems); setReminders(page.items); setReminderCursor(page.nextCursor); setPreferences(nextPreferences); setLoading(false); setError(""); }
+      if (active) { setItems(nextItems); setReminders((current) => { const linked = current.find((item) => item.id === new URLSearchParams(window.location.search).get("reminder")); return linked && !page.items.some((item) => item.id === linked.id) ? [linked, ...page.items] : page.items; }); setReminderCursor(page.nextCursor); setPreferences(nextPreferences); setLoading(false); setError(""); }
     }).catch((cause: unknown) => { if (active) { setError(cause instanceof Error ? cause.message : "Could not load your inbox."); setLoading(false); } }));
     return () => { active = false; };
   }, [revision]);
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("reminder");
+    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return;
+    let active = true;
+    queueMicrotask(() => getLiveReminder(id).then((item) => {
+      if (!active) return;
+      setLinkedReminderId(id);
+      setReminders((current) => current.some((entry) => entry.id === id) ? current : [item, ...current]);
+    }).catch(() => { if (active) setLinkedReminderError("The linked reminder is unavailable or no longer accessible."); }));
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!linkedReminderId || !reminders.some((item) => item.id === linkedReminderId)) return;
+    const target = document.getElementById(`reminder-${linkedReminderId}`);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [linkedReminderId, reminders]);
 
   useEffect(() => {
     const onSnapshot = (event: Event) => {
@@ -71,6 +93,7 @@ export function LiveNotificationsScreen() {
     <PageTitle eyebrow="Connected inbox" title="Live notifications" description="Server-owned messages, reminders, and delivery preferences." action={<button type="button" className={secondaryClass} onClick={() => { setLoading(true); setRevision((value) => value + 1); }}><RefreshCw size={15} />Refresh</button>} />
     <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>Task-reminder notices now carry an actionable reminder ID; snooze always targets that ID, not the task. <Link href="/demo/notifications" className="font-bold underline">Demo notifications</Link> remain separate.</p></div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
+    {linkedReminderError && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{linkedReminderError}</p>}
     {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">
       <Panel><div className="flex gap-2 border-b border-neutral-100 p-3"><button type="button" onClick={() => setUnreadOnly(false)} className={`min-h-9 rounded-lg px-3 text-sm font-bold ${!unreadOnly ? "bg-neutral-900 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>All</button><button type="button" onClick={() => setUnreadOnly(true)} className={`min-h-9 rounded-lg px-3 text-sm font-bold ${unreadOnly ? "bg-neutral-900 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>Unread</button></div>
@@ -80,7 +103,8 @@ export function LiveNotificationsScreen() {
         })}</div> : <Empty title="Inbox clear" body="The API returned no notifications in this view." />}
       </Panel>
       <div className="space-y-4"><Panel><PanelHead title="Delivery preferences" /><form onSubmit={savePreferences} className="space-y-2 p-4">{preferences ? (Object.keys(preferenceLabels) as (keyof Preferences)[]).map((key) => <label key={key} className="flex min-h-10 items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 text-sm font-bold text-neutral-700"><span>{preferenceLabels[key]}</span><input type="checkbox" checked={preferences[key]} onChange={(event) => setPreferences((current) => current ? { ...current, [key]: event.target.checked } : current)} /></label>) : <p className="text-sm text-neutral-500">Loading preferences…</p>}<button disabled={!preferences || busyId === "preferences"} className={`${primaryClass} mt-2`}>Save preferences</button></form></Panel>
-        <Panel><PanelHead title="Your reminders" aside={<Badge tone="blue">{reminders.length}{reminderCursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{reminders.length ? reminders.map((item) => <article key={item.id} className="p-4"><p className="text-sm font-bold text-neutral-800">{item.message}</p><p className="mt-1 text-xs text-neutral-500">{stamp(item.scheduledAt)} · {item.state} · {item.timezone}</p>{item.taskId && <Link href={`/tasks/live?task=${encodeURIComponent(item.taskId)}`} className="mt-2 inline-block text-xs font-bold text-primary-700 underline">Open task</Link>}{item.state === "scheduled" && <select aria-label={`Snooze reminder ${item.id}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(item.id, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="mt-2 block min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-bold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Never</option></select>}</article>) : <Empty title="No reminders" body="Nothing has been scheduled for your account." />}</div>{reminderCursor && <button type="button" disabled={busyId === "reminders"} onClick={moreReminders} className="m-4 text-xs font-bold text-primary-700 underline">Load more reminders</button>}</Panel>
+        <Panel><PanelHead title="Browser push" /><LiveWebPush preferenceEnabled={preferences?.webPush} /></Panel>
+        <Panel><PanelHead title="Your reminders" aside={<Badge tone="blue">{reminders.length}{reminderCursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{reminders.length ? reminders.map((item) => <article key={item.id} id={`reminder-${item.id}`} tabIndex={-1} className={`p-4 outline-none ${linkedReminderId === item.id ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : ""}`}><p className="text-sm font-bold text-neutral-800">{item.message}</p><p className="mt-1 text-xs text-neutral-500">{stamp(item.scheduledAt)} · {item.state} · {item.timezone}</p>{item.taskId && <Link href={`/tasks/live?task=${encodeURIComponent(item.taskId)}`} className="mt-2 inline-block text-xs font-bold text-primary-700 underline">Open task</Link>}{item.state === "scheduled" && <select aria-label={`Snooze reminder ${item.id}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(item.id, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="mt-2 block min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-bold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Never</option></select>}</article>) : <Empty title="No reminders" body="Nothing has been scheduled for your account." />}</div>{reminderCursor && <button type="button" disabled={busyId === "reminders"} onClick={moreReminders} className="m-4 text-xs font-bold text-primary-700 underline">Load more reminders</button>}</Panel>
       </div>
     </div>
   </PageFrame>;

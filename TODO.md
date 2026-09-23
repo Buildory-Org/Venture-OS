@@ -59,9 +59,11 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Dock Channels details beside chat and open a group-scoped Kanban/Attachments/Saved workspace sheet; verify paged feeds, authorized status moves, image preview and invalid-media fallback, desktop/320px layout, scope switching, and Escape/focus return in an isolated browser fixture
 - [x] Add admin-only group People controls in connected Channels: named roster, fixed-scope existing-member search/add and precise group removal, with invite-by-email manual-link fallback; verify submitted group IDs, resulting roster, Escape/focus, and desktop/390px/320px layout in an isolated fixture
 - [ ] Verify real invitation email delivery and the email-sent response UI after configuring a verified Resend sender; the user approved Resend for invitations on 2026-09-23, but development currently returns a manual link
-- [ ] Verify a browser-originated channel message in an isolated UI fixture; the Mongo-backed API smoke test covers a real send, but the current browser points to shared seed data
+- [x] Verify a browser-originated channel message in an isolated UI fixture; send and reload passed against the 2026-09-23 local MongoDB preview
 - [ ] Connect active-group member discovery, additive Add people/Remove access, and real invitation issuance/acceptance; verify parent scope, delivery mode, authorization, and browser flow
 - [ ] Attach uploaded files to channel and DM messages; verify send, receive, reload, previews, authorization, and group media discovery
+  - [x] Browser-select synthetic text files, send in channel and DM, reload both conversations, find the file in group Attachments, and verify exact download bytes plus unrelated-user denial in the isolated local-storage preview
+  - [ ] Verify image/video/audio previews and repeat the browser flow against private Cloudflare R2 storage
 
 ### 2.2 Work management
 

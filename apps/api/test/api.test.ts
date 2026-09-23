@@ -512,7 +512,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(invalidMention.status, 400);
     const adminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
     const inviteUrl = `${origin}/v1/admin/invitations`;
-    const inviteBody = { email: "mail-candidate@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] };
+    const inviteBody = { email: "invited@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] };
     assert.equal((await fetch(inviteUrl, { method: "POST", headers, body: JSON.stringify(inviteBody) })).status, 403);
     const manualInvite = await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify(inviteBody) });
     assert.equal(manualInvite.status, 201, await manualInvite.clone().text());
@@ -526,11 +526,13 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const originalFetch = globalThis.fetch;
     let sentPayload: Record<string, unknown> | undefined;
     let sentIdempotencyKey = "";
-    let providerStatus = 200;
+    let providerStatus: number | "timeout" = 200;
+    let ambiguousInvitationToken = "";
     globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
       if (String(args[0]) === "https://api.resend.com/emails") {
         sentPayload = JSON.parse(String(args[1]?.body)) as Record<string, unknown>;
         sentIdempotencyKey = new Headers(args[1]?.headers).get("Idempotency-Key") ?? "";
+        if (providerStatus === "timeout") throw new Error("Simulated provider timeout after possible acceptance");
         return new Response(providerStatus === 200 ? JSON.stringify({ id: "mock-resend-message-id" }) : "{}", { status: providerStatus, headers: { "Content-Type": "application/json" } });
       }
       return originalFetch(...args);
@@ -556,6 +558,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
       assert.equal(rejectedInvite.status, 503);
       assert.equal(await database.db.collection("invitations").countDocuments({ workspaceId: "workspace-a", email: inviteBody.email, status: "pending", "delivery.status": "unconfirmed" }), 1);
       assert.equal(await database.db.collection("invitations").countDocuments({ _id: emailedData.invitation.id, status: "pending" }), 1);
+      providerStatus = "timeout";
+      const timedOutInvite = await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify(inviteBody) });
+      assert.equal(timedOutInvite.status, 503);
+      const ambiguousLink = String(sentPayload?.text).match(/https?:\/\/\S+\/invite\/live\?token=\S+/)?.[0];
+      assert.ok(ambiguousLink);
+      ambiguousInvitationToken = new URL(ambiguousLink).searchParams.get("token") ?? "";
+      assert.ok(ambiguousInvitationToken);
+      assert.equal(await database.db.collection("invitations").countDocuments({ workspaceId: "workspace-a", email: inviteBody.email, status: "pending", tokenHash: createHash("sha256").update(ambiguousInvitationToken).digest("hex"), "delivery.status": "unconfirmed" }), 1);
     } finally {
       globalThis.fetch = originalFetch;
       config.RESEND_API_KEY = undefined;
@@ -670,17 +680,18 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const replayVerify = await fetch(`${origin}${magic.pathname}?token=${encodeURIComponent(magic.searchParams.get("token")!)}`, { redirect: "manual" });
     assert.equal(replayVerify.status, 302);
 
-    const invitationToken = "invitation-token-valid-00000001";
+    const invitationToken = ambiguousInvitationToken;
     const wrongRecipientToken = "invitation-token-wrong-0000001";
     const expiredInvitationToken = "invitation-token-expired-00001";
     await database.db.collection("invitations").insertMany([
-      { _id: "invite-valid", workspaceId: "workspace-a", email: "invited@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], tokenHash: createHash("sha256").update(invitationToken).digest("hex"), status: "pending", invitedBy: "user-test", expiresAt: new Date(Date.now() + 60_000), createdAt: new Date() },
       { _id: "invite-wrong", workspaceId: "workspace-a", email: "someone-else@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], tokenHash: createHash("sha256").update(wrongRecipientToken).digest("hex"), status: "pending", invitedBy: "user-test", expiresAt: new Date(Date.now() + 60_000), createdAt: new Date() },
       { _id: "invite-expired", workspaceId: "workspace-a", email: "invited@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], tokenHash: createHash("sha256").update(expiredInvitationToken).digest("hex"), status: "pending", invitedBy: "user-test", expiresAt: new Date(Date.now() - 1), createdAt: new Date() },
     ]);
     const sessionHeaders = { "content-type": "application/json", cookie: sessionCookie };
     const acceptedInvite = await fetch(`${origin}/v1/invitations/accept`, { method: "POST", headers: sessionHeaders, body: JSON.stringify({ token: invitationToken }) });
     assert.equal(acceptedInvite.status, 200, await acceptedInvite.text());
+    assert.equal(await database.db.collection("invitations").countDocuments({ tokenHash: createHash("sha256").update(invitationToken).digest("hex"), status: "accepted", "delivery.status": "unconfirmed" }), 1);
+    assert.equal(await database.db.collection("invitations").countDocuments({ _id: manualInviteData.invitation.id, status: "superseded" }), 1);
     assert.equal((await database.db.collection("memberships").findOne({ userId: verifiedUser.id }))?.status, "active");
     assert.match(String((await database.db.collection("users").findOne({ _id: verifiedUser.id }))?.handle), /^invited-user-[a-f0-9]{8}$/);
     assert.equal((await fetch(`${origin}/v1/invitations/accept`, { method: "POST", headers: sessionHeaders, body: JSON.stringify({ token: invitationToken }) })).status, 404);

@@ -581,6 +581,17 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     await new Promise<void>((resolve, reject) => { cookieSocket!.once("connect", resolve); cookieSocket!.once("connect_error", reject); });
     assert.equal((await new Promise<any>((resolve) => cookieSocket!.emit("channel:join", "channel-a", resolve))).ok, true);
     cookieSocket.close();
+    const scopedGroupResponse = await fetch(`${origin}/v1/admin/groups`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ ventureId: "venture-a", name: "Scoped QA" }) });
+    assert.equal(scopedGroupResponse.status, 201, await scopedGroupResponse.clone().text());
+    const scopedGroup = ((await scopedGroupResponse.json()) as any).data;
+    assert.equal(scopedGroup.ventureId, "venture-a");
+    assert.equal(scopedGroup.channels[0].groupId, scopedGroup.id);
+    const scopedChannelResponse = await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ groupId: scopedGroup.id, name: "Handoff" }) });
+    assert.equal(scopedChannelResponse.status, 201, await scopedChannelResponse.clone().text());
+    const scopedChannel = ((await scopedChannelResponse.json()) as any).data;
+    assert.equal(scopedChannel.groupId, scopedGroup.id);
+    assert.equal(scopedChannel.ventureId, "venture-a");
+    assert.equal(await database.db.collection("channels").countDocuments({ _id: scopedChannel.id, groupId: scopedGroup.id, ventureId: "venture-a" }), 1);
   } finally {
     activeSocket?.close();
     activePeerSocket?.close();

@@ -51,6 +51,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Direct messages and notification center
 - [x] Move connected DMs and channels to independent full-viewport, three-pane messenger routes
 - [x] Add visible admin controls for venture, group, and channel creation in connected Channels
+- [x] Fix scoped Channels creation dialogs to inherit the clicked venture/group without a redundant selector; verify both dialogs in-browser and created scope in the isolated Mongo API test
 - [x] Show deterministic DiceBear Adventurer avatars for connected workspace users
 - [x] Smoke-check desktop and 390px chat layouts, admin create dialog, API-backed data, lint, and production build
 - [ ] Decide whether non-admin members or venture heads may create ventures, groups, or channels; update server permissions and reviewer tests only after policy approval

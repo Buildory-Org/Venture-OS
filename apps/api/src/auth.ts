@@ -17,6 +17,20 @@ async function sendMagicLink(config: AppConfig, email: string, url: string): Pro
   if (!response.ok) throw new Error(`Resend rejected magic link: ${response.status}`);
 }
 
+export async function sendInvitationEmail(config: AppConfig, email: string, url: string, invitationId: string): Promise<string> {
+  if (!config.RESEND_API_KEY) throw new Error("Resend is not configured");
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.RESEND_API_KEY}`, "Content-Type": "application/json", "Idempotency-Key": `invitation/${invitationId}` },
+    body: JSON.stringify({ from: config.EMAIL_FROM, to: email, subject: "Join Venture Studio", text: `You have been invited to Venture Studio. Open this one-time link to join:\n\n${url}\n\nThis invitation expires in 7 days.` }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`Resend rejected invitation: ${response.status}`);
+  const result: unknown = await response.json();
+  if (!result || typeof result !== "object" || !("id" in result) || typeof result.id !== "string") throw new Error("Resend did not confirm an email ID");
+  return result.id;
+}
+
 export function createAuth(db: Db, config: AppConfig) {
   return betterAuth({
     baseURL: config.API_ORIGIN,

@@ -25,7 +25,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   const resolveActor = createActorResolver(auth, database.db, config);
   app.use(requestContext);
   app.all("/api/auth/*splat", toNodeHandler(auth));
-  if (store instanceof LocalObjectStore) app.use("/v1", localObjectRoutes(database.db, store));
+  const localStore = store instanceof LocalObjectStore ? store : new LocalObjectStore(config);
+  app.use("/v1", localObjectRoutes(database.db, localStore));
   app.use(express.json({ limit: "2mb" }));
   app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
   app.use("/v1", rateLimit(database.db, 300, 60_000));
@@ -36,10 +37,10 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", collaborationRoutes(database));
   app.use("/v1", commandRoutes(database));
   app.use("/v1", knowledgeRoutes(database));
-  app.use("/v1", fileRoutes(database.db, store));
+  app.use("/v1", fileRoutes(database.db, store, localStore));
   app.use("/v1", patRoutes(database.db, config));
-  app.use("/v1", adminRoutes(database));
-  app.use("/v1", notificationRoutes(database.db));
+  app.use("/v1", adminRoutes(database, config));
+  app.use("/v1", notificationRoutes(database.db, config.VAPID_PUBLIC_KEY));
   app.use("/v1", salesRoutes(database.db));
   app.use("/v1", searchRoutes(database.db));
   app.use((_req, res) => res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Route not found", requestId: res.getHeader("x-request-id") } }));

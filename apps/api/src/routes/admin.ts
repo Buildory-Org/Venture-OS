@@ -1,8 +1,10 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Database } from "../db.js";
 import { atomic } from "../db.js";
+import type { AppConfig } from "../config.js";
+import { sendInvitationEmail } from "../auth.js";
 import { appRoleSchema, createChannelSchema, idSchema, updateMembershipSchema } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
@@ -12,7 +14,7 @@ const inviteSchema = z.object({ email: z.email(), role: appRoleSchema, ventureId
 const ventureSchema = z.object({ name: z.string().trim().min(1).max(120), ownerId: idSchema, goal30Day: z.string().trim().max(500).default("") });
 const groupSchema = z.object({ ventureId: idSchema, name: z.string().trim().min(1).max(120) });
 
-export function adminRoutes(database: Database): Router {
+export function adminRoutes(database: Database, config: AppConfig): Router {
   const db = database.db;
   const router = Router();
   router.post("/admin/invitations", async (req, res) => {
@@ -23,14 +25,39 @@ export function adminRoutes(database: Database): Router {
     if (ventures !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace");
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Every invited group must belong to an invited venture");
+    const email = input.email.toLowerCase();
+    const currentUser = await db.collection("users").findOne({ workspaceId: actor.membership.workspaceId, email, status: "active" });
+    if (currentUser && await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: currentUser._id, status: "active" })) throw new AppError(409, "CONFLICT", "This person is already a workspace member; use membership management instead");
     const token = randomBytes(32).toString("base64url");
-    const invite = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, email: input.email.toLowerCase(), tokenHash: createHash("sha256").update(token).digest("hex"), status: "pending", invitedBy: actor.id, expiresAt: new Date(Date.now() + 7 * 86_400_000), createdAt: new Date() };
+    const manual = !config.RESEND_API_KEY;
+    const invite = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, email, tokenHash: createHash("sha256").update(token).digest("hex"), status: "pending", delivery: { mode: manual ? "manual" : "email", status: manual ? "not_sent" : "sending" }, invitedBy: actor.id, expiresAt: new Date(Date.now() + 7 * 86_400_000), createdAt: new Date() };
+    const safeInvite = { id: invite._id, workspaceId: invite.workspaceId, email, role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, expiresAt: invite.expiresAt, status: "pending" };
+    if (manual) {
+      await atomic(database, async (session) => {
+        await db.collection("invitations").insertOne(invite, { session });
+        await audit(db, { workspaceId: invite.workspaceId, actorId: actor.id, channel: "api", action: "invitation.create", objectType: "invitation", objectId: invite._id, result: "success" }, session);
+      });
+      res.status(201).json({ ok: true, data: { invitation: jsonValue(safeInvite), token, delivery: { mode: "manual", status: "not_sent" } } });
+      return;
+    }
+    await db.collection("invitations").insertOne(invite);
+    const link = new URL("/invite/live", config.APP_ORIGIN);
+    link.searchParams.set("token", token);
+    let providerId: string;
+    try { providerId = await sendInvitationEmail(config, email, link.toString(), invite._id); }
+    catch {
+      // A timeout is ambiguous: Resend may have delivered the message. Keep its link usable.
+      await db.collection("invitations").updateOne({ _id: invite._id, status: "pending" }, { $set: { "delivery.status": "unconfirmed", updatedAt: new Date() } });
+      await audit(db, { workspaceId: invite.workspaceId, actorId: actor.id, channel: "api", action: "invitation.deliver", objectType: "invitation", objectId: invite._id, result: "failure" });
+      throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Invitation email was not confirmed; please retry");
+    }
     await atomic(database, async (session) => {
-      await db.collection("invitations").updateMany({ workspaceId: actor.membership.workspaceId, email: input.email.toLowerCase(), status: "pending" }, { $set: { status: "superseded", updatedAt: new Date() } }, { session });
-      await db.collection("invitations").insertOne(invite, { session });
+      const sent = await db.collection("invitations").updateOne({ _id: invite._id, status: "pending" }, { $set: { "delivery.status": "sent", "delivery.providerId": providerId, "delivery.sentAt": new Date(), updatedAt: new Date() } }, { session });
+      if (!sent.matchedCount) throw new AppError(409, "CONFLICT", "Invitation state changed before delivery confirmation");
+      // Concurrently delivered links remain valid until one is accepted.
+      await audit(db, { workspaceId: invite.workspaceId, actorId: actor.id, channel: "api", action: "invitation.deliver", objectType: "invitation", objectId: invite._id, result: "success" }, session);
     });
-    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "invitation.create", objectType: "invitation", objectId: String(invite._id), result: "success" });
-    res.status(201).json({ ok: true, data: { invitation: jsonValue({ ...invite, tokenHash: undefined }), token, next: "Send the user a Better Auth magic link, then accept this invitation after sign-in." } });
+    res.status(201).json({ ok: true, data: { invitation: jsonValue(safeInvite), delivery: { mode: "email", status: "sent" } } });
   });
   router.post("/admin/ventures", async (req, res) => {
     const actor = req.actor!;
@@ -86,12 +113,44 @@ export function adminRoutes(database: Database): Router {
     if (ventures !== input.ventureIds.length || groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Membership scopes must be valid groups within assigned ventures");
     const updatedAt = new Date();
     await atomic(database, async (session) => {
-      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active" }, { $set: { ...input, updatedAt } }, { session });
+      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active" }, { $set: { ...input, inheritedVentureIds: [], updatedAt } }, { session });
       if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success" }, session);
     });
     res.json({ ok: true, data: jsonValue(await db.collection("memberships").findOne({ _id: id, workspaceId: actor.membership.workspaceId })) });
   });
+  async function changeGroupMember(req: Request, res: Response, add: boolean) {
+    const actor = req.actor!;
+    if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only workspace admins may manage group members");
+    if (!database.transactions) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Group membership changes require a MongoDB replica set");
+    const groupId = idSchema.parse(req.params.groupId);
+    const userId = idSchema.parse(req.params.userId);
+    const workspaceId = actor.membership.workspaceId;
+    const group = await db.collection("groups").findOne({ _id: groupId, workspaceId });
+    if (!group) throw new AppError(404, "NOT_FOUND", "Group not found");
+    const updated = await atomic(database, async (session) => {
+      const membership = await db.collection("memberships").findOne({ workspaceId, userId, status: "active" }, { session });
+      const user = await db.collection("users").findOne({ _id: userId, workspaceId, status: "active" }, { session });
+      if (!membership || !user) throw new AppError(404, "NOT_FOUND", "Active workspace member not found");
+      if (userId === actor.id) throw new AppError(403, "FORBIDDEN", "Admins cannot change their own group membership");
+      if (!add && membership.role === "admin") throw new AppError(403, "FORBIDDEN", "Workspace admins retain access to every group");
+      const changed = add ? !membership.groupIds.includes(groupId) || !membership.ventureIds.includes(group.ventureId) : membership.groupIds.includes(groupId);
+      if (!changed) return membership;
+      const inherited = add && !membership.ventureIds.includes(group.ventureId);
+      const remainingGroupIds = add ? [] : membership.groupIds.filter((id: string) => id !== groupId);
+      const otherGroupInVenture = !add && await db.collection("groups").findOne({ _id: { $in: remainingGroupIds }, workspaceId, ventureId: group.ventureId }, { session });
+      const revokeInherited = !add && !otherGroupInVenture && (membership.inheritedVentureIds ?? []).includes(group.ventureId);
+      const result = add
+        ? await db.collection("memberships").updateOne({ _id: membership._id, workspaceId, status: "active" }, { $addToSet: { ventureIds: group.ventureId, groupIds: groupId, ...(inherited ? { inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session })
+        : await database.native.collection<{ _id: string; workspaceId: string; status: string; groupIds: string[]; ventureIds: string[]; inheritedVentureIds: string[]; updatedAt: Date }>("memberships").updateOne({ _id: String(membership._id), workspaceId, status: "active" }, { $pull: { groupIds: groupId, ...(revokeInherited ? { ventureIds: group.ventureId, inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session });
+      if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
+      await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: add ? "group.member.add" : "group.member.remove", objectType: "membership", objectId: String(membership._id), ventureId: String(group.ventureId), result: "success" }, session);
+      return db.collection("memberships").findOne({ _id: membership._id, workspaceId }, { session });
+    });
+    res.json({ ok: true, data: jsonValue(updated) });
+  }
+  router.put("/groups/:groupId/members/:userId", (req, res) => changeGroupMember(req, res, true));
+  router.delete("/groups/:groupId/members/:userId", (req, res) => changeGroupMember(req, res, false));
   return router;
 }
 
@@ -115,12 +174,11 @@ export function invitationAcceptanceRoutes(database: Database): Router {
       if (ventureCount !== invite.ventureIds.length || groups.length !== invite.groupIds.length || groups.some((group) => !invite.ventureIds.includes(group.ventureId))) throw new AppError(409, "CONFLICT", "Invitation scope is no longer valid");
       const activeMembership = await db.collection("memberships").findOne({ userId: identity.id, status: "active" }, { session });
       if (activeMembership && activeMembership.workspaceId !== invite.workspaceId) throw new AppError(409, "CONFLICT", "This account already has an active workspace membership");
-      const existing = activeMembership?.workspaceId === invite.workspaceId ? activeMembership : null;
-      if (existing && (existing.updatedAt as Date).getTime() > (invite.createdAt as Date).getTime()) throw new AppError(409, "CONFLICT", "Membership changed after this invitation was issued");
+      if (activeMembership) throw new AppError(409, "CONFLICT", "This account already has an active workspace membership");
       const handle = `${slug(identity.name).slice(0, 40) || "member"}-${createHash("sha256").update(identity.id).digest("hex").slice(0, 8)}`;
       const currentUser = await db.collection("users").findOne({ _id: identity.id }, { session });
       await db.collection("users").updateOne({ _id: identity.id }, { $set: { email: identity.email, name: identity.name, workspaceId: invite.workspaceId, status: "active", updatedAt: now, ...(!currentUser?.handle ? { handle } : {}) }, $setOnInsert: { createdAt: now } }, { upsert: true, session });
-      await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
+      await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, inheritedVentureIds: [], status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
       const accepted = await db.collection("invitations").updateOne({ _id: invite._id, status: "accepting" }, { $set: { status: "accepted", acceptedAt: now, acceptedBy: identity.id } }, { session });
       if (!accepted.matchedCount) throw new AppError(409, "CONFLICT", "Invitation was already claimed");
       await db.collection("invitations").updateMany({ workspaceId: invite.workspaceId, email: invite.email, status: "pending", _id: { $ne: invite._id } }, { $set: { status: "superseded", updatedAt: now } }, { session });

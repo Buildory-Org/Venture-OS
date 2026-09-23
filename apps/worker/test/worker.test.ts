@@ -31,7 +31,7 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     await collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true });
     await collection("notifications").createIndex({ outboxId: 1 }, { unique: true });
     await collection("users").insertOne({ _id: "user-a", workspaceId: "workspace-a", status: "active", email: "a@example.invalid" });
-    await collection("tasks").insertOne({ _id: "task-a", status: "accepted" });
+    await collection("tasks").insertOne({ _id: "task-a", workspaceId: "workspace-a", assigneeId: "user-a", status: "accepted", deadlineRisk: false });
     await collection("reminders").insertOne({ _id: "reminder-a", workspaceId: "workspace-a", userId: "user-a", taskId: "task-a", message: "Start work", scheduledAt: now, repeatMinutes: 10, sequence: 0, state: "scheduled", createdAt: now, updatedAt: now });
     const worker = new Worker(client, db, config, true);
     assert.equal(await worker.tick(now), true);
@@ -44,7 +44,7 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal((await collection("notification_outbox").findOne({ idempotencyKey: "reminder:reminder-a:0" }))?.state, "delivered");
     assert.equal(await collection("notifications").countDocuments({ outboxId: { $exists: true } }), 1);
     assert.equal((await collection("notifications").findOne({ outboxId: { $exists: true } }))?.reminderId, "reminder-a");
-    await collection("notification_outbox").insertOne({ _id: "outbox-fail", workspaceId: "workspace-a", userId: "missing-user", type: "reminder", title: "Fail", body: "Fail", resourceType: "task", resourceId: "task-a", idempotencyKey: "failure-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    await collection("notification_outbox").insertOne({ _id: "outbox-fail", workspaceId: "workspace-a", userId: "missing-user", type: "message", title: "Fail", body: "Fail", resourceType: "message", resourceId: "message-a", idempotencyKey: "failure-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);
     const failed = await collection("notification_outbox").findOne({ _id: "outbox-fail" });
     assert.equal(failed?.state, "pending");
@@ -72,7 +72,7 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal(await worker.tick(now), true);
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-message-muted" }), 0);
 
-    await collection("notification_outbox").insertOne({ _id: "outbox-dead", workspaceId: "workspace-a", userId: "missing-user", type: "reminder", title: "Dead", body: "Dead", resourceType: "task", resourceId: "task-a", idempotencyKey: "dead-test", state: "pending", attempts: 7, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    await collection("notification_outbox").insertOne({ _id: "outbox-dead", workspaceId: "workspace-a", userId: "missing-user", type: "message", title: "Dead", body: "Dead", resourceType: "message", resourceId: "message-a", idempotencyKey: "dead-test", state: "pending", attempts: 7, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);
     assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-dead" }))?.state, "dead");
 
@@ -82,6 +82,15 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     const claims = await Promise.all([worker.tick(now), competitor.tick(now)]);
     assert.equal(claims.filter(Boolean).length, 1);
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-race" }), 1);
+    await collection("notification_outbox").insertOne({ _id: "outbox-stale-risk", workspaceId: "workspace-a", userId: "user-a", type: "deadline_warning", title: "Risk", body: "Risk", resourceType: "task", resourceId: "task-a", idempotencyKey: "stale-risk-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    assert.equal(await worker.tick(now), true);
+    assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-stale-risk" }))?.state, "cancelled");
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-stale-risk" }), 0);
+    await collection("tasks").updateOne({ _id: "task-a" }, { $set: { startedAt: now } });
+    await collection("notification_outbox").insertOne({ _id: "outbox-stale-reminder", workspaceId: "workspace-a", userId: "user-a", type: "reminder", title: "Start", body: "Start", resourceType: "task", resourceId: "task-a", reminderId: "reminder-a", idempotencyKey: "reminder:reminder-a:99", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    assert.equal(await worker.tick(now), true);
+    assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-stale-reminder" }))?.state, "cancelled");
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-stale-reminder" }), 0);
   } finally {
     await db.dropDatabase();
     await client.close();

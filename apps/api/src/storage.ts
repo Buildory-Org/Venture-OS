@@ -11,7 +11,7 @@ export interface ObjectStore {
   uploadUrl(key: string, contentType: string, size: number): Promise<string>;
   downloadUrl(key: string): Promise<string>;
   head(key: string): Promise<ObjectMetadata>;
-  finalize(stagingKey: string, finalKey: string): Promise<ObjectMetadata>;
+  finalize(stagingKey: string, finalKey: string, expectedEtag?: string): Promise<ObjectMetadata>;
   discard(key: string): Promise<void>;
 }
 
@@ -53,13 +53,13 @@ export class R2ObjectStore implements ObjectStore {
   uploadUrl(key: string, contentType: string, size: number): Promise<string> { return getSignedUrl(this.client, new PutObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key, ContentType: contentType, ContentLength: size }), { expiresIn: 900 }); }
   downloadUrl(key: string): Promise<string> { return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key }), { expiresIn: 300 }); }
   async head(key: string): Promise<ObjectMetadata> { const result = await this.client.send(new HeadObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key })); return { size: result.ContentLength ?? 0, etag: result.ETag?.replaceAll('"', "") ?? "" }; }
-  async finalize(stagingKey: string, finalKey: string): Promise<ObjectMetadata> {
-    await this.client.send(new CopyObjectCommand({ Bucket: this.config.R2_BUCKET, CopySource: `${this.config.R2_BUCKET}/${stagingKey}`, Key: finalKey }));
+  async finalize(stagingKey: string, finalKey: string, expectedEtag?: string): Promise<ObjectMetadata> {
+    await this.client.send(new CopyObjectCommand({ Bucket: this.config.R2_BUCKET, CopySource: `${this.config.R2_BUCKET}/${stagingKey}`, CopySourceIfMatch: expectedEtag ? `"${expectedEtag}"` : undefined, Key: finalKey }));
     return this.head(finalKey);
   }
   async discard(key: string): Promise<void> { await this.client.send(new DeleteObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key })); }
 }
 
 export function createObjectStore(config: AppConfig): ObjectStore {
-  return config.R2_ENDPOINT && config.R2_ACCESS_KEY_ID && config.R2_SECRET_ACCESS_KEY ? new R2ObjectStore(config) : new LocalObjectStore(config);
+  return config.FILE_STORAGE === "r2" ? new R2ObjectStore(config) : new LocalObjectStore(config);
 }

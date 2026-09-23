@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { connectDatabase } from "./db.js";
 import { ensureIndexes } from "./indexes.js";
@@ -7,6 +9,8 @@ import { createObjectStore } from "./storage.js";
 import { createApp } from "./app.js";
 import { attachRealtime } from "./collaboration.js";
 
+const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
+if (envFile) process.loadEnvFile(envFile);
 const config = loadConfig();
 const database = await connectDatabase(config);
 await ensureIndexes(database.db);

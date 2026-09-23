@@ -35,11 +35,27 @@ export class Worker {
   }
   private async processOutbox(item: Record<string, any>, now: Date): Promise<void> {
     try {
+      if (await this.isStaleTaskNotice(item)) {
+        await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: "cancelled", cancelReason: "task_changed", updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } });
+        return;
+      }
       await this.delivery.send(item);
       await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: "delivered", deliveredAt: new Date(), adapter: this.delivery.mode, updatedAt: new Date() }, $unset: { leaseUntil: "", claimedBy: "", lastError: "" } });
     } catch (error) {
       const attempts = Number(item.attempts ?? 0) + 1;
       await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: attempts >= 8 ? "dead" : "pending", attempts, nextAttemptAt: retryAt(attempts, now), lastError: error instanceof Error ? error.message.slice(0, 500) : "Unknown delivery error", updatedAt: new Date() }, $unset: { leaseUntil: "", claimedBy: "" } });
     }
+  }
+
+  private async isStaleTaskNotice(item: Record<string, any>): Promise<boolean> {
+    if (item.resourceType !== "task" || !["assignment", "deadline_warning", "reminder"].includes(item.type)) return false;
+    const task = await this.db.collection("tasks").findOne({ _id: item.resourceId, workspaceId: item.workspaceId });
+    if (!task || task.assigneeId !== item.userId) return true;
+    if (item.type === "assignment") return false;
+    if (task.startedAt || task.completedAt || ["done", "cancelled"].includes(String(task.status))) return true;
+    if (item.type === "deadline_warning") return !task.deadlineRisk;
+    if (!item.reminderId) return false;
+    const reminder = await this.db.collection("reminders").findOne({ _id: item.reminderId, taskId: task._id, workspaceId: item.workspaceId, userId: item.userId });
+    return !reminder || reminder.state === "cancelled" || item.idempotencyKey !== `reminder:${reminder._id}:${Number(reminder.sequence) - 1}`;
   }
 }

@@ -32,3 +32,7 @@ npm run smoke:web
 
 Copy `.env.example` to `.env` and use a MongoDB replica set. Local mode can use labelled development identity, email, push, and object-storage adapters; production mode fails closed when required credentials or transaction support are missing.
 
+For Cloudflare R2 development uploads, use a private development bucket and a bucket-scoped Object Read & Write token. Set `FILE_STORAGE=r2`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in the ignored root `.env`; API startup fails if any are missing. Configure bucket CORS for the local web origin (`http://localhost:3011` in the current preview): allow `PUT`, `GET`, and `HEAD`, allow `Content-Type`, and expose `ETag`. Use a separate private bucket and token in production. An actual signed browser upload/download smoke test still requires configured credentials and must not be inferred from local-adapter tests.
+
+Member notifications default to in-app delivery, plus browser push once the member subscribes and VAPID keys are configured. Email notifications are opt-in, so repeating task reminders do not flood inboxes when Resend is configured; invitation and sign-in emails use their separate delivery flow.
+

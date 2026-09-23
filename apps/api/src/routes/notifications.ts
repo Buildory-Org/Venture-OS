@@ -5,11 +5,15 @@ import { idSchema, notificationPreferencesSchema } from "@venture-studio/contrac
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 
-const defaultPreferences = { email: true, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
+const defaultPreferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
 const subscriptionSchema = z.object({ endpoint: z.url(), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
+const subscriptionEndpointSchema = subscriptionSchema.pick({ endpoint: true });
 
-export function notificationRoutes(db: AppDb): Router {
+export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   const router = Router();
+  router.get("/push-config", (_req, res) => {
+    res.json({ ok: true, data: vapidPublicKey ? { available: true, publicKey: vapidPublicKey } : { available: false } });
+  });
   router.get("/notifications", async (req, res) => {
     const actor = req.actor!;
     const items = await db.collection("notifications").find({ workspaceId: actor.membership.workspaceId, userId: actor.id }).sort({ createdAt: -1 }).limit(100).toArray();
@@ -35,6 +39,11 @@ export function notificationRoutes(db: AppDb): Router {
     const actor = req.actor!; const subscription = subscriptionSchema.parse(req.body);
     await db.collection("push_subscriptions").updateOne({ workspaceId: actor.membership.workspaceId, userId: actor.id, endpoint: subscription.endpoint }, { $set: { ...subscription, active: true, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
     res.status(201).json({ ok: true, data: { subscribed: true } });
+  });
+  router.delete("/push-subscriptions", async (req, res) => {
+    const actor = req.actor!; const { endpoint } = subscriptionEndpointSchema.parse(req.body);
+    await db.collection("push_subscriptions").updateOne({ workspaceId: actor.membership.workspaceId, userId: actor.id, endpoint }, { $set: { active: false, updatedAt: new Date() } });
+    res.json({ ok: true, data: { unsubscribed: true } });
   });
   return router;
 }

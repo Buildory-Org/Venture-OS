@@ -16,7 +16,7 @@ export function searchRoutes(db: AppDb): Router {
     const [tasks, messages, files] = await Promise.all([
       query.types.includes("task") ? db.collection("tasks").find({ workspaceId: actor.membership.workspaceId, ...ventureScope, ...(actor.membership.role === "admin" ? {} : { groupId: { $in: actor.membership.groupIds } }), $text: { $search: query.q } }).limit(query.limit).toArray() : [],
       query.types.includes("message") ? db.collection("messages").find({ workspaceId: actor.membership.workspaceId, $text: { $search: query.q }, $or: [{ channelId: { $in: channelIds } }, { dmKey: { $regex: `(^|:)${escapedActor}(:|$)` } }] }).limit(query.limit).toArray() : [],
-      query.types.includes("file") ? db.collection("files").find({ workspaceId: actor.membership.workspaceId, ...ventureScope, status: "ready", $text: { $search: query.q }, ...(actor.membership.role === "admin" ? {} : { $or: [{ groupId: { $exists: false } }, { groupId: { $in: actor.membership.groupIds } }] }) }).limit(query.limit).toArray() : [],
+      query.types.includes("file") ? db.collection("files").find({ workspaceId: actor.membership.workspaceId, recipientId: { $exists: false }, ...ventureScope, status: "ready", $text: { $search: query.q }, ...(actor.membership.role === "admin" ? {} : { $or: [{ groupId: { $exists: false } }, { groupId: { $in: actor.membership.groupIds } }] }) }).limit(query.limit).toArray() : [],
     ]);
     const items = [
       ...tasks.map((item) => ({ type: "task", id: item._id, title: item.title, excerpt: item.outcome, ventureId: item.ventureId, sourceRef: `task:${item._id}` })),

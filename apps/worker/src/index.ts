@@ -1,7 +1,11 @@
 import { MongoClient } from "mongodb";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { Worker } from "./worker.js";
 
+const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
+if (envFile) process.loadEnvFile(envFile);
 const config = loadConfig();
 const client = new MongoClient(config.MONGODB_URI);
 await client.connect();

@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { cursorQuerySchema, idSchema, isoDateSchema } from "./common.js";
 
+export const messageAttachmentSchema = z.object({
+  id: idSchema,
+  name: z.string().min(1).max(255),
+  contentType: z.string().min(1).max(120),
+  size: z.number().int().min(1).max(25 * 1024 * 1024),
+});
+
 export const messageSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
@@ -9,7 +16,8 @@ export const messageSchema = z.object({
   channelId: idSchema.optional(),
   dmKey: z.string().optional(),
   authorId: idSchema,
-  body: z.string().min(1).max(10_000),
+  body: z.string().max(10_000),
+  attachments: z.array(messageAttachmentSchema).default([]),
   mentionUserIds: z.array(idSchema).default([]),
   threadRootId: idSchema.optional(),
   createdAt: isoDateSchema,
@@ -26,11 +34,12 @@ export const saveUpdateSchema = z.object({ saved: z.boolean() });
 export const pinUpdateSchema = z.object({ pinned: z.boolean() });
 
 export const createChannelMessageSchema = z.object({
-  body: z.string().trim().min(1).max(10_000),
+  body: z.string().trim().max(10_000),
+  attachmentFileIds: z.array(idSchema).max(10).default([]),
   mentionUserIds: z.array(idSchema).max(50).default([]),
   threadRootId: idSchema.optional(),
   clientId: z.string().min(8).max(120),
-});
+}).refine((value) => value.body.length > 0 || value.attachmentFileIds.length > 0, { message: "A message needs text or an attachment" });
 
 export const createDirectMessageSchema = createChannelMessageSchema.extend({
   recipientId: idSchema,

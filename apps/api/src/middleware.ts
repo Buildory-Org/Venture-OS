@@ -59,7 +59,7 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
   req.interfaceChannel = "api";
   res.setHeader("x-request-id", req.id);
   const startedAt = Date.now();
-  res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path, status: res.statusCode, durationMs: Date.now() - startedAt })));
+  res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path.replace(/\/local-objects\/[^/]+/i, "/local-objects/[redacted]"), status: res.statusCode, durationMs: Date.now() - startedAt })));
   next();
 }
 

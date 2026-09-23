@@ -9,14 +9,22 @@ import { connectDatabase } from "../src/db.js";
 import { ensureIndexes } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
-import { LocalObjectStore } from "../src/storage.js";
+import { LocalObjectStore, type ObjectStore } from "../src/storage.js";
 import { attachRealtime } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
-import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema } from "@venture-studio/contracts";
+import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, messageSchema } from "@venture-studio/contracts";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
-  assert.throws(() => loadConfig({ APP_MODE: "production", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
+  assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "https://app.example.com", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
+  assert.equal(loadConfig({}).EMAIL_FROM, "Venture Studio <noreply@example.invalid>");
+  assert.equal(loadConfig({ RESEND_API_KEY: "test-only", EMAIL_FROM: "Studio <invites@example.com>" }).EMAIL_FROM, "Studio <invites@example.com>");
+  assert.equal(loadConfig({ RESEND_API_KEY: "test-only", EMAIL_FROM: "invites@example.com" }).EMAIL_FROM, "invites@example.com");
+  assert.throws(() => loadConfig({ RESEND_API_KEY: "test-only" }), /EMAIL_FROM/);
+  assert.throws(() => loadConfig({ EMAIL_FROM: "Studio\n<invites@example.com>" }), /EMAIL_FROM/);
+  assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /HTTPS/);
+  assert.throws(() => loadConfig({ FILE_STORAGE: "r2" }), /FILE_STORAGE=r2 requires/);
+  assert.throws(() => loadConfig({ R2_ENDPOINT: "https://example.r2.cloudflarestorage.com" }), /R2 settings require FILE_STORAGE=r2/);
 });
 
 test("local object URLs are signed, operation-scoped, and expiring", async () => {
@@ -97,7 +105,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.deepEqual(((await (await fetch(`${origin}/v1/members?groupId=group-a&handle=peer`, { headers })).json()) as any).data.items.map((item: any) => item.name), ["Peer User"]);
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-hidden`, { headers })).status, 404);
     assert.equal(((await (await fetch(`${origin}/v1/members?handle=b`, { headers })).json()) as any).data.items[0].name, "Venture B User");
-    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: true, webPush: true, mentions: true, messages: true, assignments: true, reminders: true });
+    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true });
     const changedPreferences = { email: false, webPush: false, mentions: true, messages: true, assignments: true, reminders: true };
     assert.equal((await fetch(`${origin}/v1/notification-preferences`, { method: "PUT", headers, body: JSON.stringify(changedPreferences) })).status, 200);
     assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, changedPreferences);
@@ -199,14 +207,53 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const invalidReassignment = await fetch(`${origin}/v1/tasks/${createdBody.data.id}`, { method: "PATCH", headers, body: JSON.stringify({ assigneeId: "user-hidden" }) });
     assert.equal(invalidReassignment.status, 400);
     const taskReminder = await database.db.collection("reminders").findOne({ taskId: createdBody.data.id });
+    await database.db.collection("notification_outbox").insertOne({ _id: "outbox-snooze-pending", workspaceId: "workspace-a", userId: "user-test", type: "reminder", title: "Start", body: "Start", resourceType: "task", resourceId: createdBody.data.id, reminderId: taskReminder?._id, idempotencyKey: "snooze-pending-0001", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
     for (const minutes of [10, 20, 30]) {
       const snoozed = await fetch(`${origin}/v1/reminders/${taskReminder?._id}/snooze`, { method: "POST", headers, body: JSON.stringify({ minutes }) });
       assert.equal(snoozed.status, 200, await snoozed.text());
     }
+    assert.equal((await database.db.collection("notification_outbox").findOne({ _id: "outbox-snooze-pending" }))?.state, "cancelled");
+    assert.equal((await database.db.collection("reminders").findOne({ _id: taskReminder?._id }))?.sequence, 3);
     const silenced = await fetch(`${origin}/v1/reminders/${taskReminder?._id}/snooze`, { method: "POST", headers, body: JSON.stringify({ minutes: "never" }) });
     assert.equal(silenced.status, 200, await silenced.text());
     const terminalSnooze = await fetch(`${origin}/v1/reminders/${taskReminder?._id}/snooze`, { method: "POST", headers, body: JSON.stringify({ minutes: 10 }) });
     assert.equal(terminalSnooze.status, 409);
+
+    const planned = await fetch(`${origin}/v1/tasks`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", title: "Reschedule safely", outcome: "Verified reminder", assigneeId: "user-peer", reviewerId: "user-peer", dueAt: new Date(Date.now() + 7_200_000).toISOString(), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Checked", evidenceRequirement: "Evidence" }) });
+    assert.equal(planned.status, 201, await planned.clone().text());
+    const plannedId = ((await planned.json()) as any).data.id;
+    const firstReminder = await database.db.collection("reminders").findOne({ taskId: plannedId });
+    assert.equal(firstReminder?.userId, "user-peer");
+    await database.db.collection("notification_outbox").insertOne({ _id: "outbox-old-schedule", workspaceId: "workspace-a", userId: "user-peer", type: "reminder", title: "Start", body: "Start", resourceType: "task", resourceId: plannedId, reminderId: firstReminder?._id, idempotencyKey: "old-schedule-0001", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    const riskyDueAt = new Date(Date.now() + 20 * 60_000).toISOString();
+    const risky = await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ dueAt: riskyDueAt, estimatedMinutes: 30 }) });
+    assert.equal(risky.status, 200, await risky.clone().text());
+    assert.equal(((await risky.json()) as any).data.deadlineRisk, true);
+    assert.ok((await database.db.collection("tasks").findOne({ _id: plannedId }))?.dueAt instanceof Date);
+    assert.ok((await database.db.collection("reminders").findOne({ _id: firstReminder?._id }))?.scheduledAt <= new Date(Date.now() + 5_000));
+    assert.equal((await database.db.collection("notification_outbox").findOne({ _id: "outbox-old-schedule" }))?.state, "cancelled");
+    assert.equal((await database.db.collection("notification_outbox").findOne({ resourceId: plannedId, userId: "user-peer", type: "deadline_warning" }))?.state, "pending");
+    const reassigned = await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ assigneeId: "user-test", dueAt: new Date(Date.now() + 7_200_000).toISOString() }) });
+    assert.equal(reassigned.status, 200, await reassigned.clone().text());
+    assert.equal(((await reassigned.json()) as any).data.deadlineRisk, false);
+    assert.equal((await database.db.collection("notification_outbox").findOne({ resourceId: plannedId, userId: "user-peer", type: "deadline_warning" }))?.state, "cancelled");
+    assert.equal((await database.db.collection("reminders").findOne({ _id: firstReminder?._id }))?.state, "cancelled");
+    const newReminder = await database.db.collection("reminders").findOne({ taskId: plannedId, userId: "user-test", state: "scheduled" });
+    assert.ok(newReminder);
+    assert.ok(newReminder.scheduledAt > new Date(Date.now() + 60 * 60_000));
+    assert.equal((await database.db.collection("notification_outbox").findOne({ resourceId: plannedId, userId: "user-peer", type: "assignment" }))?.state, "cancelled");
+    assert.equal((await database.db.collection("notification_outbox").findOne({ resourceId: plannedId, userId: "user-test", type: "assignment" }))?.state, "pending");
+    assert.equal((await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers: scopePeerHeaders, body: JSON.stringify({ status: "in_progress" }) })).status, 403);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "contributor", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ dueAt: new Date(Date.now() + 1_800_000).toISOString() }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "in_progress", blocker: "Started" }) })).status, 200);
+    assert.equal((await database.db.collection("reminders").findOne({ _id: newReminder._id }))?.state, "cancelled");
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "learner", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ blocker: "Unauthorized" }) })).status, 403);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "venture_head", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/tasks/${plannedId}`, { method: "PATCH", headers, body: JSON.stringify({ assigneeId: "user-peer" }) })).status, 200);
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: plannedId, userId: "user-peer", type: "assignment", state: "pending" }), 1);
+    assert.equal(await database.db.collection("reminders").countDocuments({ taskId: plannedId, state: "scheduled" }), 0);
 
     await database.db.collection("users").insertMany([
       { _id: "user-ashutosh", workspaceId: "workspace-a", email: "ashutosh@example.invalid", name: "Ashutosh", status: "active" },
@@ -233,9 +280,15 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe`, { headers })).status, 409);
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe&q=Duplicate%20A`, { headers })).status, 400);
 
+    assert.equal((await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers: scopePeerHeaders, body: JSON.stringify({ channelId: "channel-a", input: `/assign @ashutosh "Denied" due=${new Date(Date.now() + 3_600_000).toISOString()} estimate=30 timezone=UTC` }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers: scopePeerHeaders, body: JSON.stringify({ channelId: "channel-a", input: `/notify @ashutosh "Denied" at=${new Date(Date.now() + 3_600_000).toISOString()} timezone=UTC` }) })).status, 403);
     const assignPreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/assign @ashutosh "Review evidence" due=${new Date(Date.now() + 3_600_000).toISOString()} estimate=30 timezone=UTC` }) });
     assert.equal(assignPreview.status, 201, await assignPreview.clone().text());
-    const assigned = await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: ((await assignPreview.json()) as any).data.previewId, idempotencyKey: "assign-ashutosh-0001" }) });
+    const assignPreviewId = ((await assignPreview.json()) as any).data.previewId;
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "contributor", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: assignPreviewId, idempotencyKey: "assign-downgraded-0001" }) })).status, 403);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "venture_head", updatedAt: new Date() } });
+    const assigned = await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify({ previewId: assignPreviewId, idempotencyKey: "assign-ashutosh-0001" }) });
     assert.equal(assigned.status, 201, await assigned.clone().text());
     assert.equal(((await assigned.json()) as any).data.task.assigneeId, "user-ashutosh");
     const notifyPreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @ashutosh "Review evidence" at=${new Date(Date.now() + 3_600_000).toISOString()} timezone=UTC` }) });
@@ -286,6 +339,13 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const replayed = await fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify(executeBody) });
     assert.equal(replayed.status, 200);
     assert.equal(await database.db.collection("command_executions").countDocuments({ idempotencyKey: "smoke-notify-0001" }), 1);
+    const concurrentPreview = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @test "Concurrent reminder" at=${new Date(Date.now() + 90_000).toISOString()} timezone=UTC` }) });
+    assert.equal(concurrentPreview.status, 201);
+    const concurrentBody = { previewId: ((await concurrentPreview.json()) as any).data.previewId, idempotencyKey: "notify-concurrent-0001" };
+    const concurrentResults = await Promise.all(Array.from({ length: 2 }, () => fetch(`${origin}/v1/commands/execute`, { method: "POST", headers, body: JSON.stringify(concurrentBody) })));
+    assert.deepEqual(concurrentResults.map((response) => response.status).sort(), [200, 201]);
+    assert.equal(await database.db.collection("command_executions").countDocuments({ idempotencyKey: concurrentBody.idempotencyKey }), 1);
+    assert.equal(await database.db.collection("reminders").countDocuments({ message: "Concurrent reminder", userId: "user-test" }), 1);
     const hiddenPreviewResponse = await fetch(`${origin}/v1/commands/preview`, { method: "POST", headers, body: JSON.stringify({ channelId: "channel-a", input: `/notify @hidden "Cross scope" at=${new Date(Date.now() + 60_000).toISOString()} timezone=UTC` }) });
     assert.equal(hiddenPreviewResponse.status, 201);
     const hiddenPreview = await hiddenPreviewResponse.json() as any;
@@ -317,6 +377,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const intentResponse = await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", taskId: createdBody.data.id, name: "proof.txt", contentType: "text/plain", size: 3 }) });
     assert.equal(intentResponse.status, 201);
     const intent = (await intentResponse.json()) as any;
+    assert.equal((await fetch(`${origin}/v1/uploads/${intent.data.file.id}/complete`, { method: "POST", headers: { "content-type": "application/json", "x-dev-user-id": "user-peer" }, body: JSON.stringify({ etag: "other" }) })).status, 404);
     assert.equal((await fetch(intent.data.uploadUrl, { method: "PUT", headers: { "content-type": "text/plain" }, body: "yes" })).status, 204);
     const complete = await fetch(`${origin}/v1/uploads/${intent.data.file.id}/complete`, { method: "POST", headers, body: JSON.stringify({ etag: "local" }) });
     assert.equal(complete.status, 200, await complete.text());
@@ -324,6 +385,27 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const download = await fetch(`${origin}/v1/files/${intent.data.file.id}/download`, { headers });
     const downloadBody = (await download.json()) as any;
     assert.equal(await (await fetch(downloadBody.data.downloadUrl)).text(), "yes");
+    const unavailableR2: ObjectStore = {
+      kind: "r2",
+      async uploadUrl() { throw new Error("R2 unavailable in this test"); },
+      async downloadUrl() { throw new Error("R2 unavailable in this test"); },
+      async head() { throw new Error("R2 unavailable in this test"); },
+      async finalize() { throw new Error("R2 unavailable in this test"); },
+      async discard() { throw new Error("R2 unavailable in this test"); },
+    };
+    const switchedConfig = { ...config, FILE_STORAGE: "r2" as const };
+    const switchedServer = createServer(createApp(database, switchedConfig, auth, unavailableR2).app).listen(0);
+    try {
+      await once(switchedServer, "listening");
+      const switchedAddress = switchedServer.address();
+      switchedConfig.API_ORIGIN = `http://127.0.0.1:${typeof switchedAddress === "object" && switchedAddress ? switchedAddress.port : 0}`;
+      const legacyDownload = await fetch(`${switchedConfig.API_ORIGIN}/v1/files/${intent.data.file.id}/download`, { headers });
+      assert.equal(legacyDownload.status, 200, await legacyDownload.clone().text());
+      assert.equal(await (await fetch(((await legacyDownload.json()) as any).data.downloadUrl)).text(), "yes");
+    } finally { await new Promise<void>((resolve) => switchedServer.close(() => resolve())); }
+    await database.db.collection("files").insertOne({ _id: "r2-unavailable", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "r2.txt", contentType: "text/plain", size: 1, objectKey: "fake", status: "ready", storage: "r2", createdAt: new Date() });
+    assert.equal((await fetch(`${origin}/v1/files/r2-unavailable/download`, { headers })).status, 503);
+    await database.db.collection("files").deleteOne({ _id: "r2-unavailable" });
     await database.db.collection("files").insertOne({ _id: "file-malformed-cross-tenant", workspaceId: "workspace-other", ventureId: "venture-other", groupId: "group-other", taskId: createdBody.data.id, ownerId: "other", name: "leak.txt", contentType: "text/plain", size: 1, objectKey: "other", status: "ready", storage: "local", createdAt: new Date() });
     await database.db.collection("files").insertOne({ _id: "file-same-group-other-workspace", workspaceId: "workspace-other", ventureId: "venture-a", groupId: "group-a", ownerId: "other", name: "cross-workspace.txt", contentType: "text/plain", size: 1, objectKey: "other", status: "ready", storage: "local", createdAt: new Date() });
     const taskWithAttachment = await (await fetch(`${origin}/v1/tasks/${createdBody.data.id}`, { headers })).json() as any;
@@ -359,6 +441,15 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
       groupFileCursor = page.data.nextCursor;
     } while (groupFileCursor);
     assert.deepEqual(new Set(groupFileNames), new Set(["proof.txt", "recover.txt", "clip.mp4", "voice.webm"]));
+    const downgradedIntent = await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", taskId: createdBody.data.id, name: "role-check.txt", contentType: "text/plain", size: 3 }) });
+    assert.equal(downgradedIntent.status, 201, await downgradedIntent.clone().text());
+    const downgradedFile = (await downgradedIntent.json()) as any;
+    assert.equal((await fetch(downgradedFile.data.uploadUrl, { method: "PUT", headers: { "content-type": "text/plain" }, body: "yes" })).status, 204);
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "reviewer", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/uploads/${downgradedFile.data.file.id}/complete`, { method: "POST", headers, body: JSON.stringify({ etag: "local" }) })).status, 403);
+    assert.equal((await database.db.collection("files").findOne({ _id: downgradedFile.data.file.id }))?.status, "pending");
+    await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "venture_head", updatedAt: new Date() } });
+    assert.equal((await fetch(`${origin}/v1/uploads/${downgradedFile.data.file.id}/complete`, { method: "POST", headers, body: JSON.stringify({ etag: "local" }) })).status, 200);
     await database.db.collection("api_rate_limits").deleteMany({}); // Reset this isolated fixture between independent API flows.
 
     const patResponse = await fetch(`${origin}/v1/pats`, { method: "POST", headers, body: JSON.stringify({ name: "smoke", scopes: ["ventures:read", "tasks:read", "knowledge:read"] }) });
@@ -394,6 +485,56 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const invalidMention = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Cross-boundary mention", mentionUserIds: ["user-hidden"], clientId: "invalid-mention-0001" }) });
     assert.equal(invalidMention.status, 400);
     const adminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
+    const inviteUrl = `${origin}/v1/admin/invitations`;
+    const inviteBody = { email: "mail-candidate@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] };
+    assert.equal((await fetch(inviteUrl, { method: "POST", headers, body: JSON.stringify(inviteBody) })).status, 403);
+    const manualInvite = await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify(inviteBody) });
+    assert.equal(manualInvite.status, 201, await manualInvite.clone().text());
+    const manualInviteData = ((await manualInvite.json()) as any).data;
+    assert.equal(manualInviteData.delivery.mode, "manual");
+    assert.equal(manualInviteData.delivery.status, "not_sent");
+    assert.equal(typeof manualInviteData.token, "string");
+    assert.equal(await database.db.collection("invitations").countDocuments({ _id: manualInviteData.invitation.id, status: "pending" }), 1);
+    config.RESEND_API_KEY = "re_test_mock_only";
+    config.EMAIL_FROM = "Studio <invites@example.com>";
+    const originalFetch = globalThis.fetch;
+    let sentPayload: Record<string, unknown> | undefined;
+    let sentIdempotencyKey = "";
+    let providerStatus = 200;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      if (String(args[0]) === "https://api.resend.com/emails") {
+        sentPayload = JSON.parse(String(args[1]?.body)) as Record<string, unknown>;
+        sentIdempotencyKey = new Headers(args[1]?.headers).get("Idempotency-Key") ?? "";
+        return new Response(providerStatus === 200 ? JSON.stringify({ id: "mock-resend-message-id" }) : "{}", { status: providerStatus, headers: { "Content-Type": "application/json" } });
+      }
+      return originalFetch(...args);
+    }) as typeof fetch;
+    try {
+      const emailedInvite = await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify(inviteBody) });
+      assert.equal(emailedInvite.status, 201, await emailedInvite.clone().text());
+      const emailedData = ((await emailedInvite.json()) as any).data;
+      assert.deepEqual(emailedData.delivery, { mode: "email", status: "sent" });
+      assert.equal("token" in emailedData, false);
+      assert.equal("tokenHash" in emailedData.invitation, false);
+      assert.equal(sentPayload?.to, inviteBody.email);
+      assert.equal(sentPayload?.from, "Studio <invites@example.com>");
+      const emailedLink = String(sentPayload?.text).match(/https?:\/\/\S+\/invite\/live\?token=\S+/)?.[0];
+      assert.ok(emailedLink);
+      const emailedToken = new URL(emailedLink).searchParams.get("token");
+      assert.ok(emailedToken);
+      assert.equal(sentIdempotencyKey, `invitation/${emailedData.invitation.id}`);
+      assert.equal(await database.db.collection("invitations").countDocuments({ _id: emailedData.invitation.id, status: "pending", tokenHash: createHash("sha256").update(emailedToken).digest("hex"), "delivery.status": "sent" }), 1);
+      assert.equal(await database.db.collection("invitations").countDocuments({ _id: manualInviteData.invitation.id, status: "pending" }), 1);
+      providerStatus = 422;
+      const rejectedInvite = await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify(inviteBody) });
+      assert.equal(rejectedInvite.status, 503);
+      assert.equal(await database.db.collection("invitations").countDocuments({ workspaceId: "workspace-a", email: inviteBody.email, status: "pending", "delivery.status": "unconfirmed" }), 1);
+      assert.equal(await database.db.collection("invitations").countDocuments({ _id: emailedData.invitation.id, status: "pending" }), 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.RESEND_API_KEY = undefined;
+      config.EMAIL_FROM = "Venture Studio <noreply@example.invalid>";
+    }
     assert.equal((await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers, body: JSON.stringify({ groupId: "group-a", name: "Launch Plan" }) })).status, 403);
     const newChannel = await fetch(`${origin}/v1/admin/channels`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ groupId: "group-a", name: "Launch Plan" }) });
     assert.equal(newChannel.status, 201, await newChannel.clone().text());
@@ -405,6 +546,40 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const updatedMember = await fetch(`${origin}/v1/admin/memberships/membership-peer`, { method: "PUT", headers: adminHeaders, body: JSON.stringify(membershipBody) });
     assert.equal(updatedMember.status, 200, await updatedMember.clone().text());
     assert.equal(((await updatedMember.json()) as any).data.role, "reviewer");
+    await database.db.collection("users").insertOne({ _id: "user-join", workspaceId: "workspace-a", email: "join@example.invalid", name: "Join Candidate", handle: "join", status: "active", createdAt: now, updatedAt: now });
+    await database.db.collection("memberships").insertOne({ _id: "membership-join", workspaceId: "workspace-a", userId: "user-join", role: "contributor", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now });
+    assert.equal((await fetch(inviteUrl, { method: "POST", headers: adminHeaders, body: JSON.stringify({ ...inviteBody, email: "join@example.invalid" }) })).status, 409);
+    const groupMemberUrl = (groupId: string, userId: string) => `${origin}/v1/groups/${groupId}/members/${userId}`;
+    assert.equal((await fetch(groupMemberUrl("group-hidden", "user-join"), { method: "PUT", headers })).status, 403);
+    assert.equal((await fetch(groupMemberUrl("group-missing", "user-join"), { method: "PUT", headers: adminHeaders })).status, 404);
+    assert.equal((await fetch(groupMemberUrl("group-a", "user-missing"), { method: "PUT", headers: adminHeaders })).status, 404);
+    assert.equal((await fetch(groupMemberUrl("group-a", "user-admin"), { method: "DELETE", headers: adminHeaders })).status, 403);
+    const addedToGroup = await fetch(groupMemberUrl("group-a", "user-join"), { method: "PUT", headers: adminHeaders });
+    assert.equal(addedToGroup.status, 200, await addedToGroup.clone().text());
+    const addedMembership = ((await addedToGroup.json()) as any).data;
+    assert.deepEqual(addedMembership.ventureIds, ["venture-a"]);
+    assert.deepEqual(addedMembership.groupIds, ["group-a"]);
+    assert.deepEqual(addedMembership.inheritedVentureIds, ["venture-a"]);
+    assert.equal((await fetch(groupMemberUrl("group-a", "user-join"), { method: "PUT", headers: adminHeaders })).status, 200);
+    assert.equal(await database.db.collection("audit_events").countDocuments({ action: "group.member.add", objectId: "membership-join" }), 1);
+    assert.equal(((await (await fetch(`${origin}/v1/members?groupId=group-a`, { headers: adminHeaders })).json()) as any).data.items.some((item: any) => item.id === "user-join"), true);
+    const removedFromGroup = await fetch(groupMemberUrl("group-a", "user-join"), { method: "DELETE", headers: adminHeaders });
+    assert.equal(removedFromGroup.status, 200, await removedFromGroup.clone().text());
+    const removedMembership = ((await removedFromGroup.json()) as any).data;
+    assert.deepEqual(removedMembership.groupIds, []);
+    assert.deepEqual(removedMembership.ventureIds, []);
+    assert.deepEqual(removedMembership.inheritedVentureIds, []);
+    assert.equal((await fetch(groupMemberUrl("group-a", "user-join"), { method: "DELETE", headers: adminHeaders })).status, 200);
+    assert.equal(await database.db.collection("audit_events").countDocuments({ action: "group.member.remove", objectId: "membership-join" }), 1);
+    assert.equal(((await (await fetch(`${origin}/v1/members?groupId=group-a`, { headers: adminHeaders })).json()) as any).data.items.some((item: any) => item.id === "user-join"), false);
+    assert.equal(((await (await fetch(`${origin}/v1/members?groupId=group-a`, { headers: adminHeaders })).json()) as any).data.items.some((item: any) => item.id === "user-admin"), true);
+    assert.deepEqual(((await (await fetch(`${origin}/v1/session/bootstrap`, { headers: { "x-dev-user-id": "user-join" } })).json()) as any).data.hierarchy.ventures, []);
+    await database.db.collection("users").insertOne({ _id: "user-direct", workspaceId: "workspace-a", email: "direct@example.invalid", name: "Direct Grant", handle: "direct", status: "active", createdAt: now, updatedAt: now });
+    await database.db.collection("memberships").insertOne({ _id: "membership-direct", workspaceId: "workspace-a", userId: "user-direct", role: "contributor", ventureIds: ["venture-a"], groupIds: [], status: "active", createdAt: now, updatedAt: now });
+    assert.equal((await fetch(groupMemberUrl("group-a", "user-direct"), { method: "PUT", headers: adminHeaders })).status, 200);
+    const removedDirectGroup = await fetch(groupMemberUrl("group-a", "user-direct"), { method: "DELETE", headers: adminHeaders });
+    assert.equal(removedDirectGroup.status, 200);
+    assert.deepEqual(((await removedDirectGroup.json()) as any).data.ventureIds, ["venture-a"]);
     await database.db.collection("decisions").insertOne({ _id: "decision-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", status: "draft", updatedAt: now });
     await database.db.collection("classes").insertOne({ _id: "class-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", objective: "Learn", scheduledAt: new Date(Date.now() + 86_400_000), durationMinutes: 30, facilitatorId: "user-test", participantIds: ["user-peer"], status: "scheduled", createdAt: now, updatedAt: now });
     assert.equal((await fetch(`${origin}/v1/classes/class-a`, { method: "PATCH", headers, body: JSON.stringify({ participantIds: ["user-b"] }) })).status, 400);
@@ -519,11 +694,16 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     peerSocket.close();
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { groupIds: ["group-a"], updatedAt: new Date() } });
     assert.equal((await new Promise<any>((resolve) => socket.emit("channel:join", "channel-a", resolve))).ok, true);
-    const sent = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
+    const attachmentPush = new Promise<any>((resolve) => socket.once("event", resolve));
+    const sent = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], attachmentFileIds: [intent.data.file.id], clientId: "smoke-message-0001" } }, resolve));
     assert.equal(sent.ok, true);
-    const replayedMessage = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
+    assert.deepEqual(sent.data.attachments, [{ id: intent.data.file.id, name: "proof.txt", contentType: "text/plain", size: 3 }]);
+    assert.deepEqual((await attachmentPush).payload.attachments, sent.data.attachments);
+    const replayedMessage = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], attachmentFileIds: [intent.data.file.id], clientId: "smoke-message-0001" } }, resolve));
     assert.equal(replayedMessage.ok, true);
     assert.equal(replayedMessage.data.id, sent.data.id);
+    const changedSocketRetry = await new Promise<any>((resolve) => socket.emit("message:create", { channelId: "channel-a", body: { body: "Hello @test", mentionUserIds: ["user-test"], clientId: "smoke-message-0001" } }, resolve));
+    assert.equal(changedSocketRetry.error.code, "CONFLICT");
     assert.equal(await database.db.collection("messages").countDocuments({ clientId: "smoke-message-0001" }), 1);
     assert.equal(await database.db.collection("events").countDocuments({ _id: sent.data.id, type: "message.created" }), 1);
     const messageId = sent.data.id;
@@ -631,6 +811,71 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(scopedChannel.groupId, scopedGroup.id);
     assert.equal(scopedChannel.ventureId, "venture-a");
     assert.equal(await database.db.collection("channels").countDocuments({ _id: scopedChannel.id, groupId: scopedGroup.id, ventureId: "venture-a" }), 1);
+    await database.db.collection("api_rate_limits").deleteMany({});
+    const channelFileId = intent.data.file.id as string;
+    const channelFileSend = await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "", attachmentFileIds: [channelFileId], clientId: "attachment-channel-0001" }) });
+    assert.equal(channelFileSend.status, 201, await channelFileSend.clone().text());
+    const channelFileMessage = messageSchema.parse(((await channelFileSend.json()) as any).data.message);
+    assert.equal(channelFileMessage.body, "");
+    assert.deepEqual(channelFileMessage.attachments, [{ id: channelFileId, name: "proof.txt", contentType: "text/plain", size: 3 }]);
+    assert.equal((await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "", attachmentFileIds: [channelFileId], clientId: "attachment-channel-0001" }) })).status, 200);
+    assert.equal((await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "Changed", attachmentFileIds: [channelFileId], clientId: "attachment-channel-0001" }) })).status, 409);
+    assert.equal(Object.hasOwn(channelFileMessage.attachments[0]!, "objectKey"), false);
+    const channelFileReload = ((await (await fetch(origin + "/v1/channels/channel-a/messages", { headers })).json()) as any).data.items.find((item: any) => item.id === channelFileMessage.id);
+    assert.deepEqual(channelFileReload.attachments, channelFileMessage.attachments);
+    const channelFileEvent = await database.db.collection("events").findOne({ _id: channelFileMessage.id, type: "message.created" });
+    assert.deepEqual(channelFileEvent?.payload.attachments, channelFileMessage.attachments);
+    assert.equal(Object.hasOwn(channelFileEvent?.payload ?? {}, "objectKey"), false);
+    assert.equal(Object.hasOwn(channelFileEvent?.payload ?? {}, "attachmentFileIds"), false);
+    const deniedFileIds = ["file-other-group", "file-other-owner", "file-not-ready", "file-other-venture"];
+    await database.db.collection("files").insertMany([
+      { _id: deniedFileIds[0]!, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-hidden", ownerId: "user-test", name: "hidden.txt", contentType: "text/plain", size: 1, objectKey: "hidden", status: "ready", createdAt: now },
+      { _id: deniedFileIds[1]!, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-peer", name: "peer.txt", contentType: "text/plain", size: 1, objectKey: "peer", status: "ready", createdAt: now },
+      { _id: deniedFileIds[2]!, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "pending.txt", contentType: "text/plain", size: 1, objectKey: "pending", status: "pending", createdAt: now },
+      { _id: deniedFileIds[3]!, workspaceId: "workspace-a", ventureId: "venture-b", groupId: "group-b", ownerId: "user-test", name: "venture-b.txt", contentType: "text/plain", size: 1, objectKey: "venture-b", status: "ready", createdAt: now },
+    ]);
+    for (const [index, fileId] of [...deniedFileIds, "file-same-group-other-workspace"].entries()) {
+      const denied = await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "Attempt", attachmentFileIds: [fileId], clientId: "attachment-denied-" + index }) });
+      assert.equal(denied.status, 400, fileId);
+    }
+    assert.equal((await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "Duplicate", attachmentFileIds: [channelFileId, channelFileId], clientId: "attachment-duplicate-0001" }) })).status, 400);
+    await database.db.collection("files").deleteMany({ _id: { $in: deniedFileIds } });
+
+    const dmIntentBody = { recipientId: "user-peer", name: "private.txt", contentType: "text/plain", size: 4 };
+    assert.equal((await fetch(origin + "/v1/uploads", { method: "POST", headers, body: JSON.stringify({ ...dmIntentBody, ventureId: "venture-a" }) })).status, 400);
+    assert.equal((await fetch(origin + "/v1/uploads", { method: "POST", headers, body: JSON.stringify({ ...dmIntentBody, groupId: "group-a" }) })).status, 400);
+    assert.equal((await fetch(origin + "/v1/uploads", { method: "POST", headers, body: JSON.stringify({ ...dmIntentBody, recipientId: "user-test" }) })).status, 400);
+    const dmIntentResponse = await fetch(origin + "/v1/uploads", { method: "POST", headers, body: JSON.stringify(dmIntentBody) });
+    assert.equal(dmIntentResponse.status, 201, await dmIntentResponse.clone().text());
+    const dmIntent = ((await dmIntentResponse.json()) as any).data;
+    const dmFileId = dmIntent.file.id as string;
+    assert.equal(dmIntent.file.recipientId, "user-peer");
+    assert.equal(Object.hasOwn(dmIntent.file, "ventureId"), false);
+    assert.equal((await fetch(dmIntent.uploadUrl, { method: "PUT", headers: { "content-type": "text/plain" }, body: "only" })).status, 204);
+    assert.equal((await fetch(origin + "/v1/uploads/" + dmFileId + "/complete", { method: "POST", headers, body: JSON.stringify({ etag: "local" }) })).status, 200);
+    assert.equal((await fetch(origin + "/v1/files/" + dmFileId + "/download", { headers: adminHeaders })).status, 404);
+    assert.equal((await fetch(origin + "/v1/files/" + dmFileId + "/download", { headers: { "x-dev-user-id": "user-hidden" } })).status, 404);
+    const peerDownload = await fetch(origin + "/v1/files/" + dmFileId + "/download", { headers: { "x-dev-user-id": "user-peer" } });
+    assert.equal(peerDownload.status, 200);
+    assert.equal(await (await fetch(((await peerDownload.json()) as any).data.downloadUrl)).text(), "only");
+    const dmFileSend = await fetch(origin + "/v1/direct-messages", { method: "POST", headers, body: JSON.stringify({ recipientId: "user-peer", body: "", attachmentFileIds: [dmFileId], clientId: "attachment-dm-0001" }) });
+    assert.equal(dmFileSend.status, 201, await dmFileSend.clone().text());
+    const dmFileMessage = messageSchema.parse(((await dmFileSend.json()) as any).data);
+    assert.deepEqual(dmFileMessage.attachments, [{ id: dmFileId, name: "private.txt", contentType: "text/plain", size: 4 }]);
+    assert.equal((await fetch(origin + "/v1/direct-messages", { method: "POST", headers, body: JSON.stringify({ recipientId: "user-peer", body: "", attachmentFileIds: [dmFileId], clientId: "attachment-dm-0001" }) })).status, 200);
+    assert.equal((await fetch(origin + "/v1/direct-messages", { method: "POST", headers, body: JSON.stringify({ recipientId: "user-peer", body: "", attachmentFileIds: [channelFileId], clientId: "attachment-dm-0001" }) })).status, 409);
+    const dmReload = ((await (await fetch(origin + "/v1/direct-messages/user-peer", { headers })).json()) as any).data.find((item: any) => item.id === dmFileMessage.id);
+    assert.deepEqual(dmReload.attachments, dmFileMessage.attachments);
+    const peerDmReload = ((await (await fetch(origin + "/v1/direct-messages/user-test", { headers: { "x-dev-user-id": "user-peer" } })).json()) as any).data.find((item: any) => item.id === dmFileMessage.id);
+    assert.deepEqual(peerDmReload.attachments, dmFileMessage.attachments);
+    const dmFileEvent = await database.db.collection("events").findOne({ type: "direct_message.created", "payload._id": dmFileMessage.id });
+    assert.deepEqual(dmFileEvent?.payload.attachments, dmFileMessage.attachments);
+    assert.equal(Object.hasOwn(dmFileEvent?.payload ?? {}, "objectKey"), false);
+    assert.equal((await database.db.collection("notification_outbox").findOne({ resourceId: dmFileMessage.id, type: "message" }))?.body, "Shared a file");
+    assert.equal((await fetch(origin + "/v1/direct-messages", { method: "POST", headers, body: JSON.stringify({ recipientId: "user-hidden", body: "Wrong recipient", attachmentFileIds: [dmFileId], clientId: "attachment-dm-denied-0001" }) })).status, 400);
+    assert.equal((await fetch(origin + "/v1/direct-messages", { method: "POST", headers: adminHeaders, body: JSON.stringify({ recipientId: "user-peer", body: "Wrong owner", attachmentFileIds: [dmFileId], clientId: "attachment-dm-denied-0002" }) })).status, 400);
+    assert.equal((await fetch(origin + "/v1/direct-messages", { method: "POST", headers, body: JSON.stringify({ recipientId: "user-peer", body: "Wrong scope", attachmentFileIds: [channelFileId], clientId: "attachment-dm-denied-0003" }) })).status, 400);
+    assert.equal((await fetch(origin + "/v1/channels/channel-a/messages", { method: "POST", headers, body: JSON.stringify({ body: "Wrong scope", attachmentFileIds: [dmFileId], clientId: "attachment-channel-denied-0002" }) })).status, 400);
   } finally {
     activeSocket?.close();
     activePeerSocket?.close();

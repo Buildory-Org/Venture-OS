@@ -58,6 +58,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Replace the flattened connected Channels list with a venture selector, expandable group rail, and selected-group-only channel list; verify desktop and 390px/320px navigation, deep links, and keyboard focus
 - [x] Dock Channels details beside chat and open a group-scoped Kanban/Attachments/Saved workspace sheet; verify paged feeds, authorized status moves, image preview and invalid-media fallback, desktop/320px layout, scope switching, and Escape/focus return in an isolated browser fixture
 - [ ] Verify a browser-originated channel message in an isolated UI fixture; the Mongo-backed API smoke test covers a real send, but the current browser points to shared seed data
+- [ ] Connect active-group member discovery, additive Add people/Remove access, and real invitation issuance/acceptance; verify parent scope, delivery mode, authorization, and browser flow
+- [ ] Attach uploaded files to channel and DM messages; verify send, receive, reload, previews, authorization, and group media discovery
 
 ### 2.2 Work management
 
@@ -85,7 +87,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Verify scoped venture-head document approval in the browser on a synthetic local record
 - [x] Make the connected workspace the default at `/` and `/dashboard`, route the main navigation to API-backed pages, and isolate the sample-only prototype under `/demo`; verify desktop/mobile navigation and keyboard behavior
 - [ ] Verify physical browser save/download in a browser that exposes a download event or saved file
-- [ ] Repair and verify admin document list/detail scope for venture and workspace records in the backend
+- [x] Repair and verify admin document list/detail scope for venture and workspace records in the backend (real-Mongo scope tests)
 - [ ] Verify browser Socket.IO with a real Better Auth cookie and staging reverse-proxy/sticky-session configuration
 - [ ] Integrate shared contracts when the backend publishes them
 
@@ -100,7 +102,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 ## Phase 3 — Backend foundation
 
 - [x] Define shared Zod contracts and error/event envelopes
-- [x] Implement Better Auth identity/session flows and magic-link delivery
+- [x] Implement Better Auth identity/session flows and magic-link delivery adapter
+- [ ] Verify real magic-link and invitation email delivery with a configured sender and Resend account
 - [x] Implement app-owned workspace, venture, group, channel, role, and membership authorization
 - [x] Add MongoDB models, indexes, migrations/backfills, and seed data
 - [x] Add API request validation, structured logging, audit records, and rate limits
@@ -119,13 +122,14 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] `/assign` and `/notify` parsing with permissions, previews, and auditability
 - [x] Durable reminder worker with outbox, retries, idempotency, and escalation rules
 - [x] Focus sessions and timer recovery across refresh/reconnect
-- [x] Web Push and email notification channels with per-user preferences
+- [ ] Complete Web Push browser subscription and credentialed delivery checks; worker adapters and server-side preferences exist, but closed-tab push is not yet verified
 - [x] Independent reviewer-agent approval for realtime and scheduling paths
 - [x] End-to-end smoke tests for assignment, reminders, snooze, and completion
 
 ## Phase 5 — Files, knowledge, and MCP
 
 - [ ] R2 upload flow with signed URLs, metadata, authorization, and lifecycle rules
+- [ ] Configure separate private R2 development/production buckets with scoped keys; verify real browser upload/download and no local fallback when R2 is selected
 - [x] Add authorized, paginated group file and saved-message feeds with cross-group/cross-workspace Mongo smoke checks
 - [ ] Validate uploaded media contents and playback for image/video/audio previews; the current allowlist checks declared MIME type and size only
 - [x] Search/indexing across authorized messages, tasks, and documents
@@ -141,5 +145,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [ ] Backup/restore and disaster-recovery rehearsal
 - [ ] Security, accessibility, performance, and dependency audits
 - [ ] Cross-browser and critical-path end-to-end test suite
+- [ ] Run the local reminder worker with the preview app and verify in-app delivery, snooze, and completion from a browser session
+- [ ] Show newly delivered in-app notifications without manual refresh (unread bell and accessible reminder toast); verify no duplicate initial-load alerts
 - [ ] Staging sign-off and release checklist
 

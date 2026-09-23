@@ -30,6 +30,10 @@
 - Upload intents write to a staging object. Completion copies to the immutable final key and deletes staging so a still-valid upload URL cannot overwrite a ready file.
 - Event replay is ordered by `(occurredAt, eventId)` and the cursor itself must still be visible to the caller.
 - One active app membership per user is enforced until a workspace-selection flow is deliberately designed.
+- Group membership changes require transactions and are additive/idempotent within the active workspace. Adding a group grants its parent venture only if absent and records that inherited grant; removing the last group in that venture revokes only the inherited grant, never an explicit venture assignment.
+- R2 development and production use separate private buckets and bucket-scoped credentials. `FILE_STORAGE=r2` must be explicit, and incomplete R2 configuration fails startup rather than falling back to local uploads.
+- Invitation email and in-app reminder delivery are distinct: an invitation targets an email address before membership, while the reminder worker writes the signed-in member's in-app notification through the outbox.
+- In V1, `/assign` and `/notify` are manager shortcuts limited to workspace admins and scoped venture heads. Contributors may still create tasks through the ordinary task form/API; a distinct per-group manager role and whether it should own all delegation require a later product decision.
 
 ## Reliability and security invariants
 

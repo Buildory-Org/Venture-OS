@@ -3,7 +3,7 @@ import type { Server as HttpServer } from "node:http";
 import { Router } from "express";
 import { Server } from "socket.io";
 import type { ClientSession } from "mongodb";
-import { createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, messageSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
+import { createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, messageAttachmentSchema, messageSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
 import { can, dmKey } from "@venture-studio/core";
 import type { AppDb, Database } from "./db.js";
 import { atomic } from "./db.js";
@@ -24,6 +24,30 @@ async function channelScope(db: AppDb, actor: Actor, channelId: string) {
   const channel = await db.collection("channels").findOne({ _id: channelId, workspaceId: actor.membership.workspaceId });
   if (!channel || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(channel.ventureId)) || !actor.membership.groupIds.includes(String(channel.groupId))))) throw new AppError(404, "NOT_FOUND", "Channel not found");
   return channel;
+}
+
+async function messageAttachments(db: AppDb, actor: Actor, ids: string[], scope: { ventureId: string; groupId: string } | { recipientId: string }) {
+  if (!ids.length) return [];
+  if (new Set(ids).size !== ids.length) throw new AppError(400, "BAD_REQUEST", "Duplicate attachment");
+  const files = await db.collection("files").find({
+    _id: { $in: ids }, workspaceId: actor.membership.workspaceId, ownerId: actor.id, status: "ready",
+    ...("recipientId" in scope
+      ? { recipientId: scope.recipientId, ventureId: { $exists: false }, groupId: { $exists: false } }
+      : { ventureId: scope.ventureId, groupId: scope.groupId, recipientId: { $exists: false } }),
+  }).toArray();
+  if (files.length !== ids.length) throw new AppError(400, "BAD_REQUEST", "Every attachment must be a completed upload for this conversation");
+  const byId = new Map(files.map((file) => [String(file._id), file]));
+  return ids.map((id) => {
+    const file = byId.get(id)!;
+    return messageAttachmentSchema.parse({ id, name: file.name, contentType: file.contentType, size: file.size });
+  });
+}
+
+function sameMessageRequest(message: Record<string, any>, input: { body: string; mentionUserIds: string[]; threadRootId?: string; attachmentFileIds: string[] }) {
+  return message.body === input.body
+    && message.threadRootId === input.threadRootId
+    && JSON.stringify(message.mentionUserIds ?? []) === JSON.stringify(input.mentionUserIds)
+    && JSON.stringify((message.attachments ?? []).map((file: { id: string }) => file.id)) === JSON.stringify(input.attachmentFileIds);
 }
 
 async function messageScope(db: AppDb, actor: Actor, messageId: string) {
@@ -64,6 +88,7 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
   const prior = await database.db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: parsed.clientId });
   if (prior) {
     if (prior.channelId !== channelId) throw new AppError(409, "CONFLICT", "Message client ID was already used in another channel");
+    if (!sameMessageRequest(prior, parsed)) throw new AppError(409, "CONFLICT", "Message client ID was already used with different content");
     const priorEvent = await database.db.collection("events").findOne({ _id: prior._id, workspaceId: actor.membership.workspaceId, type: "message.created" });
     if (!priorEvent) throw new AppError(409, "CONFLICT", "Message retry is waiting for its event; retry shortly");
     return { message: prior, event: priorEvent, replayed: true };
@@ -77,7 +102,9 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     const valid = await database.db.collection("memberships").countDocuments({ workspaceId: actor.membership.workspaceId, userId: { $in: mentioned }, status: "active", ventureIds: channel.ventureId, groupIds: channel.groupId });
     if (valid !== mentioned.length) throw new AppError(400, "BAD_REQUEST", "Every mention must be an active member of this venture and group");
   }
-  const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...parsed, createdAt: new Date() };
+  const attachments = await messageAttachments(database.db, actor, parsed.attachmentFileIds, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) });
+  const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
+  const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
   try {
     await atomic(database, async (session) => {
@@ -97,6 +124,7 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     const duplicate = await database.db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: parsed.clientId, channelId });
     const duplicateEvent = duplicate ? await database.db.collection("events").findOne({ _id: duplicate._id, workspaceId: actor.membership.workspaceId, type: "message.created" }) : null;
     if (!duplicate || !duplicateEvent) throw new AppError(409, "CONFLICT", "Concurrent message retry is not yet readable; retry shortly");
+    if (!sameMessageRequest(duplicate, parsed)) throw new AppError(409, "CONFLICT", "Message client ID was already used with different content");
     return { message: duplicate, event: duplicateEvent, replayed: true };
   }
   return { message, event: createdEvent!, replayed: false };
@@ -139,6 +167,7 @@ export function collaborationRoutes(database: Database): Router {
     const prior = await db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: input.clientId });
     if (prior) {
       if (prior.dmKey !== key) throw new AppError(409, "CONFLICT", "Message client ID was already used elsewhere");
+      if (!sameMessageRequest(prior, input)) throw new AppError(409, "CONFLICT", "Message client ID was already used with different content");
       res.json({ ok: true, data: jsonValue((await decorateMessages(db, actor, [prior]))[0]) });
       return;
     }
@@ -146,16 +175,19 @@ export function collaborationRoutes(database: Database): Router {
       const root = await db.collection("messages").findOne({ _id: input.threadRootId, workspaceId: actor.membership.workspaceId, dmKey: key });
       if (!root || root.threadRootId) throw new AppError(400, "BAD_REQUEST", "Thread root must be a top-level message in this conversation");
     }
-    const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, dmKey: key, authorId: actor.id, ...input, createdAt: new Date() };
+    const attachments = await messageAttachments(db, actor, input.attachmentFileIds, { recipientId: input.recipientId });
+    const { attachmentFileIds: _attachmentFileIds, ...content } = input;
+    const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, dmKey: key, authorId: actor.id, ...content, attachments, createdAt: new Date() };
     let createdEvent: Record<string, unknown> | undefined;
     try { await atomic(database, async (session) => {
       await db.collection("messages").insertOne(message, { session });
       createdEvent = await event(db, actor, "direct_message.created", message, { audienceUserIds: [actor.id, input.recipientId] }, session);
-      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}`, body: input.body.slice(0, 500), resourceType: "message", resourceId: message._id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
+      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
     }); } catch (error) {
       if ((error as { code?: number }).code !== 11000) throw error;
       const duplicate = await db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: input.clientId, dmKey: key });
       if (!duplicate) throw new AppError(409, "CONFLICT", "Concurrent message retry is not yet readable; retry shortly");
+      if (!sameMessageRequest(duplicate, input)) throw new AppError(409, "CONFLICT", "Message client ID was already used with different content");
       res.json({ ok: true, data: jsonValue((await decorateMessages(db, actor, [duplicate]))[0]) });
       return;
     }

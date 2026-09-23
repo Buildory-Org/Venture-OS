@@ -20,7 +20,10 @@ export function hierarchyRoutes(db: AppDb): Router {
     }
     if (ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(ventureId)) throw new AppError(404, "NOT_FOUND", "Venture not found");
     if (ventureId && !await db.collection("ventures").findOne({ _id: ventureId, workspaceId })) throw new AppError(404, "NOT_FOUND", "Venture not found");
-    const memberships = await db.collection("memberships").find({ workspaceId, status: "active", ...(ventureId ? { ventureIds: ventureId } : {}), ...(query.groupId ? { groupIds: query.groupId } : {}) }).project({ userId: 1, role: 1 }).toArray();
+    const scope = query.groupId
+      ? { $or: [{ ventureIds: ventureId, groupIds: query.groupId }, { role: "admin" }] }
+      : ventureId ? { $or: [{ ventureIds: ventureId }, { role: "admin" }] } : {};
+    const memberships = await db.collection("memberships").find({ workspaceId, status: "active", ...scope }).project({ userId: 1, role: 1 }).toArray();
     const byUser = new Map(memberships.map((item) => [String(item.userId), item]));
     const escaped = query.q?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const exactHandle = query.handle?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

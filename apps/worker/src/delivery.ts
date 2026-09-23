@@ -12,7 +12,8 @@ export class Delivery {
   async send(item: Record<string, any>): Promise<void> {
     const user = await this.db.collection("users").findOne({ _id: item.userId, workspaceId: item.workspaceId, status: "active" });
     if (!user) throw new Error("Notification user is inactive");
-    const preferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId }) ?? { email: true, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
+    const storedPreferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId });
+    const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, ...storedPreferences };
     const category = item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
     if (preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
@@ -33,7 +34,13 @@ export class Delivery {
       for (const subscription of subscriptions) {
         const endpointKey = createHash("sha256").update(String(subscription.endpoint)).digest("hex");
         if (item.delivery?.push?.[endpointKey]) continue;
-        await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
+        try {
+          await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
+        } catch (error) {
+          if (![404, 410].includes(Number((error as { statusCode?: number }).statusCode))) throw error;
+          await this.db.collection("push_subscriptions").updateOne({ _id: subscription._id }, { $set: { active: false, expiredAt: new Date() } });
+          continue;
+        }
         await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { [`delivery.push.${endpointKey}`]: new Date() } });
       }
     }

@@ -1,5 +1,7 @@
 import {
   createTaskSchema,
+  createOutcomeSchema,
+  createDocumentSchema,
   channelSchema,
   createChannelMessageSchema,
   createDirectMessageSchema,
@@ -378,6 +380,11 @@ export async function listLiveDocuments(cursor?: string, filters: { ventureId?: 
   return pagedSuccessEnvelope(documentSchema).parse(await request(`/v1/documents?${params}`)).data;
 }
 
+export async function createLiveDocument(input: unknown) {
+  const valid = createDocumentSchema.parse(input);
+  return successEnvelope(documentSchema).parse(await request("/v1/documents", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
 export async function updateLiveDocument(id: string, input: unknown) {
   const valid = updateDocumentSchema.parse(input);
   return successEnvelope(documentVersionSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
@@ -391,6 +398,11 @@ export async function listLiveOutcomes() {
   return successEnvelope(outcomeSchema.array()).parse(await request("/v1/outcomes")).data;
 }
 
+export async function createLiveOutcome(input: unknown) {
+  const valid = createOutcomeSchema.parse(input);
+  return successEnvelope(outcomeSchema).parse(await request("/v1/outcomes", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
 export async function updateLiveOutcome(id: string, input: unknown) {
   const valid = updateOutcomeSchema.parse(input);
   return successEnvelope(outcomeSchema).parse(await request(`/v1/outcomes/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
@@ -400,6 +412,11 @@ export async function listLiveDecisions() {
   return successEnvelope(decisionSchema.array()).parse(await request("/v1/decisions")).data;
 }
 
+export async function createLiveDecision(input: unknown) {
+  const valid = decisionSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }).parse(input);
+  return successEnvelope(decisionSchema).parse(await request("/v1/decisions", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
 export async function updateLiveDecision(id: string, input: unknown) {
   const valid = updateDecisionSchema.parse(input);
   return successEnvelope(decisionSchema).parse(await request(`/v1/decisions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
@@ -407,6 +424,11 @@ export async function updateLiveDecision(id: string, input: unknown) {
 
 export async function listLiveClasses() {
   return successEnvelope(classSchema.array()).parse(await request("/v1/classes")).data;
+}
+
+export async function createLiveClass(input: unknown) {
+  const valid = classSchema.omit({ id: true, workspaceId: true, createdAt: true, updatedAt: true }).parse(input);
+  return successEnvelope(classSchema).parse(await request("/v1/classes", { method: "POST", body: JSON.stringify(valid) })).data;
 }
 
 export async function updateLiveClass(id: string, input: unknown) {
@@ -432,6 +454,11 @@ export async function reviewLiveClassApplication(classId: string, applicationId:
 
 export async function listLiveInformationRequests() {
   return successEnvelope(informationRequestSchema.array()).parse(await request("/v1/information-requests")).data;
+}
+
+export async function createLiveInformationRequest(input: unknown) {
+  const valid = informationRequestSchema.omit({ id: true, workspaceId: true, requesterId: true, status: true, responseMarkdown: true, sourceRefs: true, reviewedBy: true, createdAt: true, updatedAt: true }).parse(input);
+  return successEnvelope(informationRequestSchema).parse(await request("/v1/information-requests", { method: "POST", body: JSON.stringify(valid) })).data;
 }
 
 export async function updateLiveInformationRequest(id: string, input: unknown) {

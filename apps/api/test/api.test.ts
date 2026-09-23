@@ -6,7 +6,7 @@ import test from "node:test";
 import { io as socketClient } from "socket.io-client";
 import { loadConfig } from "../src/config.js";
 import { connectDatabase } from "../src/db.js";
-import { ensureIndexes } from "../src/indexes.js";
+import { deduplicatePushEndpoints, ensureIndexes } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import { LocalObjectStore, type ObjectStore } from "../src/storage.js";
@@ -48,6 +48,16 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   assert.equal(database.transactions, true);
   await ensureIndexes(database.db);
   const now = new Date();
+  const legacyPush = database.db.collection("push_subscriptions_upgrade_fixture");
+  await legacyPush.insertMany([
+    { _id: "old-device-owner", endpoint: "https://updates.push.services.mozilla.com/wpush/v2/old", userId: "user-test", active: true, updatedAt: new Date(now.getTime() - 1000), keys: { auth: "old" } },
+    { _id: "new-device-owner", endpoint: "https://UPDATES.PUSH.SERVICES.MOZILLA.COM:443/wpush/v2/old", userId: "user-peer", active: true, updatedAt: now, keys: { auth: "new" } },
+  ]);
+  assert.equal(await deduplicatePushEndpoints(legacyPush), 2);
+  assert.equal(await legacyPush.countDocuments({ endpoint: "https://updates.push.services.mozilla.com/wpush/v2/old", active: true }), 0);
+  assert.equal(await legacyPush.countDocuments({ _id: "old-device-owner", active: false, endpoint: { $exists: false }, keys: { $exists: false } }), 1);
+  assert.equal(await legacyPush.countDocuments({ _id: "new-device-owner", active: false, endpoint: { $exists: false }, keys: { $exists: false } }), 1);
+  await legacyPush.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
   await database.db.collection("users").insertMany([
     { _id: "user-admin", workspaceId: "workspace-a", email: "admin@example.invalid", name: "Admin", handle: "admin", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-test", workspaceId: "workspace-a", email: "test@example.invalid", name: "Test User", handle: "test", status: "active", createdAt: now, updatedAt: now },
@@ -119,6 +129,19 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.deepEqual(documentBrowse.data.items.map((item: any) => item.id), ["document-global"]);
     const scopeAdminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
     const scopePeerHeaders = { "content-type": "application/json", "x-dev-user-id": "user-peer" };
+    const pushEndpoint = "https://updates.push.services.mozilla.com/wpush/v2/shared-browser";
+    const pushSubscription = { endpoint: pushEndpoint, expirationTime: null, keys: { p256dh: "public-key-test", auth: "auth-key-test" } };
+    for (const endpoint of ["http://127.0.0.1/internal", "https://127.0.0.1/internal", "https://private.example.com/internal", "javascript:alert(1)"]) {
+      assert.equal((await fetch(`${origin}/v1/push-subscriptions`, { method: "POST", headers, body: JSON.stringify({ ...pushSubscription, endpoint }) })).status, 400);
+    }
+    assert.deepEqual(((await (await fetch(`${origin}/v1/push-config`, { headers })).json()) as any).data, { available: false });
+    assert.equal((await fetch(`${origin}/v1/push-subscriptions`, { method: "POST", headers, body: JSON.stringify(pushSubscription) })).status, 201);
+    assert.equal((await fetch(`${origin}/v1/push-subscriptions`, { method: "POST", headers: scopePeerHeaders, body: JSON.stringify({ ...pushSubscription, endpoint: "https://UPDATES.PUSH.SERVICES.MOZILLA.COM:443/wpush/v2/shared-browser" }) })).status, 201);
+    assert.equal(await database.db.collection("push_subscriptions").countDocuments({ endpoint: pushEndpoint, userId: "user-peer", active: true }), 1);
+    assert.equal((await fetch(`${origin}/v1/push-subscriptions`, { method: "DELETE", headers, body: JSON.stringify({ endpoint: pushEndpoint }) })).status, 200);
+    assert.equal(await database.db.collection("push_subscriptions").countDocuments({ endpoint: pushEndpoint, userId: "user-peer", active: true }), 1);
+    assert.equal((await fetch(`${origin}/v1/push-subscriptions`, { method: "DELETE", headers: scopePeerHeaders, body: JSON.stringify({ endpoint: pushEndpoint }) })).status, 200);
+    assert.equal(await database.db.collection("push_subscriptions").countDocuments({ endpoint: pushEndpoint, active: true }), 0);
     const createKnowledge = async (body: Record<string, unknown>) => {
       const response = await fetch(`${origin}/v1/documents`, { method: "POST", headers: scopeAdminHeaders, body: JSON.stringify({ markdown: "# Scope\n\nScopeparity token.", evidenceClass: "verified_fact", sensitivity: "team", ...body }) });
       assert.equal(response.status, 201, await response.clone().text());

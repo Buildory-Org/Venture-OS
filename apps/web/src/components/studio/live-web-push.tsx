@@ -42,7 +42,13 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
       const registration = await existingRegistration();
       const subscription = await registration?.pushManager.getSubscription();
       if (!active) return;
-      setState(subscription ? "enabled" : Notification.permission === "denied" ? "denied" : "ready");
+      if (Notification.permission === "denied") { setState("denied"); return; }
+      if (subscription) {
+        // A browser subscription survives sign-out; the server must confirm its current owner.
+        try { await registerLivePushSubscription(subscription); }
+        catch (cause) { throw new Error("Could not connect this browser subscription to your current account: " + errorText(cause)); }
+        if (active) setState("enabled");
+      } else setState("ready");
     }).catch((cause: unknown) => { if (active) { setError(errorText(cause)); setState("error"); } }));
     return () => { active = false; };
   }, [revision]);
@@ -93,7 +99,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
     denied: "Browser notifications are blocked. Change this site’s notification permission in browser settings before enabling push.",
     ready: "This browser is not subscribed. Enabling is optional and will ask for notification permission.",
     enabled: "This browser is subscribed for push notifications.",
-    error: "Web Push could not be confirmed. You can retry from this browser.",
+    error: "Web Push could not be confirmed. Retry the check from this browser.",
   };
 
   return <div className="space-y-3 p-4">

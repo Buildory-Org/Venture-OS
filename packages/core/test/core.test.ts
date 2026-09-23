@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Membership } from "@venture-studio/contracts";
-import { can, createPat, dmKey, hasDeadlineRisk, matchesPat, parseCommand, previewCommand, snoozeReminder, validateMembershipSubset } from "../src/index.js";
+import { can, createPat, dmKey, hasDeadlineRisk, isTrustedPushEndpoint, matchesPat, parseCommand, previewCommand, snoozeReminder, validateMembershipSubset } from "../src/index.js";
+
+test("push endpoints are limited to HTTPS browser push providers", () => {
+  for (const endpoint of ["https://fcm.googleapis.com/fcm/send/token", "https://updates.push.services.mozilla.com/wpush/v2/token", "https://web.push.apple.com/abc", "https://db3.notify.windows.com/?token=abc"]) assert.equal(isTrustedPushEndpoint(endpoint), true);
+  for (const endpoint of ["http://fcm.googleapis.com/fcm/send/token", "https://fcm.googleapis.com:8443/fcm/send/token", "https://fcm.googleapis.com/fcm/send/token#alternate-owner", "https://127.0.0.1/", "https://fcm.googleapis.com.evil.test/", "https://private.test/", "file:///etc/passwd", "javascript:alert(1)"]) assert.equal(isTrustedPushEndpoint(endpoint), false);
+});
 
 const ids = {
   membership: "10000000-0000-4000-8000-000000000001",

@@ -4,9 +4,10 @@ import type { AppDb } from "../db.js";
 import { idSchema, notificationPreferencesSchema } from "@venture-studio/contracts";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
+import { isTrustedPushEndpoint } from "@venture-studio/core";
 
 const defaultPreferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
-const subscriptionSchema = z.object({ endpoint: z.url(), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
+const subscriptionSchema = z.object({ endpoint: z.url().refine(isTrustedPushEndpoint, "Unsupported push service endpoint").transform((value) => new URL(value).href), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
 const subscriptionEndpointSchema = subscriptionSchema.pick({ endpoint: true });
 
 export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
@@ -37,7 +38,15 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   });
   router.post("/push-subscriptions", async (req, res) => {
     const actor = req.actor!; const subscription = subscriptionSchema.parse(req.body);
-    await db.collection("push_subscriptions").updateOne({ workspaceId: actor.membership.workspaceId, userId: actor.id, endpoint: subscription.endpoint }, { $set: { ...subscription, active: true, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
+    // A browser endpoint is one device, not one account; re-registration transfers ownership.
+    const collection = db.collection("push_subscriptions");
+    const update = { $set: { ...subscription, workspaceId: actor.membership.workspaceId, userId: actor.id, active: true, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } };
+    try { await collection.updateOne({ endpoint: subscription.endpoint }, update, { upsert: true }); }
+    catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      const retry = await collection.updateOne({ endpoint: subscription.endpoint }, { $set: update.$set });
+      if (!retry.matchedCount) throw error;
+    }
     res.status(201).json({ ok: true, data: { subscribed: true } });
   });
   router.delete("/push-subscriptions", async (req, res) => {

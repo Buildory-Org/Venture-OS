@@ -33,6 +33,7 @@
 - Group membership changes require transactions and are additive/idempotent within the active workspace. Adding a group grants its parent venture only if absent and records that inherited grant; removing the last group in that venture revokes only the inherited grant, never an explicit venture assignment.
 - R2 development and production use separate private buckets and bucket-scoped credentials. `FILE_STORAGE=r2` must be explicit, and incomplete R2 configuration fails startup rather than falling back to local uploads.
 - Invitation email and in-app reminder delivery are distinct: an invitation targets an email address before membership, while the reminder worker writes the signed-in member's in-app notification through the outbox.
+- A Web Push endpoint belongs to one browser subscription, not one account. Re-registration transfers its owner; historically duplicated endpoints are retired without guessing an owner. API and worker accept only HTTPS endpoints from supported browser push providers, and the worker rechecks ownership before delivery. A push already in flight cannot be recalled, so shared-device sign-out should also unsubscribe where possible.
 - In V1, `/assign` and `/notify` are manager shortcuts limited to workspace admins and scoped venture heads. Contributors may still create tasks through the ordinary task form/API; a distinct per-group manager role and whether it should own all delegation require a later product decision.
 
 ## Reliability and security invariants

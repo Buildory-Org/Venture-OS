@@ -2,6 +2,7 @@ import webpush from "web-push";
 import { createHash } from "node:crypto";
 import type { Db } from "mongodb";
 import type { WorkerConfig } from "./config.js";
+import { isTrustedPushEndpoint } from "@venture-studio/core";
 
 export class Delivery {
   readonly mode: "local" | "live";
@@ -32,13 +33,20 @@ export class Delivery {
     if (this.config.VAPID_PUBLIC_KEY && this.config.VAPID_PRIVATE_KEY && preferences.webPush) {
       const subscriptions = await this.db.collection("push_subscriptions").find({ workspaceId: item.workspaceId, userId: item.userId, active: true }).toArray();
       for (const subscription of subscriptions) {
+        if (!isTrustedPushEndpoint(String(subscription.endpoint))) {
+          await this.db.collection("push_subscriptions").updateOne({ _id: subscription._id, workspaceId: item.workspaceId, userId: item.userId }, { $set: { active: false, invalidEndpointAt: new Date() } });
+          continue;
+        }
+        // Best-effort ownership fence before the external send; an in-flight send cannot be recalled.
+        const current = await this.db.collection("push_subscriptions").findOne({ _id: subscription._id, workspaceId: item.workspaceId, userId: item.userId, endpoint: subscription.endpoint, active: true });
+        if (!current) continue;
         const endpointKey = createHash("sha256").update(String(subscription.endpoint)).digest("hex");
         if (item.delivery?.push?.[endpointKey]) continue;
         try {
-          await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
+          await webpush.sendNotification({ endpoint: current.endpoint, expirationTime: current.expirationTime, keys: current.keys }, JSON.stringify({ notificationId: item._id, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.reminderId ? { reminderId: item.reminderId } : {}) }), { topic: createHash("sha256").update(String(item._id)).digest("base64url").slice(0, 32) });
         } catch (error) {
           if (![404, 410].includes(Number((error as { statusCode?: number }).statusCode))) throw error;
-          await this.db.collection("push_subscriptions").updateOne({ _id: subscription._id }, { $set: { active: false, expiredAt: new Date() } });
+          await this.db.collection("push_subscriptions").updateOne({ _id: subscription._id, workspaceId: item.workspaceId, userId: item.userId, endpoint: current.endpoint, keys: current.keys, active: true }, { $set: { active: false, expiredAt: new Date() } });
           continue;
         }
         await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { [`delivery.push.${endpointKey}`]: new Date() } });

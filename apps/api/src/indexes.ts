@@ -14,14 +14,14 @@ export async function deduplicatePushEndpoints(collection: Collection<AppDocumen
     group.push(row);
     byEndpoint.set(canonical, group);
   }
-  const retire = async (id: string, endpoint: string) => {
-    const result = await collection.updateOne({ _id: id, endpoint }, { $set: { active: false, retiredAt: new Date() }, $unset: { endpoint: "", keys: "" } });
+  const retire = async (row: AppDocument) => {
+    const result = await collection.updateOne({ _id: row._id, endpoint: row.endpoint }, { $set: { active: false, retiredAt: new Date() }, $unset: { endpoint: "", keys: "" } });
     retired += result.modifiedCount;
   };
   // Retire every ambiguous or untrusted legacy row before normalizing single owners.
   for (const [canonical, rows] of byEndpoint) {
     if (rows.length === 1 && isTrustedPushEndpoint(canonical)) continue;
-    for (const row of rows) await retire(String(row._id), String(row.endpoint));
+    for (const row of rows) await retire(row);
   }
   for (const [canonical, rows] of byEndpoint) {
     if (rows.length !== 1 || !isTrustedPushEndpoint(canonical)) continue;
@@ -31,8 +31,23 @@ export async function deduplicatePushEndpoints(collection: Collection<AppDocumen
   return retired;
 }
 
+export async function ensurePushEndpointIndex(collection: Collection<AppDocument>): Promise<void> {
+  let indexes: Awaited<ReturnType<typeof collection.indexes>>;
+  try { indexes = await collection.indexes(); }
+  catch (error) {
+    if ((error as { code?: number }).code !== 26) throw error; // Collection does not exist yet.
+    indexes = [];
+  }
+  const endpointIndex = indexes.find((index) => index.name === "endpoint_1");
+  if (endpointIndex && (!endpointIndex.unique || endpointIndex.key?.endpoint !== 1)) throw new Error("Unexpected push endpoint index; manual migration review required");
+  // The earlier non-partial unique index cannot hold more than one retired row without an endpoint.
+  if (endpointIndex && !endpointIndex.partialFilterExpression) await collection.dropIndex("endpoint_1");
+  await deduplicatePushEndpoints(collection);
+  await collection.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
+}
+
 export async function ensureIndexes(db: AppDb): Promise<void> {
-  await deduplicatePushEndpoints(db.collection("push_subscriptions"));
+  await ensurePushEndpointIndex(db.collection("push_subscriptions"));
   await Promise.all([
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
     db.collection("memberships").createIndex({ workspaceId: 1, userId: 1 }, { unique: true }),
@@ -55,7 +70,6 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true }),
     db.collection("notification_outbox").createIndex({ state: 1, nextAttemptAt: 1, leaseUntil: 1 }),
     db.collection("notifications").createIndex({ outboxId: 1 }, { unique: true }),
-    db.collection("push_subscriptions").createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } }),
     db.collection("documents").createIndex({ workspaceId: 1, ventureId: 1, sensitivity: 1 }),
     db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
     db.collection("document_chunks").createIndex({ plainText: "text", headingPath: "text" }),

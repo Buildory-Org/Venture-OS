@@ -4,9 +4,10 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 import { io as socketClient } from "socket.io-client";
+import { ObjectId } from "mongodb";
 import { loadConfig } from "../src/config.js";
 import { connectDatabase } from "../src/db.js";
-import { deduplicatePushEndpoints, ensureIndexes } from "../src/indexes.js";
+import { ensureIndexes, ensurePushEndpointIndex } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import { LocalObjectStore, type ObjectStore } from "../src/storage.js";
@@ -49,15 +50,17 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   await ensureIndexes(database.db);
   const now = new Date();
   const legacyPush = database.db.collection("push_subscriptions_upgrade_fixture");
+  const legacyObjectId = new ObjectId();
   await legacyPush.insertMany([
-    { _id: "old-device-owner", endpoint: "https://updates.push.services.mozilla.com/wpush/v2/old", userId: "user-test", active: true, updatedAt: new Date(now.getTime() - 1000), keys: { auth: "old" } },
+    { _id: legacyObjectId as any, endpoint: "https://updates.push.services.mozilla.com/wpush/v2/old", userId: "user-test", active: true, updatedAt: new Date(now.getTime() - 1000), keys: { auth: "old" } },
     { _id: "new-device-owner", endpoint: "https://UPDATES.PUSH.SERVICES.MOZILLA.COM:443/wpush/v2/old", userId: "user-peer", active: true, updatedAt: now, keys: { auth: "new" } },
   ]);
-  assert.equal(await deduplicatePushEndpoints(legacyPush), 2);
+  await legacyPush.createIndex({ endpoint: 1 }, { unique: true });
+  await ensurePushEndpointIndex(legacyPush);
   assert.equal(await legacyPush.countDocuments({ endpoint: "https://updates.push.services.mozilla.com/wpush/v2/old", active: true }), 0);
-  assert.equal(await legacyPush.countDocuments({ _id: "old-device-owner", active: false, endpoint: { $exists: false }, keys: { $exists: false } }), 1);
+  assert.equal(await legacyPush.countDocuments({ _id: legacyObjectId as any, active: false, endpoint: { $exists: false }, keys: { $exists: false } }), 1);
   assert.equal(await legacyPush.countDocuments({ _id: "new-device-owner", active: false, endpoint: { $exists: false }, keys: { $exists: false } }), 1);
-  await legacyPush.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
+  assert.deepEqual((await legacyPush.indexes()).find((index) => index.name === "endpoint_1")?.partialFilterExpression, { endpoint: { $type: "string" } });
   await database.db.collection("users").insertMany([
     { _id: "user-admin", workspaceId: "workspace-a", email: "admin@example.invalid", name: "Admin", handle: "admin", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-test", workspaceId: "workspace-a", email: "test@example.invalid", name: "Test User", handle: "test", status: "active", createdAt: now, updatedAt: now },

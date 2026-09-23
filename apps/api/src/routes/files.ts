@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express, { Router } from "express";
 import type { AppDb } from "../db.js";
-import { idSchema, uploadCompleteSchema, uploadIntentSchema } from "@venture-studio/contracts";
+import { cursorQuerySchema, groupFileSchema, idSchema, uploadCompleteSchema, uploadIntentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
 import type { ObjectStore } from "../storage.js";
 import { LocalObjectStore } from "../storage.js";
@@ -11,6 +11,19 @@ import { jsonValue } from "../json.js";
 
 export function fileRoutes(db: AppDb, store: ObjectStore): Router {
   const router = Router();
+  router.get("/groups/:id/files", async (req, res) => {
+    const groupId = idSchema.parse(req.params.id);
+    const actor = req.actor!;
+    const group = await db.collection("groups").findOne({ _id: groupId, workspaceId: actor.membership.workspaceId });
+    if (!group || !can(actor.membership, "group:read", { ventureId: String(group.ventureId), groupId })) throw new AppError(404, "NOT_FOUND", "Group not found");
+    const query = cursorQuerySchema.parse(req.query);
+    const scope = { workspaceId: actor.membership.workspaceId, ventureId: group.ventureId, groupId, status: "ready" };
+    const cursor = query.cursor ? await db.collection("files").findOne({ ...scope, _id: idSchema.parse(query.cursor) }) : undefined;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "File cursor not found");
+    const before = cursor ? { $or: [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor._id } }] } : {};
+    const files = await db.collection("files").find({ ...scope, ...before }).sort({ createdAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: files.slice(0, query.limit).map((file) => groupFileSchema.parse(jsonValue(file))), nextCursor: files.length > query.limit ? files[query.limit - 1]?._id : undefined } });
+  });
   router.post("/uploads", async (req, res) => {
     const input = uploadIntentSchema.parse(req.body);
     const actor = req.actor!;

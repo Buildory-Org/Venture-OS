@@ -8,10 +8,11 @@ export const fileSchema = z.object({
   status: z.enum(["pending", "ready", "abandoned", "deleted"]),
   createdAt: isoDateSchema, completedAt: isoDateSchema.optional(),
 });
+export const groupFileSchema = fileSchema.omit({ objectKey: true });
 
 export const uploadIntentSchema = z.object({
   ventureId: idSchema, groupId: idSchema.optional(), taskId: idSchema.optional(), name: z.string().trim().min(1).max(255),
-  contentType: z.enum(["application/pdf", "text/markdown", "text/plain", "image/png", "image/jpeg"]),
+  contentType: z.enum(["application/pdf", "text/markdown", "text/plain", "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm", "video/quicktime", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/webm", "audio/wav"]),
   size: z.number().int().min(1).max(25 * 1024 * 1024),
 }).refine((value) => !value.taskId || Boolean(value.groupId), { message: "Task attachments require a group", path: ["groupId"] });
 export const uploadCompleteSchema = z.object({ etag: z.string().min(1).max(200) });

@@ -325,8 +325,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const downloadBody = (await download.json()) as any;
     assert.equal(await (await fetch(downloadBody.data.downloadUrl)).text(), "yes");
     await database.db.collection("files").insertOne({ _id: "file-malformed-cross-tenant", workspaceId: "workspace-other", ventureId: "venture-other", groupId: "group-other", taskId: createdBody.data.id, ownerId: "other", name: "leak.txt", contentType: "text/plain", size: 1, objectKey: "other", status: "ready", storage: "local", createdAt: new Date() });
+    await database.db.collection("files").insertOne({ _id: "file-same-group-other-workspace", workspaceId: "workspace-other", ventureId: "venture-a", groupId: "group-a", ownerId: "other", name: "cross-workspace.txt", contentType: "text/plain", size: 1, objectKey: "other", status: "ready", storage: "local", createdAt: new Date() });
     const taskWithAttachment = await (await fetch(`${origin}/v1/tasks/${createdBody.data.id}`, { headers })).json() as any;
     assert.deepEqual(taskWithAttachment.data.attachments.map((file: any) => file.id), [intent.data.file.id]);
+    assert.equal((await fetch(`${origin}/v1/groups/group-hidden/files`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/groups/group-b/files`, { headers })).status, 404);
+    assert.deepEqual(((await (await fetch(`${origin}/v1/groups/group-a/files`, { headers })).json()) as any).data.items.map((file: any) => file.id), [intent.data.file.id]);
+    assert.equal(Object.hasOwn(((await (await fetch(`${origin}/v1/groups/group-a/files`, { headers })).json()) as any).data.items[0], "objectKey"), false);
+    assert.equal((await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", name: "bad.exe", contentType: "application/x-msdownload", size: 3 }) })).status, 400);
 
     const recoveryIntentResponse = await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", name: "recover.txt", contentType: "text/plain", size: 3 }) });
     const recoveryIntent = await recoveryIntentResponse.json() as any;
@@ -338,6 +344,22 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const recovered = await fetch(`${origin}/v1/uploads/${recoveryFile?._id}/complete`, { method: "POST", headers, body: JSON.stringify({ etag: "local" }) });
     assert.equal(recovered.status, 200, await recovered.text());
     assert.equal((await database.db.collection("files").findOne({ _id: recoveryFile?._id }))?.uploadKey, undefined);
+    for (const [name, contentType] of [["clip.mp4", "video/mp4"], ["voice.webm", "audio/webm"]] as const) {
+      const response = await fetch(`${origin}/v1/uploads`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", groupId: "group-a", name, contentType, size: 3 }) });
+      assert.equal(response.status, 201, await response.clone().text());
+      const upload = (await response.json()) as any;
+      assert.equal((await fetch(upload.data.uploadUrl, { method: "PUT", headers: { "content-type": contentType }, body: "yes" })).status, 204);
+      assert.equal((await fetch(`${origin}/v1/uploads/${upload.data.file.id}/complete`, { method: "POST", headers, body: JSON.stringify({ etag: "local" }) })).status, 200);
+    }
+    const groupFileNames: string[] = [];
+    let groupFileCursor: string | undefined;
+    do {
+      const page = (await (await fetch(`${origin}/v1/groups/group-a/files?limit=1${groupFileCursor ? `&cursor=${groupFileCursor}` : ""}`, { headers })).json()) as any;
+      groupFileNames.push(...page.data.items.map((file: any) => file.name));
+      groupFileCursor = page.data.nextCursor;
+    } while (groupFileCursor);
+    assert.deepEqual(new Set(groupFileNames), new Set(["proof.txt", "recover.txt", "clip.mp4", "voice.webm"]));
+    await database.db.collection("api_rate_limits").deleteMany({}); // Reset this isolated fixture between independent API flows.
 
     const patResponse = await fetch(`${origin}/v1/pats`, { method: "POST", headers, body: JSON.stringify({ name: "smoke", scopes: ["ventures:read", "tasks:read", "knowledge:read"] }) });
     assert.equal(patResponse.status, 201);
@@ -523,6 +545,17 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const saved = await fetch(`${origin}/v1/messages/${messageId}/save`, { method: "PUT", headers, body: JSON.stringify({ saved: true }) });
     assert.equal(((await saved.json()) as any).data.savedByMe, true);
     assert.equal(((await (await fetch(`${origin}/v1/messages/saved`, { headers })).json()) as any).data[0].id, messageId);
+    assert.equal((await fetch(`${origin}/v1/groups/group-hidden/messages/saved`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/groups/group-b/messages/saved`, { headers })).status, 404);
+    assert.deepEqual(((await (await fetch(`${origin}/v1/groups/group-a/messages/saved`, { headers })).json()) as any).data.items.map((item: any) => item.id), [messageId]);
+    assert.equal((await fetch(`${origin}/v1/messages/${restBody.data.message.id}/save`, { method: "PUT", headers, body: JSON.stringify({ saved: true }) })).status, 200);
+    const savedPageOne = ((await (await fetch(`${origin}/v1/groups/group-a/messages/saved?limit=1`, { headers })).json()) as any).data;
+    assert.equal(savedPageOne.items.length, 1);
+    assert.ok(savedPageOne.nextCursor);
+    const savedPageTwo = ((await (await fetch(`${origin}/v1/groups/group-a/messages/saved?limit=1&cursor=${savedPageOne.nextCursor}`, { headers })).json()) as any).data;
+    assert.deepEqual(new Set([...savedPageOne.items, ...savedPageTwo.items].map((item: any) => item.id)), new Set([messageId, restBody.data.message.id]));
+    assert.equal(savedPageTwo.nextCursor, undefined);
+    await database.db.collection("api_rate_limits").deleteMany({});
     assert.equal((await fetch(`${origin}/v1/messages/${messageId}/pin`, { method: "PUT", headers: { "content-type": "application/json", "x-dev-user-id": "user-peer" }, body: JSON.stringify({ pinned: true }) })).status, 403);
     const pinPush = new Promise<any>((resolve) => socket.once("event", resolve));
     const pinned = await fetch(`${origin}/v1/messages/${messageId}/pin`, { method: "PUT", headers, body: JSON.stringify({ pinned: true }) });
@@ -541,6 +574,12 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const dmId = ((await dmResponse.json()) as any).data.id;
     assert.equal((await dmPush).payload.id, dmId);
     assert.equal((await fetch(`${origin}/v1/direct-messages`, { method: "POST", headers, body: JSON.stringify(dmRequest) })).status, 200);
+    assert.equal((await fetch(`${origin}/v1/messages/${dmId}/save`, { method: "PUT", headers, body: JSON.stringify({ saved: true }) })).status, 200);
+    const groupSavedFirst = ((await (await fetch(`${origin}/v1/groups/group-a/messages/saved?limit=1`, { headers })).json()) as any).data;
+    const groupSavedSecond = ((await (await fetch(`${origin}/v1/groups/group-a/messages/saved?limit=1&cursor=${groupSavedFirst.nextCursor}`, { headers })).json()) as any).data;
+    assert.deepEqual(new Set([...groupSavedFirst.items, ...groupSavedSecond.items].map((item: any) => item.id)), new Set([messageId, restBody.data.message.id]));
+    assert.equal(groupSavedSecond.nextCursor, undefined);
+    await database.db.collection("api_rate_limits").deleteMany({});
     assert.equal((await fetch(`${origin}/v1/messages/${dmId}/pin`, { method: "PUT", headers, body: JSON.stringify({ pinned: true }) })).status, 403);
     assert.equal((await fetch(`${origin}/v1/messages/${dmId}/reaction`, { method: "PUT", headers: { "content-type": "application/json", "x-dev-user-id": "user-hidden" }, body: JSON.stringify({ emoji: "👍", active: true }) })).status, 404);
     const learnerBody = { role: "learner", ventureIds: ["venture-a"], groupIds: ["group-a"] };

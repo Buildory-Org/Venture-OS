@@ -4,6 +4,8 @@ import { cursorQuerySchema, idSchema, isoDateSchema } from "./common.js";
 export const messageSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
+  ventureId: idSchema.optional(),
+  groupId: idSchema.optional(),
   channelId: idSchema.optional(),
   dmKey: z.string().optional(),
   authorId: idSchema,

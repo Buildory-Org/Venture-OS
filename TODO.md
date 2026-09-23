@@ -125,6 +125,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 ## Phase 5 — Files, knowledge, and MCP
 
 - [ ] R2 upload flow with signed URLs, metadata, authorization, and lifecycle rules
+- [x] Add authorized, paginated group file and saved-message feeds with cross-group/cross-workspace Mongo smoke checks
+- [ ] Validate uploaded media contents and playback for image/video/audio previews; the current allowlist checks declared MIME type and size only
 - [x] Search/indexing across authorized messages, tasks, and documents
 - [x] Repair missing/legacy-null workspace document scope and admin all-venture visibility across REST and MCP; verify role/sensitivity boundaries in real Mongo and independent review
 - [x] Omit absent document version source URLs on write and normalize legacy null URLs on read; verify POST/GET/PUT contracts with real Mongo

@@ -27,6 +27,7 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
     db.collection("document_chunks").createIndex({ plainText: "text", headingPath: "text" }),
     db.collection("files").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
+    db.collection("files").createIndex({ workspaceId: 1, groupId: 1, status: 1, createdAt: -1, _id: -1 }),
     db.collection("files").createIndex({ name: "text" }),
     db.collection("pats").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("pats").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),

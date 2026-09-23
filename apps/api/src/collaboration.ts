@@ -3,7 +3,7 @@ import type { Server as HttpServer } from "node:http";
 import { Router } from "express";
 import { Server } from "socket.io";
 import type { ClientSession } from "mongodb";
-import { createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
+import { createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, messageSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
 import { can, dmKey } from "@venture-studio/core";
 import type { AppDb, Database } from "./db.js";
 import { atomic } from "./db.js";
@@ -171,6 +171,30 @@ export function collaborationRoutes(database: Database): Router {
       if (visible.length === 100) break;
     }
     res.json({ ok: true, data: jsonValue(await decorateMessages(db, actor, visible)) });
+  });
+  router.get("/groups/:groupId/messages/saved", async (req, res) => {
+    const actor = req.actor!;
+    const groupId = idSchema.parse(req.params.groupId);
+    const group = await db.collection("groups").findOne({ _id: groupId, workspaceId: actor.membership.workspaceId });
+    if (!group || !can(actor.membership, "group:read", { ventureId: String(group.ventureId), groupId })) throw new AppError(404, "NOT_FOUND", "Group not found");
+    const query = cursorQuerySchema.parse(req.query);
+    const scope = { workspaceId: actor.membership.workspaceId, userId: actor.id };
+    const cursor = query.cursor ? await db.collection("message_saves").findOne({ ...scope, _id: idSchema.parse(query.cursor) }) : undefined;
+    if (query.cursor && (!cursor || (await messageScope(db, actor, String(cursor.messageId))).groupId !== groupId)) throw new AppError(404, "NOT_FOUND", "Saved-message cursor not found");
+    const before = cursor ? { $or: [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor._id } }] } : {};
+    const rows = await db.collection("message_saves").aggregate([
+      { $match: { ...scope, ...before } },
+      { $sort: { createdAt: -1, _id: -1 } },
+      { $lookup: { from: "messages", localField: "messageId", foreignField: "_id", as: "message" } },
+      { $unwind: "$message" },
+      { $match: { "message.workspaceId": scope.workspaceId, "message.groupId": groupId, "message.channelId": { $exists: true } } },
+      { $lookup: { from: "channels", localField: "message.channelId", foreignField: "_id", as: "channel" } },
+      { $match: { "channel.workspaceId": scope.workspaceId, "channel.groupId": groupId } },
+      { $limit: query.limit + 1 },
+      { $project: { _id: 1, message: 1 } },
+    ]).toArray();
+    const items = await decorateMessages(db, actor, rows.slice(0, query.limit).map((row) => row.message as Record<string, any>));
+    res.json({ ok: true, data: { items: messageSchema.array().parse(jsonValue(items)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
   });
   router.put("/messages/:id/reaction", async (req, res) => {
     const actor = req.actor!; const message = await messageScope(db, actor, idSchema.parse(req.params.id));

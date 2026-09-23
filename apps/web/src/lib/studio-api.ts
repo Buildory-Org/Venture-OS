@@ -9,6 +9,10 @@ import {
   commandPreviewSchema,
   dashboardResponseSchema,
   evidenceItemSchema,
+  fileSchema,
+  uploadIntentSchema,
+  uploadCompleteSchema,
+  searchQuerySchema,
   errorEnvelopeSchema,
   eventEnvelopeSchema,
   focusSessionSchema,
@@ -123,7 +127,58 @@ export async function getLiveTask(id: string) {
     task: taskSchema.parse(data),
     updates: taskUpdateSchema.array().parse(data.updates),
     evidence: evidenceItemSchema.array().parse(data.evidence),
+    attachments: fileSchema.array().parse(data.attachments),
   };
+}
+
+type UploadScope = { ventureId: string; groupId?: string; taskId?: string };
+const fileTypes = new Map<string, string>([
+  ["pdf", "application/pdf"], ["md", "text/markdown"], ["txt", "text/plain"],
+  ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
+]);
+
+function signedObjectTarget(raw: string) {
+  const url = new URL(raw);
+  if (url.pathname.startsWith("/v1/local-objects/") && ["localhost", "127.0.0.1"].includes(url.hostname)) return `${url.pathname}${url.search}`;
+  if (url.protocol !== "https:") throw new StudioApiError("The signed object URL must use HTTPS.");
+  return url.href;
+}
+
+export async function uploadLiveFile(file: File, scope: UploadScope) {
+  const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+  const contentType = fileTypes.get(extension) ?? file.type;
+  const intent = uploadIntentSchema.parse({ ...scope, name: file.name, contentType, size: file.size });
+  const body = await request("/v1/uploads", { method: "POST", body: JSON.stringify(intent) });
+  if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("file" in body.data) || !("uploadUrl" in body.data) || typeof body.data.uploadUrl !== "string") throw new StudioApiError("The upload intent response was invalid.");
+  const pending = fileSchema.parse(body.data.file);
+  const target = signedObjectTarget(body.data.uploadUrl);
+  const response = await fetch(target, { method: "PUT", body: file, headers: { "content-type": intent.contentType } });
+  if (!response.ok) throw new StudioApiError(`The signed upload returned HTTP ${response.status}.`);
+  const etag = response.headers.get("etag") ?? (target.startsWith("/v1/local-objects/") ? "local" : "");
+  if (!etag) throw new StudioApiError("The upload completed without an ETag; check object-store CORS exposure before retrying.");
+  const complete = uploadCompleteSchema.parse({ etag });
+  return successEnvelope(fileSchema).parse(await request(`/v1/uploads/${encodeURIComponent(pending.id)}/complete`, { method: "POST", body: JSON.stringify(complete) })).data;
+}
+
+export async function prepareLiveFileDownload(id: string) {
+  const body = await request(`/v1/files/${encodeURIComponent(id)}/download`);
+  if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("downloadUrl" in body.data) || typeof body.data.downloadUrl !== "string") throw new StudioApiError("The authorized download response was invalid.");
+  const response = await fetch(signedObjectTarget(body.data.downloadUrl));
+  if (!response.ok) throw new StudioApiError(`The signed download returned HTTP ${response.status}.`);
+  return URL.createObjectURL(await response.blob());
+}
+
+export type LiveFileSearchHit = { type: "file"; id: string; title: string; excerpt: string; ventureId: string; sourceRef: string };
+export async function searchLiveFiles(q: string, ventureId?: string): Promise<LiveFileSearchHit[]> {
+  const query = searchQuerySchema.parse({ q, ventureId, types: ["file"], limit: 50 });
+  const params = new URLSearchParams({ q: query.q, types: "file", limit: String(query.limit) });
+  if (query.ventureId) params.set("ventureId", query.ventureId);
+  const body = await request(`/v1/search?${params}`);
+  if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("items" in body.data) || !Array.isArray(body.data.items)) throw new StudioApiError("The file search response was invalid.");
+  return body.data.items.map((item: unknown) => {
+    if (!item || typeof item !== "object" || !("type" in item) || item.type !== "file" || !("id" in item) || typeof item.id !== "string" || !("title" in item) || typeof item.title !== "string" || !("excerpt" in item) || typeof item.excerpt !== "string" || !("ventureId" in item) || typeof item.ventureId !== "string" || !("sourceRef" in item) || typeof item.sourceRef !== "string") throw new StudioApiError("The file search item was invalid.");
+    return item as LiveFileSearchHit;
+  });
 }
 
 export async function createLiveTask(input: unknown) {
@@ -267,7 +322,8 @@ export async function searchLiveKnowledge(q: string, ventureId?: string) {
 
 export async function getLiveDocument(id: string) {
   const data = successEnvelope(documentSchema.passthrough()).parse(await request(`/v1/documents/${encodeURIComponent(id)}`)).data;
-  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(data.currentVersion), versions: documentVersionSchema.omit({ markdown: true }).array().parse(data.versions) };
+  const normalizeVersion = (value: unknown) => value && typeof value === "object" && "sourceUri" in value && value.sourceUri === null ? { ...value, sourceUri: undefined } : value;
+  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(normalizeVersion(data.currentVersion)), versions: documentVersionSchema.omit({ markdown: true }).array().parse(Array.isArray(data.versions) ? data.versions.map(normalizeVersion) : data.versions) };
 }
 
 export async function listLiveDocuments(cursor?: string, filters: { ventureId?: string; status?: "draft" | "approved" | "stale" } = {}) {
@@ -280,6 +336,10 @@ export async function listLiveDocuments(cursor?: string, filters: { ventureId?: 
 export async function updateLiveDocument(id: string, input: unknown) {
   const valid = updateDocumentSchema.parse(input);
   return successEnvelope(documentVersionSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLiveDocumentMetadata(id: string, input: { status: "draft" | "approved" | "stale" | "archived"; lastReviewedAt?: string }) {
+  return successEnvelope(documentSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}/metadata`, { method: "PATCH", body: JSON.stringify(input) })).data;
 }
 
 export async function listLiveOutcomes() {

@@ -72,6 +72,10 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Connect authorized member discovery to task assignment, board filtering, channel mentions, DM recipients, and class reviewers; inspect the pickers in the browser
 - [x] Connect reminder IDs and preferences, focus history, document browse/edit, class applications/review, and DM history/send to the published contracts; verify the new reads in the browser and mutations in Mongo-backed API tests
 - [x] Verify same-origin Socket.IO polling in the browser by receiving another local member's channel message without reloading
+- [x] Connect signed file upload/completion, authorized file-name search/download preparation, and task-scoped attachments; verify a synthetic local browser upload and downloaded bytes by SHA-256
+- [x] Verify scoped venture-head document approval in the browser on a synthetic local record
+- [ ] Verify physical browser save/download in a browser that exposes a download event or saved file
+- [ ] Repair and verify admin document list/detail scope for venture and workspace records in the backend
 - [ ] Verify browser Socket.IO with a real Better Auth cookie and staging reverse-proxy/sticky-session configuration
 - [ ] Integrate shared contracts when the backend publishes them
 
@@ -79,6 +83,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 
 - [x] Route-level UI smoke tests
 - [x] Responsive pass at 390px and 320px for all studio routes
+- [x] Connected keyboard pass: named controls, tab order across core routes, and task drawer focus trap, Escape, and focus return
 - [ ] Keyboard-accessibility pass
 - [ ] User approval of the complete dummy UI
 

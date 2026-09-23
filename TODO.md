@@ -137,7 +137,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 ## Phase 5 — Files, knowledge, and MCP
 
 - [ ] R2 upload flow with signed URLs, metadata, authorization, and lifecycle rules
-- [ ] Configure separate private R2 development/production buckets with scoped keys; verify real browser upload/download and no local fallback when R2 is selected
+- [ ] Configure separate private R2 development/production buckets with scoped keys; verify real browser upload/download and no local fallback when R2 is selected. On 2026-09-23, private `venture-studio-dev` and `venture-studio-prod` buckets existed/created, and dev CORS was limited to `http://localhost:3011`; scoped credentials and live R2 smoke remain pending.
 - [x] Add authorized, paginated group file and saved-message feeds with cross-group/cross-workspace Mongo smoke checks
 - [ ] Validate uploaded media contents and playback for image/video/audio previews; the current allowlist checks declared MIME type and size only
 - [x] Search/indexing across authorized messages, tasks, and documents

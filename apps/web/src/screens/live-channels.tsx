@@ -10,6 +10,7 @@ import { ChatAvatar, ChatCredit, ChatEmpty, ChatShell } from "@/components/studi
 import { ChannelNavigator } from "@/components/studio/channel-navigator";
 import { LiveMemberPicker } from "@/components/studio/live-member-picker";
 import { GroupWorkspaceSheet, type WorkspaceTab } from "@/components/studio/group-workspace-sheet";
+import { GroupPeople } from "@/components/studio/group-people";
 import { useLiveRealtime } from "@/lib/use-live-realtime";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
@@ -31,7 +32,8 @@ export function LiveChannelsScreen() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
-  const [members, setMembers] = useState<Member[]>([]);
+  const [memberState, setMemberState] = useState<{ groupId: string; items: Member[]; loading: boolean; error: string }>({ groupId: "", items: [], loading: false, error: "" });
+  const [memberRevision, setMemberRevision] = useState(0);
   const [search, setSearch] = useState("");
   const [composer, setComposer] = useState("");
   const [mentions, setMentions] = useState<Member[]>([]);
@@ -84,6 +86,10 @@ export function LiveChannelsScreen() {
   const venture = session?.hierarchy.ventures.find((item) => item.id === selectedVentureId);
   const group = venture?.groups.find((item) => item.id === selectedGroupId);
   const selected = group?.channels.find((channel) => channel.id === selectedId);
+  const activeGroupId = group?.id ?? "";
+  const members = memberState.groupId === activeGroupId ? memberState.items : [];
+  const membersLoading = Boolean(activeGroupId) && (memberState.groupId !== activeGroupId || memberState.loading);
+  const membersError = memberState.groupId === activeGroupId ? memberState.error : "";
   const canCreate = session?.membership.role === "admin";
 
   useEffect(() => {
@@ -145,14 +151,26 @@ export function LiveChannelsScreen() {
   }, [selectedId, revision, session]);
 
   useEffect(() => {
-    if (!selected?.groupId) return;
+    if (!group?.id) return;
     let active = true;
-    const groupId = selected.groupId;
-    queueMicrotask(() => listLiveMembers({ groupId, limit: 100 }).then((page) => {
-      if (active) setMembers(page.items);
-    }).catch(() => { if (active) setMembers([]); }));
+    const groupId = group.id;
+    queueMicrotask(async () => {
+      if (!active) return;
+      setMemberState({ groupId, items: [], loading: true, error: "" });
+      try {
+        const items: Member[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await listLiveMembers({ groupId, limit: 100, ...(cursor ? { cursor } : {}) });
+          if (!active) return;
+          items.push(...page.items);
+          cursor = page.nextCursor;
+        } while (cursor);
+        if (active) setMemberState({ groupId, items, loading: false, error: "" });
+      } catch (cause) { if (active) setMemberState({ groupId, items: [], loading: false, error: errorText(cause) }); }
+    });
     return () => { active = false; };
-  }, [selected?.groupId]);
+  }, [group?.id, memberRevision]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages.length, selectedId]);
 
@@ -304,7 +322,12 @@ export function LiveChannelsScreen() {
   const createScopeLabel = createKind === "group" ? createVentureParent?.name : createKind === "channel" ? `${createGroupParent?.name ?? "Unknown group"} · ${createVentureParent?.name ?? "Unknown venture"}` : "";
   const details = <aside aria-label="Group details" className={clsx("chat-details thin-scroll overflow-y-auto border-l border-[#eeeef1] bg-white p-5", detailsOpen ? "fixed inset-y-0 right-0 z-20 w-[min(320px,92vw)] shadow-2xl lg:static lg:z-auto lg:block lg:w-[290px] lg:shrink-0 lg:shadow-none" : "hidden")}>
     <div className="flex items-center justify-between gap-2"><p className="text-xs font-bold">Group Details</p><button type="button" aria-label="Close details" onClick={() => { setDetailsOpen(false); detailsButtonRef.current?.focus(); }} className="chat-icon"><X size={17} /></button></div>
-    {selected ? <><div className="mt-7 flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-[#fff1e7] text-[#f58229]"><Hash size={22} /></span><div><h2 className="text-sm font-bold">#{selected.name}</h2><p className="mt-1 text-[11px] text-[#a1a1aa]">{venture?.name} · {group?.name}</p></div></div><div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Members <span className="font-normal text-[#aaaab3]">{members.length}</span></p><div className="mt-3 flex -space-x-2">{members.slice(0, 7).map((member) => <ChatAvatar key={member.id} id={member.id} name={member.name} size={30} />)}</div>{members.length === 0 && <p className="mt-2 text-xs text-[#a2a2ab]">No scoped members listed.</p>}</div><div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Pinned messages</p>{messages.filter((item) => item.pinned).slice(0, 3).map((item) => <p key={item.id} className="mt-2 line-clamp-3 rounded-lg bg-[#faf9f8] p-3 text-[11px] leading-5 text-[#62636e]">{item.body}</p>)}{!messages.some((item) => item.pinned) && <p className="mt-2 text-xs text-[#a2a2ab]">No pinned messages yet.</p>}</div><div className="mt-7 space-y-2"><button type="button" onClick={() => openWorkspace("kanban")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#fff2e8] px-3 text-left text-xs font-semibold text-[#e4781f]"><Columns3 size={16} />Kanban</button><button type="button" onClick={() => openWorkspace("attachments")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#f6f6f8] px-3 text-left text-xs font-semibold text-[#555560]"><FolderOpen size={16} />Attachments</button><button type="button" onClick={() => openWorkspace("saved")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#f6f6f8] px-3 text-left text-xs font-semibold text-[#555560]"><Bookmark size={16} />Saved messages</button></div></> : <p className="mt-6 text-xs text-[#999aa4]">Choose a channel to see its details.</p>}
+    {group ? <>
+      <div className="mt-7 flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-[#fff1e7] text-[#f58229]"><Hash size={22} /></span><div className="min-w-0"><h2 className="truncate text-sm font-bold">{group.name}</h2><p className="mt-1 truncate text-[11px] text-[#a1a1aa]">{venture?.name}{selected ? ` · #${selected.name}` : ""}</p></div></div>
+      <GroupPeople key={group.id} ventureId={venture?.id ?? ""} ventureName={venture?.name ?? ""} groupId={group.id} groupName={group.name} members={members} loading={membersLoading} error={membersError} canManage={canCreate} onOpen={() => setWorkspaceTab(null)} onRefresh={() => setMemberRevision((value) => value + 1)} />
+      <div className="mt-7 border-t border-[#f0f0f2] pt-5"><p className="text-xs font-bold">Pinned messages</p>{messages.filter((item) => item.pinned).slice(0, 3).map((item) => <p key={item.id} className="mt-2 line-clamp-3 rounded-lg bg-[#faf9f8] p-3 text-[11px] leading-5 text-[#62636e]">{item.body}</p>)}{!messages.some((item) => item.pinned) && <p className="mt-2 text-xs text-[#a2a2ab]">No pinned messages yet.</p>}</div>
+      <div className="mt-7 space-y-2"><button type="button" onClick={() => openWorkspace("kanban")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#fff2e8] px-3 text-left text-xs font-semibold text-[#e4781f]"><Columns3 size={16} />Kanban</button><button type="button" onClick={() => openWorkspace("attachments")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#f6f6f8] px-3 text-left text-xs font-semibold text-[#555560]"><FolderOpen size={16} />Attachments</button><button type="button" onClick={() => openWorkspace("saved")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[#f6f6f8] px-3 text-left text-xs font-semibold text-[#555560]"><Bookmark size={16} />Saved messages</button></div>
+    </> : <p className="mt-6 text-xs text-[#999aa4]">Choose a group to see its details.</p>}
     <div className="mt-8"><ChatCredit /></div>
   </aside>;
 

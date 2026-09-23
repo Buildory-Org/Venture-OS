@@ -115,6 +115,29 @@ export async function listLiveMembers(input: { ventureId?: string; groupId?: str
   return pagedSuccessEnvelope(memberDirectoryItemSchema).parse(await request(`/v1/members?${params}`)).data;
 }
 
+export async function addLiveGroupMember(groupId: string, ventureId: string, userId: string) {
+  const membership = successEnvelope(membershipSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "PUT" })).data;
+  if (membership.userId !== userId || !membership.groupIds.includes(groupId) || !membership.ventureIds.includes(ventureId)) throw new StudioApiError("The group membership response did not match the selected person and group.");
+  return membership;
+}
+
+export async function removeLiveGroupMember(groupId: string, userId: string) {
+  const membership = successEnvelope(membershipSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" })).data;
+  if (membership.userId !== userId || membership.groupIds.includes(groupId)) throw new StudioApiError("The group membership response did not confirm removal from this group.");
+  return membership;
+}
+
+export async function createLiveGroupInvitation(input: { email: string; role: "venture_head" | "contributor" | "reviewer" | "learner"; ventureId: string; groupId: string }) {
+  const body = await request("/v1/admin/invitations", { method: "POST", body: JSON.stringify({ email: input.email, role: input.role, ventureIds: [input.ventureId], groupIds: [input.groupId] }) });
+  if (!body || typeof body !== "object" || !("ok" in body) || body.ok !== true || !("data" in body) || !body.data || typeof body.data !== "object") throw new StudioApiError("The invitation response was invalid.");
+  const invitation = "invitation" in body.data ? body.data.invitation : null;
+  if (!invitation || typeof invitation !== "object" || !("ventureIds" in invitation) || !Array.isArray(invitation.ventureIds) || !invitation.ventureIds.includes(input.ventureId) || !("groupIds" in invitation) || !Array.isArray(invitation.groupIds) || !invitation.groupIds.includes(input.groupId)) throw new StudioApiError("The invitation response did not match the selected group.");
+  if ("token" in body.data && typeof body.data.token === "string" && body.data.token) return { kind: "manual" as const, token: body.data.token };
+  const delivery = "delivery" in body.data ? body.data.delivery : null;
+  if (delivery && typeof delivery === "object" && "mode" in delivery && delivery.mode === "email" && "status" in delivery && delivery.status === "sent") return { kind: "email" as const };
+  throw new StudioApiError("The invitation was created, but the API did not confirm email delivery or provide a manual link.");
+}
+
 type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string };
 
 export async function listLiveTasks(cursor?: string, filters: TaskFilters = {}) {

@@ -54,7 +54,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Show deterministic DiceBear Adventurer avatars for connected workspace users
 - [x] Smoke-check desktop and 390px chat layouts, admin create dialog, API-backed data, lint, and production build
 - [ ] Decide whether non-admin members or venture heads may create ventures, groups, or channels; update server permissions and reviewer tests only after policy approval
-- [ ] Replace the flattened connected Channels list with venture selection and a selected-group-only Discord-style rail/channel view; automatically collapse group labels when a group opens, then verify navigation and messaging end to end
+- [x] Replace the flattened connected Channels list with a venture selector, expandable group rail, and selected-group-only channel list; verify desktop and 390px/320px navigation, deep links, and keyboard focus
+- [ ] Verify a browser-originated channel message in an isolated UI fixture; the Mongo-backed API smoke test covers a real send, but the current browser points to shared seed data
 
 ### 2.2 Work management
 

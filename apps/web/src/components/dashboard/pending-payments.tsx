@@ -37,7 +37,7 @@ export function PendingPayments({
                 {p.days}d late
               </p>
             </div>
-            <span className="text-[13px] font-bold text-neutral-900 tnum">
+            <span className="text-[13px] font-semibold text-neutral-900 tnum">
               {inrCompact(p.amount)}
             </span>
           </li>
@@ -45,7 +45,7 @@ export function PendingPayments({
       </ul>
       <button
         type="button"
-        className="mt-3.5 inline-flex items-center gap-1.5 rounded-full bg-ai-surface px-3 py-1.5 text-[11.5px] font-bold text-ai-text transition-[background-color,transform] duration-150 hover:bg-[#ede9fe] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ai active:scale-[0.96]"
+        className="mt-3.5 inline-flex items-center gap-1.5 rounded-full bg-ai-surface px-3 py-1.5 text-[11.5px] font-bold text-ai-text transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-100)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ai active:scale-[0.96]"
       >
         <HugeiconsIcon icon={AiMagicIcon} size={13} strokeWidth={1.75} />
         Send all reminders — AI draft

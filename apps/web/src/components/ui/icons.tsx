@@ -41,6 +41,7 @@ import {
   Mail as MailSvg,
   MailCheck as MailCheckSvg,
   Menu as MenuSvg,
+  Moon as MoonSvg,
   MessageCircle as MessageCircleSvg,
   MessageSquareText as MessageSquareTextSvg,
   MoreHorizontal as MoreHorizontalSvg,
@@ -61,6 +62,7 @@ import {
   SmilePlus as SmilePlusSvg,
   Sparkles as SparklesSvg,
   Square as SquareSvg,
+  Sun as SunSvg,
   Target as TargetSvg,
   TimerReset as TimerResetSvg,
   TrendingUp as TrendingUpSvg,
@@ -122,6 +124,7 @@ export const LockKeyhole = icon(LockKeyholeSvg);
 export const Mail = icon(MailSvg);
 export const MailCheck = icon(MailCheckSvg);
 export const Menu = icon(MenuSvg);
+export const Moon = icon(MoonSvg);
 export const MessageCircle = icon(MessageCircleSvg);
 export const MessageSquareText = icon(MessageSquareTextSvg);
 export const MoreHorizontal = icon(MoreHorizontalSvg);
@@ -142,6 +145,7 @@ export const ShieldCheck = icon(ShieldCheckSvg);
 export const SmilePlus = icon(SmilePlusSvg);
 export const Sparkles = icon(SparklesSvg);
 export const Square = icon(SquareSvg);
+export const Sun = icon(SunSvg);
 export const Target = icon(TargetSvg);
 export const TimerReset = icon(TimerResetSvg);
 export const TrendingUp = icon(TrendingUpSvg);

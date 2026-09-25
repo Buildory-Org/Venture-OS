@@ -77,7 +77,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Sales & CRM"
         title="Sales"
         subtitle="Invoices, orders, customers and collections — Delhi HQ +2"
       >
@@ -150,7 +149,7 @@ function Inner() {
               id: c.id,
               cells: [
                 <span key="n" className="font-bold text-neutral-900">{c.name}</span>,
-                <span key="g" className="rounded-md bg-primary-50 px-1.5 py-0.5 text-[10.5px] font-extrabold text-primary-700">{c.grade}</span>,
+                <span key="g" className="rounded-md bg-primary-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-primary-700">{c.grade}</span>,
                 c.city,
                 inr(c.lifetime),
                 <span key="o" className={c.outstanding > 0 ? "font-bold text-danger" : ""}>{inr(c.outstanding)}</span>,

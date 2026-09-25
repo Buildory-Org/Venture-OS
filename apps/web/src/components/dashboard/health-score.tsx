@@ -37,14 +37,14 @@ export function HealthScore({
         <svg viewBox="0 0 180 104" className="w-full max-w-[230px]">
           <defs>
             <linearGradient id="hsGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#34D399" />
+              <stop offset="0%" stopColor="var(--color-primary-400)" />
               <stop offset="100%" stopColor={color} />
             </linearGradient>
           </defs>
           <path
             d="M 20 92 A 70 70 0 0 1 160 92"
             fill="none"
-            stroke="#F1F5F9"
+            stroke="var(--color-neutral-100)"
             strokeWidth="15"
             strokeLinecap="round"
           />
@@ -65,7 +65,7 @@ export function HealthScore({
             y="80"
             textAnchor="middle"
             className="tnum"
-            style={{ fontSize: 36, fontWeight: 800, fill: "#0F172A" }}
+            style={{ fontSize: 36, fontWeight: 800, fill: "var(--color-neutral-900)" }}
           >
             {Math.round(frac * 100) === 0 ? "" : Math.round(frac * 100)}
           </text>
@@ -83,7 +83,7 @@ export function HealthScore({
             GOOD · /100
           </text>
         </svg>
-        <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-success-surface px-2.5 py-1 text-[11px] font-bold text-success-text tnum">
+        <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-success-surface px-2.5 py-1 text-[11px] font-semibold text-success-text tnum">
           ▲ 6 pts vs Aug · cash &amp; receivables improving
         </p>
       </div>

@@ -46,7 +46,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="HR"
         title="HR"
         subtitle="People, attendance, leave and payroll"
       >

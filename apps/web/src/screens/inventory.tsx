@@ -36,7 +36,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Inventory"
         title="Inventory"
         subtitle="Stock levels, batches and transfers across 3 warehouses"
       >
@@ -185,10 +184,10 @@ function Inner() {
                   </div>
                 </div>
                 <div className="mt-4 flex items-end justify-between">
-                  <p className="text-[20px] font-extrabold tracking-tight text-neutral-900 tnum">
+                  <p className="text-[20px] font-bold tracking-tight text-neutral-900 tnum">
                     {w.items} <span className="text-[12px] font-semibold text-neutral-400">SKUs</span>
                   </p>
-                  <p className="text-[11px] font-bold text-neutral-500 tnum">{w.util}% utilized</p>
+                  <p className="text-[11px] font-semibold text-neutral-500 tnum">{w.util}% utilized</p>
                 </div>
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-100">
                   <div

@@ -44,6 +44,23 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Classes with objectives, applied assignments, and assessment evidence
 - [x] Venture-specific sales pipeline
 
+### 2.0a Demo-to-connected UI parity correction
+
+- [x] Reuse the demo shell for connected routes and populate its workspace, venture, task, member, and notification context from the API; verify the connected dashboard in the local authenticated browser fixture.
+- [x] Reuse the demo dashboard, Today, and Ventures presentations for connected data, with an API-backed venture creation entry point; verify routes, People tab, scoped creation drawer, and New task navigation in-browser. Venture creation was not submitted in this visual pass.
+- [x] Give connected Decisions, Classes, Timeline, and Requests distinct routes and active sidebar states; verify Decisions read in-browser.
+- [x] Align connected Sales with the demo venture tabs and stage board while retaining API-backed creation and status controls; verify the board and Add record drawer in-browser.
+- [x] Align connected Tasks search/filter row and named assignees, and group the connected Kanban board into the demo's six visual stages while preserving exact backend statuses on cards; verify live reads and task search in-browser.
+- [x] Align connected People & access Members/Structure tabs and show real member names rather than IDs; verify both tabs with API-backed data in-browser.
+- [x] Preserve venture and document context when navigating from the connected Ventures tabs into Sales and Knowledge; verify selected venture and exact document drawer in-browser.
+- [x] Bring connected Knowledge records into a demo-like list/detail layout, keep the authorized full-record drawer and evidence search, and verify record selection plus direct document links in the isolated API-backed browser fixture.
+- [x] Bring connected Decisions and Classes into demo-like list/detail layouts, add workspace-level creation entry points with destination selection, and verify a synthetic decision create/reload in a separate seeded smoke database. Browser inspection confirmed a venture-scoped destination after selection; signed-in production creation remains unverified.
+- [x] Bring connected Questions & requests into a searchable list/detail layout with named requester/respondent labels from the authorized member directory; verify selection and search/empty/restore in the isolated API-backed browser fixture. Answer submission remains unverified in a real signed-in session.
+- [x] Browser-smoke a connected Ready-to-In-progress drag, verify it persists after reload, then restore the tested task to its original Accepted status and verify that persists after reload.
+- [ ] Browser-smoke the remaining connected board drop targets and task-status transition rules.
+- [ ] Complete visual and interaction parity for connected Knowledge, Planning detail views, remaining People & access tabs, and remaining task/board details; test all real mutations without relying on demo-local state.
+- [ ] Verify signed-in production UI with a real account/session on port 3011, including create/edit/reload flows. The isolated development preview uses `x-dev-user-id` and does not prove the real auth flow.
+
 ### 2.1 Collaboration
 
 - [x] Venture/group/channel navigation and channel chat
@@ -59,6 +76,12 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Dock Channels details beside chat and open a group-scoped Kanban/Attachments/Saved workspace sheet; verify paged feeds, authorized status moves, image preview and invalid-media fallback, desktop/320px layout, scope switching, and Escape/focus return in an isolated browser fixture
 - [x] Add admin-only group People controls in connected Channels: named roster, fixed-scope existing-member search/add and precise group removal, with invite-by-email manual-link fallback; verify submitted group IDs, resulting roster, Escape/focus, and desktop/390px/320px layout in an isolated fixture
 - [x] Polish invitation/link delivery copy, replace web interface icons with Hugeicons, and add restrained contextual motion; verify web lint/build, connected link-only invite and clipboard flow, group sheet, reduced-motion styles, and full-viewport mobile invitation dialog
+- [x] Unify light/dark surfaces around grayscale and emerald, add shell-preserving route motion and sliding active-tab indicators, and persist theme preference; verify lint/build plus production-browser tab, route, theme-reload, and console smoke checks on localhost:3011
+- [x] Shift the primary accent to a lighter, contrast-safe money green; reduce small-label/body weight while preserving heading emphasis; stage page sections, dashboard cards, and task rows on route navigation. Verify web lint/build, light/dark screenshots, keyboard navigation, and settled browser routes with no console errors.
+- [x] Remove redundant page-level eyebrow and crumb labels from shared headers and dashboard headings, keeping the actual page titles and useful descriptions. Verify web lint/build and production-browser Today, Timeline, Requests, and demo Dashboard; connected visual verification remains auth-gated.
+- [x] Move venture links into the Ventures sidebar submenu, fit venture tabs to their labels, and show the 30-day goal only on Overview; verify submenu switching resets Overview in the production browser.
+- [x] Replace single-choice native dropdown menus with the shared styled combobox, including keyboard navigation; verify mouse/keyboard filtering in the production browser, plus web lint/build. The participant multi-select remains a listbox, not a dropdown.
+- [x] Add drag-and-drop status moves to demo, connected, and group Kanban boards, with visible drop targets and a keyboard/touch Move menu; verify demo drag, reload persistence, and restoration in the production browser, plus web lint/build. Connected boards remain authentication-gated for browser smoke.
 - [ ] Verify real invitation email delivery and the email-sent response UI after configuring a verified Resend sender; the user approved Resend for invitations on 2026-09-23, but development currently returns a manual link
 - [x] Verify a browser-originated channel message in an isolated UI fixture; send and reload passed against the 2026-09-23 local MongoDB preview
 - [ ] Connect active-group member discovery, additive Add people/Remove access, and real invitation issuance/acceptance; verify parent scope, delivery mode, authorization, and browser flow
@@ -83,6 +106,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Document UI-to-backend contract seams
 - [x] Verify a separate connected dashboard preview against session, dashboard, and paged task contracts
 - [x] Verify connected sign-in request, invitation acceptance path, task/board, channel/command preview, inbox, and focus UI slices against the local API and Mongo tests
+- [ ] Add first-admin email-verified signup with a one-time claim and close `/signup` afterward; independently review auth and verify API/browser flow
 - [x] Verify connected knowledge search and planning reads for outcomes, decisions, classes, and information requests against the local API
 - [x] Verify planning, sales, and admin connected controls in the browser, and channel action contracts in the Mongo-backed API smoke suite
 - [x] Connect authorized member discovery to task assignment, board filtering, channel mentions, DM recipients, and class reviewers; inspect the pickers in the browser
@@ -113,6 +137,8 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Implement app-owned workspace, venture, group, channel, role, and membership authorization
 - [x] Add MongoDB models, indexes, migrations/backfills, and seed data
 - [x] Add API request validation, structured logging, audit records, and rate limits
+- [x] Fix the local 429 regression: avoid route-change shell refetches, separate authenticated read/write buckets (300/120 per actor per minute), keep anonymous and invitation ingress limits, and return Retry-After; verify real-Mongo API tests, web lint/build, independent review, and a connected browser route smoke on ports 3012/4010.
+- [ ] Harden production auth ingress against abusive unauthenticated traffic with a verified proxy/IP strategy; generic anonymous requests currently resolve session identity before their limit, and `/api/auth/*` depends on Better Auth production-mode limiting.
 - [x] Independent reviewer-agent approval for auth and permission boundaries
 - [x] Backend unit/integration smoke tests
 - [x] UX-parity API slice: additional channels, membership role/scope replacement, message reactions/pins/saves, and planning/sales edits

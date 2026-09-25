@@ -33,7 +33,9 @@ export async function sendInvitationEmail(config: AppConfig, email: string, url:
 
 export function createAuth(db: Db, config: AppConfig) {
   return betterAuth({
-    baseURL: config.API_ORIGIN,
+    // Magic-link verification must be served through the web origin so its
+    // session cookie belongs to the same host used by subsequent /v1 calls.
+    baseURL: config.APP_ORIGIN,
     secret: config.BETTER_AUTH_SECRET,
     trustedOrigins: [config.APP_ORIGIN],
     database: mongodbAdapter(db),

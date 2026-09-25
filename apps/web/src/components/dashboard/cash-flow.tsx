@@ -35,12 +35,12 @@ function CalloutLabel(props: {
   return (
     <g>
       {/* connector dot on bar top */}
-      <circle cx={cx} cy={Number(y) - 5} r={4} fill="#fff" stroke="#3B6FF0" strokeWidth={3} />
-      <rect x={left} y={top} width={W} height={H} rx={10} fill="#fff" stroke="#E2E8F0" />
-      <text x={cx} y={top + 15} textAnchor="middle" style={{ fontSize: 9.5, fontWeight: 600, fill: "#94A3B8" }}>
+      <circle cx={cx} cy={Number(y) - 5} r={4} fill="#fff" stroke="var(--color-primary-500)" strokeWidth={3} />
+      <rect x={left} y={top} width={W} height={H} rx={10} fill="#fff" stroke="var(--color-neutral-200)" />
+      <text x={cx} y={top + 15} textAnchor="middle" style={{ fontSize: 9.5, fontWeight: 600, fill: "var(--color-neutral-400)" }}>
         Aug 2025
       </text>
-      <text x={cx} y={top + 30} textAnchor="middle" className="tnum" style={{ fontSize: 13, fontWeight: 800, fill: "#0F172A" }}>
+      <text x={cx} y={top + 30} textAnchor="middle" className="tnum" style={{ fontSize: 13, fontWeight: 800, fill: "var(--color-neutral-900)" }}>
         ₹38.9L
       </text>
     </g>
@@ -81,7 +81,7 @@ export function CashFlow({
                 "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]",
                 range === r
-                  ? "bg-neutral-900 text-white"
+                  ? "bg-primary-700 text-white"
                   : "text-neutral-400 hover:text-neutral-700"
               )}
             >
@@ -96,28 +96,28 @@ export function CashFlow({
           <BarChart data={cashFlow} margin={{ top: 48, right: 0, bottom: 0, left: -18 }} barCategoryGap="28%">
             <defs>
               <linearGradient id="cfBar" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#6396FA" />
-                <stop offset="100%" stopColor="#2453DB" />
+                <stop offset="0%" stopColor="var(--color-primary-400)" />
+                <stop offset="100%" stopColor="var(--color-primary-700)" />
               </linearGradient>
             </defs>
-            <CartesianGrid stroke="#F1F5F9" vertical={false} />
+            <CartesianGrid stroke="var(--color-neutral-100)" vertical={false} />
             <XAxis
               dataKey="m"
               tickLine={false}
               axisLine={false}
-              tick={{ fontSize: 11, fill: "#94A3B8", fontWeight: 600 }}
+              tick={{ fontSize: 11, fill: "var(--color-neutral-400)", fontWeight: 600 }}
               dy={8}
             />
             <YAxis
               tickLine={false}
               axisLine={false}
-              tick={{ fontSize: 11, fill: "#94A3B8", fontWeight: 600 }}
+              tick={{ fontSize: 11, fill: "var(--color-neutral-400)", fontWeight: 600 }}
               tickFormatter={(v: number) => `${v}L`}
               ticks={[0, 10, 20, 30, 40]}
             />
             <Bar dataKey="in" radius={[9, 9, 9, 9]} maxBarSize={34}>
               {cashFlow.map((_, i) => (
-                <Cell key={i} fill={i === HILITE ? "url(#cfBar)" : "#EEF1F6"} />
+                <Cell key={i} fill={i === HILITE ? "url(#cfBar)" : "var(--color-neutral-100)"} />
               ))}
               <LabelList content={<CalloutLabel />} />
             </Bar>

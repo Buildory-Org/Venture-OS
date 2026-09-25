@@ -25,7 +25,6 @@ export function StatusScreen() {
   return (
     <div className="mx-auto max-w-[900px] p-6">
       <PageHeader
-        crumb="Support"
         title="System Status"
         subtitle="All systems operational — last checked just now"
       />
@@ -45,7 +44,7 @@ export function StatusScreen() {
           <Anim key={s.name} delay={120 + i * 40}>
             <div className="flex items-center gap-3.5 px-5 py-3.5">
               <HugeiconsIcon icon={s.icon} size={18} strokeWidth={1.5} className="text-neutral-300" />
-              <p className="flex-1 text-[13px] font-bold text-neutral-800">{s.name}</p>
+              <p className="flex-1 text-[13px] font-semibold text-neutral-800">{s.name}</p>
               <p className="text-[11px] font-medium text-neutral-400 tnum">{s.uptime} / 30d</p>
               <StatusChip label={s.status} tone="success" />
             </div>

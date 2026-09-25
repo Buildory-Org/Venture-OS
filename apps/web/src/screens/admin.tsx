@@ -33,7 +33,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Admin"
         title="Admin"
         subtitle="Users, roles, branches, integrations and security"
       >
@@ -100,7 +99,7 @@ function Inner() {
             chips={["Active", "2FA off", "Delhi", "Jaipur"]}
           />
           <div className="rounded-2xl bg-white p-5">
-            <p className="text-[13px] font-bold text-neutral-900">Role presets</p>
+            <p className="text-[13px] font-semibold text-neutral-900">Role presets</p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
               {roles.map((r) => (
                 <button
@@ -154,7 +153,7 @@ function Inner() {
                   <p className="mt-0.5 text-[11.5px] font-medium text-neutral-400">{i.detail}</p>
                 </div>
                 <StatusChip label={i.status} tone={i.tone as Tone} />
-                <button type="button" className="rounded-full bg-neutral-100 px-3 py-1.5 text-[11px] font-bold text-neutral-600 transition-colors hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">
+                <button type="button" className="rounded-full bg-neutral-100 px-3 py-1.5 text-[11px] font-semibold text-neutral-600 transition-colors hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">
                   Configure
                 </button>
               </div>
@@ -168,8 +167,8 @@ function Inner() {
           <div className="rounded-2xl bg-white p-3">
             {auditLogs.map((a, i) => (
               <div key={i} className="flex items-center gap-4 rounded-xl px-4 py-3 transition-colors hover:bg-neutral-50">
-                <span className="w-12 shrink-0 font-mono text-[11px] font-bold text-neutral-400 tnum">{a.when}</span>
-                <span className="w-20 shrink-0 text-[12px] font-bold text-neutral-800">{a.who}</span>
+                <span className="w-12 shrink-0 font-mono text-[11px] font-semibold text-neutral-400 tnum">{a.when}</span>
+                <span className="w-20 shrink-0 text-[12px] font-semibold text-neutral-800">{a.who}</span>
                 <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-600">{a.what}</span>
                 <span className="shrink-0 rounded-full bg-neutral-100 px-2.5 py-1 text-[10.5px] font-bold text-neutral-500">{a.where}</span>
               </div>
@@ -192,7 +191,7 @@ function Inner() {
                   <HugeiconsIcon icon={Shield01Icon} size={19} strokeWidth={1.5} />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-bold text-neutral-900">{s.t}</p>
+                  <p className="text-[13px] font-semibold text-neutral-900">{s.t}</p>
                   <p className="mt-0.5 text-[11.5px] font-medium text-neutral-400">{s.d}</p>
                 </div>
                 <StatusChip label={s.on ? "On" : "Off"} tone={s.on ? "success" : "neutral"} />

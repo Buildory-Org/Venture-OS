@@ -18,6 +18,7 @@ import { adminRoutes, invitationAcceptanceRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { salesRoutes } from "./routes/sales.js";
 import { searchRoutes } from "./routes/search.js";
+import { firstAdminRoutes } from "./routes/first-admin.js";
 
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
   const app = express();
@@ -29,9 +30,14 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", localObjectRoutes(database.db, localStore));
   app.use(express.json({ limit: "2mb" }));
   app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
-  app.use("/v1", rateLimit(database.db, 300, 60_000));
-  app.use("/v1", requireIdentity(resolveIdentity), invitationAcceptanceRoutes(database));
-  app.use("/v1", requireActor(resolveActor), rateLimit(database.db, 120, 60_000));
+  app.use("/v1/setup/first-admin", rateLimit(database.db, 60, 60_000, "setup-ip"));
+  app.use("/v1", firstAdminRoutes(database, config, auth));
+  app.use("/v1/invitations/accept", rateLimit(database.db, 60, 60_000, "invite-ip"), requireIdentity(resolveIdentity), rateLimit(database.db, 30, 60_000, "invite-user"));
+  app.use("/v1", invitationAcceptanceRoutes(database));
+  const readLimit = rateLimit(database.db, 300, 60_000, "actor-read");
+  const writeLimit = rateLimit(database.db, 120, 60_000, "actor-write");
+  app.use("/v1", requireActor(resolveActor, rateLimit(database.db, 60, 60_000, "anonymous-ip")));
+  app.use("/v1", (req, res, next) => (req.method === "GET" || req.method === "HEAD" ? readLimit : writeLimit)(req, res, next));
   app.use("/v1", hierarchyRoutes(database.db));
   app.use("/v1", workRoutes(database));
   app.use("/v1", collaborationRoutes(database));

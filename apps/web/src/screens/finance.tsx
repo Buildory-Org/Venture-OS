@@ -40,7 +40,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Finance"
         title="Finance"
         subtitle="Books, expenses, cash flow and tax — FY Apr 2026–Mar 2027"
       >
@@ -81,7 +80,7 @@ function Inner() {
           <div className="grid gap-5 lg:grid-cols-12">
             <CashFlow className="lg:col-span-8" />
             <div className="rounded-2xl bg-white p-5 lg:col-span-4">
-              <p className="text-[13px] font-bold text-neutral-900">P&L — September</p>
+              <p className="text-[13px] font-semibold text-neutral-900">P&L — September</p>
               <div className="mt-4 space-y-3">
                 {[
                   ["Income", "₹42.3L", "text-neutral-900"],
@@ -92,7 +91,7 @@ function Inner() {
                 ].map(([l, v, c]) => (
                   <div key={l} className="flex items-center justify-between">
                     <span className="text-[12.5px] font-semibold text-neutral-500">{l}</span>
-                    <span className={`text-[13px] font-bold tnum ${c}`}>{v}</span>
+                    <span className={`text-[13px] font-semibold tnum ${c}`}>{v}</span>
                   </div>
                 ))}
               </div>
@@ -228,7 +227,7 @@ function Inner() {
             ].map((x) => (
               <div key={x.l} className="rounded-2xl bg-white p-5">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-neutral-400">{x.l}</p>
-                <p className="mt-1.5 text-[22px] font-extrabold tracking-tight text-neutral-900 tnum">{x.v}</p>
+                <p className="mt-1.5 text-[22px] font-bold tracking-tight text-neutral-900 tnum">{x.v}</p>
                 <p className="mt-1 text-[11px] font-medium text-neutral-400">{x.h}</p>
               </div>
             ))}

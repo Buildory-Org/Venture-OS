@@ -7,17 +7,17 @@
     system-ui, sans-serif;
   --font-mono: var(--font-jbmono), "JetBrains Mono", ui-monospace, monospace;
 
-  /* Brand — AIBOS Indigo */
-  --color-primary-50: #eef4ff;
-  --color-primary-100: #dfe9ff;
-  --color-primary-200: #c2d6fe;
-  --color-primary-300: #97bbfd;
-  --color-primary-400: #6396fa;
-  --color-primary-500: #3b6ff0;
-  --color-primary-600: #2453db;
-  --color-primary-700: #1d41b0;
-  --color-primary-800: #1c388c;
-  --color-primary-900: #1c3270;
+  /* Brighter money-green accent; primary actions keep white-text contrast. */
+  --color-primary-50: #f0faf2;
+  --color-primary-100: #d8f4df;
+  --color-primary-200: #b6e9c5;
+  --color-primary-300: #8adba4;
+  --color-primary-400: #5acb7e;
+  --color-primary-500: #30af5e;
+  --color-primary-600: #198754;
+  --color-primary-700: #188647;
+  --color-primary-800: #126b3a;
+  --color-primary-900: #0e4f2e;
 
   /* Semantic — surface / accent / text triples */
   --color-success-surface: #ecfdf3;
@@ -29,30 +29,29 @@
   --color-danger-surface: #fef3f2;
   --color-danger: #dc2626;
   --color-danger-text: #b42318;
-  --color-info-surface: #f0f9ff;
-  --color-info: #0284c7;
-  --color-info-text: #075985;
+  --color-info-surface: #f0faf2;
+  --color-info: #198754;
+  --color-info-text: #126b3a;
 
-  /* AI accent — reserved for AI-generated content only */
-  --color-ai-surface: #f5f3ff;
-  --color-ai: #7c3aed;
-  --color-ai-text: #5b21b6;
+  /* AI context uses the same accent instead of a competing purple. */
+  --color-ai-surface: #f0faf2;
+  --color-ai: #198754;
+  --color-ai-text: #126b3a;
 
-  /* Neutrals — cool slate */
+  /* Neutrals — grayscale rather than blue slate. */
   --color-neutral-0: #ffffff;
-  --color-neutral-50: #f8fafc;
-  --color-neutral-100: #f1f5f9;
-  --color-neutral-200: #e2e8f0;
-  --color-neutral-300: #cbd5e1;
-  --color-neutral-400: #94a3b8;
-  --color-neutral-500: #64748b;
-  --color-neutral-600: #475569;
-  --color-neutral-700: #334155;
-  --color-neutral-800: #1e293b;
-  --color-neutral-900: #0f172a;
+  --color-neutral-50: #fafafa;
+  --color-neutral-100: #f5f5f5;
+  --color-neutral-200: #e5e5e5;
+  --color-neutral-300: #d4d4d4;
+  --color-neutral-400: #a3a3a3;
+  --color-neutral-500: #737373;
+  --color-neutral-600: #525252;
+  --color-neutral-700: #404040;
+  --color-neutral-800: #262626;
+  --color-neutral-900: #171717;
 
-  /* App canvas — cool tinted gray like the references */
-  --color-canvas: #f4f6fb;
+  --color-canvas: #f7faf8;
 
   /* Radius — softer, rounder system */
   --radius-sm: 6px;
@@ -98,6 +97,18 @@
     transform: translateY(0);
   }
 }
+
+/* Route staging targets page sections while the shared shell stays still. */
+.vso-route-content { min-height: 100%; }
+
+.vso-tab-indicator {
+  opacity: 0;
+  transition-property: transform, width, height, opacity;
+  transition-duration: 180ms;
+  transition-timing-function: var(--ease-snappy);
+}
+.vso-tabs[data-ready="true"] .vso-tab-indicator { opacity: 1; }
+.vso-tabs:not([data-ready="true"]) [role="tab"][aria-selected="true"] { background: var(--color-primary-100); }
 
 /* Spatial cues for occasional overlays; content remains visible without animation support. */
 @keyframes vso-enter-right {
@@ -146,6 +157,64 @@
   --foreground: var(--color-neutral-900);
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-canvas: #0b120e;
+  --color-neutral-0: #111a14;
+  --color-neutral-50: #141e17;
+  --color-neutral-100: #1b2920;
+  --color-neutral-200: #2b4032;
+  --color-neutral-300: #48614f;
+  --color-neutral-400: #8da996;
+  --color-neutral-500: #aec5b5;
+  --color-neutral-600: #c6d7cb;
+  --color-neutral-700: #dce9df;
+  --color-neutral-800: #eaf3ec;
+  --color-neutral-900: #f5faf6;
+  --color-primary-50: #102617;
+  --color-primary-100: #173d25;
+  --color-primary-200: #215934;
+  --color-primary-300: #2e7d48;
+  --color-primary-400: #43ba67;
+  --color-primary-500: #52cf79;
+  --color-primary-600: #6cdb8b;
+  --color-primary-700: #91e6a8;
+  --color-primary-800: #b7f0c6;
+  --color-primary-900: #dcfae4;
+  --color-success-surface: #10301d;
+  --color-success-text: #a7f3d0;
+  --color-warning-surface: #332709;
+  --color-warning-text: #fcd34d;
+  --color-danger-surface: #3c171c;
+  --color-danger-text: #fda4af;
+  --color-info-surface: #102617;
+  --color-info-text: #91e6a8;
+  --color-ai-surface: #102617;
+  --color-ai: #6cdb8b;
+  --color-ai-text: #91e6a8;
+  --shadow-card: 0 0 0 1px rgb(255 255 255 / 0.07), 0 10px 28px -14px rgb(0 0 0 / 0.55);
+  --shadow-card-hover: 0 0 0 1px rgb(255 255 255 / 0.12), 0 14px 32px -12px rgb(0 0 0 / 0.6);
+  --background: var(--color-canvas);
+  --foreground: var(--color-neutral-900);
+}
+
+/* Only surfaces are remapped; text-white stays white on emerald actions. */
+:root[data-theme="dark"] .bg-white { background-color: #111a14; }
+:root[data-theme="dark"] .bg-neutral-900 { background-color: #126b3a; }
+:root[data-theme="dark"] .bg-neutral-800 { background-color: #188647; }
+:root[data-theme="dark"] :is(.bg-primary-600, [class~="bg-[var(--color-primary-600)]"]) { background-color: #198754; }
+:root[data-theme="dark"] :is(.bg-primary-700, [class~="bg-[var(--color-primary-700)]"]) { background-color: #188647; }
+:root[data-theme="dark"] [class~="hover:bg-neutral-800"]:hover { background-color: #188647; }
+:root[data-theme="dark"] [class~="hover:bg-primary-700"]:hover { background-color: #126b3a; }
+:root[data-theme="dark"] [class*="bg-neutral-900/"] { background-color: rgb(0 0 0 / 0.55); }
+:root[data-theme="dark"] .chat-icon:hover,
+:root[data-theme="dark"] .chat-icon-active { background-color: #153d29; color: #6ee7b7; }
+:root[data-theme="dark"] .bg-red-50 { background-color: #3c171c; }
+:root[data-theme="dark"] .text-red-700 { color: #fda4af; }
+:root[data-theme="dark"] .bg-emerald-50 { background-color: #10301d; }
+:root[data-theme="dark"] .text-emerald-700 { color: #a7f3d0; }
+:root[data-theme="dark"] .text-amber-700 { color: #fcd34d; }
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -175,11 +244,11 @@ button {
   transition: background-color 150ms, color 150ms;
 }
 .chat-icon:hover, .chat-icon-active {
-  background: #fff1e6;
-  color: #ed7d23;
+  background: #d1fae5;
+  color: #047857;
 }
 .chat-icon:focus-visible {
-  outline: 2px solid #f58229;
+  outline: 2px solid #059669;
   outline-offset: 2px;
 }
 .chat-details { overflow-y: auto; }
@@ -199,6 +268,10 @@ button {
 
 /* Reduced motion: keep color/opacity cues, drop movement */
 @media (prefers-reduced-motion: reduce) {
+  .vso-tab-indicator { transition-duration: 0.01ms !important; }
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) { animation-duration: 0s !important; animation-delay: 0s !important; }
   .vso-enter-right,
   .vso-enter-left,
   .vso-enter-bottom,

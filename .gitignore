@@ -1,6 +1,7 @@
 node_modules/
 .next/
 **/.next/
+**/.next-preview/
 dist/
 **/dist/
 .env

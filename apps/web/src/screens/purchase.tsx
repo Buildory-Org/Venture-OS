@@ -45,7 +45,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Purchase"
         title="Purchase"
         subtitle="Vendors, purchase orders and goods received"
       >
@@ -131,7 +130,7 @@ function Inner() {
               cells: [
                 <span key="n" className="font-bold text-neutral-900">{v.name}</span>,
                 v.city,
-                <span key="r" className="rounded-md bg-primary-50 px-1.5 py-0.5 text-[10.5px] font-extrabold text-primary-700">{v.rating}</span>,
+                <span key="r" className="rounded-md bg-primary-50 px-1.5 py-0.5 text-[10.5px] font-semibold text-primary-700">{v.rating}</span>,
                 inr(v.spend),
                 v.outstanding > 0 ? <span className="font-bold text-warning-text">{inr(v.outstanding)}</span> : inr(0),
                 <StatusChip key="s" label={v.status} tone={v.tone as Tone} />,

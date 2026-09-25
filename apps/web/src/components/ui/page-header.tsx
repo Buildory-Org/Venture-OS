@@ -1,13 +1,11 @@
 import { Anim } from "./anim";
 
-/** Page header — breadcrumb + title + right-side actions. */
+/** Page header — title, optional context, and right-side actions. */
 export function PageHeader({
-  crumb,
   title,
   subtitle,
   children,
 }: {
-  crumb: string;
   title: string;
   subtitle?: string;
   children?: React.ReactNode;
@@ -15,8 +13,7 @@ export function PageHeader({
   return (
     <Anim className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <p className="text-[11.5px] font-semibold text-neutral-400">{crumb}</p>
-        <h1 className="mt-0.5 text-[22px] font-extrabold tracking-tight text-neutral-900">
+        <h1 className="text-[22px] font-bold tracking-tight text-neutral-900">
           {title}
         </h1>
         {subtitle && (

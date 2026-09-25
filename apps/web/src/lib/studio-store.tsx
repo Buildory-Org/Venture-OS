@@ -9,6 +9,9 @@ const USER_KEY = "venture-studio-demo-user";
 type StudioContextValue = {
   data: StudioData;
   currentUserId: string;
+  mode: "demo" | "connected";
+  workspaceName: string;
+  role: string;
   setCurrentUserId: (id: string) => void;
   updateSection: <K extends keyof StudioData>(section: K, updater: (current: StudioData[K]) => StudioData[K]) => void;
   resetDemo: () => void;
@@ -17,12 +20,13 @@ type StudioContextValue = {
 
 const StudioContext = createContext<StudioContextValue | null>(null);
 
-export function StudioProvider({ children }: { children: React.ReactNode }) {
-  const [data, setData] = useState<StudioData>(demoData);
-  const [currentUserId, setCurrentUserId] = useState("divyansh");
+export function StudioProvider({ children, mode = "demo", initialData, initialUserId, workspaceName = "Meridian Studio", role = "Demo identity" }: { children: React.ReactNode; mode?: "demo" | "connected"; initialData?: StudioData; initialUserId?: string; workspaceName?: string; role?: string }) {
+  const [data, setData] = useState<StudioData>(initialData ?? demoData);
+  const [currentUserId, setCurrentUserId] = useState(initialUserId ?? "divyansh");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    if (mode === "connected") return;
     const frame = requestAnimationFrame(() => {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
@@ -38,17 +42,18 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setReady(true);
     });
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data, ready]);
+    if (ready && mode === "demo") localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }, [data, ready, mode]);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(USER_KEY, currentUserId);
-  }, [currentUserId, ready]);
+    if (ready && mode === "demo") localStorage.setItem(USER_KEY, currentUserId);
+  }, [currentUserId, ready, mode]);
 
   const updateSection: StudioContextValue["updateSection"] = (section, updater) => {
+    if (mode === "connected") throw new Error("Connected workspace changes must use the API.");
     setData((current) => ({
       ...current,
       [section]: updater(current[section]),
@@ -57,11 +62,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   };
 
   const resetDemo = () => {
+    if (mode === "connected") return;
     setData(demoData);
     setCurrentUserId("divyansh");
   };
 
-  return <StudioContext.Provider value={{ data, currentUserId, setCurrentUserId, updateSection, resetDemo, ready }}>{children}</StudioContext.Provider>;
+  return <StudioContext.Provider value={{ data: mode === "connected" ? initialData ?? data : data, currentUserId, mode, workspaceName, role, setCurrentUserId, updateSection, resetDemo, ready: mode === "connected" || ready }}>{children}</StudioContext.Provider>;
 }
 
 export function useStudio() {

@@ -43,7 +43,7 @@ export function BranchComparison({
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-neutral-700">
               {b.name}
             </span>
-            <span className="text-[12px] font-bold text-neutral-900 tnum">
+            <span className="text-[12px] font-semibold text-neutral-900 tnum">
               {inrCompact(b.value)}
             </span>
             <span className="w-8 text-right text-[11px] font-semibold text-neutral-400 tnum">

@@ -15,7 +15,7 @@ export function StatCards({ stats, delay = 0 }: { stats: Stat[]; delay?: number 
             <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-neutral-400">
               {s.label}
             </p>
-            <p className="mt-1.5 text-[22px] font-extrabold leading-7 tracking-tight text-neutral-900 tnum">
+            <p className="mt-1.5 text-[22px] font-bold leading-7 tracking-tight text-neutral-900 tnum">
               {s.value}
             </p>
             {s.hint && (

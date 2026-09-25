@@ -31,7 +31,7 @@ function RankedList({
       <ul className="space-y-2">
         {items.map((it, i) => (
           <li key={it.name} className="flex items-center gap-2.5">
-            <span className="grid h-5.5 w-5.5 shrink-0 place-items-center rounded-full bg-primary-50 text-[10px] font-bold text-primary-700 tnum">
+            <span className="grid h-5.5 w-5.5 shrink-0 place-items-center rounded-full bg-primary-50 text-[10px] font-semibold text-primary-700 tnum">
               {i + 1}
             </span>
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-700">

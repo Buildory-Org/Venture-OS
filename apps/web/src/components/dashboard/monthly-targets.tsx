@@ -36,7 +36,7 @@ export function MonthlyTargets({
                 }}
               />
             </div>
-            <p className="mt-1 text-right text-[11px] font-bold text-primary-700 tnum">
+            <p className="mt-1 text-right text-[11px] font-semibold text-primary-700 tnum">
               {t.pct}%
             </p>
           </li>

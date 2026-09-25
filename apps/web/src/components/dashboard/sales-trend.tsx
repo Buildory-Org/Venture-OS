@@ -37,19 +37,19 @@ export function SalesTrend({
           <AreaChart data={salesTrend} margin={{ top: 10, right: 12, bottom: 0, left: 8 }}>
             <defs>
               <linearGradient id="salesG" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#3B6FF0" stopOpacity={0.28} />
-                <stop offset="100%" stopColor="#3B6FF0" stopOpacity={0} />
+                <stop offset="0%" stopColor="var(--color-primary-500)" stopOpacity={0.28} />
+                <stop offset="100%" stopColor="var(--color-primary-500)" stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
               dataKey="d"
               tickLine={false}
               axisLine={false}
-              tick={{ fontSize: 10, fill: "#94A3B8", fontWeight: 600 }}
+              tick={{ fontSize: 10, fill: "var(--color-neutral-400)", fontWeight: 600 }}
               dy={6}
             />
             <Tooltip
-              cursor={{ stroke: "#CBD5E1" }}
+              cursor={{ stroke: "var(--color-neutral-300)" }}
               contentStyle={{
                 borderRadius: 12,
                 boxShadow: "0 4px 12px rgba(15,23,42,.10)",
@@ -61,7 +61,7 @@ export function SalesTrend({
             <Area
               type="monotone"
               dataKey="v"
-              stroke="#2453DB"
+              stroke="var(--color-primary-700)"
               strokeWidth={2.75}
               fill="url(#salesG)"
               dot={false}
@@ -71,7 +71,7 @@ export function SalesTrend({
               x={hot.d}
               y={hot.v}
               r={5}
-              fill="#2453DB"
+              fill="var(--color-primary-700)"
               stroke="#fff"
               strokeWidth={3}
             />

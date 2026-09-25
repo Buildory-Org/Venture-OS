@@ -34,7 +34,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Operations"
         title="Operations"
         subtitle="Approvals, projects and tasks"
       >
@@ -71,7 +70,7 @@ function Inner() {
                     "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.98]",
                     filter === f.k
-                      ? "bg-neutral-900 text-white"
+                      ? "bg-primary-700 text-white"
                       : "text-neutral-600 hover:bg-neutral-100"
                   )}
                 >
@@ -85,7 +84,7 @@ function Inner() {
 
             {/* queue */}
             <div className="space-y-1.5 rounded-2xl bg-white p-3 lg:col-span-4">
-              <p className="px-2 pb-1 text-[11px] font-bold text-neutral-400">
+              <p className="px-2 pb-1 text-[11px] font-semibold text-neutral-400">
                 5 pending · oldest 2d
               </p>
               {approvalsQueue.map((a) => (
@@ -104,7 +103,7 @@ function Inner() {
                     <span className="text-[12.5px] font-bold text-neutral-900">
                       {a.kind} · {a.id}
                     </span>
-                    <span className={clsx("text-[10px] font-bold tnum", a.ageTone === "warning" ? "text-warning-text" : "text-neutral-400")}>
+                    <span className={clsx("text-[10px] font-semibold tnum", a.ageTone === "warning" ? "text-warning-text" : "text-neutral-400")}>
                       {a.age}
                     </span>
                   </div>
@@ -112,7 +111,7 @@ function Inner() {
                     {a.who} · {a.meta}
                   </p>
                   {a.amount && (
-                    <p className="mt-1 text-[12px] font-extrabold text-neutral-900 tnum">{a.amount}</p>
+                    <p className="mt-1 text-[12px] font-semibold text-neutral-900 tnum">{a.amount}</p>
                   )}
                 </button>
               ))}
@@ -121,7 +120,7 @@ function Inner() {
             {/* detail */}
             <div className="rounded-2xl bg-white p-5 lg:col-span-5">
               <div className="flex items-center justify-between">
-                <p className="text-[15px] font-extrabold tracking-tight text-neutral-900">
+                <p className="text-[15px] font-bold tracking-tight text-neutral-900">
                   {item.id} · {item.kind}
                 </p>
                 <StatusChip label="Pending" tone="warning" />
@@ -150,7 +149,7 @@ function Inner() {
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-neutral-900 py-2.5 text-[12.5px] font-bold text-white transition-[background-color,transform] duration-150 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.98]"
+                  className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-primary-700 py-2.5 text-[12.5px] font-bold text-white transition-[background-color,transform] duration-150 hover:bg-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.98]"
                 >
                   <HugeiconsIcon icon={CheckmarkCircle01Icon} size={15} strokeWidth={1.75} />
                   Approve
@@ -184,7 +183,7 @@ function Inner() {
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-neutral-100">
                   <div className="h-full rounded-full bg-gradient-to-r from-primary-400 to-primary-600" style={{ width: `${p.progress}%` }} />
                 </div>
-                <p className="mt-2 text-[11px] font-bold text-neutral-500 tnum">{p.progress}% complete</p>
+                <p className="mt-2 text-[11px] font-semibold text-neutral-500 tnum">{p.progress}% complete</p>
               </div>
             ))}
           </div>

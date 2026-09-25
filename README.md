@@ -43,5 +43,11 @@ For Cloudflare R2 development uploads, use a private development bucket and a bu
 5. Restart the API and worker, then perform a real browser upload/download and a test invitation. An email link using a `localhost` `APP_ORIGIN` can be opened only on that same computer; inviting remote people needs a public HTTPS application origin with production-grade authentication. Do not expose local development auth on a public tunnel.
 
 Member notifications default to in-app delivery, plus browser push once the member subscribes and VAPID keys are configured. Email notifications are opt-in, so repeating task reminders do not flood inboxes when Resend is configured; invitation and sign-in emails use their separate delivery flow.
+
+### First admin account
+
+Set `BOOTSTRAP_ADMIN_EMAIL` in the ignored root `.env` to the first owner's real email address. Configure `RESEND_API_KEY` and a verified `EMAIL_FROM`, and run the API against a MongoDB replica set. Restart the API, open `/signup` on the web app, and request the verification link for that address. Opening the link signs in and claims admin access to the existing single workspace (or creates the first workspace if none exists). The claim is single-use; `/signup` returns 404 after a real admin exists. Remove `BOOTSTRAP_ADMIN_EMAIL` from the environment after claiming. In local development, the sanitized seeded admin is not a real email account and does not close the signup path. Afterward, create a venture and group if needed, then invite members from the group's People controls. The `/sign-in/live` page is for existing members; requesting a sign-in link alone does not grant membership.
+
+Do not expose a fresh installation publicly before its configured owner claims it. Setup is restricted by the owner email and requires possession of the email verification link, but it should still be completed promptly.
 Web Push currently accepts Chrome/FCM, Firefox/Mozilla, Safari/Apple, and Edge/Windows push-service endpoints. The endpoint ownership index upgrade retires ambiguous legacy duplicates and requires those browsers to subscribe again. Push alerts are deliberately generic and open the signed-in inbox, because an in-flight send cannot be recalled during a shared-browser account switch. Real closed-tab delivery remains unverified until VAPID keys are configured.
 

@@ -103,7 +103,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
   };
 
   return <div className="space-y-3 p-4">
-    <div className="flex items-start gap-2"><BellRing size={17} className="mt-0.5 shrink-0 text-primary-700" /><div><p className="text-sm font-bold text-neutral-800">Browser push on this device</p><p role="status" className="mt-1 text-xs leading-5 text-neutral-500">{message[state]}</p></div></div>
+    <div className="flex items-start gap-2"><BellRing size={17} className="mt-0.5 shrink-0 text-primary-700" /><div><p className="text-sm font-semibold text-neutral-800">Browser push on this device</p><p role="status" className="mt-1 text-xs leading-5 text-neutral-500">{message[state]}</p></div></div>
     {preferenceEnabled === false && <p className="text-xs leading-5 text-warning-text">Turn on and save the Browser push preference above to receive alerts here.</p>}
     {error && <p role="alert" className="rounded-lg bg-danger-surface p-2 text-xs text-danger-text">{error}</p>}
     {state === "ready" && <button type="button" disabled={busy || !publicKey || !supported()} onClick={enable} className={primaryClass}>{busy ? "Enabling…" : "Enable on this browser"}</button>}

@@ -40,7 +40,7 @@ export function Widget({
       <header className="flex items-center gap-2 px-6 pt-5">
         <h2
           className={clsx(
-            "text-[13px] font-bold text-neutral-800",
+            "text-[13px] font-semibold text-neutral-800",
             ai && "text-ai"
           )}
         >
@@ -56,7 +56,7 @@ export function Widget({
               trigger={
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1.5 text-[11px] font-bold text-neutral-600 transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"
+                  className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-3 py-1.5 text-[11px] font-semibold text-neutral-600 transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"
                 >
                   {period}
                   <HugeiconsIcon icon={ArrowDown01Icon} size={13} strokeWidth={1.75} />

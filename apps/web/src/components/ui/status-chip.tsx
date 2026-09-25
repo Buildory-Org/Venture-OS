@@ -16,7 +16,7 @@ export function StatusChip({ label, tone }: { label: string; tone: Tone }) {
   return (
     <span
       className={clsx(
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold",
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold",
         tones[tone]
       )}
     >

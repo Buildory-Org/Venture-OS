@@ -37,7 +37,6 @@ function Inner() {
   return (
     <div className="mx-auto max-w-[1600px] p-6">
       <PageHeader
-        crumb="Documents"
         title="Documents"
         subtitle="Library, OCR search and e-signatures"
       >
@@ -74,12 +73,12 @@ function Inner() {
                   className={clsx(
                     "flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-[12.5px] font-semibold",
                     "transition-[color,background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.98]",
-                    folder === f.name ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-100"
+                    folder === f.name ? "bg-primary-700 text-white" : "text-neutral-600 hover:bg-neutral-100"
                   )}
                 >
                   <HugeiconsIcon icon={Folder01Icon} size={16} strokeWidth={1.5} className={folder === f.name ? "text-white/70" : "text-neutral-300"} />
                   <span className="flex-1 truncate text-left">{f.name}</span>
-                  <span className={clsx("text-[10px] font-bold tnum", folder === f.name ? "text-white/60" : "text-neutral-300")}>{f.count}</span>
+                  <span className={clsx("text-[10px] font-semibold tnum", folder === f.name ? "text-white/60" : "text-neutral-300")}>{f.count}</span>
                 </button>
               ))}
               <p className="px-3 pb-1 pt-3 text-[9.5px] font-bold uppercase tracking-[0.09em] text-ai-text">✦ Smart folders</p>
@@ -96,7 +95,7 @@ function Inner() {
                 >
                   <HugeiconsIcon icon={AiFolder01Icon} size={16} strokeWidth={1.5} />
                   <span className="flex-1 truncate text-left">{f.name}</span>
-                  <span className="text-[10px] font-bold tnum opacity-60">{f.count}</span>
+                  <span className="text-[10px] font-semibold tnum opacity-60">{f.count}</span>
                 </button>
               ))}
             </div>
@@ -188,7 +187,7 @@ function Inner() {
                   <p className="text-[11px] font-medium text-neutral-400">{d.date}</p>
                 </div>
                 <StatusChip label={d.status} tone={d.tone as Tone} />
-                <button type="button" className="rounded-full bg-neutral-900 px-3 py-1.5 text-[11px] font-bold text-white transition-transform duration-150 hover:bg-neutral-800 active:scale-[0.96]">
+                <button type="button" className="rounded-full bg-primary-700 px-3 py-1.5 text-[11px] font-semibold text-white transition-transform duration-150 hover:bg-primary-800 active:scale-[0.96]">
                   Remind
                 </button>
               </div>

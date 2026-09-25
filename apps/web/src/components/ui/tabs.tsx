@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import clsx from "clsx";
+import { SlidingTabs } from "./sliding-tabs";
 
 export type TabDef = { key: string; label: string; badge?: number };
 
@@ -17,45 +17,17 @@ function TabsInner({
 }) {
   const router = useRouter();
   const sp = useSearchParams();
-  const active = sp.get(param) ?? tabs[0].key;
+  const requested = sp.get(param);
+  const active = tabs.some((tab) => tab.key === requested) ? requested! : tabs[0].key;
 
   return (
-    <div className="flex items-center gap-1 overflow-x-auto rounded-full bg-neutral-100 p-1">
-      {tabs.map((t) => (
-        <button
-          key={t.key}
-          type="button"
-          onClick={() => {
-            onChange?.(t.key);
-            const q = new URLSearchParams(sp.toString());
-            q.set(param, t.key);
-            router.replace(`?${q.toString()}`, { scroll: false });
-          }}
-          className={clsx(
-            "flex items-center gap-1.5 whitespace-nowrap rounded-full px-3.5 py-1.5 text-[12px] font-bold",
-            "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]",
-            active === t.key
-              ? "bg-neutral-900 text-white"
-              : "text-neutral-500 hover:text-neutral-800"
-          )}
-        >
-          {t.label}
-          {t.badge != null && (
-            <span
-              className={clsx(
-                "rounded-full px-1.5 py-0.5 text-[9.5px] font-bold leading-none tnum",
-                active === t.key
-                  ? "bg-white/20 text-white"
-                  : "bg-neutral-200/80 text-neutral-500"
-              )}
-            >
-              {t.badge}
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
+    <SlidingTabs tabs={tabs} active={active} label={`${param} sections`} className="bg-neutral-100"
+      onChange={(key) => {
+        onChange?.(key);
+        const q = new URLSearchParams(sp.toString());
+        q.set(param, key);
+        router.replace(`?${q.toString()}`, { scroll: false });
+      }} />
   );
 }
 

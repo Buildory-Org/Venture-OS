@@ -26,7 +26,7 @@ export function KpiStrip({ delay = 0 }: { delay?: number }) {
             {k.delta !== null ? (
               <p
                 className={clsx(
-                  "mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold tnum",
+                  "mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold tnum",
                   positive
                     ? "bg-success-surface text-success-text"
                     : "bg-danger-surface text-danger-text"

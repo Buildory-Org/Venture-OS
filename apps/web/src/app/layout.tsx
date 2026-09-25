@@ -24,8 +24,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${jakarta.variable} ${jbMono.variable} h-full antialiased`}
     >
+      <head><script dangerouslySetInnerHTML={{ __html: "var c=document.cookie.match(/(?:^|; )venture_studio_theme=(dark|light)/);document.documentElement.dataset.theme=c?.[1]||'light'" }} /></head>
       <body className="min-h-full bg-canvas font-sans text-neutral-900">
         {children}
       </body>

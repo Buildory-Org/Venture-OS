@@ -69,14 +69,14 @@ export function useChatAttachments(scopeKey: string, scope: ChatUploadScope | nu
 export function AttachmentPicker({ attachments, scopeLabel, disabled }: { attachments: ReturnType<typeof useChatAttachments>; scopeLabel: string; disabled?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   return <>
-    <p className="mb-1 text-[10px] text-[#999aa4]">Files will be shared in {scopeLabel}.</p>
+    <p className="mb-1 text-[10px] text-[var(--color-neutral-400)]">Files will be shared in {scopeLabel}.</p>
     {(attachments.items.length > 0 || attachments.uploading) && <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Files ready to send">
-      {attachments.items.map((file) => <span key={file.id} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[#f5f5f6] px-2 py-1 text-[11px] text-[#51515c]"><FileText size={13} className="shrink-0" /><span className="max-w-44 truncate">{file.name}</span><span className="text-[#999aa4]">{fileSize(file.size)}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => attachments.remove(file.id)} className="grid h-6 w-6 place-items-center rounded-md hover:bg-[#e9e9ed]"><X size={13} /></button></span>)}
-      {attachments.uploading && <span role="status" className="text-[11px] text-[#777883]">Uploading…</span>}
+      {attachments.items.map((file) => <span key={file.id} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--color-neutral-100)] px-2 py-1 text-[11px] text-[var(--color-neutral-700)]"><FileText size={13} className="shrink-0" /><span className="max-w-44 truncate">{file.name}</span><span className="text-[var(--color-neutral-400)]">{fileSize(file.size)}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => attachments.remove(file.id)} className="grid h-6 w-6 place-items-center rounded-md hover:bg-[var(--color-neutral-200)]"><X size={13} /></button></span>)}
+      {attachments.uploading && <span role="status" className="text-[11px] text-[var(--color-neutral-500)]">Uploading…</span>}
     </div>}
     {attachments.error && <p role="alert" className="mb-2 text-[11px] text-red-700">{attachments.error}</p>}
     <input ref={input} type="file" multiple className="sr-only" tabIndex={-1} accept=".pdf,.md,.txt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm,.mp3,.m4a,.ogg,.wav" onChange={(event) => { void attachments.addFiles(event.target.files); event.target.value = ""; }} />
-    <button type="button" aria-label="Attach files" title="Attach files" disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={() => input.current?.click()} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[#777883] hover:bg-[#f5f5f6] disabled:opacity-40"><Paperclip size={16} /></button>
+    <button type="button" aria-label="Attach files" title="Attach files" disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={() => input.current?.click()} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-500)] hover:bg-[var(--color-neutral-100)] disabled:opacity-40"><Paperclip size={16} /></button>
   </>;
 }
 
@@ -112,9 +112,9 @@ function MessageAttachmentCard({ file }: { file: ChatAttachment }) {
     finally { setLoading(false); }
   }
 
-  return <div className="min-w-0 max-w-full rounded-xl bg-[#f5f5f6] p-2 text-left text-[#444450]">
-    <div className="flex min-w-0 items-center gap-2"><FileText size={15} className="shrink-0 text-[#e4781f]" /><div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold" title={file.name}>{file.name}</p><p className="text-[10px] text-[#999aa4]">{fileSize(file.size)}</p></div>{previewable && <button type="button" disabled={loading} onClick={preview} className="min-h-8 rounded-md px-2 text-[10px] font-semibold text-[#e4781f] hover:bg-[#fff2e8]">{url ? "Close" : "Preview"}</button>}<button type="button" disabled={loading} onClick={download} aria-label={`Download ${file.name}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-md hover:bg-[#e9e9ed]"><Download size={14} /></button></div>
-    {loading && <p role="status" className="mt-2 text-[10px] text-[#777883]">Loading file…</p>}
+  return <div className="min-w-0 max-w-full rounded-xl bg-[var(--color-neutral-100)] p-2 text-left text-[var(--color-neutral-700)]">
+    <div className="flex min-w-0 items-center gap-2"><FileText size={15} className="shrink-0 text-[var(--color-primary-700)]" /><div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold" title={file.name}>{file.name}</p><p className="text-[10px] text-[var(--color-neutral-400)]">{fileSize(file.size)}</p></div>{previewable && <button type="button" disabled={loading} onClick={preview} className="min-h-8 rounded-md px-2 text-[10px] font-semibold text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]">{url ? "Close" : "Preview"}</button>}<button type="button" disabled={loading} onClick={download} aria-label={`Download ${file.name}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-md hover:bg-[var(--color-neutral-200)]"><Download size={14} /></button></div>
+    {loading && <p role="status" className="mt-2 text-[10px] text-[var(--color-neutral-500)]">Loading file…</p>}
     {error && <p role="alert" className="mt-2 text-[10px] text-red-700">{error}</p>}
     {url && <div className="mt-2 overflow-hidden rounded-lg bg-white">{file.contentType.startsWith("image/") ? <img src={url} alt={file.name} className="max-h-72 max-w-full object-contain" /> : file.contentType.startsWith("video/") ? <video src={url} controls className="max-h-72 max-w-full" /> : file.contentType.startsWith("audio/") ? <audio src={url} controls className="w-full" /> : <iframe src={url} title={`Preview ${file.name}`} className="h-72 w-full" />}</div>}
   </div>;

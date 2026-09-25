@@ -63,11 +63,14 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-export function requireActor(resolveActor: ReturnType<typeof createActorResolver>) {
+export function requireActor(resolveActor: ReturnType<typeof createActorResolver>, anonymousLimit?: ReturnType<typeof rateLimit>) {
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
       const actor = await resolveActor(req.headers);
-      if (!actor) throw new AppError(401, "UNAUTHENTICATED", "Authentication required");
+      if (!actor) {
+        if (anonymousLimit) return anonymousLimit(req, _res, (error) => next(error ?? new AppError(401, "UNAUTHENTICATED", "Authentication required")));
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication required");
+      }
       req.actor = actor;
       next();
     } catch (error) { next(error); }
@@ -87,10 +90,10 @@ export function authorize(db: AppDb, action: Action, scope: (req: Request) => { 
   };
 }
 
-export function rateLimit(db: AppDb, max: number, windowMs: number) {
+export function rateLimit(db: AppDb, max: number, windowMs: number, bucket = "default") {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const now = Date.now();
-    const key = req.actor?.id ?? req.ip ?? "unknown";
+    const key = `${bucket}:${req.actor?.id ?? req.identity?.id ?? req.ip ?? "unknown"}`;
     const windowStart = Math.floor(now / windowMs) * windowMs;
     try {
       const entry = await db.collection("api_rate_limits").findOneAndUpdate(
@@ -99,8 +102,12 @@ export function rateLimit(db: AppDb, max: number, windowMs: number) {
         { upsert: true, returnDocument: "after" },
       );
       const count = Number(entry?.count ?? 1);
+      res.setHeader("x-ratelimit-limit", max);
       res.setHeader("x-ratelimit-remaining", Math.max(0, max - count));
-      if (count > max) return next(new AppError(429, "RATE_LIMITED", "Too many requests"));
+      if (count > max) {
+        res.setHeader("retry-after", Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)));
+        return next(new AppError(429, "RATE_LIMITED", "Too many requests"));
+      }
       next();
     } catch (error) { next(error); }
   };

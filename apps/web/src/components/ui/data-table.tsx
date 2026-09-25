@@ -81,7 +81,7 @@ export function DataTable({
                 "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.96]",
                 chip === c
-                  ? "bg-neutral-900 text-white"
+                  ? "bg-primary-700 text-white"
                   : "bg-neutral-100 text-neutral-500 hover:text-neutral-800"
               )}
             >

@@ -40,7 +40,6 @@ export function AiChatScreen() {
   return (
     <div className="mx-auto flex h-full max-w-[900px] flex-col p-6">
       <PageHeader
-        crumb="AI Engine"
         title="AI Business Advisor"
         subtitle="Context: Delhi HQ · September 2026 — ask in Hindi or English"
       />
@@ -63,7 +62,7 @@ export function AiChatScreen() {
         {msgs.map((m, i) =>
           m.from === "you" ? (
             <div key={i} className="flex justify-end">
-              <div className="max-w-[75%] rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-[13px] font-medium text-white">
+              <div className="max-w-[75%] rounded-2xl rounded-br-md bg-primary-700 px-4 py-2.5 text-[13px] font-medium text-white">
                 {m.text}
               </div>
             </div>
@@ -78,7 +77,7 @@ export function AiChatScreen() {
                     {m.text}
                     {m.card && (
                       <div className="mt-3 rounded-xl bg-white p-3.5">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.06em] text-neutral-400">Cash position</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.06em] text-neutral-400">Cash position</p>
                         <p className="mt-1.5 text-[12.5px] font-semibold leading-relaxed text-neutral-700 tnum">
                           Cash on hand ₹8.2L · Receivables ₹6.4L · Payables ₹9.1L → projected low ₹5.5L on ~12 Oct
                         </p>
@@ -123,7 +122,7 @@ export function AiChatScreen() {
             type="button"
             onClick={() => send(input)}
             aria-label="Send"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-neutral-900 text-white transition-[background-color,transform] duration-150 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.94]"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary-700 text-white transition-[background-color,transform] duration-150 hover:bg-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.94]"
           >
             <HugeiconsIcon icon={SentIcon} size={16} strokeWidth={1.75} />
           </button>

@@ -23,7 +23,6 @@ export function HelpScreen() {
   return (
     <div className="mx-auto max-w-[1200px] p-6">
       <PageHeader
-        crumb="Support"
         title="Help Desk"
         subtitle="Guides, tutorials and ways to reach the Buildory team"
       />

@@ -35,9 +35,9 @@ export function PlSummary({
       </ul>
       <div className="my-3" />
       <div className="flex items-baseline justify-between">
-        <span className="text-[13px] font-bold text-neutral-800">Net Profit</span>
+        <span className="text-[13px] font-semibold text-neutral-800">Net Profit</span>
         <span className="flex items-center gap-1.5">
-          <span className="text-[19px] font-extrabold text-neutral-900 tnum">
+          <span className="text-[19px] font-bold text-neutral-900 tnum">
             ₹11.3L
           </span>
           <span className="inline-flex items-center gap-0.5 rounded-full bg-success-surface px-2 py-0.5 text-[10.5px] font-bold text-success-text tnum">
@@ -47,7 +47,7 @@ export function PlSummary({
       </div>
       <div className="mt-2 flex items-baseline justify-between">
         <span className="text-[12px] font-medium text-neutral-500">Margin</span>
-        <span className="text-[13px] font-bold text-primary-700 tnum">26.7%</span>
+        <span className="text-[13px] font-semibold text-primary-700 tnum">26.7%</span>
       </div>
     </Widget>
   );

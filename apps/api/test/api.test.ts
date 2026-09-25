@@ -6,7 +6,9 @@ import test from "node:test";
 import { io as socketClient } from "socket.io-client";
 import { ObjectId } from "mongodb";
 import { loadConfig } from "../src/config.js";
-import { connectDatabase } from "../src/db.js";
+import { connectDatabase, type AppDb } from "../src/db.js";
+import { AppError } from "../src/errors.js";
+import { rateLimit } from "../src/middleware.js";
 import { ensureIndexes, ensurePushEndpointIndex } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
@@ -15,6 +17,7 @@ import { attachRealtime } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
 import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, messageSchema } from "@venture-studio/contracts";
+import type { Request, Response } from "express";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
   assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "https://app.example.com", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
@@ -26,6 +29,114 @@ test("production configuration fails closed without delivery and storage credent
   assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /HTTPS/);
   assert.throws(() => loadConfig({ FILE_STORAGE: "r2" }), /FILE_STORAGE=r2 requires/);
   assert.throws(() => loadConfig({ R2_ENDPOINT: "https://example.r2.cloudflarestorage.com" }), /R2 settings require FILE_STORAGE=r2/);
+});
+
+test("read and write rate limits have separate actor buckets and a retry time", async () => {
+  const counts = new Map<string, number>();
+  const db = { collection: () => ({ findOneAndUpdate: async ({ _id }: { _id: string }) => {
+    const count = (counts.get(_id) ?? 0) + 1;
+    counts.set(_id, count);
+    return { count };
+  } }) } as unknown as AppDb;
+  const headers = new Map<string, string>();
+  const res = { setHeader: (name: string, value: string | number) => { headers.set(name, String(value)); } } as unknown as Response;
+  const req = { actor: { id: "user-test" } } as unknown as Request;
+  const read = rateLimit(db, 2, 60_000, "actor-read");
+  const write = rateLimit(db, 1, 60_000, "actor-write");
+  const invoke = async (limit: ReturnType<typeof rateLimit>) => {
+    let failure: unknown;
+    await limit(req, res, (error) => { failure = error; });
+    return failure;
+  };
+  assert.equal(await invoke(read), undefined);
+  assert.equal(await invoke(read), undefined);
+  assert.equal(headers.get("x-ratelimit-remaining"), "0");
+  assert.equal(await invoke(write), undefined);
+  assert.equal(headers.get("x-ratelimit-limit"), "1");
+  assert.equal((await invoke(read) as AppError).status, 429);
+  assert.match(headers.get("retry-after") ?? "", /^\d+$/);
+  assert.equal((await invoke(write) as AppError).status, 429);
+  assert.equal(counts.size, 2);
+});
+
+test("first admin signup requires the configured verified email and closes after one claim", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_signup_${process.pid}_${Date.now()}`;
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true",
+    APP_ORIGIN: "http://localhost:3011/", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName,
+    BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+    BOOTSTRAP_ADMIN_EMAIL: "owner@example.com",
+  });
+  const database = await connectDatabase(config);
+  assert.equal(database.transactions, true);
+  await ensureIndexes(database.db);
+  const now = new Date();
+  await database.db.collection("workspaces").insertOne({ _id: "workspace-seeded", name: "Venture Studio", slug: "venture-studio", createdAt: now });
+  await database.db.collection("users").insertOne({ _id: "user-seeded", workspaceId: "workspace-seeded", email: "seed@example.invalid", name: "Seeded", handle: "seeded", status: "active" });
+  await database.db.collection("memberships").insertOne({ _id: "membership-seeded", workspaceId: "workspace-seeded", userId: "user-seeded", role: "admin", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now });
+  const auth = createAuth(database.native, config);
+  const { app } = createApp(database, config, auth, new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const claim = (cookie?: string, requestOrigin = new URL(config.APP_ORIGIN).origin) => fetch(`${origin}/v1/setup/first-admin`, { method: "POST", headers: { "content-type": "application/json", origin: requestOrigin, ...(cookie ? { cookie } : {}) }, body: "{}" });
+  async function verifiedCookie(email: string): Promise<string> {
+    let link = "";
+    const oldInfo = console.info;
+    console.info = (...args: unknown[]) => {
+      try { const value = JSON.parse(String(args[0])); if (value.event === "magic_link") { link = value.url; return; } } catch { /* Ignore non-email logs. */ }
+      oldInfo(...args);
+    };
+    try {
+      const response = await fetch(`${origin}/api/auth/sign-in/magic-link`, { method: "POST", headers: { "content-type": "application/json", origin: new URL(config.APP_ORIGIN).origin }, body: JSON.stringify({ email, name: "First Owner" }) });
+      assert.equal(response.status, 200, await response.text());
+    } finally { console.info = oldInfo; }
+    assert.ok(link);
+    const url = new URL(link);
+    assert.equal(url.origin, new URL(config.APP_ORIGIN).origin);
+    const response = await fetch(`${origin}${url.pathname}?token=${encodeURIComponent(url.searchParams.get("token")!)}`, { redirect: "manual" });
+    assert.equal(response.status, 200, await response.text());
+    const cookie = response.headers.get("set-cookie")?.split(";")[0];
+    assert.ok(cookie);
+    return cookie;
+  }
+  try {
+    const before = await fetch(`${origin}/v1/setup/first-admin`);
+    assert.deepEqual((await before.json() as any).data, { available: true, complete: false, configured: true, emailDeliveryReady: false });
+    assert.equal((await claim()).status, 401);
+    assert.equal((await fetch(`${origin}/v1/setup/first-admin`, { method: "POST", headers: { origin: new URL(config.APP_ORIGIN).origin, "x-dev-user-id": "user-seeded" }, body: "{}" })).status, 401);
+    const wrongCookie = await verifiedCookie("other@example.com");
+    assert.equal((await claim(wrongCookie)).status, 403);
+    const ownerCookie = await verifiedCookie("owner@example.com");
+    assert.equal((await claim(ownerCookie, "https://untrusted.example")).status, 403);
+    const created = await claim(ownerCookie);
+    assert.equal(created.status, 201, await created.clone().text());
+    assert.equal((await created.json() as any).data.workspaceId, "workspace-seeded");
+    assert.equal((await database.db.collection("memberships").findOne({ role: "admin", userId: { $ne: "user-seeded" } }))?.workspaceId, "workspace-seeded");
+    assert.equal((await database.db.collection("installation_setup").countDocuments({ _id: "first-admin" })), 1);
+    const ownerSession = await fetch(`${origin}/v1/session/bootstrap`, { headers: { cookie: ownerCookie } });
+    assert.equal(ownerSession.status, 200);
+    const ownerId = (await ownerSession.json() as any).data.user.id;
+    const adminHeaders = { cookie: ownerCookie, "content-type": "application/json" };
+    const ventureResponse = await fetch(`${origin}/v1/admin/ventures`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ name: "First venture", ownerId, goal30Day: "Define the first outcome" }) });
+    assert.equal(ventureResponse.status, 201, await ventureResponse.clone().text());
+    const ventureId = (await ventureResponse.json() as any).data.id;
+    const groupResponse = await fetch(`${origin}/v1/admin/groups`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ ventureId, name: "Core" }) });
+    assert.equal(groupResponse.status, 201, await groupResponse.clone().text());
+    const groupId = (await groupResponse.json() as any).data.id;
+    const invitationResponse = await fetch(`${origin}/v1/admin/invitations`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ email: "teammate@example.com", role: "contributor", ventureIds: [ventureId], groupIds: [groupId] }) });
+    assert.equal(invitationResponse.status, 201, await invitationResponse.clone().text());
+    assert.equal((await invitationResponse.json() as any).data.delivery.mode, "manual");
+    assert.equal((await claim(ownerCookie)).status, 409);
+    assert.equal((await fetch(`${origin}/v1/setup/first-admin`).then((response) => response.json()) as any).data.complete, true);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
 });
 
 test("local object URLs are signed, operation-scoped, and expiring", async () => {
@@ -106,9 +217,22 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
   try {
     const unauthenticated = await fetch(`${origin}/v1/session/bootstrap`);
     assert.equal(unauthenticated.status, 401);
+    assert.equal(unauthenticated.headers.get("x-ratelimit-limit"), "60");
+    const unauthenticatedInvite = await fetch(`${origin}/v1/invitations/accept`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(unauthenticatedInvite.status, 401);
+    assert.equal(unauthenticatedInvite.headers.get("x-ratelimit-limit"), "60");
     const headers = { "content-type": "application/json", "x-dev-user-id": "user-test" };
     const bootstrap = await fetch(`${origin}/v1/session/bootstrap`, { headers });
     assert.equal(bootstrap.status, 200);
+    assert.equal(bootstrap.headers.get("x-ratelimit-limit"), "300");
+    assert.equal(bootstrap.headers.get("x-ratelimit-remaining"), "299");
+    const peerBootstrap = await fetch(`${origin}/v1/session/bootstrap`, { headers: { "x-dev-user-id": "user-peer" } });
+    assert.equal(peerBootstrap.status, 200);
+    assert.equal(peerBootstrap.headers.get("x-ratelimit-remaining"), "299");
+    const writeProbe = await fetch(`${origin}/v1/rate-limit-probe`, { method: "POST", headers });
+    assert.equal(writeProbe.status, 404);
+    assert.equal(writeProbe.headers.get("x-ratelimit-limit"), "120");
+    assert.equal(writeProbe.headers.get("x-ratelimit-remaining"), "119");
     const bootstrapBody = await bootstrap.json() as any;
     assert.deepEqual(bootstrapBody.data.hierarchy.ventures[0].groups.map((group: any) => group.id), ["group-a"]);
     const memberPage = (await (await fetch(`${origin}/v1/members?limit=2`, { headers })).json()) as any;

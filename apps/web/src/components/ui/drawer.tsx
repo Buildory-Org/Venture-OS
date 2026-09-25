@@ -58,7 +58,7 @@ export function Drawer({
         )}
       >
         <div className="flex items-center justify-between px-5 py-4">
-          <h2 className="text-[15px] font-extrabold tracking-tight text-neutral-900">
+          <h2 className="text-[15px] font-bold tracking-tight text-neutral-900">
             {title}
           </h2>
           <button

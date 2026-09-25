@@ -10,6 +10,7 @@ const schema = z.object({
   MONGODB_DB: z.string().min(1).default("venture_studio"),
   BETTER_AUTH_SECRET: z.string().min(32).default("local-only-change-me-32-characters-minimum"),
   RESEND_API_KEY: z.string().optional(),
+  BOOTSTRAP_ADMIN_EMAIL: z.email().optional(),
   VAPID_PUBLIC_KEY: z.string().optional(),
   EMAIL_FROM: z.string().refine((value) => {
     const named = /^[^\r\n<>]+ <([^<>\r\n]+)>$/.exec(value);
@@ -31,6 +32,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   if (config.FILE_STORAGE === "r2" && (!config.R2_ENDPOINT || !config.R2_ACCESS_KEY_ID || !config.R2_SECRET_ACCESS_KEY || !config.R2_BUCKET)) throw new Error("FILE_STORAGE=r2 requires R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET");
   if (config.FILE_STORAGE === "local" && (config.R2_ENDPOINT || config.R2_ACCESS_KEY_ID || config.R2_SECRET_ACCESS_KEY || config.R2_BUCKET)) throw new Error("R2 settings require FILE_STORAGE=r2; storage will not fall back silently");
   if (config.RESEND_API_KEY && config.EMAIL_FROM.includes("example.invalid")) throw new Error("EMAIL_FROM must be a verified Resend sender when RESEND_API_KEY is set");
+  if (config.BOOTSTRAP_ADMIN_EMAIL && config.BOOTSTRAP_ADMIN_EMAIL.endsWith("@example.invalid")) throw new Error("BOOTSTRAP_ADMIN_EMAIL must be a real email address");
   if (config.APP_MODE === "production") {
     if (config.ALLOW_DEV_AUTH) throw new Error("ALLOW_DEV_AUTH is forbidden in production");
     if (config.BETTER_AUTH_SECRET.startsWith("local-only")) throw new Error("BETTER_AUTH_SECRET must be configured in production");

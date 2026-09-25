@@ -11,7 +11,7 @@ export function ChatAvatar({ id, name, size = 40 }: { id: string; name: string; 
 }
 
 export function ChatShell({ children }: { children: ReactNode }) {
-  return <main className="flex h-dvh min-h-[420px] flex-col overflow-hidden bg-[var(--color-neutral-50)] text-[var(--color-neutral-900)]"><div data-vso-stagger-group className="flex h-full min-h-0 w-full flex-row overflow-hidden bg-white shadow-[0_12px_50px_rgba(33,36,69,.06)]">{children}</div></main>;
+  return <div className="flex h-full min-h-[420px] flex-col overflow-hidden bg-[var(--color-neutral-50)] text-[var(--color-neutral-900)]"><div data-vso-stagger-group className="flex h-full min-h-0 w-full flex-row overflow-hidden bg-white shadow-[0_12px_50px_rgba(33,36,69,.06)]">{children}</div></div>;
 }
 
 export function ChatNav({ mode }: { mode: "messages" | "channels" }) {

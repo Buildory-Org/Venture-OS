@@ -100,6 +100,49 @@
 
 /* Route staging targets page sections while the shared shell stays still. */
 .vso-route-content { min-height: 100%; }
+.vso-shell-chat .vso-route-content { height: 100%; min-height: 0; }
+.vso-shell-sidebar-slot { transition: width 200ms var(--ease-drawer); }
+.vso-shell-chat[data-chat-motion="idle"] .vso-shell-sidebar-slot { transition: width 240ms var(--ease-drawer); }
+.vso-shell-chat[data-chat-motion="idle"] .vso-shell-sidebar {
+  transition: transform 240ms var(--ease-drawer), opacity 160ms ease-out;
+}
+.vso-shell-chat[data-chat-motion="leaving"] .vso-shell-sidebar-slot {
+  width: 0 !important;
+  transition: width 220ms var(--ease-drawer);
+}
+
+/* Chat takes over the same workspace viewport after the chrome exits. */
+.vso-shell[data-chat-motion="leaving"] .vso-shell-sidebar {
+  transform: translateX(-105%) !important;
+  opacity: 0;
+  transition: transform 220ms var(--ease-drawer), opacity 160ms ease-out;
+}
+.vso-shell[data-chat-motion="leaving"] .vso-shell-topbar {
+  transform: translateY(-105%);
+  opacity: 0;
+  transition: transform 220ms var(--ease-drawer), opacity 160ms ease-out;
+}
+.vso-shell[data-chat-motion="immersive"] .vso-shell-sidebar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-105%) !important;
+  transition: none;
+}
+.vso-shell-chat .vso-shell-topbar {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .vso-shell-sidebar-slot,
+  .vso-shell-chat[data-chat-motion="idle"] .vso-shell-sidebar-slot,
+  .vso-shell-chat[data-chat-motion="leaving"] .vso-shell-sidebar-slot,
+  .vso-shell-chat[data-chat-motion="idle"] .vso-shell-sidebar,
+  .vso-shell[data-chat-motion="leaving"] .vso-shell-sidebar,
+  .vso-shell[data-chat-motion="leaving"] .vso-shell-topbar { transition: none; }
+}
 
 .vso-tab-indicator {
   opacity: 0;

@@ -103,7 +103,7 @@ export function LiveMessagesScreen() {
     <div className="mt-8"><ChatCredit /></div>
   </aside>;
 
-  return <ChatShell>
+  return <ChatShell ready={Boolean(session) || Boolean(error)}>
     <aside className={clsx("chat-list flex w-full shrink-0 flex-col border-r border-[var(--color-neutral-200)] bg-white md:w-[282px] xl:w-[310px]", recipientId ? "hidden md:flex" : "flex")}>
       <div className="flex h-[68px] shrink-0 items-center justify-between border-b border-[var(--color-neutral-100)] px-5"><ChatNav mode="messages" /><span className="text-[10px] font-semibold text-[var(--color-neutral-400)]">VENTURE STUDIO</span></div>
       <div className="px-5 pb-3 pt-5"><div className="mb-4 flex items-center justify-between"><h1 className="text-[15px] font-bold tracking-tight">Messages <span className="text-[var(--color-neutral-400)]">⌄</span></h1><button type="button" aria-label="Refresh messages" title="Refresh messages" className="chat-icon" onClick={() => setRevision((value) => value + 1)}><RefreshCw size={16} /></button></div><ChatSearch value={search} onChange={setSearch} placeholder="Search people..." /></div>

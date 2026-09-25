@@ -341,7 +341,7 @@ export function LiveChannelsScreen() {
     <div className="mt-8"><ChatCredit /></div>
   </aside>;
 
-  return <ChatShell>
+  return <ChatShell ready={Boolean(error) || (Boolean(session) && !messagesLoading)}>
     {listOpen && <button type="button" aria-label="Close channel list" onClick={closeList} className="fixed inset-0 z-10 bg-[var(--color-neutral-900)]/25 md:!hidden" />}
     <ChannelNavigator session={session} selectedVentureId={selectedVentureId} selectedGroupId={selectedGroupId} selectedChannelId={selectedId} railExpanded={railExpanded} listOpen={listOpen} search={search} realtime={realtime} canCreate={canCreate} onVentureSelect={changeVenture} onGroupSelect={changeGroup} onChannelSelect={changeChannel} onToggleRail={() => setRailExpanded((value) => !value)} onSearch={setSearch} onCreate={openCreate} />
     <div className="relative flex min-w-0 flex-1 overflow-hidden">

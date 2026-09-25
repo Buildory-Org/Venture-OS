@@ -9,6 +9,8 @@ import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 import { workspaceHref } from "./workspace-link";
 
+type ChatEntry = { path: string; phase: "waiting" | "leaving" };
+
 export function AppShell({ children, connected = false }: { children: React.ReactNode; connected?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -17,21 +19,33 @@ export function AppShell({ children, connected = false }: { children: React.Reac
   const [focusOpen, setFocusOpen] = useState(false);
   const [focusInstant, setFocusInstant] = useState(false);
   const [revealedChatPath, setRevealedChatPath] = useState<string | null>(null);
-  const [departurePath, setDeparturePath] = useState<string | null>(null);
-  const departureTimer = useRef<number | null>(null);
+  const [chatEntry, setChatEntry] = useState<ChatEntry | null>(null);
   const lastEscape = useRef(0);
   const isChat = /^\/(?:demo\/)?(?:channels|messages)(?:\/live)?$/.test(pathname);
-  const immersive = isChat && revealedChatPath !== pathname;
-  const departing = departurePath === pathname;
+  const waitingForChat = isChat && chatEntry?.path === pathname && chatEntry.phase === "waiting";
+  const leavingForChat = isChat && chatEntry?.path === pathname && chatEntry.phase === "leaving";
+  const immersive = isChat && revealedChatPath !== pathname && !waitingForChat;
 
-  useEffect(() => () => {
-    if (departureTimer.current !== null) window.clearTimeout(departureTimer.current);
-  }, []);
+  useEffect(() => {
+    if (chatEntry?.phase !== "leaving") return;
+    const timer = window.setTimeout(() => setChatEntry((current) => current === chatEntry ? null : current), 220);
+    return () => window.clearTimeout(timer);
+  }, [chatEntry]);
 
   useEffect(() => {
     lastEscape.current = 0;
-    queueMicrotask(() => setDeparturePath(null));
   }, [pathname]);
+
+  useEffect(() => {
+    const onReady = (event: Event) => {
+      const readyPath = (event as CustomEvent<string>).detail;
+      if (chatEntry?.phase !== "waiting" || chatEntry.path !== readyPath || pathname !== readyPath) return;
+      setRevealedChatPath(null);
+      setChatEntry(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? null : { path: readyPath, phase: "leaving" });
+    };
+    window.addEventListener("venture:chat-ready", onReady);
+    return () => window.removeEventListener("venture:chat-ready", onReady);
+  }, [chatEntry, pathname]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -79,17 +93,14 @@ export function AppShell({ children, connected = false }: { children: React.Reac
     if (event.button !== 0 || event.detail === 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     const destination = workspaceHref(href, connected ? "connected" : "demo");
-    if (departureTimer.current !== null) window.clearTimeout(departureTimer.current);
-    setDeparturePath(pathname);
-    const finish = () => {
-      departureTimer.current = null;
-      if (destination.split("?")[0] === pathname) {
-        setRevealedChatPath(null);
-        setDeparturePath(null);
-      } else router.push(destination);
-    };
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) finish();
-    else departureTimer.current = window.setTimeout(finish, 220);
+    const targetPath = destination.split("?")[0];
+    if (targetPath === pathname) {
+      setRevealedChatPath(null);
+      setChatEntry(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? null : { path: pathname, phase: "leaving" });
+      return;
+    }
+    setChatEntry({ path: targetPath, phase: "waiting" });
+    router.push(destination);
   };
 
   const toggleFocus = () => {
@@ -98,7 +109,7 @@ export function AppShell({ children, connected = false }: { children: React.Reac
   };
 
   return (
-    <div className={clsx("vso-shell flex h-dvh overflow-hidden bg-white", isChat && "vso-shell-chat")} data-chat-motion={departing ? "leaving" : immersive ? "immersive" : "idle"}>
+    <div className={clsx("vso-shell flex h-dvh overflow-hidden bg-white", isChat && "vso-shell-chat")} data-chat-motion={leavingForChat ? "leaving" : immersive ? "immersive" : "idle"}>
       <div className={clsx("vso-shell-sidebar-slot w-0 shrink-0 lg:overflow-hidden", immersive ? "lg:!w-0" : collapsed ? "lg:w-[76px]" : "lg:w-[248px]")}>
         <Sidebar collapsed={collapsed} mobileOpen={mobileOpen} immersive={immersive} onCloseMobile={() => setMobileOpen(false)} onOpenChat={openChat} />
       </div>

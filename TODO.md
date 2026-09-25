@@ -68,6 +68,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Direct messages and notification center
 - [x] Move connected DMs and channels to independent full-viewport, three-pane messenger routes
 - [x] Keep Channels and Messages in the shared workspace shell: slide the chrome away on sidebar entry, omit the shared top header throughout chat, and animate the sidebar plus chat-area resize on double Escape. Verify both connected chat routes, intermediate sidebar widths, header absence, and web lint/build in the local preview.
+- [x] Start chat navigation immediately and wait for the destination screen to render before sliding the sidebar away; verify Channels and Messages in the connected browser preview, the demo loading fallback, double-Escape resize, and web lint/build.
 - [x] Add visible admin controls for venture, group, and channel creation in connected Channels
 - [x] Fix scoped Channels creation dialogs to inherit the clicked venture/group without a redundant selector; verify both dialogs in-browser and created scope in the isolated Mongo API test
 - [x] Show deterministic DiceBear Adventurer avatars for connected workspace users

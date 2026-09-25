@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, Hash, MessageCircle, Search } from "@/components/ui/icons";
@@ -10,7 +11,19 @@ export function ChatAvatar({ id, name, size = 40 }: { id: string; name: string; 
   return <Image unoptimized src={`https://api.dicebear.com/10.x/adventurer/svg?seed=${encodeURIComponent(id)}`} alt={`${name}'s avatar`} width={size} height={size} className="shrink-0 rounded-full bg-[var(--color-primary-100)] ring-1 ring-black/5" style={{ width: size, height: size }} />;
 }
 
-export function ChatShell({ children }: { children: ReactNode }) {
+export function useChatReady(ready: boolean) {
+  useEffect(() => {
+    if (!ready) return;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("venture:chat-ready", { detail: window.location.pathname })));
+    });
+    return () => { window.cancelAnimationFrame(firstFrame); window.cancelAnimationFrame(secondFrame); };
+  }, [ready]);
+}
+
+export function ChatShell({ children, ready }: { children: ReactNode; ready: boolean }) {
+  useChatReady(ready);
   return <div className="flex h-full min-h-[420px] flex-col overflow-hidden bg-[var(--color-neutral-50)] text-[var(--color-neutral-900)]"><div data-vso-stagger-group className="flex h-full min-h-0 w-full flex-row overflow-hidden bg-white shadow-[0_12px_50px_rgba(33,36,69,.06)]">{children}</div></div>;
 }
 

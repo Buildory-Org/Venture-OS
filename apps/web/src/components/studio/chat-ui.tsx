@@ -3,9 +3,10 @@
 import { useEffect } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, Hash, MessageCircle, Search } from "@/components/ui/icons";
+import { Hash, MessageCircle, PanelLeftClose, PanelLeftOpen, Search } from "@/components/ui/icons";
 import clsx from "clsx";
 import type { ReactNode } from "react";
+import { useChatSidebar } from "@/components/shell/chat-sidebar-context";
 
 export function ChatAvatar({ id, name, size = 40 }: { id: string; name: string; size?: number }) {
   return <Image unoptimized src={`https://api.dicebear.com/10.x/adventurer/svg?seed=${encodeURIComponent(id)}`} alt={`${name}'s avatar`} width={size} height={size} className="shrink-0 rounded-full bg-[var(--color-primary-100)] ring-1 ring-black/5" style={{ width: size, height: size }} />;
@@ -28,7 +29,8 @@ export function ChatShell({ children, ready }: { children: ReactNode; ready: boo
 }
 
 export function ChatNav({ mode }: { mode: "messages" | "channels" }) {
-  return <div className="flex items-center gap-1"><Link href="/dashboard/live" aria-label="Back to dashboard" title="Dashboard" className="chat-icon"><ArrowLeft size={17} /></Link><div className="mx-1 h-5 w-px bg-black/10" /><Link href="/messages/live" aria-label="Direct messages" title="Direct messages" className={clsx("chat-icon", mode === "messages" && "chat-icon-active")}><MessageCircle size={17} /></Link><Link href="/channels/live" aria-label="Channels" title="Channels" className={clsx("chat-icon", mode === "channels" && "chat-icon-active")}><Hash size={17} /></Link></div>;
+  const sidebar = useChatSidebar();
+  return <div className="flex items-center gap-1"><button type="button" onClick={sidebar.toggle} aria-label={sidebar.visible ? "Hide workspace sidebar" : "Show workspace sidebar"} aria-expanded={sidebar.visible} title={sidebar.visible ? "Hide sidebar" : "Show sidebar"} className="chat-icon">{sidebar.visible ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button><div className="mx-1 h-5 w-px bg-black/10" /><Link href="/messages/live" aria-label="Direct messages" title="Direct messages" className={clsx("chat-icon", mode === "messages" && "chat-icon-active")}><MessageCircle size={17} /></Link><Link href="/channels/live" aria-label="Channels" title="Channels" className={clsx("chat-icon", mode === "channels" && "chat-icon-active")}><Hash size={17} /></Link></div>;
 }
 
 export function ChatSearch({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
@@ -40,5 +42,5 @@ export function ChatEmpty({ title, detail }: { title: string; detail: string }) 
 }
 
 export function ChatCredit() {
-  return <p className="text-[10px] leading-4 text-[var(--color-neutral-400)]">Avatars: <a className="underline" href="https://www.dicebear.com/styles/adventurer/" target="_blank" rel="noreferrer">Adventurer by Lisa Wischofsky / DiceBear</a> · CC BY 4.0</p>;
+  return <p className="text-[10px] leading-4 text-[var(--color-neutral-400)]">Avatar artwork: <a className="underline" href="https://www.dicebear.com/styles/adventurer/" target="_blank" rel="noreferrer">Adventurer by Lisa Wischofsky, remixed by DiceBear</a> · <a className="underline" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a></p>;
 }

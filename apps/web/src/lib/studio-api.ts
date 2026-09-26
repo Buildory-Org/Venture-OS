@@ -175,6 +175,15 @@ export async function listLiveGroupFiles(groupId: string, cursor?: string) {
   return page;
 }
 
+export async function listLiveFiles(cursor?: string, ventureId?: string) {
+  const params = new URLSearchParams({ limit: "100" });
+  if (cursor) params.set("cursor", cursor);
+  if (ventureId) params.set("ventureId", ventureId);
+  const page = pagedSuccessEnvelope(groupFileSchema).parse(await request(`/v1/files?${params}`)).data;
+  if (page.items.some((file) => file.status !== "ready" || Boolean(file.recipientId) || (ventureId && file.ventureId !== ventureId))) throw new StudioApiError("The file library returned an item outside its scope.");
+  return page;
+}
+
 function signedObjectTarget(raw: string) {
   const url = new URL(raw);
   if (url.pathname.startsWith("/v1/local-objects/") && ["localhost", "127.0.0.1"].includes(url.hostname)) return `${url.pathname}${url.search}`;
@@ -182,7 +191,7 @@ function signedObjectTarget(raw: string) {
   return url.href;
 }
 
-export async function uploadLiveFile(file: File, scope: UploadScope) {
+export async function uploadLiveFile(file: File, scope: UploadScope, onProgress?: (percent: number, phase: "uploading" | "finalizing") => void) {
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
   const contentType = file.type || fileTypes.get(extension) || "";
   const intent = uploadIntentSchema.parse({ ...scope, name: file.name, contentType, size: file.size });
@@ -190,12 +199,31 @@ export async function uploadLiveFile(file: File, scope: UploadScope) {
   if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("file" in body.data) || !("uploadUrl" in body.data) || typeof body.data.uploadUrl !== "string") throw new StudioApiError("The upload intent response was invalid.");
   const pending = fileSchema.parse(body.data.file);
   const target = signedObjectTarget(body.data.uploadUrl);
-  const response = await fetch(target, { method: "PUT", body: file, headers: { "content-type": intent.contentType } });
-  if (!response.ok) throw new StudioApiError(`The signed upload returned HTTP ${response.status}.`);
-  const etag = response.headers.get("etag") ?? (target.startsWith("/v1/local-objects/") ? "local" : "");
+  let etag: string;
+  if (onProgress) {
+    onProgress(0, "uploading");
+    etag = await new Promise<string>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", target);
+      xhr.setRequestHeader("content-type", intent.contentType);
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(95, Math.round(event.loaded / event.total * 95)), "uploading"); };
+      xhr.onerror = () => reject(new StudioApiError("The signed upload could not reach storage."));
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+        ? resolve(xhr.getResponseHeader("etag") ?? (target.startsWith("/v1/local-objects/") ? "local" : ""))
+        : reject(new StudioApiError(`The signed upload returned HTTP ${xhr.status}.`));
+      xhr.send(file);
+    });
+    onProgress(95, "finalizing");
+  } else {
+    const response = await fetch(target, { method: "PUT", body: file, headers: { "content-type": intent.contentType } });
+    if (!response.ok) throw new StudioApiError(`The signed upload returned HTTP ${response.status}.`);
+    etag = response.headers.get("etag") ?? (target.startsWith("/v1/local-objects/") ? "local" : "");
+  }
   if (!etag) throw new StudioApiError("The upload completed without an ETag; check object-store CORS exposure before retrying.");
   const complete = uploadCompleteSchema.parse({ etag });
-  return successEnvelope(fileSchema).parse(await request(`/v1/uploads/${encodeURIComponent(pending.id)}/complete`, { method: "POST", body: JSON.stringify(complete) })).data;
+  const uploaded = successEnvelope(fileSchema).parse(await request(`/v1/uploads/${encodeURIComponent(pending.id)}/complete`, { method: "POST", body: JSON.stringify(complete) })).data;
+  onProgress?.(100, "finalizing");
+  return uploaded;
 }
 
 export async function prepareLiveFileDownload(id: string, contentType?: string) {
@@ -217,6 +245,29 @@ export async function searchLiveFiles(q: string, ventureId?: string): Promise<Li
   return body.data.items.map((item: unknown) => {
     if (!item || typeof item !== "object" || !("type" in item) || item.type !== "file" || !("id" in item) || typeof item.id !== "string" || !("title" in item) || typeof item.title !== "string" || !("excerpt" in item) || typeof item.excerpt !== "string" || !("ventureId" in item) || typeof item.ventureId !== "string" || !("sourceRef" in item) || typeof item.sourceRef !== "string") throw new StudioApiError("The file search item was invalid.");
     return item as LiveFileSearchHit;
+  });
+}
+
+export type LiveChatSearchHit = {
+  type: "message" | "file";
+  id: string;
+  title: string;
+  excerpt: string;
+  groupId: string;
+  channelId?: string;
+  contentType?: string;
+};
+
+export async function searchLiveGroupContent(q: string, groupId: string): Promise<LiveChatSearchHit[]> {
+  const query = searchQuerySchema.parse({ q, groupId, types: ["message", "file"], limit: 50 });
+  const params = new URLSearchParams({ q: query.q, groupId, types: "message,file", limit: String(query.limit) });
+  const body = await request(`/v1/search?${params}`);
+  if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("items" in body.data) || !Array.isArray(body.data.items)) throw new StudioApiError("The group search response was invalid.");
+  return body.data.items.map((item: unknown) => {
+    if (!item || typeof item !== "object" || !("type" in item) || (item.type !== "message" && item.type !== "file") || !("id" in item) || typeof item.id !== "string" || !("title" in item) || typeof item.title !== "string" || !("excerpt" in item) || typeof item.excerpt !== "string" || !("groupId" in item) || item.groupId !== groupId) throw new StudioApiError("The group search included an item outside this group.");
+    if (item.type === "message" && (!("channelId" in item) || typeof item.channelId !== "string")) throw new StudioApiError("A channel search result lacked its destination.");
+    if (item.type === "file" && (!("contentType" in item) || typeof item.contentType !== "string")) throw new StudioApiError("A file search result lacked its type.");
+    return item as LiveChatSearchHit;
   });
 }
 

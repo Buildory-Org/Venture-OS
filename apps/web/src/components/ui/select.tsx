@@ -44,6 +44,7 @@ export function Select({ children, value, defaultValue, onChange, className, dis
   const selectedValue = value ?? internalValue;
   const selected = choices.find((choice) => choice.value === selectedValue);
   const [open, setOpen] = useState(false);
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
   const [highlighted, setHighlighted] = useState(0);
   const [position, setPosition] = useState({ top: 0, left: 0, width: 180, maxHeight: 280 });
   const trigger = useRef<HTMLButtonElement>(null);
@@ -60,6 +61,7 @@ export function Select({ children, value, defaultValue, onChange, className, dis
     const placeAbove = below < Math.min(desiredHeight, 160) && above > below;
     const maxHeight = Math.max(80, Math.min(desiredHeight, placeAbove ? above : below));
     setPosition({ top: placeAbove ? rect.top - maxHeight - 4 : rect.bottom + 4, left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), width, maxHeight });
+    setPortalHost(trigger.current.closest<HTMLDialogElement>("dialog[open]") ?? document.body);
     setHighlighted(Math.max(0, choices.findIndex((choice) => choice.value === selectedValue)));
     setOpen(true);
   }
@@ -129,8 +131,8 @@ export function Select({ children, value, defaultValue, onChange, className, dis
       <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select…"}</span><ChevronDown size={15} aria-hidden="true" className={clsx("pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 transition-transform duration-150", open && "rotate-180")} />
     </button>
     {(required || name) && <select aria-hidden="true" tabIndex={-1} name={name} required={required} value={selectedValue} onChange={() => {}} onInvalid={(event) => { event.preventDefault(); show(); trigger.current?.focus(); }} className="pointer-events-none absolute h-px w-px opacity-0">{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.text}</option>)}</select>}
-    {open && createPortal(<div ref={menu} id={listId} role="listbox" aria-label={ariaLabel ?? "Options"} className="thin-scroll fixed z-[120] overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1 text-neutral-800 shadow-e4" style={position}>
+    {open && portalHost && createPortal(<div ref={menu} id={listId} role="listbox" aria-label={ariaLabel ?? "Options"} className="thin-scroll fixed z-[120] overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1 text-neutral-800 shadow-e4" style={position}>
       {choices.map((choice, index) => <div key={`${choice.value}-${index}`} id={`${listId}-${index}`} data-choice-index={index} role="option" aria-selected={choice.value === selectedValue} aria-disabled={choice.disabled || undefined} onMouseEnter={() => !choice.disabled && setHighlighted(index)} onClick={() => choose(choice)} className={clsx("flex min-h-9 cursor-pointer items-center rounded-lg px-3 text-sm font-medium", choice.disabled ? "cursor-not-allowed opacity-40" : index === highlighted ? "bg-primary-50 text-primary-800" : "hover:bg-neutral-100", choice.value === selectedValue && "font-semibold")}>{choice.label}</div>)}
-    </div>, document.body)}
+    </div>, portalHost)}
   </span>;
 }

@@ -5,19 +5,23 @@ import { Select } from "@/components/ui/select";
 import { useKanbanDnd } from "@/components/ui/use-kanban-dnd";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Download, Eye, Paperclip, Plus, X } from "@/components/ui/icons";
+import { ArrowLeft, Download, Eye, FileText, Paperclip, Plus, X } from "@/components/ui/icons";
 import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { KnowledgeDocumentTile } from "@/components/studio/knowledge-document-tile";
+import Link from "next/link";
 import type { Message, Task } from "@venture-studio/contracts";
-import { listLiveGroupFiles, listLiveGroupSavedMessages, listLiveTasks, prepareLiveFileDownload, updateLiveMessageSave, updateLiveTask, uploadLiveFile } from "@/lib/studio-api";
+import { getLiveDocument, listLiveDocuments, listLiveGroupFiles, listLiveGroupSavedMessages, listLiveTasks, prepareLiveFileDownload, updateLiveMessageSave, updateLiveTask, uploadLiveFile } from "@/lib/studio-api";
 
-export type WorkspaceTab = "kanban" | "attachments" | "saved";
+export type WorkspaceTab = "kanban" | "attachments" | "saved" | "knowledge";
 type FileItem = Awaited<ReturnType<typeof listLiveGroupFiles>>["items"][number];
 type SavedItem = Awaited<ReturnType<typeof listLiveGroupSavedMessages>>["items"][number];
+type DocumentItem = Awaited<ReturnType<typeof listLiveDocuments>>["items"][number];
+type DocumentDetail = Awaited<ReturnType<typeof getLiveDocument>>;
 type Page<T> = { scope: string; items: T[]; cursor?: string; loading: boolean; error: string };
 type Group = { id: string; name: string; channels: { id: string; name: string }[] };
 
 const statuses: Task["status"][] = ["draft", "proposed", "accepted", "backlog", "todo", "in_progress", "blocked", "review", "done", "cancelled", "parked"];
-const tabs: WorkspaceTab[] = ["kanban", "attachments", "saved"];
+const tabs: WorkspaceTab[] = ["kanban", "attachments", "saved", "knowledge"];
 const label = (value: string) => value.replaceAll("_", " ");
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "The request failed. Please try again.";
 const mediaAccept = "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav";
@@ -38,13 +42,17 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
   const [tasks, setTasks] = useState<Page<Task>>(emptyPage);
   const [files, setFiles] = useState<Page<FileItem>>(emptyPage);
   const [saved, setSaved] = useState<Page<SavedItem>>(emptyPage);
+  const [knowledge, setKnowledge] = useState<Page<DocumentItem>>(emptyPage);
+  const [knowledgeDetail, setKnowledgeDetail] = useState<{ scope: string; value: DocumentDetail } | null>(null);
   const [taskRevision, setTaskRevision] = useState(0);
   const [fileRevision, setFileRevision] = useState(0);
   const [savedRevision, setSavedRevision] = useState(0);
+  const [knowledgeRevision, setKnowledgeRevision] = useState(0);
   const [busyTaskId, setBusyTaskId] = useState("");
   const [busyFileId, setBusyFileId] = useState("");
   const [uploading, setUploading] = useState(false);
   const [busySavedId, setBusySavedId] = useState("");
+  const [busyKnowledgeId, setBusyKnowledgeId] = useState("");
   const [actionError, setActionError] = useState("");
   const [preview, setPreview] = useState<{ file: FileItem; url: string; groupId: string } | null>(null);
   const [previewError, setPreviewError] = useState("");
@@ -97,9 +105,27 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
     return () => { active = false; };
   }, [tab, groupId, savedRevision]);
 
+  useEffect(() => {
+    if (tab !== "knowledge" || !ventureId) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setKnowledge({ scope: ventureId, items: [], loading: true, error: "" });
+      setKnowledgeDetail(null);
+      listLiveDocuments(undefined, { ventureId }).then((page) => {
+        if (!active) return;
+        if (page.items.some((document) => document.ventureId && document.ventureId !== ventureId)) throw new Error("The knowledge response included another venture.");
+        setKnowledge({ scope: ventureId, items: page.items, cursor: page.nextCursor, loading: false, error: "" });
+      }).catch((cause: unknown) => { if (active) setKnowledge({ scope: ventureId, items: [], loading: false, error: errorText(cause) }); });
+    });
+    return () => { active = false; };
+  }, [tab, ventureId, knowledgeRevision]);
+
   const currentTasks = tasks.scope === groupId ? tasks : { ...emptyPage<Task>(), loading: Boolean(groupId) };
   const currentFiles = files.scope === groupId ? files : { ...emptyPage<FileItem>(), loading: Boolean(groupId) };
   const currentSaved = saved.scope === groupId ? saved : { ...emptyPage<SavedItem>(), loading: Boolean(groupId) };
+  const currentKnowledge = knowledge.scope === ventureId ? knowledge : { ...emptyPage<DocumentItem>(), loading: Boolean(ventureId) };
+  const currentKnowledgeDetail = knowledgeDetail?.scope === ventureId ? knowledgeDetail.value : null;
   const orderedStatuses = [...statuses.filter((status) => currentTasks.items.some((task) => task.status === status)), ...statuses.filter((status) => !currentTasks.items.some((task) => task.status === status))];
   const canUpload = ["admin", "venture_head", "contributor"].includes(role);
   const canMove = (task: Task) => ["admin", "venture_head"].includes(role) || task.assigneeId === userId;
@@ -174,6 +200,28 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
     finally { setBusySavedId(""); }
   }
 
+  async function moreKnowledge() {
+    if (!currentKnowledge.cursor || !ventureId) return;
+    setBusyKnowledgeId("more"); setActionError("");
+    try {
+      const page = await listLiveDocuments(currentKnowledge.cursor, { ventureId });
+      if (page.items.some((document) => document.ventureId && document.ventureId !== ventureId)) throw new Error("The knowledge response included another venture.");
+      setKnowledge((value) => value.scope === ventureId ? { ...value, items: [...value.items, ...page.items], cursor: page.nextCursor } : value);
+    } catch (cause) { setActionError(errorText(cause)); }
+    finally { setBusyKnowledgeId(""); }
+  }
+
+  async function openKnowledge(documentId: string) {
+    if (!ventureId) return;
+    setBusyKnowledgeId(documentId); setActionError("");
+    try {
+      const detail = await getLiveDocument(documentId);
+      if (detail.document.ventureId && detail.document.ventureId !== ventureId) throw new Error("This record belongs to another venture.");
+      setKnowledgeDetail({ scope: ventureId, value: detail });
+    } catch (cause) { setActionError(errorText(cause)); }
+    finally { setBusyKnowledgeId(""); }
+  }
+
   async function upload(file: File) {
     if (!groupId || !ventureId) return;
     if (!mediaAccept.split(",").includes(file.type)) { setActionError("Choose a supported image, video, or audio file."); return; }
@@ -205,9 +253,9 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
     finally { setBusySavedId(""); }
   }
 
-  return <section role="region" aria-label="Group workspace" className="vso-enter-bottom absolute inset-x-0 bottom-0 z-30 flex h-[80dvh] max-h-full min-h-0 flex-col border-t border-[var(--color-neutral-200)] bg-white shadow-[0_-18px_48px_rgba(38,38,55,.12)]">
+  return <section role="region" aria-label="Group workspace" className="vso-enter-bottom pointer-events-auto absolute inset-x-0 bottom-0 z-30 flex h-[80dvh] max-h-full min-h-0 flex-col border-t border-[var(--color-neutral-200)] bg-white shadow-[0_-18px_48px_rgba(38,38,55,.12)]">
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--color-neutral-200)] px-4 py-3 sm:px-6"><div className="min-w-0"><h2 className="text-sm font-semibold text-[var(--color-neutral-800)]">Group workspace</h2><p className="truncate text-[11px] text-[var(--color-neutral-400)]">{group ? `${ventureName} · ${group.name}` : "Choose a group"}</p></div><button type="button" onClick={onClose} aria-label="Close group workspace" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-500)] hover:bg-[var(--color-neutral-100)]"><X size={18} /></button></header>
-    <SlidingTabs tabs={tabs.map((item) => ({ key: item, label: item === "saved" ? "Saved messages" : item }))} active={tab} onChange={(key) => { setActionError(""); onTabChange(key as WorkspaceTab); }} label="Group workspace views" className="mx-3 my-2 shrink-0 sm:mx-5" />
+    <SlidingTabs tabs={tabs.map((item) => ({ key: item, label: item === "saved" ? "Saved messages" : item }))} active={tab} onChange={(key) => { setActionError(""); onTabChange(key as WorkspaceTab); }} label="Group workspace views" fitContent className="mx-3 my-2 shrink-0 self-start !border !border-[var(--color-neutral-200)] !bg-[var(--color-neutral-100)] !shadow-none sm:mx-5" />
     {actionError && <p role="alert" className="mx-4 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 sm:mx-6">{actionError}</p>}
     <div role="tabpanel" aria-label={tab === "saved" ? "Saved messages" : label(tab)} className="thin-scroll min-h-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
       {!group ? <p className="py-16 text-center text-sm text-[var(--color-neutral-400)]">Choose a group in the navigator to see its workspace.</p> : tab === "kanban" ? <>
@@ -230,6 +278,12 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-semibold text-[var(--color-neutral-700)]">Group attachments</p><p className="mt-1 text-[11px] text-[var(--color-neutral-400)]">Ready files shared in {group.name}</p></div><div className="flex items-center gap-2"><button type="button" onClick={() => setFileRevision((value) => value + 1)} className="min-h-9 rounded-lg px-3 text-xs font-semibold text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]">Refresh</button>{canUpload && <label className="flex min-h-9 cursor-pointer items-center gap-1 rounded-lg bg-[var(--color-primary-600)] px-3 text-xs font-semibold text-white"><Plus size={14} />{uploading ? "Uploading…" : "Add media"}<input type="file" accept={mediaAccept} disabled={uploading} className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file); }} /></label>}</div></div>
         {currentFiles.loading ? <p role="status" className="py-12 text-center text-sm text-[var(--color-neutral-400)]">Loading group files…</p> : currentFiles.error ? <p role="alert" className="py-12 text-center text-sm text-red-700">{currentFiles.error}</p> : currentFiles.items.length ? <><div className="space-y-2">{currentFiles.items.map((file) => <article key={file.id} className="flex min-w-0 items-center gap-3 rounded-xl bg-[var(--color-neutral-50)] p-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-white text-[var(--color-primary-600)]"><Paperclip size={18} /></span><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-[var(--color-neutral-800)]">{file.name}</p><p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{file.contentType} · {(file.size / 1024).toFixed(1)} KB</p></div>{canPreview(file) && <button type="button" disabled={Boolean(busyFileId)} onClick={() => openPreview(file)} aria-label={`Preview ${file.name}`} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]"><Eye size={17} /></button>}<button type="button" disabled={Boolean(busyFileId)} onClick={() => download(file)} aria-label={`Download ${file.name}`} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]"><Download size={17} /></button></article>)}</div>{currentFiles.cursor && <button type="button" disabled={Boolean(busyFileId)} onClick={moreFiles} className="mt-3 min-h-10 rounded-lg bg-[var(--color-primary-100)] px-4 text-xs font-semibold text-[var(--color-primary-700)]">Load more files</button>}</> : <p className="py-12 text-center text-sm text-[var(--color-neutral-400)]">No files in this group yet.</p>}
         {canUpload && <p className="mt-4 text-[10px] text-[var(--color-neutral-400)]">Supported images, video, and audio · Up to 25 MB each.</p>}
+      </> : tab === "knowledge" ? <>
+        {currentKnowledgeDetail ? <><div className="flex flex-wrap items-center justify-between gap-3"><button type="button" onClick={() => setKnowledgeDetail(null)} className="inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-[var(--color-neutral-600)] hover:bg-[var(--color-neutral-100)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)]"><ArrowLeft size={15} />Back to documents</button><Link href={`/knowledge/live?doc=${encodeURIComponent(currentKnowledgeDetail.document.id)}`} className="inline-flex min-h-9 items-center rounded-lg bg-[var(--color-primary-600)] px-3 text-xs font-semibold text-white">Open in Knowledge</Link></div><article className="mx-auto max-w-4xl py-6"><span className="mb-4 grid h-11 w-11 place-items-center rounded-xl bg-[var(--color-primary-100)] text-[var(--color-primary-700)]"><FileText size={22} /></span><h3 className="break-words text-2xl font-bold tracking-tight text-[var(--color-neutral-900)]">{currentKnowledgeDetail.document.title}</h3><p className="mt-2 text-xs text-[var(--color-neutral-500)]">{currentKnowledgeDetail.document.ventureId ? ventureName : "Shared workspace"} · Version {currentKnowledgeDetail.version.version} · {label(currentKnowledgeDetail.document.evidenceClass)}</p><span className="mt-3 inline-flex rounded-md bg-[var(--color-primary-100)] px-2 py-1 text-[10px] font-semibold capitalize text-[var(--color-primary-700)]">{label(currentKnowledgeDetail.document.status)}</span><div className="mt-6 border-t border-[var(--color-neutral-200)] pt-5"><p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-neutral-400)]">Markdown document</p><pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7 text-[var(--color-neutral-700)]">{currentKnowledgeDetail.version.markdown}</pre></div></article></> : <>
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--color-neutral-800)]">{ventureName} knowledge</p><p className="mt-1 text-xs text-[var(--color-neutral-500)]">Choose a document to open it here.</p></div><button type="button" onClick={() => setKnowledgeRevision((value) => value + 1)} className="min-h-9 rounded-lg px-3 text-xs font-semibold text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]">Refresh</button></div>
+          {busyKnowledgeId && busyKnowledgeId !== "more" && <p role="status" className="mb-3 text-xs text-[var(--color-neutral-500)]">Opening document…</p>}
+          {currentKnowledge.loading ? <p role="status" className="py-12 text-center text-sm text-[var(--color-neutral-400)]">Loading venture knowledge…</p> : currentKnowledge.error ? <p role="alert" className="py-12 text-center text-sm text-red-700">{currentKnowledge.error}</p> : currentKnowledge.items.length ? <><div aria-label="Knowledge documents" className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 xl:grid-cols-4">{currentKnowledge.items.map((document) => <KnowledgeDocumentTile key={document.id} title={document.title} venture={document.ventureId ? ventureName : "Shared workspace"} status={label(document.status)} updatedAt={new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(document.updatedAt))} onOpen={() => void openKnowledge(document.id)} />)}</div>{currentKnowledge.cursor && <button type="button" disabled={Boolean(busyKnowledgeId)} onClick={() => void moreKnowledge()} className="mt-6 min-h-10 rounded-lg bg-[var(--color-primary-100)] px-4 text-xs font-semibold text-[var(--color-primary-700)]">Load more documents</button>}</> : <p className="py-12 text-center text-sm text-[var(--color-neutral-400)]">No knowledge documents are available for this venture yet.</p>}
+        </>}
       </> : <>
         <div className="mb-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--color-neutral-400)]">Saved messages in {group.name}</p><button type="button" onClick={() => setSavedRevision((value) => value + 1)} className="min-h-9 rounded-lg px-3 text-xs font-semibold text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]">Refresh</button></div>
         {currentSaved.loading ? <p role="status" className="py-12 text-center text-sm text-[var(--color-neutral-400)]">Loading saved messages…</p> : currentSaved.error ? <p role="alert" className="py-12 text-center text-sm text-red-700">{currentSaved.error}</p> : currentSaved.items.length ? <><div className="space-y-2">{currentSaved.items.map((item) => <article key={item.id} className="rounded-xl bg-[var(--color-neutral-50)] p-4"><div className="flex items-center justify-between gap-3"><p className="text-[10px] font-semibold text-[var(--color-primary-700)]"># {group.channels.find((channel) => channel.id === item.channelId)?.name ?? "Channel"}</p><time className="text-[10px] text-[var(--color-neutral-400)]">{new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(item.createdAt))}</time></div><p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-neutral-700)]">{item.body}</p><button type="button" disabled={Boolean(busySavedId)} onClick={() => unsave(item)} className="mt-3 min-h-8 text-[11px] font-semibold text-[var(--color-primary-700)]">Remove from saved</button></article>)}</div>{currentSaved.cursor && <button type="button" disabled={Boolean(busySavedId)} onClick={moreSaved} className="mt-3 min-h-10 rounded-lg bg-[var(--color-primary-100)] px-4 text-xs font-semibold text-[var(--color-primary-700)]">Load more saved messages</button>}</> : <p className="py-12 text-center text-sm text-[var(--color-neutral-400)]">No saved messages in this group yet.</p>}

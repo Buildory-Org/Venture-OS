@@ -3,7 +3,7 @@
 import { Select } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Hash, Layers3, Plus } from "@/components/ui/icons";
 import clsx from "clsx";
-import { ChatAvatar, ChatNav, ChatSearch } from "./chat-ui";
+import { ChatAvatar, ChatNav } from "./chat-ui";
 import type { loadLiveSession } from "@/lib/studio-api";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
@@ -16,22 +16,20 @@ type Props = {
   selectedChannelId: string;
   railExpanded: boolean;
   listOpen: boolean;
-  search: string;
   realtime: string;
   canCreate: boolean;
   onVentureSelect: (id: string) => void;
   onGroupSelect: (id: string) => void;
   onChannelSelect: (id: string) => void;
   onToggleRail: () => void;
-  onSearch: (value: string) => void;
   onCreate: (kind: CreateKind, parent?: string) => void;
 };
 
 export function ChannelNavigator(props: Props) {
-  const { session, selectedVentureId, selectedGroupId, selectedChannelId, railExpanded, listOpen, search, realtime, canCreate, onVentureSelect, onGroupSelect, onChannelSelect, onToggleRail, onSearch, onCreate } = props;
+  const { session, selectedVentureId, selectedGroupId, selectedChannelId, railExpanded, listOpen, realtime, canCreate, onVentureSelect, onGroupSelect, onChannelSelect, onToggleRail, onCreate } = props;
   const venture = session?.hierarchy.ventures.find((item) => item.id === selectedVentureId);
   const group = venture?.groups.find((item) => item.id === selectedGroupId);
-  const channels = group?.channels.filter((channel) => channel.name.toLowerCase().includes(search.trim().toLowerCase())) ?? [];
+  const channels = group?.channels ?? [];
 
   return <aside role={listOpen ? "dialog" : undefined} aria-modal={listOpen ? true : undefined} aria-label="Channel navigation" className={clsx("chat-list shrink-0 flex-col border-r border-[var(--color-neutral-200)] bg-white max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-20 max-md:w-[min(350px,94vw)] max-md:shadow-xl md:flex", railExpanded ? "md:w-[420px]" : "md:w-[330px]", listOpen ? "flex" : "hidden")}>
     <div className="flex h-[68px] shrink-0 items-center gap-1.5 border-b border-[var(--color-neutral-100)] px-2 sm:px-3">
@@ -51,10 +49,9 @@ export function ChannelNavigator(props: Props) {
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-[58px] items-center justify-between gap-1 px-3 pt-2"><div className="min-w-0"><p className="text-[9px] font-bold uppercase tracking-[.08em] text-[var(--color-neutral-400)]">Channels</p><h1 className="truncate text-[13px] font-semibold text-[var(--color-neutral-800)]">{group?.name ?? (venture ? "Choose a group" : "Choose a venture")}</h1></div>{canCreate && group && <button type="button" aria-label={`Create channel in ${group.name}`} title={`Create channel in ${group.name}`} onClick={() => onCreate("channel", group.id)} className="chat-icon"><Plus size={17} /></button>}</div>
-        <div className="px-3 pb-3"><ChatSearch value={search} onChange={onSearch} placeholder="Search this group..." /></div>
         <nav aria-label={group ? `Channels in ${group.name}` : "Channels"} className="thin-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-4">
           {channels.map((channel) => <button key={channel.id} type="button" onClick={() => onChannelSelect(channel.id)} aria-pressed={channel.id === selectedChannelId} className={clsx("my-0.5 flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)]", selectedChannelId === channel.id ? "bg-[var(--color-primary-100)] font-semibold text-[var(--color-primary-700)]" : "text-[var(--color-neutral-600)] hover:bg-[var(--color-neutral-50)]")}><Hash size={14} className="shrink-0" /><span className="truncate">{channel.name}</span></button>)}
-          {group && channels.length === 0 && <p className="px-2 py-5 text-[11px] leading-5 text-[var(--color-neutral-400)]">{search ? "No channels match this search in this group." : "No channels in this group yet."}</p>}
+          {group && channels.length === 0 && <p className="px-2 py-5 text-[11px] leading-5 text-[var(--color-neutral-400)]">No channels in this group yet.</p>}
           {!session && <p className="px-2 py-5 text-[11px] text-[var(--color-neutral-400)]">Loading workspace…</p>}
         </nav>
       </div>

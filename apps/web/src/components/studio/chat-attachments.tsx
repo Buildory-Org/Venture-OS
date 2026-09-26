@@ -66,18 +66,56 @@ export function useChatAttachments(scopeKey: string, scope: ChatUploadScope | nu
   };
 }
 
-export function AttachmentPicker({ attachments, scopeLabel, disabled }: { attachments: ReturnType<typeof useChatAttachments>; scopeLabel: string; disabled?: boolean }) {
-  const input = useRef<HTMLInputElement>(null);
+type AttachmentState = ReturnType<typeof useChatAttachments>;
+
+export function AttachmentTray({ attachments }: { attachments: AttachmentState }) {
   return <>
-    <p className="mb-1 text-[10px] text-[var(--color-neutral-400)]">Files will be shared in {scopeLabel}.</p>
     {(attachments.items.length > 0 || attachments.uploading) && <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Files ready to send">
       {attachments.items.map((file) => <span key={file.id} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--color-neutral-100)] px-2 py-1 text-[11px] text-[var(--color-neutral-700)]"><FileText size={13} className="shrink-0" /><span className="max-w-44 truncate">{file.name}</span><span className="text-[var(--color-neutral-400)]">{fileSize(file.size)}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => attachments.remove(file.id)} className="grid h-6 w-6 place-items-center rounded-md hover:bg-[var(--color-neutral-200)]"><X size={13} /></button></span>)}
       {attachments.uploading && <span role="status" className="text-[11px] text-[var(--color-neutral-500)]">Uploading…</span>}
     </div>}
     {attachments.error && <p role="alert" className="mb-2 text-[11px] text-red-700">{attachments.error}</p>}
-    <input ref={input} type="file" multiple className="sr-only" tabIndex={-1} accept=".pdf,.md,.txt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm,.mp3,.m4a,.ogg,.wav" onChange={(event) => { void attachments.addFiles(event.target.files); event.target.value = ""; }} />
-    <button type="button" aria-label="Attach files" title="Attach files" disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={() => input.current?.click()} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-500)] hover:bg-[var(--color-neutral-100)] disabled:opacity-40"><Paperclip size={16} /></button>
   </>;
+}
+
+export function AttachmentMenu({ attachments, disabled }: { attachments: AttachmentState; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const images = useRef<HTMLInputElement>(null);
+  const documents = useRef<HTMLInputElement>(null);
+  const audio = useRef<HTMLInputElement>(null);
+  const onFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
+    void attachments.addFiles(event.target.files);
+    event.target.value = "";
+    trigger.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", onOutside);
+    return () => document.removeEventListener("pointerdown", onOutside);
+  }, [open]);
+
+  return <div ref={root} className="relative shrink-0" onKeyDown={(event) => {
+    if (event.key !== "Escape" || !open) return;
+    event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus();
+  }}>
+    <input ref={images} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm" onChange={onFiles} />
+    <input ref={documents} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".pdf,.md,.txt" onChange={onFiles} />
+    <input ref={audio} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".mp3,.m4a,.ogg,.wav,.webm" onChange={onFiles} />
+    <button ref={trigger} type="button" aria-label="Attach files" title="Attach files" aria-haspopup="menu" aria-expanded={open} disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={() => setOpen((value) => !value)} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--color-primary-600)] hover:bg-[var(--color-primary-100)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)] disabled:opacity-40"><Paperclip size={16} /></button>
+    {open && <div role="menu" aria-label="Choose attachment type" className="absolute bottom-full left-0 z-30 mb-2 w-48 rounded-xl border border-[var(--color-neutral-200)] bg-white p-1.5 shadow-e3">
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); images.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Images & videos</button>
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); documents.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Documents</button>
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); audio.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Audio</button>
+    </div>}
+  </div>;
+}
+
+export function AttachmentPicker({ attachments, disabled }: { attachments: AttachmentState; disabled?: boolean }) {
+  return <><AttachmentTray attachments={attachments} /><AttachmentMenu attachments={attachments} disabled={disabled} /></>;
 }
 
 function MessageAttachmentCard({ file }: { file: ChatAttachment }) {

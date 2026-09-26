@@ -16,6 +16,23 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
     if (file.storage === "r2" && store.kind === "r2") return store;
     throw new AppError(503, "INTEGRATION_UNAVAILABLE", "The file's storage backend is not configured");
   };
+  router.get("/files", async (req, res) => {
+    const actor = req.actor!;
+    const query = cursorQuerySchema.extend({ ventureId: idSchema.optional() }).parse(req.query);
+    if (query.ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(query.ventureId)) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    const scope = {
+      workspaceId: actor.membership.workspaceId,
+      recipientId: { $exists: false },
+      status: "ready",
+      ...(query.ventureId ? { ventureId: query.ventureId } : actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } }),
+      ...(actor.membership.role === "admin" ? {} : { $or: [{ groupId: { $exists: false } }, { groupId: { $in: actor.membership.groupIds } }] }),
+    };
+    const cursor = query.cursor ? await db.collection("files").findOne({ ...scope, _id: idSchema.parse(query.cursor) }) : undefined;
+    if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "File cursor not found");
+    const before = cursor ? { $or: [{ createdAt: { $lt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $lt: cursor._id } }] } : {};
+    const files = await db.collection("files").find({ $and: [scope, before] }).sort({ createdAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    res.json({ ok: true, data: { items: files.slice(0, query.limit).map((file) => groupFileSchema.parse(jsonValue(file))), nextCursor: files.length > query.limit ? files[query.limit - 1]?._id : undefined } });
+  });
   router.get("/groups/:id/files", async (req, res) => {
     const groupId = idSchema.parse(req.params.id);
     const actor = req.actor!;

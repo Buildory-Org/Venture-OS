@@ -20,7 +20,7 @@ export const uploadIntentSchema = z.object({
 export const uploadCompleteSchema = z.object({ etag: z.string().min(1).max(200) });
 
 export const searchQuerySchema = cursorQuerySchema.extend({
-  q: z.string().trim().min(2).max(200), ventureId: idSchema.optional(),
+  q: z.string().trim().min(2).max(200), ventureId: idSchema.optional(), groupId: idSchema.optional(),
   types: z.array(z.enum(["message", "task", "file"])).default(["message", "task", "file"]),
 });
 

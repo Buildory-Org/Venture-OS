@@ -251,6 +251,51 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal((await fetch(`${origin}/v1/tasks/task-group-hidden`, { headers })).status, 404);
     const hiddenSearch = await fetch(`${origin}/v1/search?q=GroupSecretNeedle&types=task`, { headers });
     assert.equal(((await hiddenSearch.json()) as any).data.items.length, 0);
+    await database.db.collection("messages").insertMany([
+      { _id: "search-message-allowed", clientId: "search-message-allowed", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-peer", body: "ChannelSearchNeedle allowed", createdAt: now },
+      { _id: "search-message-legacy", clientId: "search-message-legacy", workspaceId: "workspace-a", ventureId: "venture-a", channelId: "channel-a", authorId: "user-peer", body: "ChannelSearchNeedle legacy", createdAt: now },
+      { _id: "search-message-hidden", clientId: "search-message-hidden", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-hidden", channelId: "channel-hidden", authorId: "user-hidden", body: "ChannelSearchNeedle hidden", createdAt: now },
+    ]);
+    await database.db.collection("files").insertMany([
+      { _id: "search-file-allowed", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-peer", name: "ChannelSearchNeedle-allowed.txt", contentType: "text/plain", size: 1, objectKey: "search/allowed", status: "ready", createdAt: now },
+      { _id: "search-file-hidden", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-hidden", ownerId: "user-hidden", name: "ChannelSearchNeedle-hidden.txt", contentType: "text/plain", size: 1, objectKey: "search/hidden", status: "ready", createdAt: now },
+      { _id: "search-file-venture", workspaceId: "workspace-a", ventureId: "venture-a", ownerId: "user-peer", name: "Workspace brief.pdf", contentType: "application/pdf", size: 1, objectKey: "search/venture", status: "ready", createdAt: now },
+      { _id: "search-file-dm", workspaceId: "workspace-a", recipientId: "user-test", ownerId: "user-peer", name: "Private DM.pdf", contentType: "application/pdf", size: 1, objectKey: "search/dm", status: "ready", createdAt: now },
+      { _id: "search-file-other-workspace", workspaceId: "workspace-other", ventureId: "venture-a", ownerId: "user-peer", name: "Other workspace.pdf", contentType: "application/pdf", size: 1, objectKey: "search/other", status: "ready", createdAt: now },
+    ]);
+    const firstLibraryPage = (await (await fetch(`${origin}/v1/files?limit=1`, { headers })).json()) as any;
+    assert.equal(firstLibraryPage.data.items.length, 1);
+    assert.ok(firstLibraryPage.data.nextCursor);
+    const secondLibraryPage = (await (await fetch(`${origin}/v1/files?limit=1&cursor=${firstLibraryPage.data.nextCursor}`, { headers })).json()) as any;
+    assert.equal(secondLibraryPage.data.items.length, 1);
+    assert.deepEqual([firstLibraryPage.data.items[0].id, secondLibraryPage.data.items[0].id].sort(), ["search-file-allowed", "search-file-venture"]);
+    assert.equal(Object.hasOwn(firstLibraryPage.data.items[0], "objectKey"), false);
+    assert.equal((await fetch(`${origin}/v1/files?ventureId=venture-b`, { headers })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/files?cursor=search-file-hidden`, { headers })).status, 404);
+    const adminLibrary = (await (await fetch(`${origin}/v1/files`, { headers: { "x-dev-user-id": "user-admin" } })).json()) as any;
+    assert.deepEqual(adminLibrary.data.items.map((file: any) => file.id).sort(), ["search-file-allowed", "search-file-hidden", "search-file-venture"]);
+    const groupSearch = (await (await fetch(`${origin}/v1/search?q=ChannelSearchNeedle&types=message,file&groupId=group-a`, { headers })).json()) as any;
+    assert.deepEqual(groupSearch.data.items.map((item: any) => item.id).sort(), ["search-file-allowed", "search-message-allowed", "search-message-legacy"]);
+    assert.equal(groupSearch.data.items.find((item: any) => item.type === "message").channelId, "channel-a");
+    assert.equal(groupSearch.data.items.find((item: any) => item.id === "search-message-legacy").groupId, "group-a");
+    const hiddenGroupSearch = (await (await fetch(`${origin}/v1/search?q=ChannelSearchNeedle&types=message,file&groupId=group-hidden`, { headers })).json()) as any;
+    assert.deepEqual(hiddenGroupSearch.data.items, []);
+    const adminGroupSearch = (await (await fetch(`${origin}/v1/search?q=ChannelSearchNeedle&types=message,file&groupId=group-hidden`, { headers: { "x-dev-user-id": "user-admin" } })).json()) as any;
+    assert.deepEqual(adminGroupSearch.data.items.map((item: any) => item.id).sort(), ["search-file-hidden", "search-message-hidden"]);
+    await database.db.collection("channels").insertOne({ _id: "search-channel-sentinel", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "__inaccessible_group__", name: "sentinel", createdAt: now });
+    await database.db.collection("messages").insertOne({ _id: "search-message-sentinel", clientId: "search-message-sentinel", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "__inaccessible_group__", channelId: "search-channel-sentinel", authorId: "user-hidden", body: "ChannelSearchNeedle sentinel", createdAt: now });
+    await database.db.collection("files").insertOne({ _id: "search-file-sentinel", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "__inaccessible_group__", ownerId: "user-hidden", name: "ChannelSearchNeedle-sentinel.txt", contentType: "text/plain", size: 1, objectKey: "search/sentinel", status: "ready", createdAt: now });
+    const collisionSearch = (await (await fetch(`${origin}/v1/search?q=ChannelSearchNeedle&types=message,file&groupId=group-hidden`, { headers })).json()) as any;
+    assert.deepEqual(collisionSearch.data.items, []);
+    const overflowMessages = Array.from({ length: 50 }, (_, index) => ({ _id: `search-overflow-${index}`, clientId: `search-overflow-${index}`, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-peer", body: "SearchOverflowNeedle", createdAt: now }));
+    await database.db.collection("messages").insertMany(overflowMessages);
+    await database.db.collection("files").insertOne({ _id: "search-overflow-file", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-peer", name: "SearchOverflowNeedle.txt", contentType: "text/plain", size: 1, objectKey: "search/overflow", status: "ready", createdAt: now });
+    const overflowSearch = (await (await fetch(`${origin}/v1/search?q=SearchOverflowNeedle&types=message,file&groupId=group-a&limit=50`, { headers })).json()) as any;
+    assert.equal(overflowSearch.data.items.length, 50);
+    assert.equal(overflowSearch.data.items.some((item: any) => item.id === "search-overflow-file"), true);
+    await database.db.collection("messages").deleteMany({ _id: { $in: ["search-message-allowed", "search-message-legacy", "search-message-hidden", "search-message-sentinel", ...overflowMessages.map((item) => item._id)] } });
+    await database.db.collection("files").deleteMany({ _id: { $in: ["search-file-allowed", "search-file-hidden", "search-file-venture", "search-file-dm", "search-file-other-workspace", "search-file-sentinel", "search-overflow-file"] } });
+    await database.db.collection("channels").deleteOne({ _id: "search-channel-sentinel" });
     await database.db.collection("documents").insertOne({ _id: "document-b", workspaceId: "workspace-a", ventureId: "venture-b", title: "Hidden venture note", status: "approved", sensitivity: "team", updatedAt: now });
     const documentBrowse = (await (await fetch(`${origin}/v1/documents`, { headers })).json()) as any;
     assert.deepEqual(documentBrowse.data.items.map((item: any) => item.id), ["document-global"]);

@@ -40,7 +40,9 @@ Cursor-paginated lists return `{ ok: true, data: { items, nextCursor? } }`; othe
 
 ## Files, notifications, and MCP
 
+- `GET /v1/files` returns cursor-paginated, ready file metadata for the caller's authorized ventures and groups. `ventureId` narrows the library; direct-message attachments are excluded. The response uses the public file contract and never exposes storage keys. Knowledge displays these files beside Markdown records, but uploading a binary file does not create an approved evidence record.
 - `POST /v1/uploads` creates constrained metadata and a short-lived upload URL, optionally linked to a same-scope task; recoverable completion rechecks metadata and promotes staging through `pending -> finalizing -> ready`; `GET /v1/files/:id/download` authorizes metadata before signing.
 - Local object URLs are HMAC-signed and operation-scoped. Production uses Cloudflare R2 credentials and refuses the local adapter.
+- Browser uploads to R2 also require a bucket CORS policy for the web page's exact origin, independent of a valid presigned URL. Allow `PUT`, `GET`, and `HEAD`, allow the `Content-Type` request header, and expose `ETag` so the client can complete the upload. The `venture-studio-dev` bucket allows both local preview origins `http://localhost:3011` and `http://localhost:3012`; add the deployment origin to the appropriate bucket before using a different host or port. Keep production bucket policy separate.
 - `GET|PUT /v1/notification-preferences` exposes separate message, mention, assignment, reminder, email, and Web Push controls. Push is at-least-once and includes stable `notificationId` for client deduplication.
 - Local development PATs are created/revoked under `/v1/pats`. The stdio MCP exposes ten read-only tools with PAT scope, membership filtering, citations, revocation, and audits. Hosted access must replace PATs with OAuth.

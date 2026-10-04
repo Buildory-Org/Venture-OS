@@ -69,6 +69,8 @@ import {
   TrendingUp as TrendingUpSvg,
   UserPlus as UserPlusSvg,
   Users as UsersSvg,
+  Volume2 as Volume2Svg,
+  VolumeX as VolumeXSvg,
   X as XSvg,
 } from "@hugeicons/core-free-icons";
 
@@ -153,4 +155,6 @@ export const TimerReset = icon(TimerResetSvg);
 export const TrendingUp = icon(TrendingUpSvg);
 export const UserPlus = icon(UserPlusSvg);
 export const Users = icon(UsersSvg);
+export const Volume2 = icon(Volume2Svg);
+export const VolumeX = icon(VolumeXSvg);
 export const X = icon(XSvg);

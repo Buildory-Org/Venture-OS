@@ -1,6 +1,20 @@
 export const notificationSnapshotEvent = "vso:notification-snapshot";
 export const notificationRefreshEvent = "vso:notification-refresh";
 
+/** Latest inbox poll, shared by the bell, the shell, and the inbox (one poller feeds them all). */
+type Snapshot = ReadonlyArray<{ readAt?: string; chatKind?: string; chatId?: string }>;
+let latestSnapshot: Snapshot | null = null;
+export function publishNotificationSnapshot<T extends { readAt?: string; chatKind?: string; chatId?: string }>(items: T[]) {
+  latestSnapshot = items;
+  window.dispatchEvent(new CustomEvent(notificationSnapshotEvent, { detail: items }));
+}
+export function subscribeNotificationSnapshot(listener: () => void) {
+  window.addEventListener(notificationSnapshotEvent, listener);
+  return () => window.removeEventListener(notificationSnapshotEvent, listener);
+}
+export const getNotificationUnread = () => latestSnapshot ? latestSnapshot.filter((item) => !item.readAt).length : 0;
+export const getNotificationSnapshot = () => latestSnapshot;
+
 type Linkable = { resourceType: string; resourceId: string; chatKind?: "direct" | "channel"; chatId?: string };
 /** Where a notification should take the reader: the task, the conversation, or the inbox. */
 export function notificationHref(item: Linkable): { href: string; label: string } {

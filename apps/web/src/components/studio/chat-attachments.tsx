@@ -3,6 +3,7 @@ import { describeError } from "@/lib/errors";
 /* eslint-disable @next/next/no-img-element -- Authorized blob previews cannot use Next image optimization. */
 
 import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import { Download, FileText, Paperclip, X } from "@/components/ui/icons";
 import type { Message } from "@venture-studio/contracts";
 import { prepareLiveFileDownload, uploadLiveFile } from "@/lib/studio-api";
@@ -27,11 +28,13 @@ export function messageAttachments(message: Message): ChatAttachment[] {
 }
 
 export function useChatAttachments(scopeKey: string, scope: ChatUploadScope | null) {
-  const [state, setState] = useState<{ key: string; items: ChatAttachment[]; uploading: boolean; error: string }>({ key: scopeKey, items: [], uploading: false, error: "" });
+  // Files still uploading show as placeholder chips so the tray never jumps when each one lands.
+  type Queued = { name: string; size: number };
+  const [state, setState] = useState<{ key: string; items: ChatAttachment[]; queued: Queued[]; uploading: boolean; error: string }>({ key: scopeKey, items: [], queued: [], uploading: false, error: "" });
   const activeKey = useRef(scopeKey);
-  const current = state.key === scopeKey ? state : { key: scopeKey, items: [], uploading: false, error: "" };
+  const current = state.key === scopeKey ? state : { key: scopeKey, items: [], queued: [], uploading: false, error: "" };
 
-  useEffect(() => { activeKey.current = scopeKey; setState({ key: scopeKey, items: [], uploading: false, error: "" }); }, [scopeKey]);
+  useEffect(() => { activeKey.current = scopeKey; setState({ key: scopeKey, items: [], queued: [], uploading: false, error: "" }); }, [scopeKey]);
 
   async function addFiles(files: FileList | null) {
     if (!scope || !files?.length || current.uploading) return;
@@ -41,46 +44,68 @@ export function useChatAttachments(scopeKey: string, scope: ChatUploadScope | nu
       setState((value) => value.key === key ? { ...value, error: "A message can have up to 10 files." } : value);
       return;
     }
-    setState((value) => value.key === key ? { ...value, uploading: true, error: "" } : value);
+    setState((value) => value.key === key ? { ...value, uploading: true, error: "", queued: chosen.map((file) => ({ name: file.name, size: file.size })) } : value);
     try {
       for (const file of chosen) {
         const type = file.type || typeByExtension[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
         if (!allowedTypes.has(type) || file.size < 1 || file.size > 25 * 1024 * 1024) throw new Error("Choose a supported file up to 25 MB.");
         const uploaded = await uploadLiveFile(file, scope);
         if (activeKey.current !== key) return;
-        setState((value) => value.key === key ? { ...value, items: [...value.items, { id: uploaded.id, name: uploaded.name, contentType: uploaded.contentType, size: uploaded.size }] } : value);
+        setState((value) => value.key === key ? { ...value, items: [...value.items, { id: uploaded.id, name: uploaded.name, contentType: uploaded.contentType, size: uploaded.size }], queued: value.queued.slice(1) } : value);
       }
     } catch (cause) {
       if (activeKey.current === key) setState((value) => value.key === key ? { ...value, error: errorText(cause) } : value);
     } finally {
-      setState((value) => value.key === key ? { ...value, uploading: false } : value);
+      setState((value) => value.key === key ? { ...value, uploading: false, queued: [] } : value);
     }
   }
 
   return {
     items: current.items,
+    queued: current.queued,
     uploading: current.uploading,
     error: current.error,
     addFiles,
     remove: (id: string) => setState((value) => value.key === scopeKey ? { ...value, items: value.items.filter((item) => item.id !== id) } : value),
     clear: () => setState((value) => value.key === scopeKey ? { ...value, items: [], error: "" } : value),
+    dismissError: () => setState((value) => value.key === scopeKey ? { ...value, error: "" } : value),
+    /** Puts already-uploaded files back in the tray (editing a message that failed to send). */
+    restore: (files: ChatAttachment[]) => setState((value) => value.key === scopeKey ? { ...value, items: [...value.items, ...files.filter((file) => !value.items.some((item) => item.id === file.id))].slice(0, 10) } : value),
   };
 }
 
 type AttachmentState = ReturnType<typeof useChatAttachments>;
 
 export function AttachmentTray({ attachments }: { attachments: AttachmentState }) {
+  // A removed chip shrinks away before it leaves the tray.
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());
+  const open = attachments.items.length > 0 || attachments.queued.length > 0;
+  function remove(id: string) {
+    setLeaving((value) => new Set(value).add(id));
+    window.setTimeout(() => { attachments.remove(id); setLeaving((value) => { const next = new Set(value); next.delete(id); return next; }); }, 120);
+  }
   return <>
-    {(attachments.items.length > 0 || attachments.uploading) && <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Files ready to send">
-      {attachments.items.map((file) => <span key={file.id} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--color-neutral-100)] px-2 py-1 text-[11px] text-[var(--color-neutral-700)]"><FileText size={13} className="shrink-0" /><span className="max-w-44 truncate">{file.name}</span><span className="text-[var(--color-neutral-400)]">{fileSize(file.size)}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => attachments.remove(file.id)} className="grid h-6 w-6 place-items-center rounded-md hover:bg-[var(--color-neutral-200)]"><X size={13} /></button></span>)}
-      {attachments.uploading && <span role="status" className="text-[11px] text-[var(--color-neutral-500)]">Uploading…</span>}
-    </div>}
-    {attachments.error && <p role="alert" className="mb-2 text-[11px] text-red-700">{attachments.error}</p>}
+    <div data-open={open} className="vso-collapse"><div><div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="Files ready to send">
+      {attachments.items.map((file) => <span key={file.id} data-leaving={leaving.has(file.id)} className="vso-chip-in inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--color-neutral-100)] py-1 pl-2 pr-1 text-[11px] text-[var(--color-neutral-700)]"><FileText size={13} className="shrink-0" /><span className="max-w-44 truncate">{file.name}</span><span className="text-[var(--color-neutral-400)]">{fileSize(file.size)}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => remove(file.id)} className="grid h-6 w-6 place-items-center rounded-md transition-[background-color,transform] duration-150 hover:bg-[var(--color-neutral-200)] active:scale-90"><X size={13} /></button></span>)}
+      {attachments.queued.map((file, index) => <span key={`${file.name}-${index}`} className="vso-chip-in inline-flex max-w-full items-center gap-1.5 rounded-lg border border-dashed border-[var(--color-neutral-200)] px-2 py-1 text-[11px] text-[var(--color-neutral-500)]">{index === 0 ? <span className="vso-spinner h-3 w-3 text-[var(--color-primary-600)]" aria-hidden="true" /> : <FileText size={13} className="shrink-0 opacity-60" />}<span className="max-w-44 truncate">{file.name}</span><span className="text-[var(--color-neutral-400)]">{index === 0 ? "Uploading…" : "Waiting"}</span></span>)}
+      {attachments.uploading && <span role="status" className="sr-only">Uploading {attachments.queued.length} {attachments.queued.length === 1 ? "file" : "files"}</span>}
+    </div></div></div>
+    {attachments.error && <p role="alert" className="vso-row-enter mb-2 flex items-start gap-1 text-[11px] text-red-700"><span className="flex-1">{attachments.error}</span><button type="button" aria-label="Dismiss upload error" onClick={attachments.dismissError} className="-mt-1 grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-red-50"><X size={12} /></button></p>}
   </>;
 }
 
 export function AttachmentMenu({ attachments, disabled }: { attachments: AttachmentState; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const closeTimer = useRef(0);
+  /** Pointer dismissals fade out; keyboard ones and picks close at once. */
+  function close(animate: boolean) {
+    window.clearTimeout(closeTimer.current);
+    if (!animate) { setClosing(false); setOpen(false); return; }
+    setClosing(true);
+    closeTimer.current = window.setTimeout(() => { setOpen(false); setClosing(false); }, 100);
+  }
+  function pick(input: React.RefObject<HTMLInputElement | null>) { close(false); input.current?.click(); }
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const images = useRef<HTMLInputElement>(null);
@@ -94,23 +119,36 @@ export function AttachmentMenu({ attachments, disabled }: { attachments: Attachm
 
   useEffect(() => {
     if (!open) return;
-    const onOutside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    const onOutside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) close(true); };
     document.addEventListener("pointerdown", onOutside);
     return () => document.removeEventListener("pointerdown", onOutside);
   }, [open]);
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   return <div ref={root} className="relative shrink-0" onKeyDown={(event) => {
-    if (event.key !== "Escape" || !open) return;
-    event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus();
+    if (!open) return;
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(false); trigger.current?.focus(); return; }
+    if (event.key === "Tab") { close(false); return; }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const items = [...(root.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
   }}>
     <input ref={images} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm" onChange={onFiles} />
     <input ref={documents} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".pdf,.md,.txt" onChange={onFiles} />
     <input ref={audio} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".mp3,.m4a,.ogg,.wav,.webm" onChange={onFiles} />
-    <button ref={trigger} type="button" aria-label="Attach files" title="Attach files" aria-haspopup="menu" aria-expanded={open} disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={() => setOpen((value) => !value)} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--color-primary-600)] hover:bg-[var(--color-primary-100)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)] disabled:opacity-40"><Paperclip size={16} /></button>
-    {open && <div role="menu" aria-label="Choose attachment type" className="absolute bottom-full left-0 z-30 mb-2 w-48 rounded-xl border border-[var(--color-neutral-200)] bg-white p-1.5 shadow-e3">
-      <button type="button" role="menuitem" onClick={() => { setOpen(false); images.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Images & videos</button>
-      <button type="button" role="menuitem" onClick={() => { setOpen(false); documents.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Documents</button>
-      <button type="button" role="menuitem" onClick={() => { setOpen(false); audio.current?.click(); }} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] hover:bg-[var(--color-primary-50)]">Audio</button>
+    <button ref={trigger} type="button" aria-label="Attach files" title="Attach files" aria-haspopup="menu" aria-expanded={open} disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={(event) => {
+      if (open) { close(event.detail !== 0); return; }
+      setOpen(true);
+      // Opened from the keyboard, focus lands on the first choice.
+      if (event.detail === 0) requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus());
+    }} className={clsx("grid h-8 w-8 place-items-center rounded-lg text-[var(--color-primary-600)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-100)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)] active:scale-[0.92] disabled:opacity-40", open && !closing && "bg-[var(--color-primary-100)]")}><Paperclip size={16} /></button>
+    {open && <div role="menu" aria-label="Choose attachment type" data-side="top" data-align="left" data-state={closing ? "closing" : undefined} className="vso-enter-popover absolute bottom-full left-0 z-30 mb-2 w-48 rounded-xl border border-[var(--color-neutral-200)] bg-white p-1.5 shadow-e3">
+      <button type="button" role="menuitem" onClick={() => pick(images)} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] transition-colors duration-100 hover:bg-[var(--color-primary-50)] focus-visible:bg-[var(--color-primary-50)] focus-visible:outline-none active:bg-[var(--color-primary-100)]">Images & videos</button>
+      <button type="button" role="menuitem" onClick={() => pick(documents)} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] transition-colors duration-100 hover:bg-[var(--color-primary-50)] focus-visible:bg-[var(--color-primary-50)] focus-visible:outline-none active:bg-[var(--color-primary-100)]">Documents</button>
+      <button type="button" role="menuitem" onClick={() => pick(audio)} className="flex min-h-9 w-full items-center rounded-lg px-3 text-left text-xs text-[var(--color-neutral-700)] transition-colors duration-100 hover:bg-[var(--color-primary-50)] focus-visible:bg-[var(--color-primary-50)] focus-visible:outline-none active:bg-[var(--color-primary-100)]">Audio</button>
     </div>}
   </div>;
 }
@@ -152,10 +190,10 @@ function MessageAttachmentCard({ file }: { file: ChatAttachment }) {
   }
 
   return <div className="min-w-0 max-w-full rounded-xl bg-[var(--color-neutral-100)] p-2 text-left text-[var(--color-neutral-700)]">
-    <div className="flex min-w-0 items-center gap-2"><FileText size={15} className="shrink-0 text-[var(--color-primary-700)]" /><div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold" title={file.name}>{file.name}</p><p className="text-[10px] text-[var(--color-neutral-400)]">{fileSize(file.size)}</p></div>{previewable && <button type="button" disabled={loading} onClick={preview} className="min-h-8 rounded-md px-2 text-[10px] font-semibold text-[var(--color-primary-700)] hover:bg-[var(--color-primary-100)]">{url ? "Close" : "Preview"}</button>}<button type="button" disabled={loading} onClick={download} aria-label={`Download ${file.name}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-md hover:bg-[var(--color-neutral-200)]"><Download size={14} /></button></div>
-    {loading && <p role="status" className="mt-2 text-[10px] text-[var(--color-neutral-500)]">Loading file…</p>}
-    {error && <p role="alert" className="mt-2 text-[10px] text-red-700">{error}</p>}
-    {url && <div className="mt-2 overflow-hidden rounded-lg bg-white">{file.contentType.startsWith("image/") ? <img src={url} alt={file.name} className="max-h-72 max-w-full object-contain" /> : file.contentType.startsWith("video/") ? <video src={url} controls className="max-h-72 max-w-full" /> : file.contentType.startsWith("audio/") ? <audio src={url} controls className="w-full" /> : <iframe src={url} title={`Preview ${file.name}`} className="h-72 w-full" />}</div>}
+    <div className="flex min-w-0 items-center gap-2"><FileText size={15} className="shrink-0 text-[var(--color-primary-700)]" /><div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold" title={file.name}>{file.name}</p><p className="text-[10px] text-[var(--color-neutral-400)]">{fileSize(file.size)}</p></div>{previewable && <button type="button" disabled={loading} onClick={preview} className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-[10px] font-semibold text-[var(--color-primary-700)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-100)] active:scale-[0.96] disabled:opacity-70">{loading && <span className="vso-spinner h-2.5 w-2.5" aria-hidden="true" />}{url ? "Close" : "Preview"}</button>}<button type="button" disabled={loading} onClick={download} aria-label={`Download ${file.name}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-md transition-[background-color,transform] duration-150 hover:bg-[var(--color-neutral-200)] active:scale-90"><Download size={14} /></button></div>
+    {loading && <p role="status" className="sr-only">Loading file…</p>}
+    {error && <p role="alert" className="vso-row-enter mt-2 text-[10px] text-red-700">{error}</p>}
+    {url && <div className="vso-fade-enter mt-2 overflow-hidden rounded-lg bg-white">{file.contentType.startsWith("image/") ? <img src={url} alt={file.name} className="max-h-72 max-w-full object-contain" /> : file.contentType.startsWith("video/") ? <video src={url} controls className="max-h-72 max-w-full" /> : file.contentType.startsWith("audio/") ? <audio src={url} controls className="w-full" /> : <iframe src={url} title={`Preview ${file.name}`} className="h-72 w-full" />}</div>}
   </div>;
 }
 

@@ -1,10 +1,40 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Message } from "@venture-studio/contracts";
+import { Volume2, VolumeX } from "@/components/ui/icons";
 
 type Sound = "sent" | "received";
 let audio: AudioContext | null = null;
+
+/* Message sounds can be muted per browser; the choice is a convenience, so storage failures fall back to sound on. */
+const SOUND_KEY = "vso-chat-sound";
+const soundListeners = new Set<() => void>();
+let muted = (() => { try { return typeof window !== "undefined" && window.localStorage.getItem(SOUND_KEY) === "off"; } catch { return false; } })();
+
+export function setChatSoundMuted(next: boolean) {
+  muted = next;
+  try { window.localStorage.setItem(SOUND_KEY, next ? "off" : "on"); } catch { /* The toggle still works for this visit. */ }
+  soundListeners.forEach((listener) => listener());
+}
+
+function subscribeSound(listener: () => void) {
+  soundListeners.add(listener);
+  return () => { soundListeners.delete(listener); };
+}
+
+export function useChatSoundMuted() {
+  return useSyncExternalStore(subscribeSound, () => muted, () => false);
+}
+
+export function ChatSoundToggle() {
+  const isMuted = useChatSoundMuted();
+  return <button type="button" aria-pressed={isMuted} aria-label={isMuted ? "Turn message sounds on" : "Mute message sounds"} title={isMuted ? "Message sounds off" : "Message sounds on"} className="chat-icon" onClick={() => {
+    setChatSoundMuted(!isMuted);
+    // Turning sound back on plays the cue once so the change is audible.
+    if (isMuted) { prepareChatAudio(); playChatSound("received"); }
+  }}><span key={String(isMuted)} className="vso-label-swap grid place-items-center">{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</span></button>;
+}
 
 export function prepareChatAudio() {
   try {
@@ -14,7 +44,7 @@ export function prepareChatAudio() {
 }
 
 export function playChatSound(kind: Sound) {
-  if (!audio || audio.state !== "running") return;
+  if (muted || !audio || audio.state !== "running") return;
   try {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();

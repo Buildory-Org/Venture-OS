@@ -4,7 +4,9 @@ import { describeError } from "@/lib/errors";
 import { useEffect, useState } from "react";
 import { BellRing } from "@/components/ui/icons";
 import { getLivePushConfig, registerLivePushSubscription, unregisterLivePushSubscription } from "@/lib/studio-api";
-import { primaryClass, secondaryClass } from "@/components/studio/primitives";
+import clsx from "clsx";
+import { ActionLabel, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { toast } from "@/components/ui/toast";
 
 type State = "checking" | "unavailable" | "unsupported" | "denied" | "ready" | "enabled" | "error";
 const workerPath = "/push-sw.js";
@@ -71,6 +73,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
       if (!current) newlyCreated = subscription;
       await registerLivePushSubscription(subscription);
       setState("enabled");
+      toast({ title: "Browser notifications on", body: "Alerts will reach this browser even when the workspace is closed." });
     } catch (cause) {
       if (newlyCreated) await newlyCreated.unsubscribe().catch(() => false);
       setError(errorText(cause));
@@ -89,6 +92,7 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
         if (!await subscription.unsubscribe()) throw new Error("This browser could not finish turning off notifications. Check this site's notification settings in your browser.");
       }
       setState(Notification.permission === "denied" ? "denied" : "ready");
+      toast({ title: "Browser notifications off", body: "This browser will no longer receive alerts." });
     } catch (cause) { setError(errorText(cause)); setState("enabled"); }
     finally { setBusy(false); }
   }
@@ -104,11 +108,11 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
   };
 
   return <div className="space-y-3 p-4">
-    <div className="flex items-start gap-2"><BellRing size={17} className="mt-0.5 shrink-0 text-primary-700" /><div><p className="text-sm font-semibold text-neutral-800">Browser push on this device</p><p role="status" className="mt-1 text-xs leading-5 text-neutral-500">{message[state]}</p></div></div>
-    {preferenceEnabled === false && <p className="text-xs leading-5 text-warning-text">Turn on and save the Browser push preference above to receive alerts here.</p>}
-    {error && <p role="alert" className="rounded-lg bg-danger-surface p-2 text-xs text-danger-text">{error}</p>}
-    {state === "ready" && <button type="button" disabled={busy || !publicKey || !supported()} onClick={enable} className={primaryClass}>{busy ? "Enabling…" : "Enable on this browser"}</button>}
-    {state === "enabled" && <button type="button" disabled={busy} onClick={disable} className={secondaryClass}>{busy ? "Disabling…" : "Disable on this browser"}</button>}
+    <div className="flex items-start gap-2"><span className="relative mt-0.5 shrink-0"><BellRing size={17} className="text-primary-700" /><span aria-hidden="true" className={clsx("absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white transition-[background-color,transform] duration-300", state === "enabled" ? "scale-100 bg-success" : state === "denied" || state === "error" ? "scale-100 bg-danger" : "scale-0 bg-neutral-300")} /></span><div><p className="text-sm font-semibold text-neutral-800">Browser push on this device</p><p role="status" key={state} className={clsx("mt-1 text-xs leading-5 text-neutral-500", state !== "checking" && "vso-label-swap")}>{message[state]}</p></div></div>
+    <div data-open={preferenceEnabled === false} className="vso-collapse"><div><p className="text-xs leading-5 text-warning-text">Turn on and save the Browser push preference above to receive alerts here.</p></div></div>
+    <Notice tone="error" message={error} onDismiss={() => setError("")} />
+    {state === "ready" && <button type="button" disabled={busy || !publicKey || !supported()} onClick={enable} className={clsx(primaryClass, "vso-fade-enter")}><ActionLabel busy={busy} busyText="Enabling…" idle="Enable on this browser" /></button>}
+    {state === "enabled" && <button type="button" disabled={busy} onClick={disable} className={clsx(secondaryClass, "vso-fade-enter")}><ActionLabel busy={busy} busyText="Disabling…" idle="Disable on this browser" /></button>}
     {state === "error" && <button type="button" onClick={() => { setError(""); setState("checking"); setRevision((value) => value + 1); }} className={secondaryClass}>Retry check</button>}
     <p className="text-xs leading-5 text-neutral-400">Applies to this browser only. Keep the preference above enabled to receive alerts.</p>
   </div>;

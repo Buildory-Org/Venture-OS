@@ -12,6 +12,7 @@ export function SlidingTabs({
   label,
   className,
   fitContent = false,
+  tone = "light",
 }: {
   tabs: SlidingTab[];
   active: string;
@@ -19,10 +20,14 @@ export function SlidingTabs({
   label: string;
   className?: string;
   fitContent?: boolean;
+  /** "dark" sits on a dark header (document reader): white pill, light text. */
+  tone?: "light" | "dark";
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
   const keyboardChange = useRef(false);
+  // Re-measure only when the set of tabs changes, not on every render of a fresh array.
+  const tabKeys = tabs.map((tab) => tab.key).join("|");
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -39,6 +44,11 @@ export function SlidingTabs({
       indicator.style.height = `${target.height}px`;
       indicator.style.transform = `translate3d(${target.left - parent.left + list.scrollLeft}px, ${target.top - parent.top + list.scrollTop}px, 0)`;
       list.dataset.ready = "true";
+      // Keep the active tab visible in a scrolling tab bar (phones).
+      if (list.scrollWidth > list.clientWidth) {
+        const left = target.left - parent.left + list.scrollLeft;
+        if (left < list.scrollLeft || left + target.width > list.scrollLeft + list.clientWidth) list.scrollTo({ left: Math.max(0, left - 16), behavior: keyboardChange.current ? "auto" : "smooth" });
+      }
     };
 
     if (keyboardChange.current) {
@@ -52,7 +62,7 @@ export function SlidingTabs({
     list.querySelectorAll("[data-tab-key]").forEach((button) => observer.observe(button));
     list.addEventListener("scroll", measure, { passive: true });
     return () => { observer.disconnect(); list.removeEventListener("scroll", measure); };
-  }, [active, tabs]);
+  }, [active, tabKeys]);
 
   const moveByKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -71,15 +81,16 @@ export function SlidingTabs({
 
   return (
     <div ref={listRef} role="tablist" aria-label={label} onKeyDown={moveByKey}
-      className={clsx("vso-tabs relative min-w-0 gap-1 overflow-x-auto rounded-xl bg-white p-1 shadow-sm", fitContent ? "inline-flex w-fit max-w-full" : "flex", className)}>
-      <span ref={indicatorRef} aria-hidden="true" className="vso-tab-indicator pointer-events-none absolute left-0 top-0 z-0 rounded-lg bg-primary-100" />
+      className={clsx("vso-tabs relative min-w-0 gap-1 overflow-x-auto rounded-xl p-1", tone === "dark" ? "border border-white/15 bg-white/10" : "bg-white shadow-sm", fitContent ? "inline-flex w-fit max-w-full" : "flex", className)}>
+      <span ref={indicatorRef} aria-hidden="true" className={clsx("vso-tab-indicator pointer-events-none absolute left-0 top-0 z-0 rounded-lg", tone === "dark" ? "bg-white" : "bg-primary-100")} />
       {tabs.map((tab) => (
         <button key={tab.key} type="button" role="tab" aria-selected={active === tab.key}
           tabIndex={active === tab.key ? 0 : -1} data-tab-key={tab.key}
           onClick={() => onChange(tab.key)}
-          className={clsx("relative z-10 flex min-h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-semibold",
-            "transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600",
-            active === tab.key ? "text-primary-800" : "text-neutral-500 hover:text-neutral-900")}
+          className={clsx("relative z-10 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg font-semibold",
+            tone === "dark" ? "min-h-8 px-2.5 text-xs focus-visible:ring-white/80" : "min-h-10 px-3 text-sm focus-visible:ring-primary-600",
+            "transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2",
+            tone === "dark" ? (active === tab.key ? "text-neutral-900" : "text-white/75 hover:text-white") : active === tab.key ? "text-primary-800" : "text-neutral-500 hover:text-neutral-900")}
         >
           {tab.label}
           {tab.badge != null && <span className={clsx("rounded-full px-1.5 py-0.5 text-[10px] leading-none tnum", active === tab.key ? "bg-primary-200 text-primary-900" : "bg-neutral-100 text-neutral-600")}>{tab.badge}</span>}

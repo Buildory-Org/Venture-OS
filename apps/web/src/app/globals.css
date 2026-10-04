@@ -253,6 +253,138 @@
 .vso-stagger > :nth-child(3) { animation-delay: 70ms; }
 .vso-stagger > :nth-child(4) { animation-delay: 105ms; }
 
+/* Exits run about a third faster than entrances. Components set data-state="closing", wait, then unmount. */
+@keyframes vso-exit-right { to { opacity: 0; transform: translateX(22px); } }
+@keyframes vso-exit-modal { to { opacity: 0; transform: translateY(3px) scale(0.985); } }
+@keyframes vso-exit-popover { to { opacity: 0; transform: scale(0.985); } }
+@keyframes vso-exit-bottom { to { transform: translateY(100%); } }
+@keyframes vso-enter-popover-up {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes vso-fade-in { from { opacity: 0; } }
+@keyframes vso-fade-out { to { opacity: 0; } }
+.vso-backdrop { animation: vso-fade-in 200ms ease-out both; }
+.vso-backdrop[data-state="closing"] { animation: vso-fade-out 150ms ease-out forwards; pointer-events: none; }
+[data-state="closing"] .vso-enter-right, .vso-enter-right[data-state="closing"] { animation: vso-exit-right 170ms var(--ease-snappy) forwards; }
+[data-state="closing"] .vso-enter-modal, .vso-enter-modal[data-state="closing"] { animation: vso-exit-modal 130ms var(--ease-snappy) forwards; }
+[data-state="closing"] .vso-enter-bottom, .vso-enter-bottom[data-state="closing"] { animation: vso-exit-bottom 240ms var(--ease-drawer) forwards; }
+.vso-enter-popover[data-side="top"] { animation-name: vso-enter-popover-up; transform-origin: bottom right; }
+.vso-enter-popover[data-side="top"][data-align="left"] { transform-origin: bottom left; }
+.vso-enter-popover[data-state="closing"] { animation: vso-exit-popover 100ms ease-out forwards; pointer-events: none; }
+.vso-fade-enter { animation: vso-fade-in 140ms ease-out both; }
+
+/* Smooth open/close for inline content (banners, confirm rows, fieldsets). Hidden content leaves the tab order once closed. */
+.vso-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows 220ms var(--ease-snappy), opacity 160ms ease-out, visibility 0s linear 220ms; }
+.vso-collapse[data-open="true"] { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows 220ms var(--ease-snappy), opacity 160ms ease-out, visibility 0s; }
+.vso-collapse > * { min-height: 0; overflow: hidden; }
+
+/* "Just changed": a brief tint that fades, so a new or updated item is easy to find. */
+@keyframes vso-flash { 0%, 15% { background-color: var(--color-primary-100); } 100% { background-color: transparent; } }
+.vso-flash { animation: vso-flash 1300ms ease-out; }
+
+/* Loading placeholders and spinners. */
+@keyframes vso-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.vso-skeleton { display: block; border-radius: 8px; background: linear-gradient(90deg, var(--color-neutral-100) 25%, var(--color-neutral-50) 50%, var(--color-neutral-100) 75%); background-size: 300% 100%; animation: vso-shimmer 1.5s linear infinite; }
+@keyframes vso-spin { to { transform: rotate(360deg); } }
+.vso-spin { animation: vso-spin 750ms linear infinite; }
+
+/* Toast stack: the row opens room while the toast slides in from the right edge; leaving reverses it a bit faster. */
+@keyframes vso-toast-row-in { from { grid-template-rows: 0fr; } }
+@keyframes vso-toast-in { from { transform: translateX(calc(100% + 24px)); } }
+@keyframes vso-toast-out { to { transform: translateX(calc(100% + 24px)); opacity: 0.4; } }
+.vso-toast-row { display: grid; grid-template-rows: 1fr; animation: vso-toast-row-in 240ms var(--ease-snappy) backwards; }
+.vso-toast-row > div { min-height: 0; }
+.vso-toast { animation: vso-toast-in 280ms var(--ease-snappy) backwards; }
+.vso-toast-row[data-leaving="true"] { grid-template-rows: 0fr; transition: grid-template-rows 160ms var(--ease-snappy) 80ms; }
+.vso-toast-row[data-leaving="true"] .vso-toast { animation: vso-toast-out 180ms var(--ease-snappy) forwards; pointer-events: none; }
+
+@keyframes vso-badge-pop { 40% { transform: scale(1.35); } }
+.vso-badge-pop { animation: vso-badge-pop 280ms var(--ease-snappy); }
+
+/* Content arriving after a load: rows rise 6px one after another (35ms apart). New rows added later rise on their own. */
+@keyframes vso-rise-in { from { opacity: 0; transform: translateY(6px); } }
+.vso-stagger-in > * { animation: vso-rise-in 220ms var(--ease-snappy) backwards; }
+.vso-stagger-in > :nth-child(2) { animation-delay: 35ms; }
+.vso-stagger-in > :nth-child(3) { animation-delay: 70ms; }
+.vso-stagger-in > :nth-child(4) { animation-delay: 105ms; }
+.vso-stagger-in > :nth-child(5) { animation-delay: 140ms; }
+.vso-stagger-in > :nth-child(6) { animation-delay: 175ms; }
+.vso-stagger-in > :nth-child(7) { animation-delay: 210ms; }
+.vso-stagger-in > :nth-child(n+8) { animation-delay: 245ms; }
+.vso-row-enter { animation: vso-rise-in 220ms var(--ease-snappy) backwards; }
+.vso-stagger-in > .vso-flash, .vso-row-enter.vso-flash { animation: vso-flash 1300ms ease-out; }
+/* Button text that changes state (Saving…, Saved) blurs in instead of snapping. */
+@keyframes vso-label-in { from { opacity: 0; filter: blur(2px); } }
+.vso-label-swap { animation: vso-label-in 180ms var(--ease-snappy) backwards; }
+/* A drawer that replaces another one opens without a second slide. */
+[data-enter="false"]:not([data-state="closing"]).vso-backdrop,
+[data-enter="false"]:not([data-state="closing"]) .vso-enter-right { animation: none; }
+
+/* A refused action (e.g. moving a card to Blocked without a blocker) shakes once. */
+@keyframes vso-shake { 20% { transform: translateX(-5px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }
+.vso-shake { animation: vso-shake 360ms ease-in-out; }
+
+/* Native <dialog> modals grow from the centre with a fading backdrop, and shrink away on close. */
+.vso-dialog[open] { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+.vso-dialog[open]::backdrop { animation: vso-fade-in 200ms ease-out both; }
+.vso-dialog[data-state="closing"] { animation: vso-exit-modal 130ms var(--ease-snappy) forwards; }
+.vso-dialog[data-state="closing"]::backdrop { animation: vso-fade-out 150ms ease-out forwards; }
+
+/* Chat: a reaction dips and pops once; a jumped-to message glows; the new-messages pill rises; a sent message rises from the composer. */
+@keyframes vso-pop { 30% { transform: scale(.88); } 65% { transform: scale(1.12); } }
+.vso-pop { animation: vso-pop 300ms var(--ease-snappy); }
+@keyframes vso-message-flash { 0%, 20% { background-color: var(--color-primary-100); } 100% { background-color: transparent; } }
+.vso-message-flash { animation: vso-message-flash 1200ms ease-out; border-radius: 16px; }
+@keyframes vso-pill-in { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.vso-pill-in { transform: translateX(-50%); animation: vso-pill-in 220ms var(--ease-snappy) both; }
+@keyframes vso-send-rise { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+.vso-send-rise { animation: vso-send-rise 260ms var(--ease-snappy) backwards; }
+
+/* Composer file chips grow in and shrink away; a tiny ring spins while a file uploads. */
+@keyframes vso-chip-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes vso-chip-out { to { opacity: 0; transform: scale(.94); } }
+.vso-chip-in { animation: vso-chip-in 180ms var(--ease-snappy) backwards; }
+.vso-chip-in[data-leaving="true"] { animation: vso-chip-out 120ms ease-out forwards; pointer-events: none; }
+.vso-spinner { display: inline-block; flex: none; border-radius: 999px; border: 1.5px solid currentColor; border-top-color: transparent; animation: vso-spin 750ms linear infinite; }
+/* Avatars fade in once their artwork arrives instead of popping over the placeholder. */
+.vso-avatar-img { transition: opacity 200ms ease-out; }
+.vso-avatar-img[data-loaded="false"] { opacity: 0; }
+
+/* Sidebar: the active pill glides between items (decision 1B); until it is placed the active item paints its own fill. */
+.vso-nav-list:not([data-ready="true"]) [data-nav-active] { background: var(--color-primary-700); box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / .05)); }
+@media (min-width: 1024px) {
+  /* Labels fade back in as the rail widens instead of popping in clipped. */
+  .vso-shell-sidebar:not([data-instant="true"]) .vso-nav-label { animation: vso-fade-in 160ms ease-out 70ms backwards; }
+}
+/* Collapsed-rail tooltips: a short delay for the first, instant for the next ones. */
+@keyframes vso-tip-in { from { opacity: 0; transform: translateX(-4px) scale(.97); } }
+.vso-tooltip { animation: vso-tip-in 125ms var(--ease-snappy) both; transform-origin: left center; }
+.vso-tooltip[data-instant="true"] { animation: none; }
+/* Theme icon: the incoming icon turns in while the outgoing one turns away (decision 17B). */
+@keyframes vso-icon-in { from { opacity: 0; transform: rotate(-90deg) scale(.6); } }
+@keyframes vso-icon-out { to { opacity: 0; transform: rotate(90deg) scale(.6); } }
+.vso-icon-swap { grid-area: 1 / 1; }
+.vso-icon-swap[data-state="out"] { opacity: 0; }
+.vso-icon-swap[data-animate="true"][data-state="in"] { animation: vso-icon-in 260ms var(--ease-snappy) both; }
+.vso-icon-swap[data-animate="true"][data-state="out"] { animation: vso-icon-out 200ms var(--ease-snappy) both; }
+
+/* Changed numbers roll: the new value slides in from below when it rises, from above when it falls (decision 8C). */
+@keyframes vso-roll-in { from { opacity: 0; transform: translateY(calc(var(--roll-dir, 1) * 70%)); } }
+@keyframes vso-roll-out { to { opacity: 0; transform: translateY(calc(var(--roll-dir, 1) * -70%)); } }
+.vso-roll { display: inline-grid; overflow: hidden; vertical-align: bottom; }
+.vso-roll > * { grid-area: 1 / 1; }
+.vso-roll-in { animation: vso-roll-in 320ms var(--ease-snappy) both; }
+.vso-roll-out { animation: vso-roll-out 320ms var(--ease-snappy) both; }
+/* Progress bars slide to a new value but never animate on first paint (decision 9C). */
+.vso-progress { transition: width 500ms var(--ease-in-out-strong, cubic-bezier(0.77, 0, 0.175, 1)); }
+
+/* Hover lifts only where a mouse can hover. */
+.vso-lift { transition: transform 180ms var(--ease-snappy), box-shadow 180ms var(--ease-snappy), background-color 150ms ease; }
+@media (hover: hover) and (pointer: fine) {
+  .vso-lift:hover { transform: translateY(-1px); box-shadow: var(--shadow-card-hover); }
+}
+
 @keyframes chat-message-arrive {
   from { opacity: 0; transform: translateY(7px) scale(.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -348,8 +480,9 @@ button {
   place-items: center;
   border-radius: 9px;
   color: #8e8f9a;
-  transition: background-color 150ms, color 150ms;
+  transition: background-color 150ms, color 150ms, transform 150ms var(--ease-snappy);
 }
+.chat-icon:active { transform: scale(.94); }
 .chat-icon:hover, .chat-icon-active {
   background: #d1fae5;
   color: #047857;
@@ -421,9 +554,33 @@ button {
   .vso-enter-modal,
   .vso-enter-popover,
   .chat-message-arrive,
+  .vso-backdrop,
+  .vso-fade-enter,
+  .vso-flash,
+  .vso-skeleton,
+  .vso-spin,
+  .vso-toast-row,
+  .vso-toast,
+  .vso-badge-pop,
+  .vso-stagger-in > *,
+  .vso-row-enter,
+  .vso-label-swap,
+  .vso-shake,
+  .vso-pop,
+  .vso-message-flash,
+  .vso-pill-in,
+  .vso-send-rise,
+  .vso-dialog,
+  .vso-dialog::backdrop,
+  .vso-chip-in,
+  .vso-tooltip,
+  .vso-icon-swap,
+  .vso-roll-in,
+  .vso-spinner,
   .vso-stagger > * {
     animation: none !important;
   }
+  .vso-roll-out { display: none; }
   *,
   *::before,
   *::after {

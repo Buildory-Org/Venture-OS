@@ -2,12 +2,14 @@
 import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, BookOpenText, Copy, Download, Edit, Plus, RefreshCw, Search } from "@/components/ui/icons";
+import { ArrowLeft, BookOpenText, Copy, Download, Edit, Plus, Search } from "@/components/ui/icons";
 import { createLiveDocument, getLiveDocument, listLiveDocuments, listLiveFiles, loadLiveSession, prepareLiveFileDownload, searchLiveKnowledge, updateLiveDocumentMetadata } from "@/lib/studio-api";
-import { Badge, DetailDrawer, Empty, Field, inputClass, PageTitle, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { ActionLabel, Badge, DetailDrawer, Empty, Field, inputClass, Notice, PageTitle, Panel, PanelHead, primaryClass, RefreshButton, secondaryClass, SkeletonRows, useFlag } from "@/components/studio/primitives";
+import { SlidingTabs } from "@/components/ui/sliding-tabs";
 import { KnowledgeDocumentTile } from "@/components/studio/knowledge-document-tile";
 import { KnowledgeFileIcon } from "@/components/studio/knowledge-file-icon";
 import { MarkdownBody, MarkdownViewToggle, type MarkdownView } from "@/components/studio/knowledge-markdown";
@@ -20,11 +22,33 @@ type DocumentDetail = Awaited<ReturnType<typeof getLiveDocument>>;
 type DocumentMetadata = Awaited<ReturnType<typeof listLiveDocuments>>["items"][number];
 type FileMetadata = Awaited<ReturnType<typeof listLiveFiles>>["items"][number];
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value));
+const SECTION_TABS = [{ key: "library", label: "Library" }, { key: "search", label: "Evidence search" }];
+/** Wraps the searched words in <mark> so a reader sees why a result matched. */
+function highlight(text: string, query: string) {
+  const terms = query.trim().split(/\s+/).filter((term) => term.length >= 2).map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!terms.length) return text;
+  return text.split(new RegExp(`(${terms.join("|")})`, "gi")).map((part, index) => index % 2 ? <mark key={index} className="rounded bg-warning-surface px-0.5 text-inherit">{part}</mark> : part);
+}
+/** Esc returns to the library; "e" opens the editor. Ignored while typing or when a dialog is open. */
+function useReaderKeys(onBack: () => void, onEdit?: () => void) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open], [role="listbox"]')) return;
+      if (event.key === "Escape") { event.preventDefault(); onBack(); }
+      else if (event.key === "e" && onEdit) { event.preventDefault(); onEdit(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onBack, onEdit]);
+}
 
 function ReaderShell({ name, subtitle, onBack, action, children }: { name: string; subtitle: string; onBack: () => void; action: React.ReactNode; children: React.ReactNode }) {
-  return <section aria-label={`Viewing ${name}`} className="relative flex h-[calc(100dvh-56px)] min-h-0 w-full flex-col overflow-hidden bg-neutral-50">
+  return <section aria-label={`Viewing ${name}`} className="vso-fade-enter relative flex h-[calc(100dvh-56px)] min-h-0 w-full flex-col overflow-hidden bg-neutral-50">
     <header className="absolute inset-x-0 top-0 z-10 flex min-h-14 items-center gap-3 border-b border-white/10 bg-[#183027]/85 px-4 text-white backdrop-blur-xl sm:px-6">
-      <button type="button" onClick={onBack} aria-label="Back to library" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"><ArrowLeft size={17} /></button>
+      <button type="button" onClick={onBack} aria-label="Back to library" aria-keyshortcuts="Escape" title="Back to library (Esc)" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-[background-color,transform] duration-150 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 active:scale-[0.94]"><ArrowLeft size={17} /></button>
       <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-semibold" title={name}>{name}</h1><p className="truncate text-[10px] text-white/60">{subtitle}</p></div>
       {action}
     </header>
@@ -34,7 +58,8 @@ function ReaderShell({ name, subtitle, onBack, action, children }: { name: strin
 
 function DocumentReader({ detail, venture, onBack, onDetails, onEdit }: { detail: DocumentDetail; venture: string; onBack: () => void; onDetails: () => void; onEdit?: () => void }) {
   const [markdownView, setMarkdownView] = useState<MarkdownView>("rendered");
-  return <ReaderShell name={detail.document.title} subtitle={`${venture} · Version ${detail.version.version} · ${detail.document.status}`} onBack={onBack} action={<div className="flex shrink-0 items-center gap-2"><MarkdownViewToggle value={markdownView} onChange={setMarkdownView} />{onEdit && <button type="button" onClick={onEdit} aria-label={`Edit ${detail.document.title}`} title="Open editor" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"><Edit size={17} /></button>}<button type="button" onClick={onDetails} className="min-h-9 shrink-0 rounded-xl px-3 text-xs font-semibold text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80">Details & actions</button></div>}><div className="h-full w-full overflow-auto bg-white px-5 pb-12 pt-6 sm:px-10"><article className="mx-auto w-full max-w-5xl"><MarkdownBody markdown={detail.version.markdown} view={markdownView} /></article></div></ReaderShell>;
+  useReaderKeys(onBack, onEdit);
+  return <ReaderShell name={detail.document.title} subtitle={`${venture} · Version ${detail.version.version} · ${detail.document.status}`} onBack={onBack} action={<div className="flex shrink-0 items-center gap-2"><MarkdownViewToggle value={markdownView} onChange={setMarkdownView} />{onEdit && <button type="button" onClick={onEdit} aria-label={`Edit ${detail.document.title}`} aria-keyshortcuts="e" title="Open editor (E)" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-[background-color,transform] duration-150 active:scale-[0.94] hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"><Edit size={17} /></button>}<button type="button" onClick={onDetails} className="min-h-9 shrink-0 rounded-xl px-3 text-xs font-semibold text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80">Details & actions</button></div>}><div className="h-full w-full overflow-auto bg-white px-5 pb-12 pt-6 sm:px-10"><article className="mx-auto w-full max-w-5xl"><MarkdownBody markdown={detail.version.markdown} view={markdownView} /></article></div></ReaderShell>;
 }
 
 function FileReader({ file, url, venture, onBack }: { file: FileMetadata; url: string; venture: string; onBack: () => void }) {
@@ -44,13 +69,14 @@ function FileReader({ file, url, venture, onBack }: { file: FileMetadata; url: s
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(isText);
   const [markdownView, setMarkdownView] = useState<MarkdownView>("rendered");
+  useReaderKeys(onBack);
   useEffect(() => {
     if (!isText) return;
     let active = true;
     fetch(url).then((response) => { if (!response.ok) throw new Error("Preview unavailable"); return response.text(); }).then((value) => { if (active) setTextPreview(value); }).catch(() => { if (active) setPreviewError("This text file could not be previewed. Download it instead."); }).finally(() => { if (active) setPreviewLoading(false); });
     return () => { active = false; };
   }, [isText, url]);
-  const preview = isText ? <div className="h-full w-full overflow-auto bg-white px-5 pb-10 pt-6 sm:px-10"><article className="mx-auto w-full max-w-5xl">{previewLoading ? <p role="status" className="text-sm text-neutral-500">Loading preview…</p> : previewError ? <p role="alert" className="text-sm text-danger-text">{previewError}</p> : isMarkdown ? <MarkdownBody markdown={textPreview} view={markdownView} /> : <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-7 text-neutral-900">{textPreview}</pre>}</article></div>
+  const preview = isText ? <div className="h-full w-full overflow-auto bg-white px-5 pb-10 pt-6 sm:px-10"><article className="mx-auto w-full max-w-5xl">{previewLoading ? <SkeletonRows rows={6} label="Loading preview" className="!p-0" /> : previewError ? <p role="alert" className="text-sm text-danger-text">{previewError}</p> : isMarkdown ? <MarkdownBody markdown={textPreview} view={markdownView} /> : <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-7 text-neutral-900">{textPreview}</pre>}</article></div>
     : file.contentType === "application/pdf" ? <iframe src={url} title={`Preview of ${file.name}`} className="h-full w-full border-0 bg-white" />
     : file.contentType.startsWith("image/") ? <Image src={url} alt={file.name} width={1600} height={1200} unoptimized className="max-h-full max-w-full object-contain" />
     : file.contentType.startsWith("video/") ? <video src={url} controls className="max-h-full max-w-full" />
@@ -94,6 +120,14 @@ export function LiveKnowledgeScreen() {
   const [createError, setCreateError] = useState("");
   const [packetIds, setPacketIds] = useState<string[]>([]);
   const [packetBusy, setPacketBusy] = useState(false);
+  const [packetAction, setPacketAction] = useState<"" | "copy" | "export">("");
+  const [packetDone, markPacketDone] = useFlag();
+  const [reviewing, setReviewing] = useState("");
+  const [searchedQ, setSearchedQ] = useState("");
+  // Files dropped anywhere on the library open the upload dialog with them already listed.
+  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const dragDepth = useRef(0);
 
   useEffect(() => { queueMicrotask(() => { setSelected(null); setSelectedFile(null); setResults(null); setPacketIds([]); setPacketMode(false); }); }, [ventureId]);
 
@@ -136,7 +170,7 @@ export function LiveKnowledgeScreen() {
   async function search(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true); setError("");
-    try { setResults(await searchLiveKnowledge(q.trim(), ventureId || undefined)); }
+    try { setResults(await searchLiveKnowledge(q.trim(), ventureId || undefined)); setSearchedQ(q.trim()); }
     catch (cause) { setError(describeError(cause, "Search failed.")); }
     finally { setBusy(false); }
   }
@@ -157,13 +191,13 @@ export function LiveKnowledgeScreen() {
 
   async function reviewDocument(status: "approved" | "stale") {
     if (!selected) return;
-    setBusy(true); setError(""); setResult("");
+    setBusy(true); setReviewing(status); setError(""); setResult("");
     try {
       await updateLiveDocumentMetadata(selected.document.id, { status, ...(status === "approved" ? { lastReviewedAt: new Date().toISOString() } : {}) });
       setSelected(await getLiveDocument(selected.document.id)); setRevision((value) => value + 1);
       setResult(status === "approved" ? "The current document version was approved and audited." : "The document was marked stale and audited.");
     } catch (cause) { setError(describeError(cause, "Could not update document review status.")); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setReviewing(""); }
   }
 
   const canEdit = !!selected && (session?.membership.role === "admin" || (!!selected.document.ventureId && ["venture_head", "contributor"].includes(session?.membership.role ?? "") && !!session?.membership.ventureIds.includes(selected.document.ventureId)));
@@ -227,61 +261,72 @@ export function LiveKnowledgeScreen() {
   }
 
   async function copyPacket() {
+    setPacketAction("copy");
     const text = await preparePacket();
+    setPacketAction("");
     if (!text) return;
-    try { await navigator.clipboard.writeText(text); setResult("Authorized context packet copied."); }
+    try { await navigator.clipboard.writeText(text); markPacketDone("copy"); }
     catch { setError("Clipboard access failed. Try the Markdown export instead."); }
   }
 
   async function exportPacket() {
+    setPacketAction("export");
     const text = await preparePacket();
+    setPacketAction("");
     if (!text) return;
     const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url; link.download = "venture-studio-context-packet.md"; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setResult("Authorized context packet exported as Markdown.");
+    markPacketDone("export");
   }
 
   if (selectedFile) return <FileReader file={selectedFile.file} url={selectedFile.url} venture={ventureName(selectedFile.file.ventureId)} onBack={() => setSelectedFile(null)} />;
 
-  return <div className={selected ? "min-w-0 w-full" : "mx-auto min-w-0 w-full max-w-[1580px] px-4 py-5 sm:px-6 lg:px-7 lg:py-6"}>
-    {!selected && <PageTitle title="Knowledge" description="Browse records and files in one library." action={<div className="flex flex-wrap gap-2">{canCreate && <><button type="button" onClick={startCreate} className={primaryClass}><Plus size={15} />New record</button><button type="button" onClick={() => setUploadMode("file")} className={secondaryClass}>Upload file</button></>}<button type="button" onClick={() => setRevision((value) => value + 1)} className={secondaryClass}><RefreshCw size={15} />Refresh</button></div>} />}
-    {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
-    {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
+  const dropEnabled = !!session && canCreate && !selected && !uploadMode && view === "library";
+  const firstLoad = loadingDocuments && !libraryItems.length;
+  const isFileDrag = (event: React.DragEvent) => event.dataTransfer.types.includes("Files");
+  return <div className={selected ? "min-w-0 w-full" : "relative mx-auto min-w-0 w-full max-w-[1580px] px-4 py-5 sm:px-6 lg:px-7 lg:py-6"}
+    onDragEnter={(event) => { if (!dropEnabled || !isFileDrag(event)) return; event.preventDefault(); dragDepth.current += 1; setDropActive(true); }}
+    onDragOver={(event) => { if (!dropEnabled || !isFileDrag(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }}
+    onDragLeave={() => { if (!dropActive) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDropActive(false); }}
+    onDrop={(event) => { if (!dropEnabled || !isFileDrag(event)) return; event.preventDefault(); dragDepth.current = 0; setDropActive(false); const dropped = Array.from(event.dataTransfer.files); if (dropped.length) { setDroppedFiles(dropped); setUploadMode("file"); } }}>
+    {dropActive && <div aria-hidden="true" className="vso-backdrop pointer-events-none fixed inset-0 z-40 grid place-items-center bg-primary-900/10 p-6 backdrop-blur-[2px]"><div className="vso-enter-modal rounded-2xl border-2 border-dashed border-primary-500 bg-white px-8 py-7 text-center shadow-e4"><p className="text-base font-bold text-neutral-900">Drop files to upload</p><p className="mt-1 text-sm text-neutral-500">They go to {ventureId ? ventureName(ventureId) : "a venture you choose next"}. Markdown and text become draft records.</p></div></div>}
+    {!selected && <PageTitle title="Knowledge" description="Browse records and files in one library." action={<div className="flex flex-wrap gap-2">{canCreate && <><button type="button" onClick={startCreate} className={primaryClass}><Plus size={15} />New record</button><button type="button" onClick={() => setUploadMode("file")} className={secondaryClass}>Upload file</button></>}<RefreshButton busy={loadingDocuments && !!session} onClick={() => setRevision((value) => value + 1)} /></div>} />}
+    {!selected && <><Notice tone="error" message={error} onDismiss={() => setError("")} className="pb-4" /><Notice tone="success" message={result} onDismiss={() => setResult("")} autoDismissMs={5000} className="pb-4" /></>}
     {requestedDocumentId && missingDocumentId === requestedDocumentId && !selected && <Panel className="mb-4 flex flex-wrap items-center justify-between gap-3 p-5 text-sm text-neutral-600"><p role="alert">This document is not available. It may have been removed, or you may not have access to it.</p><button type="button" onClick={() => router.replace("/knowledge/live")} className={secondaryClass}>Back to library</button></Panel>}
-    {requestedDocumentId && !selected && missingDocumentId !== requestedDocumentId ? <Panel className="p-8 text-sm text-neutral-500"><p role="status">Opening document…</p></Panel> : selected ? <DocumentReader key={selected.document.id} detail={selected} venture={ventureName(selected.document.ventureId)} onBack={closeDocument} onDetails={() => setDetailOpen(true)} onEdit={canEdit ? () => router.push(`/knowledge/live/edit/${encodeURIComponent(selected.document.id)}`) : undefined} /> : <>
-      <div role="tablist" aria-label="Knowledge sections" className="mb-4 flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-neutral-200 bg-neutral-50 p-1">{(["library", "search"] as const).map((item) => <button key={item} type="button" role="tab" aria-selected={view === item} onClick={() => setView(item)} className={`min-h-9 rounded-lg px-4 text-sm font-semibold transition-colors ${view === item ? "bg-primary-700 text-white" : "text-neutral-600 hover:bg-neutral-100"}`}>{item === "search" ? "Evidence search" : "Library"}</button>)}</div>
+    {requestedDocumentId && !selected && missingDocumentId !== requestedDocumentId ? <Panel><SkeletonRows rows={5} label="Opening document" /></Panel> : selected ? <DocumentReader key={selected.document.id} detail={selected} venture={ventureName(selected.document.ventureId)} onBack={closeDocument} onDetails={() => setDetailOpen(true)} onEdit={canEdit ? () => router.push(`/knowledge/live/edit/${encodeURIComponent(selected.document.id)}`) : undefined} /> : <>
+      <SlidingTabs fitContent label="Knowledge sections" className="mb-4 bg-neutral-100 shadow-none" active={view} onChange={(key) => setView(key as "library" | "search")} tabs={SECTION_TABS} />
       {view === "library" && <><div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div className="w-full max-w-xs flex-1"><Field label="Record status"><Select className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as typeof status)}><option value="">All visible statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="stale">Stale</option></Select></Field></div><button type="button" onClick={() => { setPacketMode((value) => !value); setPacketIds([]); }} className={secondaryClass}>{packetMode ? "Done selecting" : "Create context packet"}</button></div>
-        {packetMode && <Panel className="mb-4 flex flex-wrap items-center justify-between gap-3 border-primary-200 bg-primary-50 p-4"><p className="text-sm text-neutral-700"><span className="font-semibold">{packetIds.length} approved record{packetIds.length === 1 ? "" : "s"} selected.</span> Choose thumbnails, then copy or export the authorized Markdown.</p><div className="flex gap-2"><button type="button" disabled={!packetIds.length || packetBusy} onClick={() => void copyPacket()} className={secondaryClass}><Copy size={15} />Copy packet</button><button type="button" disabled={!packetIds.length || packetBusy} onClick={() => void exportPacket()} className={secondaryClass}><Download size={15} />Export</button></div></Panel>}
-        <Panel className="p-4 sm:p-5"><div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-sm font-bold text-neutral-900">Library</h2><span className="text-xs text-neutral-500">{loadingDocuments ? "Loading…" : `${documents.length} records · ${files.length} files`}</span></div>{loadingDocuments ? <p role="status" className="py-12 text-center text-sm text-neutral-500">Loading library…</p> : libraryItems.length ? <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{libraryItems.map((entry) => entry.kind === "document" ? <KnowledgeDocumentTile key={`document-${entry.item.id}`} title={entry.item.title} venture={ventureName(entry.item.ventureId)} status={`Record · ${entry.item.status}`} updatedAt={stamp(entry.item.updatedAt)} onOpen={() => void openDocument(entry.item.id)} onEdit={!packetMode && canEditDocument(entry.item) ? () => router.push(`/knowledge/live/edit/${encodeURIComponent(entry.item.id)}`) : undefined} selected={packetIds.includes(entry.item.id)} onSelect={packetMode && entry.item.status === "approved" ? (checked) => setPacketIds((ids) => checked ? [...ids, entry.item.id] : ids.filter((id) => id !== entry.item.id)) : undefined} /> : <KnowledgeDocumentTile key={`file-${entry.item.id}`} fileId={entry.item.id} title={entry.item.name} fileName={entry.item.name} contentType={entry.item.contentType} venture={ventureName(entry.item.ventureId)} status="File" updatedAt={stamp(entry.item.createdAt)} onOpen={() => void openFile(entry.item)} />)}</div> : <Empty title="Nothing in this library yet" body="Create a record or upload a file to this venture." />}{(cursor || fileCursor) && <div className="mt-6 flex flex-wrap gap-3">{cursor && <button type="button" disabled={busy} onClick={more} className="text-xs font-semibold text-primary-700 underline">Load more records</button>}{fileCursor && <button type="button" disabled={busy} onClick={() => void moreFiles()} className="text-xs font-semibold text-primary-700 underline">Load more files</button>}</div>}</Panel>
+        <div data-open={packetMode} className="vso-collapse"><div><div className="pb-4"><Panel className="flex flex-wrap items-center justify-between gap-3 border-primary-200 bg-primary-50 p-4"><p className="text-sm text-neutral-700"><span className="font-semibold"><span key={packetIds.length} className="vso-label-swap inline-block tnum">{packetIds.length}</span> approved record{packetIds.length === 1 ? "" : "s"} selected.</span> Click thumbnails to choose them, then copy or export the authorized Markdown.</p><div className="flex gap-2"><button type="button" disabled={!packetIds.length || packetBusy} onClick={() => void copyPacket()} className={secondaryClass}><ActionLabel busy={packetBusy && packetAction === "copy"} done={packetDone === "copy"} busyText="Preparing…" doneText="Copied" idle={<><Copy size={15} />Copy packet</>} /></button><button type="button" disabled={!packetIds.length || packetBusy} onClick={() => void exportPacket()} className={secondaryClass}><ActionLabel busy={packetBusy && packetAction === "export"} done={packetDone === "export"} busyText="Preparing…" doneText="Exported" idle={<><Download size={15} />Export</>} /></button></div></Panel></div></div></div>
+        <Panel className="p-4 sm:p-5"><div className="mb-5 flex items-center justify-between gap-3"><h2 className="text-sm font-bold text-neutral-900">Library</h2><span className="text-xs text-neutral-500">{firstLoad ? "Loading…" : `${documents.length} records · ${files.length} files`}</span></div>{firstLoad ? <div role="status" aria-label="Loading the library" className="grid grid-cols-2 gap-x-4 gap-y-6 lg:grid-cols-3 xl:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <div key={index}><span className="vso-skeleton aspect-[4/3] w-full rounded-xl" /><span className="vso-skeleton mt-2.5 h-3.5 w-3/4" /><span className="vso-skeleton mt-1.5 h-2.5 w-1/2" /></div>)}</div> : libraryItems.length ? <div aria-busy={loadingDocuments || undefined} className={clsx("vso-stagger-in grid grid-cols-2 gap-x-4 gap-y-6 transition-opacity duration-200 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4", loadingDocuments && "opacity-60")}>{libraryItems.map((entry) => entry.kind === "document" ? <KnowledgeDocumentTile key={`document-${entry.item.id}`} title={entry.item.title} venture={ventureName(entry.item.ventureId)} status={`Record · ${entry.item.status}`} updatedAt={stamp(entry.item.updatedAt)} onOpen={() => void openDocument(entry.item.id)} onEdit={!packetMode && canEditDocument(entry.item) ? () => router.push(`/knowledge/live/edit/${encodeURIComponent(entry.item.id)}`) : undefined} selected={packetIds.includes(entry.item.id)} onSelect={packetMode && entry.item.status === "approved" ? (checked) => setPacketIds((ids) => checked ? [...ids, entry.item.id] : ids.filter((id) => id !== entry.item.id)) : undefined} unavailable={packetMode && entry.item.status !== "approved" ? "Only approved records can go into a context packet" : undefined} /> : <KnowledgeDocumentTile key={`file-${entry.item.id}`} unavailable={packetMode ? "Files cannot go into a context packet" : undefined} fileId={entry.item.id} title={entry.item.name} fileName={entry.item.name} contentType={entry.item.contentType} venture={ventureName(entry.item.ventureId)} status="File" updatedAt={stamp(entry.item.createdAt)} onOpen={() => void openFile(entry.item)} />)}</div> : <Empty title="Nothing in this library yet" body={canCreate ? "Create a record, upload a file, or drop files anywhere on this page." : "No records or files are available in this scope."} action={canCreate ? <button type="button" onClick={() => setUploadMode("file")} className={secondaryClass}>Upload files</button> : undefined} />}{(cursor || fileCursor) && <div className="mt-6 flex flex-wrap gap-3">{cursor && <button type="button" disabled={busy} onClick={more} className={clsx(secondaryClass, "!min-h-9 !text-xs")}>{busy ? "Loading…" : "Load more records"}</button>}{fileCursor && <button type="button" disabled={busy} onClick={() => void moreFiles()} className={clsx(secondaryClass, "!min-h-9 !text-xs")}>{busy ? "Loading…" : "Load more files"}</button>}</div>}</Panel>
       </>}
-      {view === "search" && <Panel><PanelHead title="Evidence search" /><form onSubmit={search} className="flex flex-wrap gap-2 border-b border-neutral-100 p-4"><label className="relative min-w-48 flex-1"><span className="sr-only">Search knowledge</span><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input required minLength={2} maxLength={200} value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search approved evidence" className={`${inputClass} pl-9`} /></label><button disabled={busy} className={primaryClass}>{busy ? "Searching…" : "Search"}</button></form>{!results ? <div className="px-5 py-8 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-primary-50 text-primary-700"><BookOpenText size={20} /></span><p className="mt-3 text-sm font-semibold text-neutral-800">Find a verified source</p><p className="mt-1 text-sm text-neutral-500">Enter at least two characters.</p></div> : results.items.length ? <div className="divide-y divide-neutral-100">{results.items.map((item, index) => <button key={`${item.documentId}-${item.versionId}-${index}`} type="button" onClick={() => void openDocument(item.documentId)} className="w-full px-5 py-4 text-left hover:bg-neutral-50"><span className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold text-neutral-800">{item.title}</span><Badge tone="purple">{item.evidenceClass.replaceAll("_", " ")}</Badge></span><span className="mt-2 line-clamp-3 block whitespace-pre-wrap text-sm leading-6 text-neutral-600">{item.excerpt}</span><span className="mt-2 block break-all font-mono text-[10px] text-neutral-400">{item.sourceRef}</span></button>)}</div> : <Empty title="No authorized evidence matched" body={results.warnings[0] ?? "Try another query."} />}</Panel>}
+      {view === "search" && <Panel><PanelHead title="Evidence search" /><form onSubmit={search} className="flex flex-wrap gap-2 border-b border-neutral-100 p-4"><label className="relative min-w-48 flex-1"><span className="sr-only">Search knowledge</span><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input required minLength={2} maxLength={200} value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search approved evidence" className={`${inputClass} pl-9`} /></label><button disabled={busy} className={primaryClass}><ActionLabel busy={busy} busyText="Searching…" idle="Search" /></button></form>{!results ? <div className="px-5 py-8 text-center"><span className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-primary-50 text-primary-700"><BookOpenText size={20} /></span><p className="mt-3 text-sm font-semibold text-neutral-800">Find a verified source</p><p className="mt-1 text-sm text-neutral-500">Enter at least two characters.</p></div> : results.items.length ? <div key={searchedQ} className="vso-stagger-in divide-y divide-neutral-100">{results.items.map((item, index) => <button key={`${item.documentId}-${item.versionId}-${index}`} type="button" onClick={() => void openDocument(item.documentId)} className="w-full px-5 py-4 text-left transition-colors duration-150 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-600 active:bg-neutral-100"><span className="flex flex-wrap items-center gap-2"><span className="text-sm font-semibold text-neutral-800">{item.title}</span><Badge tone="purple">{item.evidenceClass.replaceAll("_", " ")}</Badge></span><span className="mt-2 line-clamp-3 block whitespace-pre-wrap text-sm leading-6 text-neutral-600">{highlight(item.excerpt, searchedQ)}</span><span className="mt-2 block break-all font-mono text-[10px] text-neutral-400">{item.sourceRef}</span></button>)}</div> : <Empty title="No authorized evidence matched" body={results.warnings[0] ?? "Try another query."} />}</Panel>}
     </>}
     {selected && detailOpen && <DetailDrawer title={selected.document.title} subtitle={`${ventureName(selected.document.ventureId)} · version ${selected.version.version}`} onClose={() => setDetailOpen(false)}>
       <div className="mb-3 flex flex-wrap items-center gap-2"><Badge tone="purple">{selected.document.evidenceClass.replaceAll("_", " ")}</Badge><Badge>{selected.document.sensitivity.replaceAll("_", " ")}</Badge><Badge tone={selected.document.status === "approved" ? "green" : "amber"}>{selected.document.status}</Badge></div>
       <p className="text-xs text-neutral-500">Last changed {stamp(selected.version.createdAt)} · Document {selected.document.id}</p>
       <p className="mt-2 text-xs text-neutral-500">{selected.versions.length} version{selected.versions.length === 1 ? "" : "s"} recorded. Only the current version can be opened here.</p>
-      {error && <p role="alert" className="mt-3 rounded-xl bg-danger-surface p-3 text-xs font-semibold text-danger-text">{error}</p>}
-      {result && <p role="status" className="mt-3 rounded-xl bg-success-surface p-3 text-xs font-semibold text-success-text">{result}</p>}
-      {canApprove && <div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={busy || selected.document.status === "approved"} onClick={() => reviewDocument("approved")} className={primaryClass}>Approve current version</button><button type="button" disabled={busy || selected.document.status !== "approved"} title={selected.document.status === "approved" ? undefined : "Only an approved record can be marked stale"} onClick={() => reviewDocument("stale")} className={secondaryClass}>Mark stale</button></div>}
+      <Notice tone="error" message={error} onDismiss={() => setError("")} className="pt-3" />
+      <Notice tone="success" message={result} onDismiss={() => setResult("")} autoDismissMs={5000} className="pt-3" />
+      {canApprove && <div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={busy || selected.document.status === "approved"} onClick={() => reviewDocument("approved")} className={primaryClass}><ActionLabel busy={reviewing === "approved"} busyText="Approving…" idle="Approve current version" /></button><button type="button" disabled={busy || selected.document.status !== "approved"} title={selected.document.status === "approved" ? undefined : "Only an approved record can be marked stale"} onClick={() => reviewDocument("stale")} className={secondaryClass}><ActionLabel busy={reviewing === "stale"} idle="Mark stale" /></button></div>}
       {canEdit && <button type="button" onClick={() => router.push(`/knowledge/live/edit/${encodeURIComponent(selected.document.id)}`)} className={`${secondaryClass} mt-4`}><Edit size={15} />Open editor</button>}
     </DetailDrawer>}
-    {creating && <DetailDrawer title="New knowledge document" subtitle="Create a draft in the selected destination" onClose={() => setCreating(false)}>
+    {creating && <DetailDrawer title="New knowledge document" subtitle="Create a draft in the selected destination" dirty={Boolean(createTitle.trim() || createMarkdown.trim()) && !busy} onClose={() => setCreating(false)}>
       <form onSubmit={createDocument} className="space-y-4">
         {lockedCreateScope ? <div aria-label="Document destination" className="rounded-xl bg-neutral-50 p-3 text-sm"><span className="block text-xs font-semibold text-neutral-500">Destination</span><span className="font-bold text-neutral-800">{ventureName(ventureId)}</span></div> : <Field label="Destination"><Select className={inputClass} value={createVentureId} onChange={(event) => setCreateVentureId(event.target.value)} required={session?.membership.role !== "admin"}>{session?.membership.role === "admin" ? <option value="">Workspace</option> : <option value="">Choose a venture</option>}{session?.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>}
         <Field label="Title"><input required maxLength={200} value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} className={inputClass} placeholder="What should this source be called?" /></Field>
         <Field label="Markdown"><textarea required maxLength={2_000_000} value={createMarkdown} onChange={(event) => setCreateMarkdown(event.target.value)} className={`${inputClass} min-h-56 py-3 font-mono`} placeholder="# Heading&#10;&#10;Write or paste the source content…" /></Field>
         <label className="block text-xs font-semibold text-neutral-600">Import Markdown or text file<input type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" onChange={(event) => { void importMarkdown(event.target.files?.[0]); event.target.value = ""; }} className="mt-2 block w-full min-w-0 text-xs text-neutral-600 file:mr-3 file:rounded-lg file:border-0 file:bg-neutral-100 file:px-3 file:py-2 file:font-bold" /></label>
-        {importName && <p className="text-xs text-neutral-500">Loaded {importName} into the editor. It is saved only when you create the document.</p>}
+        {importName && <p key={importName} className="vso-fade-enter text-xs text-neutral-500">Loaded {importName} into the editor. It is saved only when you create the document.</p>}
         <div className="grid gap-4 sm:grid-cols-2"><Field label="Evidence class"><Select className={inputClass} value={createEvidenceClass} onChange={(event) => setCreateEvidenceClass(event.target.value)}>{["verified_fact", "founder_reported", "approved_decision", "planning_assumption", "hypothesis", "open_question", "historical"].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</Select></Field><Field label="Sensitivity"><Select className={inputClass} value={createSensitivity} onChange={(event) => setCreateSensitivity(event.target.value)}>{["team", "venture_restricted", ...(session?.membership.role === "admin" || session?.membership.role === "venture_head" ? ["manager"] : []), ...(session?.membership.role === "admin" ? ["founder_private"] : [])].map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</Select></Field></div>
         <Field label="Source URL, optional"><input type="url" value={createSourceUri} onChange={(event) => setCreateSourceUri(event.target.value)} className={inputClass} placeholder="https://…" /></Field>
         <Field label="Change summary"><input required maxLength={500} value={createSummary} onChange={(event) => setCreateSummary(event.target.value)} className={inputClass} /></Field>
         <p className="text-xs leading-5 text-neutral-500">The source URL records provenance; it does not fetch or import the webpage. New documents start as drafts and are not in approved evidence search.</p>
-        {createError && <p role="alert" className="rounded-xl bg-danger-surface p-3 text-xs font-semibold text-danger-text">{createError}</p>}
+        <Notice tone="error" message={createError} onDismiss={() => setCreateError("")} />
         <div className="flex flex-wrap gap-2"><button disabled={busy} className={primaryClass}>{busy ? "Creating…" : "Create draft document"}</button><button type="button" onClick={() => setCreating(false)} className={secondaryClass}>Cancel</button></div>
       </form>
     </DetailDrawer>}
-    {uploadMode && session && <KnowledgeUploadDialog mode={uploadMode} session={session} activeVentureId={ventureId} onClose={() => setUploadMode(null)} onComplete={({ failed }) => { setRevision((value) => value + 1); setResult(failed ? `Some files uploaded; ${failed} ${failed === 1 ? "file" : "files"} failed. Check the upload list for details.` : "Upload complete. Markdown and text become draft records; other files stay private to their venture."); }} />}
+    {uploadMode && session && <KnowledgeUploadDialog mode={uploadMode} session={session} activeVentureId={ventureId} initialFiles={droppedFiles} onClose={() => { setUploadMode(null); setDroppedFiles([]); }} onComplete={({ failed }) => { setRevision((value) => value + 1); setResult(failed ? `Some files uploaded; ${failed} ${failed === 1 ? "file" : "files"} failed. Check the upload list for details.` : "Upload complete. Markdown and text become draft records; other files stay private to their venture."); }} />}
   </div>;
 }

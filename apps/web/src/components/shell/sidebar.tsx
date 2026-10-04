@@ -33,8 +33,8 @@ const NEW_VENTURE = "__new-venture__";
 const desktopQuery = "(min-width: 1024px)";
 const watchDesktop = (onChange: () => void) => { const query = window.matchMedia(desktopQuery); query.addEventListener("change", onChange); return () => query.removeEventListener("change", onChange); };
 type Props = { collapsed: boolean; instant?: boolean; mobileOpen: boolean; immersive: boolean; onCloseMobile: () => void; onOpenChat: (href: string, event: MouseEvent<HTMLAnchorElement>) => void };
-// Decision 1B: the active pill glides between items with a strong in-out curve.
-const GLIDE = "transform 180ms cubic-bezier(0.77, 0, 0.175, 1), height 180ms cubic-bezier(0.77, 0, 0.175, 1)";
+// Decision 1B: the active pill glides between items (180 ms, strong ease-out).
+const GLIDE = "transform 180ms cubic-bezier(0.23, 1, 0.32, 1), height 180ms cubic-bezier(0.23, 1, 0.32, 1)";
 const plainClick = (event: MouseEvent<HTMLAnchorElement>) => event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 
 export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onCloseMobile, onOpenChat }: Props) {

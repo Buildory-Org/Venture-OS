@@ -1,7 +1,7 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
-import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import remarkGfm from "remark-gfm";
 
 export type MarkdownView = "rendered" | "raw";
@@ -12,8 +12,9 @@ export function MarkdownViewToggle({ value, onChange }: { value: MarkdownView; o
 }
 
 export function MarkdownBody({ markdown, view }: { markdown: string; view: MarkdownView }) {
-  if (view === "raw") return <pre key="raw" className="vso-fade-enter whitespace-pre-wrap break-words font-mono text-sm leading-7 text-neutral-800">{markdown}</pre>;
-  return <div key="rendered" className="vso-fade-enter knowledge-markdown text-neutral-800"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{
+  const motion = useTabMotion(view, ["rendered", "raw"]);
+  if (view === "raw") return <pre key="raw" style={motion.style} className="vso-tab-enter whitespace-pre-wrap break-words font-mono text-sm leading-7 text-neutral-800">{markdown}</pre>;
+  return <div key="rendered" style={motion.style} className="vso-tab-enter knowledge-markdown text-neutral-800"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{
     a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
     // Markdown sources can contain arbitrary image URLs and have no known dimensions.
     // eslint-disable-next-line @next/next/no-img-element

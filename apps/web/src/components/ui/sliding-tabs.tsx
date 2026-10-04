@@ -1,9 +1,16 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 
 export type SlidingTab = { key: string; label: React.ReactNode; badge?: number };
+
+/** Decision 2C: give the content under a set of tabs `vso-tab-enter` plus the direction of the switch (key the content by tab). */
+export function useTabMotion(active: string, keys: readonly string[]) {
+  const [last, setLast] = useState({ active, dir: 0 });
+  if (last.active !== active) setLast({ active, dir: Math.sign(keys.indexOf(active) - keys.indexOf(last.active)) });
+  return { className: "vso-tab-enter", style: { "--tab-dir": last.dir } as React.CSSProperties };
+}
 
 export function SlidingTabs({
   tabs,

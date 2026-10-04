@@ -11,7 +11,7 @@ import { replayAnimation } from "@/lib/motion";
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { ArrowLeft, ArrowUpRight, ChevronLeft, ChevronRight, Download, Eye, FileText, Paperclip, Plus, X } from "@/components/ui/icons";
-import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import { KnowledgeDocumentTile } from "@/components/studio/knowledge-document-tile";
 import Link from "next/link";
 import type { Message, Task } from "@venture-studio/contracts";
@@ -50,6 +50,7 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
   onOpenMessage?: (message: { id: string; channelId: string }) => void;
 }) {
   const router = useRouter();
+  const tabMotion = useTabMotion(tab, tabs);
   const groupId = group?.id ?? "";
   const [tasks, setTasks] = useState<Page<Task>>(emptyPage);
   const [files, setFiles] = useState<Page<FileItem>>(emptyPage);
@@ -300,7 +301,7 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
       const changed = await updateLiveMessageSave(item.id, false);
       // The row folds away, then leaves the list; Undo saves it again.
       setLeavingSaved((current) => new Set(current).add(item.id));
-      window.setTimeout(() => { setSaved((value) => ({ ...value, items: value.items.filter((message) => message.id !== item.id) })); setLeavingSaved((current) => { const next = new Set(current); next.delete(item.id); return next; }); }, 220);
+      window.setTimeout(() => { setSaved((value) => ({ ...value, items: value.items.filter((message) => message.id !== item.id) })); setLeavingSaved((current) => { const next = new Set(current); next.delete(item.id); return next; }); }, 320);
       onSavedChange(changed);
       toast({ title: "Removed from saved", action: { label: "Undo", onClick: () => { void updateLiveMessageSave(item.id, true).then((restored) => { onSavedChange(restored); setSavedRevision((value) => value + 1); }).catch((cause: unknown) => toast({ tone: "error", title: "Could not save it again", body: errorText(cause) })); } } });
     } catch (cause) { setActionError(errorText(cause)); }
@@ -311,7 +312,7 @@ export function GroupWorkspaceSheet({ tab, onTabChange, onClose, ventureId, vent
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--color-neutral-200)] px-4 py-3 sm:px-6"><div className="min-w-0"><h2 className="text-sm font-semibold text-[var(--color-neutral-800)]">Group workspace</h2><p className="truncate text-[11px] text-[var(--color-neutral-400)]">{group ? `${ventureName} · ${group.name}` : "Choose a group"}</p></div><button type="button" onClick={onClose} aria-label="Close group workspace" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-500)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-neutral-100)] active:scale-[0.94]"><X size={18} /></button></header>
     <SlidingTabs tabs={tabs.map((item) => ({ key: item, label: item === "saved" ? "Saved messages" : item }))} active={tab} onChange={(key) => { setActionError(""); onTabChange(key as WorkspaceTab); }} label="Group workspace views" fitContent className="mx-3 my-2 shrink-0 self-start !border !border-[var(--color-neutral-200)] !bg-[var(--color-neutral-100)] !shadow-none sm:mx-5" />
     <Notice tone="error" message={actionError} onDismiss={() => setActionError("")} className="mx-4 pt-2 sm:mx-6" />
-    <div key={tab} role="tabpanel" aria-label={tab === "saved" ? "Saved messages" : label(tab)} className="vso-fade-enter thin-scroll min-h-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
+    <div key={tab} role="tabpanel" aria-label={tab === "saved" ? "Saved messages" : label(tab)} style={tabMotion.style} className={clsx(tabMotion.className, "thin-scroll min-h-0 flex-1 overflow-auto px-4 py-4 sm:px-6")}>
       {!group ? <p className="py-16 text-center text-sm text-[var(--color-neutral-400)]">Choose a group in the navigator to see its workspace.</p> : tab === "kanban" ? <>
         <div className="mb-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--color-neutral-400)]">{currentTasks.items.length} task{currentTasks.items.length === 1 ? "" : "s"} in {group.name}</p><RefreshButton busy={currentTasks.loading} onClick={() => setTaskRevision((value) => value + 1)} label="Refresh tasks" /></div>
         {currentTasks.loading && !currentTasks.items.length ? <div role="status" aria-label="Loading group tasks" className="grid grid-flow-col auto-cols-[minmax(210px,240px)] gap-3 overflow-hidden pb-3">{[0, 1, 2, 3].map((index) => <div key={index} className="min-h-48 space-y-2 rounded-xl border border-[var(--color-neutral-100)] p-3"><span className="vso-skeleton mb-3 h-3 w-20" /><span className="vso-skeleton h-20 rounded-lg" /><span className="vso-skeleton h-16 rounded-lg opacity-70" /></div>)}</div> : currentTasks.error ? <p role="alert" className="py-12 text-center text-sm text-red-700">{currentTasks.error}</p> : <>

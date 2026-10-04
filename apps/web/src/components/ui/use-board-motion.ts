@@ -1,17 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { prefersReducedMotion } from "@/lib/motion";
+import { prefersReducedMotion, springTiming } from "@/lib/motion";
 
-// Motion review decisions 3 and 4 (option B): cards glide between columns; a dragged card lifts slightly and lands smoothly.
-const LIFT = "scale(1.03)";
+// Motion review decisions 3C and 4C: cards glide between columns on a soft spring (bounce 0.25); a dragged card lifts
+// and tilts (scale 1.04, -2.5°) and springs into place when dropped, unwinding the tilt as it lands.
+const LIFT = "scale(1.04) rotate(-2.5deg)";
 const LIFT_SHADOW = "0 18px 40px -12px rgb(16 24 40 / .35), 0 4px 10px rgb(16 24 40 / .08)";
-const GLIDE: KeyframeAnimationOptions = { duration: 320, easing: "cubic-bezier(0.77, 0, 0.175, 1)" };
-const SETTLE: KeyframeAnimationOptions = { duration: 220, easing: "cubic-bezier(0.23, 1, 0.32, 1)" };
+const glide = () => springTiming(0.25, 0.42);
+const settle = () => springTiming(0.35, 0.4);
 const DRAG_THRESHOLD = 5;
 
 type Snapshot = { rects: Map<string, DOMRect>; dropped?: string };
-type Gesture = { id: string; pointerId: number; startX: number; startY: number; card: HTMLElement; ghost: HTMLElement | null; offsetX: number; offsetY: number; over: string | null; scroll: number };
+type Gesture = { id: string; pointerId: number; startX: number; startY: number; card: HTMLElement; ghost: HTMLElement | null; offsetX: number; offsetY: number; x: number; y: number; over: string | null; scroll: number };
 
 const interactive = (target: EventTarget | null) => target instanceof Element && !!target.closest('button, input, select, textarea, [role="combobox"], [data-no-drag]');
 
@@ -51,7 +52,8 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
       const dx = from.left - to.left, dy = from.top - to.top;
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
       element.style.zIndex = "5";
-      const animation = element.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], id === before.dropped ? SETTLE : GLIDE);
+      const dropped = id === before.dropped;
+      const animation = element.animate([{ transform: `translate(${dx}px, ${dy}px)${dropped ? ` ${LIFT}` : ""}` }, { transform: "none" }], dropped ? settle() : glide());
       const reset = () => { element.style.zIndex = ""; };
       animation.onfinish = reset;
       animation.oncancel = reset;
@@ -70,7 +72,8 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
     const stop = (event: Event) => { event.stopPropagation(); event.preventDefault(); };
     window.addEventListener("click", stop, { capture: true, once: true });
     window.setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
-    const ghostRect = ghost.getBoundingClientRect();
+    // The ghost's own box (before its tilt), so the landing card starts exactly where the ghost is.
+    const ghostRect = new DOMRect(current.x, current.y, ghost.offsetWidth, ghost.offsetHeight);
     const column = current.over as Column | null;
     if (accept && column) {
       capture({ id: current.id, rect: ghostRect });
@@ -81,9 +84,10 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
     const home = current.card.getBoundingClientRect();
     if (prefersReducedMotion()) { ghost.remove(); setDraggingId(""); return; }
     const done = () => { if (!ghost.isConnected) return; ghost.remove(); setDraggingId(""); };
-    ghost.animate([{ transform: ghost.style.transform }, { transform: `translate(${home.left}px, ${home.top}px)` }], SETTLE).onfinish = done;
+    const back = settle();
+    ghost.animate([{ transform: ghost.style.transform }, { transform: `translate(${home.left}px, ${home.top}px)` }], back).onfinish = done;
     // Animations pause in hidden tabs; never leave the copy behind.
-    window.setTimeout(done, Number(SETTLE.duration) + 120);
+    window.setTimeout(done, Number(back.duration) + 120);
   }, [capture]);
 
   useEffect(() => () => {
@@ -108,6 +112,7 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
         Object.assign(ghost.style, { position: "fixed", left: "0", top: "0", margin: "0", width: `${rect.width}px`, zIndex: "90", pointerEvents: "none", boxShadow: LIFT_SHADOW, cursor: "grabbing", transition: "none" });
         current.offsetX = current.startX - rect.left;
         current.offsetY = current.startY - rect.top;
+        current.x = rect.left; current.y = rect.top;
         ghost.style.transform = `translate(${rect.left}px, ${rect.top}px) ${LIFT}`;
         document.body.append(ghost);
         if (!prefersReducedMotion()) ghost.animate([{ transform: `translate(${rect.left}px, ${rect.top}px)`, boxShadow: "none" }, { transform: ghost.style.transform, boxShadow: LIFT_SHADOW }], { duration: 150, easing: "cubic-bezier(0.23, 1, 0.32, 1)" });
@@ -116,7 +121,8 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
         setDraggingId(current.id);
       }
       event.preventDefault();
-      current.ghost.style.transform = `translate(${event.clientX - current.offsetX}px, ${event.clientY - current.offsetY}px) ${LIFT}`;
+      current.x = event.clientX - current.offsetX; current.y = event.clientY - current.offsetY;
+      current.ghost.style.transform = `translate(${current.x}px, ${current.y}px) ${LIFT}`;
       const over = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-drop-column]")?.dataset.dropColumn ?? null;
       if (over !== current.over) { current.over = over; setOverColumn(over as Column | null); }
       // Scroll the page (or a sideways board) while dragging near its edge.
@@ -162,7 +168,7 @@ export function useBoardMotion<Column extends string>(onDrop: (id: string, colum
           if (event.button !== 0 || event.pointerType === "touch" || gesture.current || interactive(event.target)) return;
           // Stops text selection and the browser's own link drag; the click still happens if the pointer does not move.
           event.preventDefault();
-          gesture.current = { id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, card: event.currentTarget, ghost: null, offsetX: 0, offsetY: 0, over: null, scroll: 0 };
+          gesture.current = { id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, card: event.currentTarget, ghost: null, offsetX: 0, offsetY: 0, x: 0, y: 0, over: null, scroll: 0 };
         },
       } : {}),
     };

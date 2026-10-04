@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 import { Bell, Check } from "@/components/ui/icons";
-import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import { dismissToast, toast } from "@/components/ui/toast";
 import { getLiveNotificationPreferences, getLiveReminder, listLiveNotifications, listLiveReminders, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
 import { notificationHref, notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
@@ -30,6 +30,7 @@ export function LiveNotificationsScreen() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const filterMotion = useTabMotion(unreadOnly ? "unread" : "all", ["all", "unread"]);
   const [revision, setRevision] = useState(0);
   const [linkedReminderId, setLinkedReminderId] = useState("");
   const [linkedReminderError, setLinkedReminderError] = useState("");
@@ -101,7 +102,7 @@ export function LiveNotificationsScreen() {
   function markRead(item: Notification) {
     setIn(setPendingReads, item.id, true);
     // In the Unread view the row folds away (decision 16B); in All it simply turns read.
-    if (unreadOnly) { setIn(setLeaving, item.id, true); window.setTimeout(() => setIn(setLeaving, item.id, false), 230); }
+    if (unreadOnly) { setIn(setLeaving, item.id, true); window.setTimeout(() => setIn(setLeaving, item.id, false), 320); }
     awaitingRead.current.add(item.id);
     toast({ id: `read-${item.id}`, title: "Marked as read", body: item.title, duration: UNDO_MS, action: { label: "Undo", onClick: () => undefined }, onClose: (reason) => {
       if (reason === "dismissed") { commitRead(item.id); return; }
@@ -155,7 +156,7 @@ export function LiveNotificationsScreen() {
     <Notice tone="error" message={linkedReminderError} onDismiss={() => setLinkedReminderError("")} className="pb-4" />
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">
       <Panel><div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 p-3"><SlidingTabs fitContent label="Notification filter" active={unreadOnly ? "unread" : "all"} onChange={(key) => setUnreadOnly(key === "unread")} tabs={[{ key: "all", label: "All" }, { key: "unread", label: "Unread", ...(unreadCount ? { badge: unreadCount } : {}) }]} />{unreadCount > 0 && <button type="button" disabled={busyId === "all"} onClick={() => void markAll()} className="vso-fade-enter ml-auto inline-flex min-h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-[var(--color-primary-700)] transition-[background-color,transform] duration-150 hover:bg-primary-50 active:scale-[0.97] disabled:opacity-40"><Check size={15} />Mark all read</button>}</div>
-        {loading && !items.length ? <SkeletonRows rows={4} label="Loading notifications" /> : visible.length ? <div key={unreadOnly ? "unread" : "all"} className="vso-stagger-in">{visible.map((item) => {
+        {loading && !items.length ? <SkeletonRows rows={4} label="Loading notifications" /> : visible.length ? <div key={unreadOnly ? "unread" : "all"} className={filterMotion.className} style={filterMotion.style}>{visible.map((item) => {
           const reminderId = item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
           return <div key={item.id} data-open={!leaving.has(item.id)} className="vso-collapse border-b border-neutral-100 last:border-b-0"><div><article className={clsx("flex flex-wrap items-start gap-3 p-4 transition-colors duration-300", !item.readAt && "bg-primary-50/40")}><span className="grid h-9 w-9 place-items-center rounded-xl bg-primary-50 text-primary-700"><Bell size={17} /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-neutral-800">{item.title}</p><Badge tone={item.readAt ? "neutral" : "blue"}>{item.readAt ? "Read" : "Unread"}</Badge></div><p className="mt-1 text-sm text-neutral-500">{item.body}</p><p className="mt-1 text-xs text-neutral-400">{stamp(item.createdAt)} · {item.type}</p></div><div className="flex flex-wrap gap-2">{notificationHref(item).href !== "/notifications/live" && <Link href={notificationHref(item).href} className={secondaryClass}>{notificationHref(item).label}</Link>}{!item.readAt && <button type="button" disabled={busyId === item.id} onClick={() => markRead(item)} className={secondaryClass}>Mark read</button>}{reminderId && <Select aria-label={`Snooze ${item.title}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(reminderId, value === "never" ? "never" : Number(value) as 10 | 20 | 30), snoozeText(value)); event.currentTarget.value = ""; }} className="min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Cancel reminder</option></Select>}</div></article></div></div>;
         })}</div> : <Empty title={unreadOnly ? "All caught up" : "Inbox clear"} body={unreadOnly ? "You have no unread notifications." : "No notifications in this view."} action={unreadOnly && items.length ? <button type="button" onClick={() => setUnreadOnly(false)} className={secondaryClass}>Show all</button> : undefined} />}

@@ -24,12 +24,13 @@ const sticky = (item: Notification) => item.type === "reminder" || item.type ===
 export function LiveNotificationBell() {
   const unread = useSyncExternalStore(subscribeNotificationSnapshot, getNotificationUnread, () => 0);
   const badge = useRef<HTMLSpanElement>(null);
+  const bell = useRef<HTMLSpanElement>(null);
   const previous = useRef(unread);
   useEffect(() => {
-    if (unread > previous.current) replayAnimation(badge.current, "vso-badge-pop");
+    if (unread > previous.current) { replayAnimation(badge.current, "vso-badge-pop"); replayAnimation(bell.current, "vso-bell-ring"); }
     previous.current = unread;
   }, [unread]);
-  return <Link data-notification-bell href="/notifications/live" aria-label={`Open notifications, ${unread}${unread >= 100 ? " or more" : ""} unread`} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"><Bell size={18} /><span ref={badge} aria-hidden="true" className={clsx("absolute -right-1 -top-0.5 grid h-4 min-w-4 place-items-center rounded-md bg-[var(--color-primary-700)] px-0.5 text-[9px] font-bold leading-none text-white tnum transition-[opacity,transform] duration-200", unread > 0 ? "scale-100 opacity-100" : "scale-75 opacity-0")}>{unread >= 100 ? "99+" : unread || ""}</span></Link>;
+  return <Link data-notification-bell href="/notifications/live" aria-label={`Open notifications, ${unread}${unread >= 100 ? " or more" : ""} unread`} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"><span ref={bell} className="grid"><Bell size={18} /></span><span ref={badge} aria-hidden="true" className={clsx("absolute -right-1 -top-0.5 grid h-4 min-w-4 place-items-center rounded-md bg-[var(--color-primary-700)] px-0.5 text-[9px] font-bold leading-none text-white tnum transition-[opacity,transform] duration-200", unread > 0 ? "scale-100 opacity-100" : "scale-75 opacity-0")}>{unread >= 100 ? "99+" : unread || ""}</span></Link>;
 }
 
 /** Prefixes the tab title with the unread count, e.g. "(3) Tasks", and keeps it through route changes. */

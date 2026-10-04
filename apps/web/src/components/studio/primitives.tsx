@@ -15,14 +15,15 @@ export function Panel({ children, className }: { children: React.ReactNode; clas
 export function PanelHead({ title, aside }: { title: string; aside?: React.ReactNode }) { return <div className="flex items-center justify-between gap-3 border-b border-neutral-100 px-5 py-4"><h2 className="text-sm font-bold text-neutral-900">{title}</h2>{aside}</div>; }
 export function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "blue" | "green" | "amber" | "red" | "purple" }) { const tones = { neutral: "bg-neutral-100 text-neutral-600", blue: "bg-primary-50 text-primary-700", green: "bg-success-surface text-success-text", amber: "bg-warning-surface text-warning-text", red: "bg-danger-surface text-danger-text", purple: "bg-ai-surface text-ai-text" }; return <span className={clsx("inline-flex items-center rounded-md px-2 py-1 text-[11px] font-semibold transition-colors duration-200", tones[tone])}>{children}</span>; }
 export function Empty({ title, body, action }: { title: string; body: string; action?: React.ReactNode }) { return <div className="vso-fade-enter px-5 py-12 text-center"><p className="text-sm font-semibold text-neutral-800">{title}</p><p className="mt-1 text-sm text-neutral-500">{body}</p>{action && <div className="mt-4 flex justify-center">{action}</div>}</div>; }
-/** A number that rolls to its new value when it changes (first render is static). */
+const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+/** A number whose digits roll like an odometer when it changes (decision 8C); the first value is static. */
 export function RollingNumber({ value, className }: { value: number | string; className?: string }) {
-  const [shown, setShown] = useState<{ current: number | string; previous: number | string | null; direction: 1 | -1 }>({ current: value, previous: null, direction: 1 });
-  if (shown.current !== value) setShown({ current: value, previous: shown.current, direction: parseFloat(String(value)) >= parseFloat(String(shown.current)) ? 1 : -1 });
-  return <span className={clsx("vso-roll tnum", className)} style={{ "--roll-dir": shown.direction } as React.CSSProperties}>
-    {shown.previous !== null && <span key={`was-${shown.previous}`} aria-hidden="true" className="vso-roll-out" onAnimationEnd={() => setShown((state) => ({ ...state, previous: null }))}>{shown.previous}</span>}
-    <span key={`is-${shown.current}`} className={shown.previous !== null ? "vso-roll-in" : undefined}>{shown.current}</span>
-  </span>;
+  const text = String(value);
+  const chars = [...text];
+  return <span className={clsx("tnum", className)}><span className="sr-only">{text}</span><span aria-hidden="true">
+    {/* Keyed by place from the right, so 9 → 10 rolls the ones digit and adds a tens digit. */}
+    {chars.map((char, index) => <span key={`place-${chars.length - index}`} className={/\d/.test(char) ? "vso-odo-cell" : undefined}>{/\d/.test(char) ? <><span className="vso-odo-ghost">{char}</span><span className="vso-odo-col" style={{ transform: `translateY(${-Number(char) * 10}%)` }}>{DIGITS.map((digit) => <span key={digit}>{digit}</span>)}</span></> : char}</span>)}
+  </span></span>;
 }
 export function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block"><span className="mb-1.5 block text-xs font-semibold text-neutral-600">{label}</span>{children}</label>; }
 

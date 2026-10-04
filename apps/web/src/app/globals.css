@@ -275,7 +275,7 @@
 .vso-fade-enter { animation: vso-fade-in 140ms ease-out both; }
 
 /* Smooth open/close for inline content (banners, confirm rows, fieldsets). Hidden content leaves the tab order once closed. */
-.vso-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows 220ms var(--ease-snappy), opacity 160ms ease-out, visibility 0s linear 220ms; }
+.vso-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: opacity 120ms ease-out, grid-template-rows 180ms var(--ease-snappy) 120ms, visibility 0s linear 300ms; }
 .vso-collapse[data-open="true"] { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows 220ms var(--ease-snappy), opacity 160ms ease-out, visibility 0s; }
 .vso-collapse > * { min-height: 0; overflow: hidden; }
 
@@ -369,15 +369,21 @@
 .vso-icon-swap[data-animate="true"][data-state="in"] { animation: vso-icon-in 260ms var(--ease-snappy) both; }
 .vso-icon-swap[data-animate="true"][data-state="out"] { animation: vso-icon-out 200ms var(--ease-snappy) both; }
 
-/* Changed numbers roll: the new value slides in from below when it rises, from above when it falls (decision 8C). */
-@keyframes vso-roll-in { from { opacity: 0; transform: translateY(calc(var(--roll-dir, 1) * 70%)); } }
-@keyframes vso-roll-out { to { opacity: 0; transform: translateY(calc(var(--roll-dir, 1) * -70%)); } }
-.vso-roll { display: inline-grid; overflow: hidden; vertical-align: bottom; }
-.vso-roll > * { grid-area: 1 / 1; }
-.vso-roll-in { animation: vso-roll-in 320ms var(--ease-snappy) both; }
-.vso-roll-out { animation: vso-roll-out 320ms var(--ease-snappy) both; }
-/* Progress bars slide to a new value but never animate on first paint (decision 9C). */
-.vso-progress { transition: width 500ms var(--ease-in-out-strong, cubic-bezier(0.77, 0, 0.175, 1)); }
+/* Decision 8C: changed numbers roll digit by digit like an odometer (450 ms); the first value just appears.
+   Each digit keeps a hidden copy of itself in flow so baselines line up with the surrounding text. */
+.vso-odo-cell { position: relative; display: inline-block; clip-path: inset(0 -0.25em); }
+.vso-odo-ghost { visibility: hidden; }
+.vso-odo-col { position: absolute; inset: 0 auto auto 0; display: flex; flex-direction: column; transition: transform 450ms var(--ease-in-out-strong, cubic-bezier(0.77, 0, 0.175, 1)); }
+.vso-odo-col > span { display: block; }
+/* Decision 9B: progress bars grow in when they first appear (650 ms) and slide when a value changes. */
+@keyframes vso-grow { from { width: 0; } }
+.vso-progress { animation: vso-grow 650ms var(--ease-snappy) backwards; transition: width 450ms var(--ease-in-out-strong, cubic-bezier(0.77, 0, 0.175, 1)); }
+/* Decision 2C: content under tabs fades in and slides 10 px from the side of the newly chosen tab (200 ms). */
+@keyframes vso-tab-in { from { opacity: 0; transform: translateX(calc(var(--tab-dir, 0) * 10px)); } }
+.vso-tab-enter { animation: vso-tab-in 200ms var(--ease-snappy) backwards; }
+/* Decision 6C: the bell swings when a new notification arrives while its badge pops (620 ms). */
+@keyframes vso-bell-ring { 15% { transform: rotate(-14deg); } 35% { transform: rotate(11deg); } 55% { transform: rotate(-7deg); } 75% { transform: rotate(4deg); } }
+.vso-bell-ring { animation: vso-bell-ring 620ms ease-out; transform-origin: 50% 2px; }
 
 /* Hover lifts only where a mouse can hover. */
 .vso-lift { transition: transform 180ms var(--ease-snappy), box-shadow 180ms var(--ease-snappy), background-color 150ms ease; }
@@ -575,12 +581,13 @@ button {
   .vso-chip-in,
   .vso-tooltip,
   .vso-icon-swap,
-  .vso-roll-in,
+  .vso-progress,
+  .vso-tab-enter,
+  .vso-bell-ring,
   .vso-spinner,
   .vso-stagger > * {
     animation: none !important;
   }
-  .vso-roll-out { display: none; }
   *,
   *::before,
   *::after {

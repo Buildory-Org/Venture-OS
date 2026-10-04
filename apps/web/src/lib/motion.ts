@@ -4,6 +4,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export const prefersReducedMotion = () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+let linearEasing: boolean | null = null;
+/**
+ * A damped spring (Apple-style bounce and perceptual duration in seconds) sampled into a CSS `linear()` easing for
+ * the Web Animations API. Browsers without `linear()` get a strong ease-out of similar length.
+ */
+export function springTiming(bounce: number, perceptual: number): KeyframeAnimationOptions {
+  if (linearEasing === null) { try { linearEasing = CSS.supports("transition-timing-function", "linear(0, 1)"); } catch { linearEasing = false; } }
+  if (!linearEasing) return { duration: Math.round(perceptual * 900), easing: "cubic-bezier(0.23, 1, 0.32, 1)" };
+  const zeta = Math.min(0.95, 1 - bounce);
+  const omega = (2 * Math.PI) / perceptual;
+  const damped = omega * Math.sqrt(1 - zeta * zeta);
+  const at = (t: number) => 1 - Math.exp(-zeta * omega * t) * (Math.cos(damped * t) + ((zeta * omega) / damped) * Math.sin(damped * t));
+  const total = Math.min(1.4, Math.log(1 / 0.002) / (zeta * omega));
+  const points = Array.from({ length: 61 }, (_, index) => index === 60 ? 1 : +at((total * index) / 60).toFixed(4));
+  return { duration: Math.round(total * 1000), easing: `linear(${points.join(", ")})` };
+}
+
 /**
  * Plays an exit animation before closing. The component renders `data-state={state}` (CSS animates
  * `[data-state="closing"]`) and callers keep unmounting it in `onClose`, which runs once the exit finishes.

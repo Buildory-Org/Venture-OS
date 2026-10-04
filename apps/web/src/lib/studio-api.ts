@@ -106,6 +106,14 @@ export async function loadLiveDashboard() {
   };
 }
 
+/** Whether the browser holds a Better Auth session, independent of workspace membership. */
+export async function hasLiveAuthSession(): Promise<boolean> {
+  const response = await fetch("/api/auth/get-session", { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) return false;
+  const session = await response.json().catch(() => null) as { user?: { id?: unknown } } | null;
+  return typeof session?.user?.id === "string";
+}
+
 export async function loadLiveSession() {
   return sessionBootstrapResponseSchema.parse(await request("/v1/session/bootstrap")).data;
 }

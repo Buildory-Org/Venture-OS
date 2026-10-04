@@ -34,6 +34,13 @@ Copy `.env.example` to `.env` and use a MongoDB replica set. Local mode can use 
 
 For Cloudflare R2 development uploads, use a private development bucket and a bucket-scoped Object Read & Write token. Set `FILE_STORAGE=r2`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in the ignored root `.env`; API startup fails if any are missing. Configure bucket CORS for the local web origin (`http://localhost:3011` in the current preview): allow `PUT`, `GET`, and `HEAD`, allow `Content-Type`, and expose `ETag`. Use a separate private bucket and token in production. An actual signed browser upload/download smoke test still requires configured credentials and must not be inferred from local-adapter tests.
 
+### Production settings
+
+- Set `APP_MODE=production` for the API and worker. They refuse to start when `NODE_ENV=production` is set without it, and production mode requires `BETTER_AUTH_SECRET`, public HTTPS `APP_ORIGIN`/`API_ORIGIN`, Resend, VAPID keys (generate with `npx web-push generate-vapid-keys`), R2 storage, and a MongoDB replica set.
+- `npm run build` builds `packages/contracts` and `packages/core` first, then the apps. Start the processes with `npm start --workspace @venture-studio/web`, `@venture-studio/api`, and `@venture-studio/worker`, and run exactly one API instance (realtime fan-out is in-process). Set `VSO_API_ORIGIN` when building the web app, because its API rewrites are fixed at build time. Run `npm run migrate --workspace @venture-studio/api` with the production environment exported.
+- `TRUST_PROXY` controls which `X-Forwarded-For` hops the API trusts for IP rate limits. Leave it unset unless a reverse proxy in front of the web app sets the header: the Next.js rewrite to the API forwards client headers unchanged and adds none. With nginx or Caddy on the same host, use `loopback` (or hop count `1`) and make the proxy overwrite the header with the client address. `true` is rejected in production because the client controls the leftmost entry.
+- Production builds hide the `/demo` prototype; set `NEXT_PUBLIC_ENABLE_DEMO=true` at build time to keep it.
+
 ### External-service development setup
 
 1. In [Cloudflare R2](https://developers.cloudflare.com/r2/buckets/create-buckets/), create a **private development bucket** (for example, `venture-studio-dev`). Do not enable public bucket access. Create an [S3 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** access limited to that bucket. Save the Access Key ID, Secret Access Key, and account S3 endpoint when shown; do not put them in chat or Git.

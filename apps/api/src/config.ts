@@ -23,9 +23,18 @@ const schema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().min(1).optional(),
   LOCAL_UPLOAD_DIR: z.string().default(".data/uploads"),
+  // Express "trust proxy" (e.g. "loopback" behind nginx/Caddy on the same host). Unset trusts no forwarding headers.
+  TRUST_PROXY: z.string().trim().min(1).optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;
+
+/** Express accepts true/false, a hop count, or proxy names/CIDRs such as "loopback". */
+export function trustProxySetting(value: string): boolean | number | string {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const config = schema.parse(source);
@@ -33,6 +42,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   if (config.FILE_STORAGE === "local" && (config.R2_ENDPOINT || config.R2_ACCESS_KEY_ID || config.R2_SECRET_ACCESS_KEY || config.R2_BUCKET)) throw new Error("R2 settings require FILE_STORAGE=r2; storage will not fall back silently");
   if (config.RESEND_API_KEY && config.EMAIL_FROM.includes("example.invalid")) throw new Error("EMAIL_FROM must be a verified Resend sender when RESEND_API_KEY is set");
   if (config.BOOTSTRAP_ADMIN_EMAIL && config.BOOTSTRAP_ADMIN_EMAIL.endsWith("@example.invalid")) throw new Error("BOOTSTRAP_ADMIN_EMAIL must be a real email address");
+  if (config.NODE_ENV === "production" && config.APP_MODE !== "production") throw new Error("NODE_ENV=production requires APP_MODE=production so the production safety checks run");
   if (config.APP_MODE === "production") {
     if (config.ALLOW_DEV_AUTH) throw new Error("ALLOW_DEV_AUTH is forbidden in production");
     if (config.BETTER_AUTH_SECRET.startsWith("local-only")) throw new Error("BETTER_AUTH_SECRET must be configured in production");
@@ -42,6 +52,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     if (!config.RESEND_API_KEY) throw new Error("RESEND_API_KEY is required in production");
     if (!config.VAPID_PUBLIC_KEY) throw new Error("VAPID_PUBLIC_KEY is required in production");
     if (config.FILE_STORAGE !== "r2") throw new Error("FILE_STORAGE=r2 is required in production");
+    if (config.TRUST_PROXY === "true") throw new Error("TRUST_PROXY=true trusts client-supplied X-Forwarded-For; use loopback, a hop count, or the proxy address in production");
   }
   return config;
 }

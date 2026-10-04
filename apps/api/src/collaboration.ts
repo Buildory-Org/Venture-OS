@@ -99,12 +99,12 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     if (!root || root.threadRootId) throw new AppError(400, "BAD_REQUEST", "Thread root must be a top-level message in this channel");
   }
   if (mentioned.length) {
-    const valid = await database.db.collection("memberships").countDocuments({ workspaceId: actor.membership.workspaceId, userId: { $in: mentioned }, status: "active", ventureIds: channel.ventureId, groupIds: channel.groupId });
+    const valid = await database.db.collection("memberships").countDocuments({ workspaceId: actor.membership.workspaceId, userId: { $in: mentioned }, status: "active", $or: [{ role: "admin" }, { ventureIds: channel.ventureId, groupIds: channel.groupId }] });
     if (valid !== mentioned.length) throw new AppError(400, "BAD_REQUEST", "Every mention must be an active member of this venture and group");
   }
   const attachments = await messageAttachments(database.db, actor, parsed.attachmentFileIds, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) });
-  const memberships = await database.db.collection("memberships").find({ workspaceId: actor.membership.workspaceId, status: "active", $or: [{ role: "admin" }, { ventureIds: String(channel.ventureId), groupIds: String(channel.groupId) }] }).project({ userId: 1 }).toArray();
-  const recipients = [...new Set(memberships.map((membership) => String(membership.userId)).filter((userId) => userId !== actor.id))];
+  // Channel messages notify only validated @mentions; ordinary messages surface in the channel itself.
+  const recipients = mentioned.filter((userId) => userId !== actor.id);
   const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
   const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
@@ -115,10 +115,8 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
       if (recipients.length) {
         const notifiedAt = new Date();
         await database.db.collection("notification_outbox").bulkWrite(recipients.map((userId) => {
-          const isMention = mentioned.includes(userId);
-          const type = isMention ? "mention" : "message";
-          const idempotencyKey = `${type}:${message._id}:${userId}`;
-          return { updateOne: { filter: { idempotencyKey }, update: { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId, type, title: isMention ? "Channel mention" : "Channel update", body: "Open the channel to view the new message.", resourceType: "message", resourceId: message._id, chatKind: "channel", chatId: channelId, idempotencyKey, state: "pending", attempts: 0, nextAttemptAt: notifiedAt, createdAt: notifiedAt, updatedAt: notifiedAt } }, upsert: true } };
+          const idempotencyKey = `mention:${message._id}:${userId}`;
+          return { updateOne: { filter: { idempotencyKey }, update: { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId, type: "mention", title: "Channel mention", body: "Open the channel to view the new message.", resourceType: "message", resourceId: message._id, chatKind: "channel", chatId: channelId, idempotencyKey, state: "pending", attempts: 0, nextAttemptAt: notifiedAt, createdAt: notifiedAt, updatedAt: notifiedAt } }, upsert: true } };
         }), { session });
       }
       await audit(database.db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: interfaceChannel, action: "message.create", objectType: "message", objectId: message._id, ventureId: String(channel.ventureId), result: "success" }, session);

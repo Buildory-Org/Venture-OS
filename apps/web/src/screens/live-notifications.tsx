@@ -13,7 +13,7 @@ type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 type Preferences = Awaited<ReturnType<typeof getLiveNotificationPreferences>>;
 type Reminder = Awaited<ReturnType<typeof listLiveReminders>>["items"][number];
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-const preferenceLabels: Record<keyof Preferences, string> = { email: "Email delivery", webPush: "Web push", mentions: "Mentions", messages: "Messages", assignments: "Assignments", reminders: "Reminders" };
+const preferenceLabels: Record<keyof Preferences, string> = { email: "Email delivery", webPush: "Web push", mentions: "Mentions", messages: "Direct messages", assignments: "Assignments", reminders: "Reminders" };
 
 export function LiveNotificationsScreen() {
   const [items, setItems] = useState<Notification[]>([]);

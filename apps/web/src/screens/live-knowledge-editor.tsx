@@ -92,7 +92,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
     try {
       const latest = await getLiveDocument(documentId);
       if (latest.version.id !== detail.version.id) throw new Error("A newer version was saved while you were editing. Copy your changes before reloading this editor.");
-      await updateLiveDocument(documentId, { markdown, changeSummary: summary.trim(), ...(sourceUri ? { sourceUri } : {}) });
+      await updateLiveDocument(documentId, { markdown, changeSummary: summary.trim(), baseVersionId: detail.version.id, ...(sourceUri ? { sourceUri } : {}) });
       router.push(`/knowledge/live?doc=${encodeURIComponent(documentId)}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save this document.");

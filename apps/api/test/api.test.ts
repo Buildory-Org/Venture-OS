@@ -6,7 +6,7 @@ import test from "node:test";
 import { io as socketClient } from "socket.io-client";
 import { ObjectId } from "mongodb";
 import sharp from "sharp";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, trustProxySetting } from "../src/config.js";
 import { connectDatabase, type AppDb } from "../src/db.js";
 import { AppError } from "../src/errors.js";
 import { rateLimit } from "../src/middleware.js";
@@ -24,6 +24,11 @@ import type { Request, Response } from "express";
 test("production configuration fails closed without delivery and storage credentials", () => {
   assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "https://app.example.com", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /RESEND_API_KEY/);
   assert.equal(loadConfig({}).EMAIL_FROM, "Venture Studio <noreply@example.invalid>");
+  // NODE_ENV=production alone must not silently skip the production checks.
+  assert.throws(() => loadConfig({ NODE_ENV: "production" }), /APP_MODE=production/);
+  assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "https://app.example.com", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32), RESEND_API_KEY: "test-only", EMAIL_FROM: "Studio <invites@example.com>", VAPID_PUBLIC_KEY: "test-only", FILE_STORAGE: "r2", R2_ENDPOINT: "https://r2.example.com", R2_ACCESS_KEY_ID: "id", R2_SECRET_ACCESS_KEY: "secret", R2_BUCKET: "bucket", TRUST_PROXY: "true" }), /TRUST_PROXY=true/);
+  assert.equal(loadConfig({ NODE_ENV: "development" }).TRUST_PROXY, undefined);
+  assert.deepEqual(["loopback", "1", "true", "false", "10.0.0.0/8, loopback"].map(trustProxySetting), ["loopback", 1, true, false, "10.0.0.0/8, loopback"]);
   assert.equal(loadConfig({ RESEND_API_KEY: "test-only", EMAIL_FROM: "Studio <invites@example.com>" }).EMAIL_FROM, "Studio <invites@example.com>");
   assert.equal(loadConfig({ RESEND_API_KEY: "test-only", EMAIL_FROM: "invites@example.com" }).EMAIL_FROM, "invites@example.com");
   assert.throws(() => loadConfig({ RESEND_API_KEY: "test-only" }), /EMAIL_FROM/);
@@ -475,7 +480,10 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(mentioned.status, 201, await mentioned.clone().text());
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ type: "mention", userId: "user-ashutosh" }), 1);
     const mentionedId = ((await mentioned.json()) as any).data.message.id;
-    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-peer", chatKind: "channel", chatId: "channel-a" }), 1);
+    // Mentions-only: an unmentioned group peer is not notified; the mention keeps chat routing for push suppression.
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-peer" }), 0);
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-ashutosh", type: "mention", chatKind: "channel", chatId: "channel-a" }), 1);
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-test" }), 0);
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-hidden" }), 0);
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-b" }), 0);
     await database.db.collection("notifications").insertMany([
@@ -1285,6 +1293,40 @@ test("real Mongo regressions: canonical dates, safe evidence, latest pages, and 
     const legacyUpdate = await fetch(`${origin}/v1/opportunities/opportunity-legacy-null`, { method: "PATCH", headers, body: JSON.stringify({ stage: "qualified" }) });
     assert.equal(legacyUpdate.status, 200, await legacyUpdate.clone().text());
     assert.equal(opportunitySchema.safeParse(((await legacyUpdate.json()) as any).data).success, true);
+
+    // Knowledge edits based on an older version are rejected instead of silently overwriting the newer one.
+    const doc = await post("/v1/documents", { ventureId: "venture-a", title: "Concurrency", markdown: "# One", evidenceClass: "verified_fact", sensitivity: "team" });
+    assert.equal(doc.status, 201, await doc.clone().text());
+    const docBody = (await doc.json()) as any;
+    const docId = docBody.data.id;
+    const firstVersionId = docBody.data.currentVersionId;
+    const putDocument = (body: unknown) => fetch(`${origin}/v1/documents/${docId}`, { method: "PUT", headers, body: JSON.stringify(body) });
+    const firstSave = await putDocument({ markdown: "# Two", changeSummary: "First editor", baseVersionId: firstVersionId });
+    assert.equal(firstSave.status, 200, await firstSave.clone().text());
+    const secondVersionId = ((await firstSave.json()) as any).data.id;
+    const staleSave = await putDocument({ markdown: "# Stale", changeSummary: "Second editor", baseVersionId: firstVersionId });
+    assert.equal(staleSave.status, 409);
+    assert.equal(((await staleSave.json()) as any).error.code, "CONFLICT");
+    assert.equal((await db.collection("documents").findOne({ _id: docId }))?.currentVersionId, secondVersionId);
+    assert.equal(await db.collection("document_versions").countDocuments({ documentId: docId }), 2);
+    const racing = await Promise.all([putDocument({ markdown: "# A", changeSummary: "Race A", baseVersionId: secondVersionId }), putDocument({ markdown: "# B", changeSummary: "Race B", baseVersionId: secondVersionId })]);
+    assert.deepEqual(racing.map((response) => response.status).sort(), [200, 409]);
+    assert.equal(await db.collection("document_versions").countDocuments({ documentId: docId }), 3);
+    const unversionedSave = await putDocument({ markdown: "# Without base", changeSummary: "Older client" });
+    assert.equal(unversionedSave.status, 200, await unversionedSave.clone().text());
+    assert.equal(((await unversionedSave.json()) as any).data.version, 4);
+
+    // Admins are in scope for every channel, so they can be @mentioned and notified; non-members still cannot.
+    const adminMention = await post("/v1/channels/channel-a/messages", { body: "Need a decision @admin", mentionUserIds: ["user-admin"], clientId: "admin-mention-0001" });
+    assert.equal(adminMention.status, 201, await adminMention.clone().text());
+    const adminMentionId = ((await adminMention.json()) as any).data.message.id;
+    assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: adminMentionId, userId: "user-admin", type: "mention", chatKind: "channel", chatId: "channel-a" }), 1);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: adminMentionId, userId: "user-lead" }), 0);
+    assert.equal((await post("/v1/channels/channel-a/messages", { body: "Hello @ghost", mentionUserIds: ["user-ghost"], clientId: "ghost-mention-0001" })).status, 400);
+
+    // Blank Markdown is a validation error rather than a 500 from an empty chunk insert.
+    assert.equal((await post("/v1/documents", { ventureId: "venture-a", title: "Blank", markdown: "  \n\n ", evidenceClass: "verified_fact", sensitivity: "team" })).status, 400);
+    assert.equal((await putDocument({ markdown: " \n ", changeSummary: "Blank" })).status, 400);
 
     // MCP venture status stays inside the caller's workspace even when another workspace reuses a venture ID.
     await db.collection("outcomes").insertOne({ _id: "outcome-foreign", workspaceId: "workspace-other", ventureId: "venture-a", title: "Foreign outcome", status: "active" });

@@ -1,7 +1,7 @@
 import express from "express";
 import { toNodeHandler } from "better-auth/node";
 import type { Database } from "./db.js";
-import type { AppConfig } from "./config.js";
+import { trustProxySetting, type AppConfig } from "./config.js";
 import type { Auth } from "./auth.js";
 import type { ObjectStore } from "./storage.js";
 import { LocalObjectStore } from "./storage.js";
@@ -22,6 +22,7 @@ import { firstAdminRoutes } from "./routes/first-admin.js";
 
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
   const app = express();
+  if (config.TRUST_PROXY) app.set("trust proxy", trustProxySetting(config.TRUST_PROXY));
   const resolveIdentity = createIdentityResolver(auth, database.db, config);
   const resolveActor = createActorResolver(auth, database.db, config);
   app.use(requestContext);

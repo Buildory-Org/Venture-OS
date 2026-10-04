@@ -10,9 +10,10 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "build:packages": "npm run build --workspace @venture-studio/contracts && npm run build --workspace @venture-studio/core",
+    "build": "npm run build:packages && npm run build --workspace @venture-studio/api --workspace @venture-studio/worker --workspace @venture-studio/web",
+    "typecheck": "npm run build:packages && npm run typecheck --workspaces --if-present",
+    "test": "npm run build:packages && npm run test --workspaces --if-present",
     "smoke:backend": "npm run build --workspace @venture-studio/contracts && npm run build --workspace @venture-studio/core && npm run test --workspace @venture-studio/core && npm run test --workspace @venture-studio/api && npm run test --workspace @venture-studio/worker && npm run typecheck --workspace @venture-studio/api && npm run typecheck --workspace @venture-studio/worker",
     "dev:web": "npm run dev --workspace @venture-studio/web",
     "build:web": "npm run build --workspace @venture-studio/web",

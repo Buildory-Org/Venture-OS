@@ -64,14 +64,20 @@ export function knowledgeRoutes(database: Database): Router {
     const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
     if (!document.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may edit workspace-wide knowledge");
     if (!can(actor.membership, "knowledge:write", { ventureId: document.ventureId ? String(document.ventureId) : undefined })) throw new AppError(403, "FORBIDDEN", "You cannot edit this document");
-    const last = await db.collection("document_versions").find({ documentId: document._id }).sort({ version: -1 }).limit(1).next();
     const now = new Date();
     const versionId = randomUUID();
-    const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: input.changeSummary, ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), createdBy: actor.id, createdAt: now };
+    let version = {} as AppDocument;
+    const stale = () => new AppError(409, "CONFLICT", "This document was changed by someone else since you opened it. Reload to see the latest version before saving.");
     await atomic(database, async (session) => {
+      // Read and number inside the transaction so concurrent saves cannot share a version number or silently overwrite each other.
+      const current = await db.collection("documents").findOne({ _id: document._id }, { session });
+      if (!current || (input.baseVersionId && current.currentVersionId !== input.baseVersionId)) throw stale();
+      const last = await db.collection("document_versions").find({ documentId: document._id }, { session }).sort({ version: -1 }).limit(1).next();
+      version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: input.changeSummary, ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), createdBy: actor.id, createdAt: now };
       await db.collection("document_versions").insertOne(version, { session });
       await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(document.ventureId ? { ventureId: document.ventureId } : {}), documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
-      await db.collection("documents").updateOne({ _id: document._id }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now } }, { session });
+      const moved = await db.collection("documents").updateOne({ _id: document._id, currentVersionId: current.currentVersionId }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now } }, { session });
+      if (!moved.modifiedCount) throw stale();
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.version.create", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" }, session);
     });
     res.json({ ok: true, data: documentVersionJson(version) });

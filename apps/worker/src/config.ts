@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const schema = z.object({
+  NODE_ENV: z.string().optional(),
   APP_MODE: z.enum(["local", "production"]).default("local"),
   MONGODB_URI: z.string().min(1).default("mongodb://127.0.0.1:27017/venture_studio"),
   MONGODB_DB: z.string().min(1).default("venture_studio"),
@@ -15,6 +16,7 @@ const schema = z.object({
 export type WorkerConfig = z.infer<typeof schema>;
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const value = schema.parse(source);
+  if (value.NODE_ENV === "production" && value.APP_MODE !== "production") throw new Error("NODE_ENV=production requires APP_MODE=production so the production safety checks run");
   if (value.APP_MODE === "production" && (!value.RESEND_API_KEY || !value.VAPID_PUBLIC_KEY || !value.VAPID_PRIVATE_KEY)) throw new Error("Production notification credentials are required");
   return value;
 }

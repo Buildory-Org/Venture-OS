@@ -3,6 +3,13 @@ import test from "node:test";
 import { MongoClient } from "mongodb";
 import { reminderTransition } from "../src/rules.js";
 import { Worker } from "../src/worker.js";
+import { loadConfig } from "../src/config.js";
+
+test("production NODE_ENV requires APP_MODE=production and its notification credentials", () => {
+  assert.throws(() => loadConfig({ NODE_ENV: "production" }), /APP_MODE=production/);
+  assert.throws(() => loadConfig({ NODE_ENV: "production", APP_MODE: "production" }), /notification credentials/);
+  assert.equal(loadConfig({ NODE_ENV: "development" }).APP_MODE, "local");
+});
 
 test("an unstarted task repeats on the reminder cadence, independent of delivery retry", () => {
   const now = new Date("2026-09-23T10:00:00.000Z");

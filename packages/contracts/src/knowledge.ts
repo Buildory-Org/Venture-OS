@@ -18,14 +18,17 @@ export const documentVersionSchema = z.object({
   createdBy: idSchema, createdAt: isoDateSchema, sourceUri: z.url().optional(),
 });
 
+const markdownSchema = z.string().max(2_000_000).refine((value) => value.trim().length > 0, "Document content cannot be blank");
 export const createDocumentSchema = z.object({
-  ventureId: idSchema.optional(), title: z.string().trim().min(1).max(200), markdown: z.string().min(1).max(2_000_000),
+  ventureId: idSchema.optional(), title: z.string().trim().min(1).max(200), markdown: markdownSchema,
   evidenceClass: evidenceClassSchema, sensitivity: sensitivitySchema, authoritativeRank: z.number().int().min(0).max(100).default(50),
   sourceUri: z.url().optional(), changeSummary: z.string().trim().min(1).max(500).default("Initial version"),
 });
 
 export const updateDocumentSchema = z.object({
-  markdown: z.string().min(1).max(2_000_000), changeSummary: z.string().trim().min(1).max(500), sourceUri: z.url().optional(),
+  markdown: markdownSchema, changeSummary: z.string().trim().min(1).max(500), sourceUri: z.url().optional(),
+  /** The version the editor started from; a newer saved version makes the update fail with 409 instead of overwriting it. */
+  baseVersionId: idSchema.optional(),
 });
 
 export const knowledgeSearchSchema = cursorQuerySchema.extend({

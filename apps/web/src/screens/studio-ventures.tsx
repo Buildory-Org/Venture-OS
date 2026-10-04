@@ -2,7 +2,7 @@
 
 import { WorkspaceLink as Link } from "@/components/shell/workspace-link";
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRight, Clock3, Users } from "@/components/ui/icons";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, ventureName } from "@/lib/studio-demo";
@@ -14,11 +14,13 @@ const tabs = ["Overview", "Outcomes", "Tasks", "Knowledge", "Decisions", "People
 type Tab = typeof tabs[number];
 
 export function VenturesScreen({ snapshot, action }: { snapshot?: StudioData; action?: React.ReactNode }) {
-  const { data: contextData, mode } = useStudio();
+  const { data: contextData, mode, activeVentureId, setActiveVentureId } = useStudio();
   const data = snapshot ?? contextData;
   const params = useSearchParams();
-  const selectedId = params.get("venture") ?? data.ventures[0]?.id;
+  const requestedVenture = params.get("venture");
+  const selectedId = requestedVenture ?? (activeVentureId || data.ventures[0]?.id);
   const venture = data.ventures.find((item) => item.id === selectedId) ?? data.ventures[0];
+  useEffect(() => { if (requestedVenture && data.ventures.some((item) => item.id === requestedVenture)) queueMicrotask(() => setActiveVentureId(requestedVenture)); }, [requestedVenture, data.ventures, setActiveVentureId]);
   const [tabState, setTabState] = useState<{ ventureId: string; tab: Tab }>({ ventureId: venture?.id ?? "", tab: "Overview" });
   if (!venture) return null;
   const tab = tabState.ventureId === venture.id ? tabState.tab : "Overview";

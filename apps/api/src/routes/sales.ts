@@ -4,7 +4,7 @@ import type { AppDb } from "../db.js";
 import { idSchema, opportunityInputSchema, pipelineInputSchema, updateOpportunitySchema, updatePipelineSchema } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
-import { jsonValue } from "../json.js";
+import { jsonValue, omitNullFields } from "../json.js";
 
 
 export function salesRoutes(db: AppDb): Router {
@@ -32,12 +32,12 @@ export function salesRoutes(db: AppDb): Router {
   });
   router.get("/opportunities", async (req, res) => {
     const actor = req.actor!; const pipelines = await db.collection("pipelines").find({ workspaceId: actor.membership.workspaceId, ...(actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } }) }).project({ _id: 1 }).toArray();
-    res.json({ ok: true, data: jsonValue(await db.collection("opportunities").find({ pipelineId: { $in: pipelines.map((item) => item._id) } }).toArray()) });
+    res.json({ ok: true, data: jsonValue((await db.collection("opportunities").find({ pipelineId: { $in: pipelines.map((item) => item._id) } }).toArray()).map((item) => omitNullFields(item, ["nextActionAt"]))) });
   });
   router.post("/opportunities", async (req, res) => {
     const actor = req.actor!; const input = opportunityInputSchema.parse(req.body); const pipeline = await db.collection("pipelines").findOne({ _id: input.pipelineId, workspaceId: actor.membership.workspaceId });
     if (!pipeline || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(pipeline.ventureId)))) throw new AppError(404, "NOT_FOUND", "Pipeline not found");
-    const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: pipeline.ventureId, ...input, nextActionAt: input.nextActionAt ? new Date(input.nextActionAt) : undefined, createdAt: new Date(), updatedAt: new Date() };
+    const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: pipeline.ventureId, ...input, ...(input.nextActionAt ? { nextActionAt: new Date(input.nextActionAt) } : {}), createdAt: new Date(), updatedAt: new Date() };
     await db.collection("opportunities").insertOne(item); res.status(201).json({ ok: true, data: jsonValue(item) });
   });
   router.patch("/opportunities/:id", async (req, res) => {
@@ -48,7 +48,8 @@ export function salesRoutes(db: AppDb): Router {
     const input = updateOpportunitySchema.parse(req.body);
     await db.collection("opportunities").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.nextActionAt ? { nextActionAt: new Date(input.nextActionAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "opportunity.update", objectType: "opportunity", objectId: id, ventureId: String(item.ventureId), result: "success" });
-    res.json({ ok: true, data: jsonValue(await db.collection("opportunities").findOne({ _id: id })) });
+    const updated = await db.collection("opportunities").findOne({ _id: id });
+    res.json({ ok: true, data: updated ? jsonValue(omitNullFields(updated, ["nextActionAt"])) : null });
   });
   return router;
 }

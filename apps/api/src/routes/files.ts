@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express, { Router } from "express";
+import sharp from "sharp";
 import type { AppDb, AppDocument } from "../db.js";
 import { cursorQuerySchema, groupFileSchema, idSchema, uploadCompleteSchema, uploadIntentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
@@ -11,6 +12,38 @@ import { jsonValue } from "../json.js";
 
 export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjectStore): Router {
   const router = Router();
+  const thumbnailCache = new Map<string, { bytes: Buffer; expiresAt: number }>();
+  const thumbnailInFlight = new Map<string, Promise<Buffer>>();
+  const thumbnailWaiters: Array<() => void> = [];
+  let thumbnailCacheBytes = 0;
+  let activeThumbnailConversions = 0;
+
+  async function withThumbnailSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (activeThumbnailConversions < 2) activeThumbnailConversions++;
+    else {
+      if (thumbnailWaiters.length >= 16) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Image previews are busy; try again shortly");
+      await new Promise<void>((resolve) => thumbnailWaiters.push(resolve));
+    }
+    try { return await work(); }
+    finally {
+      const next = thumbnailWaiters.shift();
+      if (next) next();
+      else activeThumbnailConversions--;
+    }
+  }
+
+  function rememberThumbnail(key: string, bytes: Buffer) {
+    if (bytes.length > 512 * 1024) return;
+    while (thumbnailCache.size >= 64 || thumbnailCacheBytes + bytes.length > 12 * 1024 * 1024) {
+      const oldest = thumbnailCache.keys().next().value;
+      if (!oldest) break;
+      thumbnailCacheBytes -= thumbnailCache.get(oldest)!.bytes.length;
+      thumbnailCache.delete(oldest);
+    }
+    thumbnailCache.set(key, { bytes, expiresAt: Date.now() + 5 * 60_000 });
+    thumbnailCacheBytes += bytes.length;
+  }
+
   const storedFileStore = (file: AppDocument): ObjectStore => {
     if (file.storage === "local") return localStore;
     if (file.storage === "r2" && store.kind === "r2") return store;
@@ -126,6 +159,40 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "file.download_url", objectType: "file", objectId: String(file._id), ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), result: "success" });
     res.json({ ok: true, data: { downloadUrl, expiresInSeconds: fileStore.kind === "r2" ? 300 : 900 } });
   });
+  router.get("/files/:id/thumbnail", async (req, res) => {
+    const actor = req.actor!;
+    const file = await accessibleFile(db, actor, idSchema.parse(req.params.id));
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(String(file.contentType)) || Number(file.size) > 25 * 1024 * 1024) {
+      throw new AppError(415, "BAD_REQUEST", "A thumbnail is unavailable for this file");
+    }
+    const fileStore = storedFileStore(file);
+    const cacheKey = `${file.workspaceId}:${file._id}:${file.storage}:${file.etag ?? file.completedAt ?? ""}`;
+    const cached = thumbnailCache.get(cacheKey);
+    if (cached && cached.expiresAt <= Date.now()) {
+      thumbnailCacheBytes -= cached.bytes.length;
+      thumbnailCache.delete(cacheKey);
+    }
+    let thumbnail = thumbnailCache.get(cacheKey)?.bytes;
+    if (!thumbnail) {
+      let pending = thumbnailInFlight.get(cacheKey);
+      if (!pending) {
+        pending = withThumbnailSlot(async () => {
+          const original = await fileStore.read(String(file.objectKey), 25 * 1024 * 1024);
+          try {
+            return await sharp(original, { limitInputPixels: 32_000_000, animated: false, failOn: "error" })
+              .rotate().resize(512, 384, { fit: "inside", withoutEnlargement: true }).webp({ quality: 76, effort: 4 }).toBuffer();
+          } catch {
+            throw new AppError(422, "BAD_REQUEST", "This image could not be previewed");
+          }
+        }).then((bytes) => { rememberThumbnail(cacheKey, bytes); return bytes; }).finally(() => { thumbnailInFlight.delete(cacheKey); });
+        thumbnailInFlight.set(cacheKey, pending);
+      }
+      thumbnail = await pending;
+    }
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "file.thumbnail", objectType: "file", objectId: String(file._id), ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), result: "success" });
+    res.set({ "Content-Type": "image/webp", "Content-Length": String(thumbnail.length), "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+    res.send(thumbnail);
+  });
   return router;
 }
 
@@ -136,7 +203,7 @@ export function localObjectRoutes(db: AppDb, store: LocalObjectStore): Router {
     catch { throw new AppError(403, "FORBIDDEN", "Upload URL is invalid or expired"); }
   });
   router.get("/local-objects/:token", async (req, res) => {
-    try { const key = store.verify(req.params.token, "get"); res.send(await store.read(key)); }
+    try { const key = store.verify(req.params.token, "get"); res.send(await store.read(key, 25 * 1024 * 1024)); }
     catch { throw new AppError(403, "FORBIDDEN", "Download URL is invalid or expired"); }
   });
   return router;

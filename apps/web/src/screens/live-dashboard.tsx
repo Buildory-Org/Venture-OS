@@ -1,7 +1,7 @@
 "use client";
 
-import { Select } from "@/components/ui/select";
 import { useEffect, useMemo, useState } from "react";
+import { useStudio } from "@/lib/studio-store";
 import Link from "next/link";
 import { ArrowRight, ArrowUpRight, CircleAlert, Database, Layers3, RefreshCw, Target } from "@/components/ui/icons";
 import clsx from "clsx";
@@ -42,18 +42,18 @@ function TaskRow({ task, ventureName, canUpdate, busy, onStart }: { task: LiveTa
 }
 
 export function LiveDashboard() {
+  const { activeVentureId: scope } = useStudio();
   const [data, setData] = useState<LiveData | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [scope, setScope] = useState("all");
 
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
-      Promise.all([loadLiveDashboard(), listLiveTasks()]).then(([dashboard, taskPage]) => {
+      Promise.all([loadLiveDashboard(), listLiveTasks(undefined, scope ? { ventureId: scope } : {})]).then(([dashboard, taskPage]) => {
         if (!active) return;
         setData({ ...dashboard, taskPage });
         setError("");
@@ -65,14 +65,14 @@ export function LiveDashboard() {
       });
     });
     return () => { active = false; };
-  }, [revision]);
+  }, [revision, scope]);
 
   const ventures = data?.bootstrap.hierarchy.ventures ?? [];
-  const filteredTasks = useMemo(() => (data?.taskPage.items ?? []).filter((task) => scope === "all" || task.ventureId === scope), [data, scope]);
-  const filteredOutcomes = (data?.dashboard.outcomes ?? []).filter((outcome) => scope === "all" || outcome.ventureId === scope);
-  const myTasks = (data?.dashboard.tasks ?? []).filter((task) => scope === "all" || task.ventureId === scope);
-  const blockers = (data?.dashboard.blockers ?? []).filter((task) => scope === "all" || task.ventureId === scope);
-  const activeVentures = ventures.filter((venture) => venture.status === "active" && (scope === "all" || venture.id === scope));
+  const filteredTasks = useMemo(() => (data?.taskPage.items ?? []).filter((task) => !scope || task.ventureId === scope), [data, scope]);
+  const filteredOutcomes = (data?.dashboard.outcomes ?? []).filter((outcome) => !scope || outcome.ventureId === scope);
+  const myTasks = (data?.dashboard.tasks ?? []).filter((task) => !scope || task.ventureId === scope);
+  const blockers = (data?.dashboard.blockers ?? []).filter((task) => !scope || task.ventureId === scope);
+  const activeVentures = ventures.filter((venture) => venture.status === "active" && (!scope || venture.id === scope));
   const ventureNames = new Map(ventures.map((venture) => [venture.id, venture.name]));
   const firstTask = filteredTasks.find((task) => !["done", "cancelled", "parked"].includes(task.status));
 
@@ -95,7 +95,7 @@ export function LiveDashboard() {
     setLoadingMore(true);
     setError("");
     try {
-      const next = await listLiveTasks(cursor);
+      const next = await listLiveTasks(cursor, scope ? { ventureId: scope } : {});
       setData((current) => current ? { ...current, taskPage: { items: [...current.taskPage.items, ...next.items], nextCursor: next.nextCursor } } : current);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load more tasks.");
@@ -107,7 +107,7 @@ export function LiveDashboard() {
   return <div data-vso-stagger-group className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6 lg:px-7 lg:py-6">
     <header className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div><h1 className="text-[clamp(1.6rem,3vw,2.1rem)] font-extrabold tracking-[-0.045em] text-neutral-900">{data ? `Good morning, ${data.bootstrap.user.name.split(" ")[0]}.` : "Your connected workspace"}</h1><p className="mt-1 text-[13px] font-medium text-neutral-500">Workspace · {data ? data.bootstrap.hierarchy.workspace.name : "Loading workspace"}</p></div>
-      <div className="flex flex-wrap items-center gap-2"><label className="sr-only" htmlFor="live-venture">Filter connected data by venture</label><Select id="live-venture" value={scope} onChange={(event) => setScope(event.target.value)} className="min-h-10 min-w-36 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700 shadow-sm"><option value="all">All ventures</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select><button type="button" disabled={loading} onClick={() => { setLoading(true); setRevision((value) => value + 1); }} className={clsx(button, "border border-neutral-200 bg-white text-neutral-700 shadow-sm hover:bg-neutral-50 disabled:cursor-wait disabled:opacity-50")}><RefreshCw size={14} />{loading ? "Refreshing…" : "Refresh"}</button><Link href="/demo" className={clsx(button, "bg-primary-700 text-white hover:bg-primary-800")}>Demo dashboard<ArrowUpRight size={14} /></Link></div>
+      <div className="flex flex-wrap items-center gap-2"><button type="button" disabled={loading} onClick={() => { setLoading(true); setRevision((value) => value + 1); }} className={clsx(button, "border border-neutral-200 bg-white text-neutral-700 shadow-sm hover:bg-neutral-50 disabled:cursor-wait disabled:opacity-50")}><RefreshCw size={14} />{loading ? "Refreshing…" : "Refresh"}</button><Link href="/demo" className={clsx(button, "bg-primary-700 text-white hover:bg-primary-800")}>Demo dashboard<ArrowUpRight size={14} /></Link></div>
     </header>
 
     <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 px-4 py-3 text-[12px] leading-5 text-primary-800"><Database size={16} className="mt-0.5 shrink-0" /><p>This dashboard shows your workspace records. The demo uses sample records; actions there do not change your workspace.</p></div>

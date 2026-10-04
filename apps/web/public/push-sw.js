@@ -4,12 +4,26 @@ self.addEventListener("push", (event) => {
   let payload = {};
   try { payload = event.data?.json() ?? {}; } catch { /* A malformed payload still gets a visible notice. */ }
   if (!payload || typeof payload !== "object") payload = {};
-  // A subscription can outlive sign-out or transfer while a send is in flight.
-  event.waitUntil(self.registration.showNotification("Venture Studio update", {
-    body: "Open your inbox to view the latest update.",
-    tag: opaqueId(payload.notificationId) ? payload.notificationId : undefined,
-    data: { url: "/notifications/live" },
-  }));
+  event.waitUntil((async () => {
+    const chat = payload.chat;
+    if (chat && ["direct", "channel"].includes(chat.kind) && opaqueId(chat.id)) {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const checks = windows.filter((client) => client.focused && new URL(client.url).origin === self.location.origin).map((client) => new Promise((resolve) => {
+        const channel = new MessageChannel();
+        const timer = setTimeout(() => { channel.port1.close(); resolve(false); }, 500);
+        channel.port1.onmessage = (reply) => { clearTimeout(timer); channel.port1.close(); resolve(reply.data?.active === true); };
+        try { client.postMessage({ type: "venture:chat-push-check", chat }, [channel.port2]); }
+        catch { clearTimeout(timer); channel.port1.close(); resolve(false); }
+      }));
+      if ((await Promise.all(checks)).some(Boolean)) return;
+    }
+    // A subscription can outlive sign-out or transfer while a send is in flight.
+    await self.registration.showNotification("Venture Studio update", {
+      body: "Open your inbox to view the latest update.",
+      tag: opaqueId(payload.notificationId) ? payload.notificationId : undefined,
+      data: { url: "/notifications/live" },
+    });
+  })());
 });
 
 self.addEventListener("notificationclick", (event) => {

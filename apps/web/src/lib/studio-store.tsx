@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { demoData, type StudioData } from "./studio-demo";
 
 const STORAGE_KEY = "venture-studio-demo-v2";
@@ -12,6 +12,8 @@ type StudioContextValue = {
   mode: "demo" | "connected";
   workspaceName: string;
   role: string;
+  activeVentureId: string;
+  setActiveVentureId: (id: string) => void;
   setCurrentUserId: (id: string) => void;
   updateSection: <K extends keyof StudioData>(section: K, updater: (current: StudioData[K]) => StudioData[K]) => void;
   resetDemo: () => void;
@@ -24,6 +26,28 @@ export function StudioProvider({ children, mode = "demo", initialData, initialUs
   const [data, setData] = useState<StudioData>(initialData ?? demoData);
   const [currentUserId, setCurrentUserId] = useState(initialUserId ?? "divyansh");
   const [ready, setReady] = useState(false);
+  const [activeVentureId, setActiveVentureIdState] = useState("");
+  const ventures = (mode === "connected" ? initialData ?? data : data).ventures;
+  const scopeKey = `venture-studio-scope:${mode}:${workspaceName}:${currentUserId}`;
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(scopeKey) ?? "";
+      queueMicrotask(() => setActiveVentureIdState(ventures.some((venture) => venture.id === stored) ? stored : ""));
+    } catch { queueMicrotask(() => setActiveVentureIdState("")); }
+  }, [scopeKey, ventures]);
+
+  useEffect(() => {
+    if (activeVentureId && !ventures.some((venture) => venture.id === activeVentureId)) {
+      queueMicrotask(() => setActiveVentureIdState(""));
+    }
+  }, [activeVentureId, ventures]);
+
+  const setActiveVentureId = useCallback((id: string) => {
+    if (id && !ventures.some((venture) => venture.id === id)) return;
+    setActiveVentureIdState(id);
+    try { localStorage.setItem(scopeKey, id); } catch { /* Private browsing can disable storage; in-memory scope still works. */ }
+  }, [scopeKey, ventures]);
 
   useEffect(() => {
     if (mode === "connected") return;
@@ -67,7 +91,7 @@ export function StudioProvider({ children, mode = "demo", initialData, initialUs
     setCurrentUserId("divyansh");
   };
 
-  return <StudioContext.Provider value={{ data: mode === "connected" ? initialData ?? data : data, currentUserId, mode, workspaceName, role, setCurrentUserId, updateSection, resetDemo, ready: mode === "connected" || ready }}>{children}</StudioContext.Provider>;
+  return <StudioContext.Provider value={{ data: mode === "connected" ? initialData ?? data : data, currentUserId, mode, workspaceName, role, activeVentureId, setActiveVentureId, setCurrentUserId, updateSection, resetDemo, ready: mode === "connected" || ready }}>{children}</StudioContext.Provider>;
 }
 
 export function useStudio() {

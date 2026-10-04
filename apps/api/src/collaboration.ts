@@ -103,6 +103,8 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     if (valid !== mentioned.length) throw new AppError(400, "BAD_REQUEST", "Every mention must be an active member of this venture and group");
   }
   const attachments = await messageAttachments(database.db, actor, parsed.attachmentFileIds, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) });
+  const memberships = await database.db.collection("memberships").find({ workspaceId: actor.membership.workspaceId, status: "active", $or: [{ role: "admin" }, { ventureIds: String(channel.ventureId), groupIds: String(channel.groupId) }] }).project({ userId: 1 }).toArray();
+  const recipients = [...new Set(memberships.map((membership) => String(membership.userId)).filter((userId) => userId !== actor.id))];
   const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
   const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
@@ -110,12 +112,14 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     await atomic(database, async (session) => {
       await database.db.collection("messages").insertOne(message, { session });
       createdEvent = await event(database.db, actor, "message.created", message, { ventureId: channel.ventureId, groupId: channel.groupId, channelId }, session, message._id);
-      for (const userId of parsed.mentionUserIds) {
-        await database.db.collection("notification_outbox").updateOne(
-          { idempotencyKey: `mention:${message._id}:${userId}` },
-          { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId, type: "mention", title: `Mention from ${actor.name}`, body: parsed.body.slice(0, 500), resourceType: "message", resourceId: message._id, idempotencyKey: `mention:${message._id}:${userId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() } },
-          { upsert: true, session },
-        );
+      if (recipients.length) {
+        const notifiedAt = new Date();
+        await database.db.collection("notification_outbox").bulkWrite(recipients.map((userId) => {
+          const isMention = mentioned.includes(userId);
+          const type = isMention ? "mention" : "message";
+          const idempotencyKey = `${type}:${message._id}:${userId}`;
+          return { updateOne: { filter: { idempotencyKey }, update: { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId, type, title: isMention ? "Channel mention" : "Channel update", body: "Open the channel to view the new message.", resourceType: "message", resourceId: message._id, chatKind: "channel", chatId: channelId, idempotencyKey, state: "pending", attempts: 0, nextAttemptAt: notifiedAt, createdAt: notifiedAt, updatedAt: notifiedAt } }, upsert: true } };
+        }), { session });
       }
       await audit(database.db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: interfaceChannel, action: "message.create", objectType: "message", objectId: message._id, ventureId: String(channel.ventureId), result: "success" }, session);
     });
@@ -142,9 +146,14 @@ export function collaborationRoutes(database: Database): Router {
     const threadRootId = typeof req.query.threadRootId === "string" ? idSchema.parse(req.query.threadRootId) : undefined;
     const cursor = query.cursor ? await db.collection("messages").findOne({ _id: query.cursor, channelId }) : undefined;
     if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Message cursor not found");
-    const after = cursor ? { $or: [{ createdAt: { $gt: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { $gt: cursor._id } }] } : {};
-    const items = await db.collection("messages").find({ workspaceId: actor.membership.workspaceId, channelId, ...(pinned ? { pinnedAt: { $exists: true } } : {}), ...(threadRootId ? { threadRootId } : {}), ...after }).sort({ createdAt: 1, _id: 1 }).limit(query.limit + 1).toArray();
-    res.json({ ok: true, data: { items: jsonValue(await decorateMessages(db, actor, items.slice(0, query.limit))), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
+    // Default pages forward from the oldest message; `order=latest` starts at the newest page and its cursor walks to older messages.
+    const latest = req.query.order === "latest";
+    const comparison = latest ? "$lt" : "$gt";
+    const after = cursor ? { $or: [{ createdAt: { [comparison]: cursor.createdAt } }, { createdAt: cursor.createdAt, _id: { [comparison]: cursor._id } }] } : {};
+    const direction = latest ? -1 : 1;
+    const items = await db.collection("messages").find({ workspaceId: actor.membership.workspaceId, channelId, ...(pinned ? { pinnedAt: { $exists: true } } : {}), ...(threadRootId ? { threadRootId } : {}), ...after }).sort({ createdAt: direction, _id: direction }).limit(query.limit + 1).toArray();
+    const page = items.slice(0, query.limit);
+    res.json({ ok: true, data: { items: jsonValue(await decorateMessages(db, actor, latest ? page.reverse() : page)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
   });
   router.post("/channels/:channelId/messages", async (req, res) => {
     const result = await createChannelMessage(database, req.actor!, idSchema.parse(req.params.channelId), req.body, "api");
@@ -182,7 +191,7 @@ export function collaborationRoutes(database: Database): Router {
     try { await atomic(database, async (session) => {
       await db.collection("messages").insertOne(message, { session });
       createdEvent = await event(db, actor, "direct_message.created", message, { audienceUserIds: [actor.id, input.recipientId] }, session);
-      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
+      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, chatKind: "direct", chatId: actor.id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
     }); } catch (error) {
       if ((error as { code?: number }).code !== 11000) throw error;
       const duplicate = await db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: input.clientId, dmKey: key });
@@ -275,7 +284,10 @@ export function collaborationRoutes(database: Database): Router {
       ? { $or: [{ audienceUserIds: actor.id }, { groupId: { $exists: true }, audienceUserIds: { $exists: false } }] }
       : { $or: [{ audienceUserIds: actor.id }, { groupId: { $in: actor.membership.groupIds }, ventureId: { $in: actor.membership.ventureIds }, audienceUserIds: { $exists: false } }] };
     const afterFilter = cursor ? { $or: [{ occurredAt: { $gt: cursor.occurredAt } }, { occurredAt: cursor.occurredAt, _id: { $gt: cursor._id } }] } : {};
-    const events = await db.collection("events").find({ workspaceId: actor.membership.workspaceId, $and: [audience, afterFilter] }).sort({ occurredAt: 1, _id: 1 }).limit(500).toArray();
+    // Without a cursor a client is establishing one, so return the newest window (still ascending) rather than the oldest history.
+    const events = cursor
+      ? await db.collection("events").find({ workspaceId: actor.membership.workspaceId, $and: [audience, afterFilter] }).sort({ occurredAt: 1, _id: 1 }).limit(500).toArray()
+      : (await db.collection("events").find({ workspaceId: actor.membership.workspaceId, $and: [audience] }).sort({ occurredAt: -1, _id: -1 }).limit(500).toArray()).reverse();
     res.json({ ok: true, data: jsonValue(events) });
   });
   return router;

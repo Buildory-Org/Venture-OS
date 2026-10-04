@@ -92,9 +92,9 @@ export class McpReadService {
     const venture = await this.db.collection("ventures").findOne({ _id: ventureId, workspaceId: this.actor.workspaceId, ...(this.actor.membership.role === "admin" ? {} : { _id: { $in: this.actor.membership.ventureIds } }) });
     if (!venture) { await this.failure("get_venture_status", ventureId, "not_found"); throw new AppError(404, "NOT_FOUND", "Venture not found"); }
     const [outcomes, blockers, decisions] = await Promise.all([
-      this.db.collection("outcomes").find({ ventureId, status: { $in: ["approved", "active", "at_risk"] } }).toArray(),
+      this.db.collection("outcomes").find({ workspaceId: this.actor.workspaceId, ventureId, status: { $in: ["approved", "active", "at_risk"] } }).toArray(),
       this.db.collection("tasks").find({ workspaceId: this.actor.workspaceId, ventureId, ...this.groups(), blocker: { $exists: true, $ne: "" }, status: { $ne: "done" } }).toArray(),
-      this.db.collection("decisions").find({ ventureId, status: "approved" }).sort({ decidedAt: -1 }).limit(20).toArray(),
+      this.db.collection("decisions").find({ workspaceId: this.actor.workspaceId, ventureId, status: "approved" }).sort({ decidedAt: -1 }).limit(20).toArray(),
     ]);
     return this.result("get_venture_status", { venture, outcomes, blockers, decisions }, [`venture:${ventureId}`, ...outcomes.map((x) => `outcome:${x._id}`), ...blockers.map((x) => `task:${x._id}`), ...decisions.map((x) => `decision:${x._id}`)], ventureId);
   }

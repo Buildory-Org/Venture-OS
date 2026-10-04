@@ -87,6 +87,12 @@ export const evidenceItemSchema = z.object({
   submittedBy: idSchema, submittedAt: isoDateSchema, reviewStatus: z.enum(["pending", "accepted", "rejected", "exception"]),
   reviewedBy: idSchema.optional(),
 });
+export const createEvidenceSchema = z.object({
+  type: evidenceItemSchema.shape.type.default("link"),
+  title: evidenceItemSchema.shape.title,
+  description: evidenceItemSchema.shape.description,
+  uri: z.url({ protocol: /^https?$/ }).optional(),
+});
 
 export const taskUpdateSchema = z.object({
   id: idSchema, workspaceId: idSchema, taskId: idSchema, authorId: idSchema,

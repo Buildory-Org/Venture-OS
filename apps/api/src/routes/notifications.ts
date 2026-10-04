@@ -5,6 +5,7 @@ import { idSchema, notificationPreferencesSchema } from "@venture-studio/contrac
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 import { isTrustedPushEndpoint } from "@venture-studio/core";
+import { listVisibleNotifications } from "../notification-visibility.js";
 
 const defaultPreferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true };
 const subscriptionSchema = z.object({ endpoint: z.url().refine(isTrustedPushEndpoint, "Unsupported push service endpoint").transform((value) => new URL(value).href), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
@@ -17,8 +18,7 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   });
   router.get("/notifications", async (req, res) => {
     const actor = req.actor!;
-    const items = await db.collection("notifications").find({ workspaceId: actor.membership.workspaceId, userId: actor.id }).sort({ createdAt: -1 }).limit(100).toArray();
-    res.json({ ok: true, data: jsonValue(items) });
+    res.json({ ok: true, data: jsonValue(await listVisibleNotifications(db, actor)) });
   });
   router.post("/notifications/:id/read", async (req, res) => {
     const actor = req.actor!;

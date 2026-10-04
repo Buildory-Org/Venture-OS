@@ -10,6 +10,7 @@ export interface ObjectStore {
   readonly kind: "local" | "r2";
   uploadUrl(key: string, contentType: string, size: number): Promise<string>;
   downloadUrl(key: string): Promise<string>;
+  read(key: string, maxBytes: number): Promise<Buffer>;
   head(key: string): Promise<ObjectMetadata>;
   finalize(stagingKey: string, finalKey: string, expectedEtag?: string): Promise<ObjectMetadata>;
   discard(key: string): Promise<void>;
@@ -38,7 +39,12 @@ export class LocalObjectStore implements ObjectStore {
   async uploadUrl(key: string): Promise<string> { return `${this.config.API_ORIGIN}/v1/local-objects/${this.token("put", key)}`; }
   async downloadUrl(key: string): Promise<string> { return `${this.config.API_ORIGIN}/v1/local-objects/${this.token("get", key)}`; }
   async write(key: string, body: Buffer): Promise<void> { const path = this.path(key); await mkdir(dirname(path), { recursive: true }); await writeFile(path, body); }
-  async read(key: string): Promise<Buffer> { return readFile(this.path(key)); }
+  async read(key: string, maxBytes: number): Promise<Buffer> {
+    if ((await stat(this.path(key))).size > maxBytes) throw new Error("Stored object exceeds the read limit");
+    const body = await readFile(this.path(key));
+    if (body.length > maxBytes) throw new Error("Stored object exceeds the read limit");
+    return body;
+  }
   async head(key: string): Promise<ObjectMetadata> { const body = await readFile(this.path(key)); const info = await stat(this.path(key)); return { size: info.size, etag: createHash("sha256").update(body).digest("hex") }; }
   async finalize(stagingKey: string, finalKey: string): Promise<ObjectMetadata> { const path = this.path(finalKey); await mkdir(dirname(path), { recursive: true }); await copyFile(this.path(stagingKey), path); return this.head(finalKey); }
   async discard(key: string): Promise<void> { try { await unlink(this.path(key)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
@@ -52,6 +58,26 @@ export class R2ObjectStore implements ObjectStore {
   }
   uploadUrl(key: string, contentType: string, size: number): Promise<string> { return getSignedUrl(this.client, new PutObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key, ContentType: contentType, ContentLength: size }), { expiresIn: 900 }); }
   downloadUrl(key: string): Promise<string> { return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key }), { expiresIn: 300 }); }
+  async read(key: string, maxBytes: number): Promise<Buffer> {
+    const result = await this.client.send(new GetObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key }));
+    if (!result.Body) throw new Error("Stored object is empty");
+    const closeBody = () => (result.Body as { destroy?: () => void }).destroy?.();
+    if (result.ContentLength !== undefined && result.ContentLength > maxBytes) {
+      closeBody();
+      throw new Error("Stored object exceeds the read limit");
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of result.Body as AsyncIterable<Uint8Array>) {
+      size += chunk.byteLength;
+      if (size > maxBytes) {
+        closeBody();
+        throw new Error("Stored object exceeds the read limit");
+      }
+      chunks.push(Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks, size);
+  }
   async head(key: string): Promise<ObjectMetadata> { const result = await this.client.send(new HeadObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key })); return { size: result.ContentLength ?? 0, etag: result.ETag?.replaceAll('"', "") ?? "" }; }
   async finalize(stagingKey: string, finalKey: string, expectedEtag?: string): Promise<ObjectMetadata> {
     await this.client.send(new CopyObjectCommand({ Bucket: this.config.R2_BUCKET, CopySource: `${this.config.R2_BUCKET}/${stagingKey}`, CopySourceIfMatch: expectedEtag ? `"${expectedEtag}"` : undefined, Key: finalKey }));

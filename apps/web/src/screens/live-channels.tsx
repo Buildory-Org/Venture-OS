@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { BookOpenText, Bookmark, Columns3, FolderOpen, Hash, Info, Menu, MoreHorizontal, Search, Send, X } from "@/components/ui/icons";
+import { BookOpenText, Bookmark, Columns3, FolderOpen, Hash, Info, Menu, MoreHorizontal, Search, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { CommandPreview, Message } from "@venture-studio/contracts";
@@ -14,6 +14,10 @@ import { GroupWorkspaceSheet, type WorkspaceTab } from "@/components/studio/grou
 import { GroupPeople } from "@/components/studio/group-people";
 import { AttachmentMenu, AttachmentTray, MessageAttachmentList, messageAttachments, useChatAttachments } from "@/components/studio/chat-attachments";
 import { useLiveRealtime } from "@/lib/use-live-realtime";
+import { useStudio } from "@/lib/studio-store";
+import { ChatSendIcon, playChatSound, prepareChatAudio, useChatMessageArrival } from "@/components/studio/chat-message-effects";
+import { ChatMessageMenu } from "@/components/studio/chat-message-menu";
+import { useActiveChatPresence } from "@/lib/chat-presence";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Member = Awaited<ReturnType<typeof listLiveMembers>>["items"][number];
@@ -22,6 +26,9 @@ const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 
 export function LiveChannelsScreen() {
+  const { activeVentureId, setActiveVentureId, data: shellData } = useStudio();
+  // A venture created here is unknown to the sidebar until the shell reloads; hold the scope handoff until then.
+  const [pendingScope, setPendingScope] = useState<{ ventureId: string; from: string } | null>(null);
   const params = useSearchParams();
   const router = useRouter();
   const initialScope = useRef({ venture: params.get("venture"), group: params.get("group"), channel: params.get("channel") });
@@ -54,6 +61,7 @@ export function LiveChannelsScreen() {
   const [createGoal, setCreateGoal] = useState("");
   const [createParent, setCreateParent] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const keepScroll = useRef<{ channelId: string; height: number; top: number } | null>(null);
   const listButtonRef = useRef<HTMLButtonElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -76,21 +84,51 @@ export function LiveChannelsScreen() {
       const channelVenture = ventures.find((venture) => venture.groups.some((group) => group.channels.some((channel) => channel.id === requested.channel)));
       const channelGroup = channelVenture?.groups.find((group) => group.channels.some((channel) => channel.id === requested.channel));
       const groupVenture = ventures.find((venture) => venture.groups.some((group) => group.id === requested.group));
-      const chosenVenture = channelVenture ?? (requested.venture ? ventures.find((venture) => venture.id === requested.venture) : undefined) ?? groupVenture ?? ventures[0];
+      const chosenVenture = channelVenture ?? (requested.venture ? ventures.find((venture) => venture.id === requested.venture) : undefined) ?? groupVenture ?? ventures.find((venture) => venture.id === activeVentureId) ?? ventures[0];
       const chosenGroup = channelGroup ?? chosenVenture?.groups.find((group) => group.id === requested.group) ?? chosenVenture?.groups[0];
       const chosenChannel = chosenGroup?.channels.find((channel) => channel.id === requested.channel) ?? chosenGroup?.channels[0];
       setSelectedVentureId(chosenVenture?.id ?? "");
+      if (chosenVenture && (requested.channel || requested.group || requested.venture)) setActiveVentureId(chosenVenture.id);
       setSelectedGroupId(chosenGroup?.id ?? "");
       setSelectedId(chosenChannel?.id ?? "");
       setMessagesLoading(Boolean(chosenChannel));
     }).catch((cause: unknown) => { if (active) setError(errorText(cause)); }));
     return () => { active = false; };
+  // URL context is applied once; subsequent global scope changes use the effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!session || pendingScope || !activeVentureId || activeVentureId === selectedVentureId) return;
+    const nextVenture = session.hierarchy.ventures.find((item) => item.id === activeVentureId);
+    if (!nextVenture) return;
+    const nextGroup = nextVenture.groups[0];
+    const nextChannel = nextGroup?.channels[0];
+    queueMicrotask(() => {
+      setSelectedVentureId(nextVenture.id); setSelectedGroupId(nextGroup?.id ?? "");
+      resetConversation(nextChannel?.id ?? "");
+      const next = new URLSearchParams({ venture: nextVenture.id });
+      if (nextGroup) next.set("group", nextGroup.id);
+      if (nextChannel) next.set("channel", nextChannel.id);
+      router.replace(`/channels/live?${next}`, { scroll: false });
+    });
+  }, [activeVentureId, pendingScope, selectedVentureId, session, router]);
+
+  useEffect(() => {
+    if (!pendingScope) return;
+    // The member picked another scope meanwhile; let the ordinary sync follow that choice.
+    if (activeVentureId !== pendingScope.from) { queueMicrotask(() => setPendingScope(null)); return; }
+    if (!shellData.ventures.some((venture) => venture.id === pendingScope.ventureId)) return;
+    setActiveVentureId(pendingScope.ventureId);
+    queueMicrotask(() => setPendingScope(null));
+  }, [activeVentureId, pendingScope, setActiveVentureId, shellData.ventures]);
 
   const venture = session?.hierarchy.ventures.find((item) => item.id === selectedVentureId);
   const group = venture?.groups.find((item) => item.id === selectedGroupId);
   const selected = group?.channels.find((channel) => channel.id === selectedId);
   const attachments = useChatAttachments(selectedId, selected ? { ventureId: selectedVentureId, groupId: selectedGroupId } : null);
+  useActiveChatPresence("channel", selectedId);
+  const arrived = useChatMessageArrival(selectedId, messages, session?.user.id, !messagesLoading);
   useEffect(() => { activeConversationId.current = selectedId; }, [selectedId]);
   const activeGroupId = group?.id ?? "";
   const members = memberState.groupId === activeGroupId ? memberState.items : [];
@@ -196,7 +234,14 @@ export function LiveChannelsScreen() {
     return () => { active = false; };
   }, [group?.id, memberRevision]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages.length, selectedId]);
+  const newestMessageId = messages.at(-1)?.id;
+  useLayoutEffect(() => {
+    const kept = keepScroll.current;
+    keepScroll.current = null;
+    const list = bottomRef.current?.parentElement;
+    if (kept && list && kept.channelId === selectedId) { list.scrollTop = list.scrollHeight - kept.height + kept.top; return; }
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages.length, newestMessageId, selectedId]);
 
   function writeScope(ventureId: string, groupId: string, channelId: string) {
     const next = new URLSearchParams();
@@ -215,7 +260,7 @@ export function LiveChannelsScreen() {
     if (!nextVenture) return;
     const nextGroup = nextVenture.groups[0];
     const nextChannel = nextGroup?.channels[0];
-    setSelectedVentureId(id); setSelectedGroupId(nextGroup?.id ?? ""); setRailExpanded(false); if ((nextChannel?.id ?? "") !== selectedId) resetConversation(nextChannel?.id ?? ""); closeList(); writeScope(id, nextGroup?.id ?? "", nextChannel?.id ?? "");
+    setActiveVentureId(id); setSelectedVentureId(id); setSelectedGroupId(nextGroup?.id ?? ""); setRailExpanded(false); if ((nextChannel?.id ?? "") !== selectedId) resetConversation(nextChannel?.id ?? ""); closeList(); writeScope(id, nextGroup?.id ?? "", nextChannel?.id ?? "");
   }
 
   function changeGroup(id: string) {
@@ -247,6 +292,7 @@ export function LiveChannelsScreen() {
     event.preventDefault();
     const body = composer.trim();
     if (!selectedId || busy || (!body && !attachments.items.length) || attachments.uploading) return;
+    prepareChatAudio();
     setBusy(true); setError(""); setResult(""); setPreview(null);
     try {
       if (body.startsWith("/")) {
@@ -263,6 +309,7 @@ export function LiveChannelsScreen() {
         }));
         clientId.current ??= crypto.randomUUID();
         const created = await sendLiveChannelMessage(selectedId, { body, attachmentFileIds: attachments.items.map((file) => file.id), mentionUserIds: resolved, clientId: clientId.current, ...(replyTo ? { threadRootId: replyTo.id } : {}) });
+        playChatSound("sent");
         if (activeConversationId.current === selectedId) {
           setMessages((items) => items.some((item) => item.id === created.message.id) ? items : [...items, created.message]);
           clientId.current = null; setComposer(""); setMentionRange(null); setReplyTo(null); attachments.clear();
@@ -285,8 +332,17 @@ export function LiveChannelsScreen() {
 
   async function more() {
     if (!selectedId || !cursor) return;
+    const channelId = selectedId;
     setBusy(true);
-    try { const page = await listLiveChannelMessages(selectedId, cursor); setMessages((items) => [...items, ...page.items]); setCursor(page.nextCursor); setError(""); }
+    try {
+      const page = await listLiveChannelMessages(channelId, cursor);
+      if (activeConversationId.current !== channelId) return;
+      const list = bottomRef.current?.parentElement;
+      // Older history is prepended; keep the reader's place instead of jumping to the newest message.
+      if (list && page.items.length) keepScroll.current = { channelId, height: list.scrollHeight, top: list.scrollTop };
+      setMessages((items) => { const loaded = new Set(items.map((item) => item.id)); return [...page.items.filter((item) => !loaded.has(item.id)), ...items]; });
+      setCursor(page.nextCursor); setError("");
+    }
     catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   }
@@ -338,8 +394,10 @@ export function LiveChannelsScreen() {
         notice = `#${created.name} created.`;
       }
       setSession(await loadLiveSession());
+      if (createKind === "venture" && activeVentureId) setPendingScope({ ventureId: nextVenture, from: activeVentureId });
       setSelectedVentureId(nextVenture); setSelectedGroupId(nextGroup); setRailExpanded(false); resetConversation(nextChannel); writeScope(nextVenture, nextGroup, nextChannel);
       closeCreate(); setResult(notice);
+      window.dispatchEvent(new Event("venture:hierarchy-changed"));
     } catch (cause) { setError(errorText(cause)); }
     finally { setBusy(false); }
   }
@@ -378,7 +436,25 @@ export function LiveChannelsScreen() {
         </div>
       </header>
       {error && <p role="alert" className="mx-5 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}{result && <p role="status" className="mx-5 mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{result}</p>}
-      <div className="thin-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pt-6 pb-28 sm:px-7">{!session ? <ChatEmpty title="Loading workspace…" detail="Checking your channel access." /> : selected ? messagesLoading ? <ChatEmpty title="Loading messages…" detail={`Opening #${selected.name}.`} /> : messagesError ? <ChatEmpty title="Messages unavailable" detail={messagesError} /> : messages.length ? <>{cursor && <button type="button" disabled={busy} onClick={more} className="mx-auto block min-h-8 text-[11px] font-semibold text-[var(--color-primary-700)]">Load older messages</button>}<div className="my-2 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[var(--color-neutral-400)]">Channel conversation</div>{messages.map((item) => { const mine = item.authorId === session?.user.id; return <article key={item.id} className={clsx("flex items-end gap-2", mine && "flex-row-reverse")}><ChatAvatar id={item.authorId} name={memberName(item.authorId)} size={25} /><div className={clsx("max-w-[min(78%,620px)]", mine && "text-right")}><div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : memberName(item.authorId)}</span><time className="text-[var(--color-neutral-400)]">{stamp(item.createdAt)}</time>{item.pinned && <span className="text-[var(--color-primary-600)]">Pinned</span>}</div>{item.body && <p className={clsx("inline-block whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[var(--color-primary-600)] text-white" : "rounded-bl-[5px] border border-[var(--color-neutral-100)] bg-white text-[var(--color-neutral-700)]")}>{item.body}</p>}<MessageAttachmentList files={messageAttachments(item)} /><div className={clsx("flex flex-wrap gap-2 text-[10px] text-[var(--color-neutral-400)]", mine && "justify-end")}><button type="button" disabled={busy} onClick={() => updateMessage(item, "reaction")} className="min-h-7 hover:text-[var(--color-primary-600)]">👍 {item.reactions?.["👍"] ?? 0}</button><button type="button" disabled={busy} onClick={() => updateMessage(item, "save")} className="min-h-7 hover:text-[var(--color-primary-600)]">{item.savedByMe ? "Saved" : "Save"}</button>{(session?.membership.role === "admin" || session?.membership.role === "venture_head") && <button type="button" disabled={busy} onClick={() => updateMessage(item, "pin")} className="min-h-7 hover:text-[var(--color-primary-600)]">{item.pinned ? "Unpin" : "Pin"}</button>}<button type="button" onClick={() => { setReplyTo(item); setPreview(null); }} className="min-h-7 hover:text-[var(--color-primary-600)]">Reply</button></div></div></article>; })}<div ref={bottomRef} /></> : <ChatEmpty title="A fresh conversation" detail="Send the first update to this channel." />  : <ChatEmpty title={group ? "No channels in this group" : venture ? "Choose a group" : "Choose a venture"} detail={group ? "Create or choose a channel in this group to start a conversation." : "Use the navigator on the left to choose a conversation."} />}</div>
+      <div className="thin-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pt-6 pb-28 sm:px-7">{!session ? <ChatEmpty title="Loading workspace…" detail="Checking your channel access." /> : selected ? messagesLoading ? <ChatEmpty title="Loading messages…" detail={`Opening #${selected.name}.`} /> : messagesError ? <ChatEmpty title="Messages unavailable" detail={messagesError} /> : messages.length ? <>{cursor && <button type="button" disabled={busy} onClick={more} className="mx-auto block min-h-8 text-[11px] font-semibold text-[var(--color-primary-700)]">Load older messages</button>}<div className="my-2 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[var(--color-neutral-400)]">Channel conversation</div>{messages.map((item) => {
+          const mine = item.authorId === session?.user.id;
+          const actions = [
+            { label: `👍 React (${item.reactions?.["👍"] ?? 0})`, onSelect: () => void updateMessage(item, "reaction"), disabled: busy },
+            { label: item.savedByMe ? "Remove from saved" : "Save message", onSelect: () => void updateMessage(item, "save"), disabled: busy },
+            ...((session?.membership.role === "admin" || session?.membership.role === "venture_head") ? [{ label: item.pinned ? "Unpin message" : "Pin message", onSelect: () => void updateMessage(item, "pin"), disabled: busy }] : []),
+            { label: "Reply", onSelect: () => { setReplyTo(item); setPreview(null); composerRef.current?.focus(); } },
+          ];
+          return <article key={item.id} className={clsx("flex items-start gap-2", arrived.has(item.id) && "chat-message-arrive", mine && "flex-row-reverse")}>
+            <span className="mt-5 shrink-0"><ChatAvatar id={item.authorId} name={memberName(item.authorId)} size={25} /></span>
+            <div className={clsx("max-w-[min(78%,620px)]", mine && "text-right")}>
+              <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : memberName(item.authorId)}</span><time className="text-[var(--color-neutral-400)]">{stamp(item.createdAt)}</time>{item.pinned && <span className="text-[var(--color-primary-600)]">Pinned</span>}</div>
+              <ChatMessageMenu actions={actions} label={`Actions for message from ${mine ? "you" : memberName(item.authorId)}`}>
+                {item.body && <p className={clsx("inline-block whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[var(--color-primary-600)] text-white" : "rounded-bl-[5px] border border-[var(--color-neutral-100)] bg-white text-[var(--color-neutral-700)]")}>{item.body}</p>}
+                <MessageAttachmentList files={messageAttachments(item)} />
+              </ChatMessageMenu>
+            </div>
+          </article>;
+        })}<div ref={bottomRef} /></> : <ChatEmpty title="A fresh conversation" detail="Send the first update to this channel." />  : <ChatEmpty title={group ? "No channels in this group" : venture ? "Choose a group" : "Choose a venture"} detail={group ? "Create or choose a channel in this group to start a conversation." : "Use the navigator on the left to choose a conversation."} />}</div>
       {preview && <section className="shrink-0 border-t border-[var(--color-primary-200)] bg-[var(--color-primary-50)] px-4 py-3 sm:px-6"><p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-primary-700)]">Review command</p><p className="mt-1 text-xs font-semibold">{preview.command.kind === "assign" ? `Assign “${preview.command.title}” to @${preview.command.assignee}` : `Notify @${preview.command.recipient}: “${preview.command.message}”`}</p><p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{preview.command.kind === "assign" ? `Due ${stamp(preview.command.dueAt)} · ${preview.command.estimatedMinutes} min` : `At ${stamp(preview.command.scheduledAt)}`}</p>{preview.warnings.map((warning) => <p key={warning} className="mt-1 text-[10px] text-amber-700">{warning}</p>)}<div className="mt-2 flex gap-2"><button type="button" disabled={busy} onClick={execute} className="rounded-lg bg-[var(--color-primary-600)] px-3 py-2 text-[11px] font-semibold text-white">Confirm command</button><button type="button" onClick={() => setPreview(null)} className="px-3 py-2 text-[11px] font-semibold text-[var(--color-neutral-500)]">Cancel</button></div></section>}
       {selected && !preview && <form onSubmit={send} className="absolute inset-x-4 bottom-4 z-10 sm:inset-x-6">
         {replyTo && <div className="mb-2 flex items-center justify-between rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="truncate">Replying to: {replyTo.body.slice(0, 70)}</span><button type="button" onClick={() => setReplyTo(null)} className="ml-2 font-bold">Cancel</button></div>}
@@ -397,7 +473,7 @@ export function LiveChannelsScreen() {
               if (mentionSuggestions.length && event.key === "Enter" && !event.shiftKey) { event.preventDefault(); chooseMention(mentionSuggestions[mentionIndex] ?? mentionSuggestions[0]!); return; }
               if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
             }} aria-controls={mentionRange ? "channel-mention-options" : undefined} aria-activedescendant={mentionSuggestions.length ? `mention-option-${mentionIndex}` : undefined} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[var(--color-neutral-400)]" placeholder="Type a message, /assign or /notify..." />
-            <button type="submit" disabled={busy || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label={composer.trim().startsWith("/") ? "Preview command" : "Send message"} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-600)] text-white transition-colors hover:bg-[var(--color-primary-600)] disabled:opacity-40"><Send size={15} /></button>
+            <button type="submit" disabled={busy || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label={composer.trim().startsWith("/") ? "Preview command" : "Send message"} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-600)] text-white transition-colors hover:bg-[var(--color-primary-600)] disabled:opacity-40"><ChatSendIcon /></button>
           </div>
         </div>
       </form>}

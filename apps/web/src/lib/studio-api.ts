@@ -235,6 +235,18 @@ export async function prepareLiveFileDownload(id: string, contentType?: string) 
   return URL.createObjectURL(contentType ? new Blob([blob], { type: contentType }) : blob);
 }
 
+export async function loadLiveImageThumbnail(id: string, signal?: AbortSignal) {
+  const localDevAuth = process.env.NODE_ENV === "development" && typeof window !== "undefined" && window.location.hostname === "localhost";
+  const response = await fetch(`/v1/files/${encodeURIComponent(id)}/thumbnail`, {
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+    headers: localDevAuth ? { "x-dev-user-id": "user-divyansh" } : undefined,
+  });
+  if (!response.ok) throw new StudioApiError(`The image thumbnail returned HTTP ${response.status}.`);
+  return response.blob();
+}
+
 export type LiveFileSearchHit = { type: "file"; id: string; title: string; excerpt: string; ventureId: string; sourceRef: string };
 export async function searchLiveFiles(q: string, ventureId?: string): Promise<LiveFileSearchHit[]> {
   const query = searchQuerySchema.parse({ q, ventureId, types: ["file"], limit: 50 });
@@ -298,8 +310,9 @@ export async function acceptLiveInvitation(token: string) {
   if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true || !("data" in result) || !result.data || typeof result.data !== "object" || !("accepted" in result.data) || result.data.accepted !== true) throw new StudioApiError("The invitation response was invalid.");
 }
 
+/** Newest page first, returned in chronological order; `nextCursor` loads the next older page. */
 export async function listLiveChannelMessages(channelId: string, cursor?: string) {
-  const params = new URLSearchParams({ limit: "100" });
+  const params = new URLSearchParams({ limit: "100", order: "latest" });
   if (cursor) params.set("cursor", cursor);
   return pagedSuccessEnvelope(messageSchema).parse(await request(`/v1/channels/${encodeURIComponent(channelId)}/messages?${params}`)).data;
 }

@@ -8,11 +8,13 @@ import { StudioProvider } from "@/lib/studio-store";
 import { connectedNotices, connectedShellData } from "@/lib/live-shell-data";
 import { notificationSnapshotEvent } from "@/lib/notification-events";
 import { listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession } from "@/lib/studio-api";
+import { useChatPushResponder } from "@/lib/chat-presence";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Snapshot = { session: Session; data: ReturnType<typeof connectedShellData> };
 
 export function LiveShell({ children }: { children: React.ReactNode }) {
+  useChatPushResponder();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [hierarchyRevision, setHierarchyRevision] = useState(0);

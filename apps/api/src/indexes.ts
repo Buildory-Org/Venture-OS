@@ -70,6 +70,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true }),
     db.collection("notification_outbox").createIndex({ state: 1, nextAttemptAt: 1, leaseUntil: 1 }),
     db.collection("notifications").createIndex({ outboxId: 1 }, { unique: true }),
+    db.collection("notifications").createIndex({ workspaceId: 1, userId: 1, createdAt: -1, _id: -1 }),
+    db.collection("notifications").createIndex({ workspaceId: 1, userId: 1, chatKind: 1, chatId: 1, createdAt: -1, _id: -1 }),
     db.collection("documents").createIndex({ workspaceId: 1, ventureId: 1, sensitivity: 1 }),
     db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
     db.collection("document_chunks").createIndex({ plainText: "text", headingPath: "text" }),

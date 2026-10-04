@@ -3,6 +3,7 @@ import type { AppDb } from "../db.js";
 import { jsonValue } from "../json.js";
 import { dashboardReadModelSchema, idSchema, memberDirectoryQuerySchema } from "@venture-studio/contracts";
 import { AppError } from "../errors.js";
+import { listVisibleNotifications } from "../notification-visibility.js";
 
 export function hierarchyRoutes(db: AppDb): Router {
   const router = Router();
@@ -53,7 +54,7 @@ export function hierarchyRoutes(db: AppDb): Router {
       db.collection("tasks").find({ workspaceId, ...taskFilter, blocker: { $exists: true, $ne: "" }, status: { $ne: "done" } }).sort({ dueAt: 1 }).limit(10).toArray(),
       db.collection("classes").find({ workspaceId, ...classFilter, participantIds: actor.id, scheduledAt: { $gte: new Date() } }).sort({ scheduledAt: 1 }).limit(3).toArray(),
       db.collection("outcomes").find({ workspaceId, ...ventureFilter, status: { $in: ["approved", "active", "at_risk"] } }).sort({ reviewAt: 1 }).limit(10).toArray(),
-      db.collection("notifications").find({ workspaceId, userId: actor.id, type: "mention", readAt: { $exists: false } }).sort({ createdAt: -1 }).limit(10).toArray(),
+      listVisibleNotifications(db, actor, { type: "mention", readAt: { $exists: false } }, 10),
     ]);
     const data = dashboardReadModelSchema.parse(jsonValue({ tasks, reviews, blockers, classes, outcomes, mentions, asOf: new Date() }));
     res.json({ ok: true, data });

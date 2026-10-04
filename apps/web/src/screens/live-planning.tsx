@@ -1,6 +1,7 @@
 "use client";
 
 import { Select } from "@/components/ui/select";
+import { useStudio } from "@/lib/studio-store";
 import { useEffect, useState } from "react";
 import { CalendarDays, Plus, RefreshCw, Search } from "@/components/ui/icons";
 import { listLiveClasses, listLiveDecisions, listLiveInformationRequests, listLiveMembers, listLiveOutcomes, loadLiveSession, updateLiveClass, updateLiveDecision, updateLiveInformationRequest, updateLiveOutcome } from "@/lib/studio-api";
@@ -16,13 +17,13 @@ type Request = Awaited<ReturnType<typeof listLiveInformationRequests>>[number];
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value));
 
 export function LivePlanningScreen({ view = null }: { view?: "decisions" | "classes" | "timeline" | "requests" | null }) {
+  const { activeVentureId: ventureId } = useStudio();
   const [session, setSession] = useState<Session | null>(null);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [classes, setClasses] = useState<Class[]>([]);
   const [requests, setRequests] = useState<Request[]>([]);
   const [memberNames, setMemberNames] = useState<Record<string, string>>({});
-  const [ventureId, setVentureId] = useState("");
   const [selected, setSelected] = useState<Request | null>(null);
   const [selectedClass, setSelectedClass] = useState<Class | null>(null);
   const [activeClass, setActiveClass] = useState<Class | null>(null);
@@ -37,6 +38,8 @@ export function LivePlanningScreen({ view = null }: { view?: "decisions" | "clas
   const [revision, setRevision] = useState(0);
   const [createKind, setCreateKind] = useState<PlanningCreateKind | null>(null);
   const [result, setResult] = useState("");
+
+  useEffect(() => { queueMicrotask(() => { setSelectedDecision(null); setActiveClass(null); setSelectedRequestId(""); }); }, [ventureId]);
 
   useEffect(() => {
     let active = true;
@@ -104,12 +107,11 @@ export function LivePlanningScreen({ view = null }: { view?: "decisions" | "clas
   return <PageFrame><PageTitle title={view === "decisions" ? "Decisions" : view === "classes" ? "Classes" : view === "timeline" ? "30-day timeline" : view === "requests" ? "Questions & requests" : "Outcomes & operating records"} description={view === "decisions" ? "What was approved, why, which evidence supported it, and when to review it." : view === "classes" ? "Lessons connect to practice, live assignments, and assessment evidence." : view === "timeline" ? "Outcomes, reviews, and work that contribute to the plan." : view === "requests" ? "Assign missing information with sources and unresolved points." : "Track 30-day commitments, decisions, classes, requests, and reviews."} action={<div className="flex flex-wrap gap-2">{((view === "decisions" || view === "classes") && canCreatePlanning || view === "requests" && canCreateRequest) && <button type="button" onClick={() => setCreateKind(view === "decisions" ? "decision" : view === "classes" ? "class" : "request")} className={primaryClass}><Plus size={15} />{view === "decisions" ? "Record decision" : view === "classes" ? "Schedule class" : "New request"}</button>}<button type="button" onClick={() => setRevision((value) => value + 1)} className={secondaryClass}><RefreshCw size={15} />Refresh</button></div>} />
     {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
     {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
-    <Panel className="mb-4 p-4"><label className="block max-w-sm"><span className="mb-1 block text-xs font-semibold text-neutral-500">Venture</span><Select className={inputClass} value={ventureId} onChange={(event) => { setVentureId(event.target.value); setSelectedDecision(null); setActiveClass(null); setSelectedRequestId(""); }}><option value="">All authorized ventures</option>{session?.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></label></Panel>
     {view === "decisions" && <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,.8fr)]">
       <Panel>
         <div className="border-b border-neutral-100 p-4"><label className="relative block"><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input aria-label="Search decisions" value={decisionQuery} onChange={(event) => setDecisionQuery(event.target.value)} placeholder="Search decisions" className={`${inputClass} pl-9`} /></label></div>
         {decisionRows.map((item) => <button type="button" key={item.id} onClick={() => setSelectedDecision(item)} className="flex w-full flex-wrap items-start justify-between gap-3 border-b border-neutral-100 p-5 text-left hover:bg-neutral-50"><div><p className="text-sm font-semibold text-neutral-800">{item.title}</p><p className="mt-1 text-xs text-neutral-500">{ventureName(item.ventureId)} · {stamp(item.decidedAt)}</p></div><Badge tone={item.status === "approved" ? "green" : "amber"}>{item.status}</Badge></button>)}
-        {decisionRows.length === 0 && <Empty title="No decisions found" body="Choose another venture or try another search." />}
+        {decisionRows.length === 0 && <Empty title="No decisions found" body="Try another search or change the active venture in the sidebar." />}
       </Panel>
       <Panel>{selectedDecision ? <><PanelHead title={selectedDecision.title} /><dl className="space-y-4 p-5 text-sm">{([["Status", selectedDecision.status], ["Decision", selectedDecision.text], ["Reason", selectedDecision.reason], ["Evidence", selectedDecision.evidence.join(", ")], ["Affected work", selectedDecision.affectedWork.join(", ")], ["Review trigger", selectedDecision.reviewTrigger]] as const).map(([label, value]) => <div key={label}><dt className="text-xs font-semibold uppercase text-neutral-400">{label}</dt><dd className="mt-1 leading-6 text-neutral-700">{value || "Not recorded"}</dd></div>)}{canManage(selectedDecision.ventureId) && <div><dt className="text-xs font-semibold uppercase text-neutral-400">Change status</dt><dd className="mt-2"><Select aria-label={`Status for decision ${selectedDecision.title}`} disabled={busy} value={selectedDecision.status} onChange={(event) => changeDecision(selectedDecision, event.target.value as Decision["status"])} className={inputClass}><option value="draft">Draft</option><option value="approved">Approved</option><option value="superseded">Superseded</option><option value="stale">Stale</option></Select></dd></div>}</dl></> : <Empty title="Select a decision" body="The approval reason and review trigger appear here." />}</Panel>
     </div>}
@@ -121,7 +123,7 @@ export function LivePlanningScreen({ view = null }: { view?: "decisions" | "clas
       <Panel>
         <div className="border-b border-neutral-100 p-4"><label className="relative block"><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input aria-label="Search requests" value={requestQuery} onChange={(event) => setRequestQuery(event.target.value)} placeholder="Search requests" className={`${inputClass} pl-9`} /></label></div>
         {requestRows.map((item) => <button type="button" key={item.id} onClick={() => setSelectedRequestId(item.id)} aria-current={item.id === selectedRequestId ? "true" : undefined} className="flex w-full flex-wrap items-start justify-between gap-3 border-b border-neutral-100 p-5 text-left transition-colors hover:bg-neutral-50 aria-[current=true]:bg-primary-50"><span className="min-w-0"><span className="block text-sm font-semibold text-neutral-800">{item.question}</span><span className="mt-1 block text-xs text-neutral-500">{ventureName(item.ventureId)} · {memberNames[item.requesterId] ?? "Requester"} → {memberNames[item.respondentId] ?? "Respondent"} · Due {stamp(item.dueAt)}</span><span className="mt-2 block line-clamp-2 text-sm text-neutral-600">{item.responseMarkdown || item.purpose}</span></span><Badge tone={item.status === "open" ? "amber" : "green"}>{item.status}</Badge></button>)}
-        {requestRows.length === 0 && <Empty title="No requests found" body="Choose another venture or try another search." />}
+        {requestRows.length === 0 && <Empty title="No requests found" body="Try another search or change the active venture in the sidebar." />}
       </Panel>
       <Panel>{activeRequest ? <><PanelHead title={activeRequest.question} aside={<Badge tone={activeRequest.status === "open" ? "amber" : "green"}>{activeRequest.status}</Badge>} /><dl className="space-y-4 p-5 text-sm">{([["Venture", ventureName(activeRequest.ventureId)], ["Requester", memberNames[activeRequest.requesterId] ?? "Requester"], ["Respondent", memberNames[activeRequest.respondentId] ?? "Respondent"], ["Due", stamp(activeRequest.dueAt)], ["Purpose", activeRequest.purpose], ["Answer", activeRequest.responseMarkdown || "Answer pending"], ["Sources", activeRequest.sourceRefs.join(", ") || "Not recorded"]] as const).map(([label, value]) => <div key={label}><dt className="text-xs font-semibold uppercase text-neutral-400">{label}</dt><dd className="mt-1 whitespace-pre-wrap leading-6 text-neutral-700">{value}</dd></div>)}{activeRequest.respondentId === session?.user.id && activeRequest.status === "open" && <button type="button" onClick={() => { setSelected(activeRequest); setResponse(""); setSources(""); }} className={primaryClass}>Answer request</button>}</dl></> : <Empty title="Select a request" body="The question, answer, and sources appear here." />}</Panel>
     </div>}

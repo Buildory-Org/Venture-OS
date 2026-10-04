@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Bell, X } from "@/components/ui/icons";
 import { listLiveNotifications, readLiveNotification, snoozeLiveReminder } from "@/lib/studio-api";
 import { notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
+import { isActiveChat } from "@/lib/chat-presence";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 type Toast = { item: Notification; count: number };
@@ -34,7 +35,7 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
         if (!active || next.some((item) => item.userId !== userId)) return;
         setItems(next);
         if (seenIdsRef.current) {
-          const unseen = next.filter((item) => !item.readAt && !seenIdsRef.current!.has(item.id));
+          const unseen = next.filter((item) => !item.readAt && !seenIdsRef.current!.has(item.id) && !isActiveChat(item.chatKind, item.chatId));
           if (unseen.length) {
             const item = unseen.find((entry) => entry.type === "reminder" || entry.type === "deadline_warning") ?? unseen[0];
             setToasts((current) => [{ item, count: unseen.length }, ...current].slice(0, 3));

@@ -56,6 +56,8 @@ export const notificationSchema = z.object({
   body: z.string(),
   resourceType: z.string(),
   resourceId: idSchema,
+  chatKind: z.enum(["direct", "channel"]).optional(),
+  chatId: idSchema.optional(),
   reminderId: idSchema.optional(),
   readAt: isoDateSchema.optional(),
   createdAt: isoDateSchema,

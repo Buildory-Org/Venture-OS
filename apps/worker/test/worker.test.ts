@@ -31,6 +31,9 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     await collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true });
     await collection("notifications").createIndex({ outboxId: 1 }, { unique: true });
     await collection("users").insertOne({ _id: "user-a", workspaceId: "workspace-a", status: "active", email: "a@example.invalid" });
+    await collection("channels").insertOne({ _id: "channel-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a" });
+    await collection("memberships").insertOne({ _id: "membership-a", workspaceId: "workspace-a", userId: "user-a", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active" });
+    await collection("messages").insertOne({ _id: "legacy-channel-message", workspaceId: "workspace-a", channelId: "channel-a" });
     await collection("tasks").insertOne({ _id: "task-a", workspaceId: "workspace-a", assigneeId: "user-a", status: "accepted", deadlineRisk: false });
     await collection("reminders").insertOne({ _id: "reminder-a", workspaceId: "workspace-a", userId: "user-a", taskId: "task-a", message: "Start work", scheduledAt: now, repeatMinutes: 10, sequence: 0, state: "scheduled", createdAt: now, updatedAt: now });
     const worker = new Worker(client, db, config, true);
@@ -68,9 +71,23 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal(await worker.tick(now), true);
     assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-muted" }))?.state, "delivered");
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-muted" }), 0);
-    await collection("notification_outbox").insertOne({ _id: "outbox-message-muted", workspaceId: "workspace-a", userId: "user-a", type: "message", title: "DM", body: "Muted DM", resourceType: "message", resourceId: "message-a", idempotencyKey: "muted-message-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    await collection("notification_outbox").insertOne({ _id: "outbox-message-muted", workspaceId: "workspace-a", userId: "user-a", type: "message", title: "DM", body: "Muted DM", resourceType: "message", resourceId: "message-a", chatKind: "direct", chatId: "user-b", idempotencyKey: "muted-message-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-message-muted" }), 0);
+    // A current DM notice bypasses the legacy-message lookup, so this proves the muted preference rather than a scope skip.
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-message-muted" }))?.delivery?.categorySkippedAt);
+
+    await collection("notification_preferences").updateOne({ _id: "preferences-a" }, { $set: { messages: true, mentions: true } });
+    await collection("memberships").updateOne({ _id: "membership-a" }, { $set: { groupIds: [] } });
+    await collection("notification_outbox").insertMany([
+      { _id: "outbox-revoked-channel", workspaceId: "workspace-a", userId: "user-a", type: "message", title: "Channel update", body: "Open channel", resourceType: "message", resourceId: "new-channel-message", chatKind: "channel", chatId: "channel-a", idempotencyKey: "revoked-channel-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now },
+      { _id: "outbox-revoked-legacy", workspaceId: "workspace-a", userId: "user-a", type: "mention", title: "Old mention", body: "Private text", resourceType: "message", resourceId: "legacy-channel-message", idempotencyKey: "revoked-legacy-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now },
+    ]);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: { $in: ["outbox-revoked-channel", "outbox-revoked-legacy"] } }), 0);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-revoked-channel" }))?.delivery?.scopeSkippedAt);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-revoked-legacy" }))?.delivery?.scopeSkippedAt);
 
     await collection("notification_outbox").insertOne({ _id: "outbox-dead", workspaceId: "workspace-a", userId: "missing-user", type: "message", title: "Dead", body: "Dead", resourceType: "message", resourceId: "message-a", idempotencyKey: "dead-test", state: "pending", attempts: 7, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);

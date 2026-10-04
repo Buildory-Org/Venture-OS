@@ -23,6 +23,7 @@ import {
   Copy as CopySvg,
   Database as DatabaseSvg,
   Download as DownloadSvg,
+  Edit02Icon,
   Eye as EyeSvg,
   FilePlusIcon,
   FileQuestionMarkIcon,
@@ -106,6 +107,7 @@ export const Columns3 = icon(Columns3Svg);
 export const Copy = icon(CopySvg);
 export const Database = icon(DatabaseSvg);
 export const Download = icon(DownloadSvg);
+export const Edit = icon(Edit02Icon);
 export const Eye = icon(EyeSvg);
 export const FilePlus2 = icon(FilePlusIcon);
 export const FileQuestion = icon(FileQuestionMarkIcon);

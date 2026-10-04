@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { io as socketClient } from "socket.io-client";
 import { ObjectId } from "mongodb";
+import sharp from "sharp";
 import { loadConfig } from "../src/config.js";
 import { connectDatabase, type AppDb } from "../src/db.js";
 import { AppError } from "../src/errors.js";
@@ -16,7 +17,8 @@ import { LocalObjectStore, type ObjectStore } from "../src/storage.js";
 import { attachRealtime } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
-import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, messageSchema } from "@venture-studio/contracts";
+import { backfillStringDates } from "../src/date-backfill.js";
+import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema } from "@venture-studio/contracts";
 import type { Request, Response } from "express";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
@@ -472,6 +474,23 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const mentioned = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Please review @ashutosh", mentionUserIds: [mentionId], clientId: "mention-ashutosh-0001" }) });
     assert.equal(mentioned.status, 201, await mentioned.clone().text());
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ type: "mention", userId: "user-ashutosh" }), 1);
+    const mentionedId = ((await mentioned.json()) as any).data.message.id;
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-peer", chatKind: "channel", chatId: "channel-a" }), 1);
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-hidden" }), 0);
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-b" }), 0);
+    await database.db.collection("notifications").insertMany([
+      { _id: "visible-channel-note", outboxId: "visible-channel-note", workspaceId: "workspace-a", userId: "user-peer", type: "message", title: "Visible", body: "Generic", resourceType: "message", resourceId: mentionedId, chatKind: "channel", chatId: "channel-a", createdAt: new Date(now.getTime() - 1000) },
+      { _id: "legacy-channel-note", outboxId: "legacy-channel-note", workspaceId: "workspace-a", userId: "user-peer", type: "mention", title: "Legacy", body: "Private", resourceType: "message", resourceId: mentionedId, createdAt: new Date(now.getTime() - 2000) },
+    ]);
+    const peerInbox = async () => ((await (await fetch(`${origin}/v1/notifications`, { headers: scopePeerHeaders })).json()) as any).data as Array<{ id: string }>;
+    assert.ok((await peerInbox()).some((item) => item.id === "visible-channel-note"));
+    await database.db.collection("notifications").insertMany(Array.from({ length: 101 }, (_, index) => ({ _id: `inaccessible-channel-note-${index}`, outboxId: `inaccessible-channel-note-${index}`, workspaceId: "workspace-a", userId: "user-peer", type: "message", title: "Hidden", body: "Hidden", resourceType: "message", resourceId: mentionedId, chatKind: "channel", chatId: "channel-hidden", createdAt: new Date(now.getTime() + index + 1) })));
+    assert.ok((await peerInbox()).some((item) => item.id === "visible-channel-note"), "inaccessible recent notices must not crowd out older authorized notices");
+    await database.db.collection("memberships").updateOne({ _id: "membership-peer" }, { $set: { groupIds: [] } });
+    assert.ok(!(await peerInbox()).some((item) => item.id === "visible-channel-note" || item.id === "legacy-channel-note"));
+    const peerDashboard = (await (await fetch(`${origin}/v1/dashboard`, { headers: scopePeerHeaders })).json()) as any;
+    assert.ok(!peerDashboard.data.mentions.some((item: { id: string }) => item.id === "legacy-channel-note"));
+    await database.db.collection("memberships").updateOne({ _id: "membership-peer" }, { $set: { groupIds: ["group-a"] } });
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe`, { headers })).status, 409);
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-a&handle=dupe&q=Duplicate%20A`, { headers })).status, 400);
 
@@ -580,10 +599,31 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const download = await fetch(`${origin}/v1/files/${intent.data.file.id}/download`, { headers });
     const downloadBody = (await download.json()) as any;
     assert.equal(await (await fetch(downloadBody.data.downloadUrl)).text(), "yes");
+    const imageBody = await sharp({ create: { width: 1200, height: 800, channels: 3, background: "#168050" } }).png().toBuffer();
+    await store.write("workspace-a/venture-a/objects/image-thumbnail-test", imageBody);
+    await assert.rejects(store.read("workspace-a/venture-a/objects/image-thumbnail-test", imageBody.length - 1), /read limit/);
+    await database.db.collection("files").insertOne({ _id: "image-thumbnail-test", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "sample.png", contentType: "image/png", size: imageBody.length, objectKey: "workspace-a/venture-a/objects/image-thumbnail-test", status: "ready", storage: "local", createdAt: new Date() });
+    const imageThumbnail = await fetch(`${origin}/v1/files/image-thumbnail-test/thumbnail`, { headers });
+    assert.equal(imageThumbnail.status, 200);
+    assert.equal(imageThumbnail.headers.get("content-type"), "image/webp");
+    assert.equal(imageThumbnail.headers.get("cache-control"), "private, no-store");
+    const thumbnailBody = Buffer.from(await imageThumbnail.arrayBuffer());
+    assert.ok(thumbnailBody.length < imageBody.length);
+    assert.equal((await sharp(thumbnailBody).metadata()).width, 512);
+    assert.equal((await fetch(`${origin}/v1/files/image-thumbnail-test/thumbnail`, { headers: { "x-dev-user-id": "user-hidden" } })).status, 404);
+    assert.equal((await fetch(`${origin}/v1/files/${intent.data.file.id}/thumbnail`, { headers })).status, 415);
+    await store.write("workspace-a/venture-a/objects/broken-thumbnail-test", Buffer.from("not an image"));
+    await database.db.collection("files").insertOne({ _id: "broken-thumbnail-test", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "broken.png", contentType: "image/png", size: 12, objectKey: "workspace-a/venture-a/objects/broken-thumbnail-test", status: "ready", storage: "local", createdAt: new Date() });
+    assert.equal((await fetch(`${origin}/v1/files/broken-thumbnail-test/thumbnail`, { headers })).status, 422);
+    await database.db.collection("files").deleteOne({ _id: "image-thumbnail-test", workspaceId: "workspace-a" });
+    await database.db.collection("files").deleteOne({ _id: "broken-thumbnail-test", workspaceId: "workspace-a" });
+    await store.discard("workspace-a/venture-a/objects/image-thumbnail-test");
+    await store.discard("workspace-a/venture-a/objects/broken-thumbnail-test");
     const unavailableR2: ObjectStore = {
       kind: "r2",
       async uploadUrl() { throw new Error("R2 unavailable in this test"); },
       async downloadUrl() { throw new Error("R2 unavailable in this test"); },
+      async read() { throw new Error("R2 unavailable in this test"); },
       async head() { throw new Error("R2 unavailable in this test"); },
       async finalize() { throw new Error("R2 unavailable in this test"); },
       async discard() { throw new Error("R2 unavailable in this test"); },
@@ -597,6 +637,9 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
       const legacyDownload = await fetch(`${switchedConfig.API_ORIGIN}/v1/files/${intent.data.file.id}/download`, { headers });
       assert.equal(legacyDownload.status, 200, await legacyDownload.clone().text());
       assert.equal(await (await fetch(((await legacyDownload.json()) as any).data.downloadUrl)).text(), "yes");
+      await database.db.collection("files").insertOne({ _id: "r2-thumbnail-unavailable", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "r2.png", contentType: "image/png", size: 1, objectKey: "fake", status: "ready", storage: "r2", createdAt: new Date() });
+      assert.equal((await fetch(`${switchedConfig.API_ORIGIN}/v1/files/r2-thumbnail-unavailable/thumbnail`, { headers })).status, 500);
+      await database.db.collection("files").deleteOne({ _id: "r2-thumbnail-unavailable" });
     } finally { await new Promise<void>((resolve) => switchedServer.close(() => resolve())); }
     await database.db.collection("files").insertOne({ _id: "r2-unavailable", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-test", name: "r2.txt", contentType: "text/plain", size: 1, objectKey: "fake", status: "ready", storage: "r2", createdAt: new Date() });
     assert.equal((await fetch(`${origin}/v1/files/r2-unavailable/download`, { headers })).status, 503);
@@ -818,6 +861,20 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(((await (await fetch(`${origin}/v1/classes/class-a/applications`, { headers: hiddenHeaders })).json()) as any).data.items[0].id, assignedApplication.id);
     assert.equal((await fetch(`${origin}/v1/classes/class-a/applications/${assignedApplication.id}/review`, { method: "PATCH", headers: hiddenHeaders, body: JSON.stringify({ assessment: "Reviewed independently" }) })).status, 200);
     await database.db.collection("outcomes").insertOne({ _id: "outcome-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Initial", updatedAt: now });
+    const pipelineInput = { name: "Scoped create test", offerName: "Test offer", status: "active" };
+    const allScopePipeline = await fetch(`${origin}/v1/pipelines`, { method: "POST", headers: adminHeaders, body: JSON.stringify({ ...pipelineInput, ventureId: "venture-b" }) });
+    assert.equal(allScopePipeline.status, 201, await allScopePipeline.clone().text());
+    const allScopePipelineId = ((await allScopePipeline.json()) as any).data.id;
+    assert.equal((await database.db.collection("pipelines").findOne({ _id: allScopePipelineId }))?.ventureId, "venture-b");
+    const fixedScopePipeline = await fetch(`${origin}/v1/pipelines`, { method: "POST", headers, body: JSON.stringify({ ...pipelineInput, ventureId: "venture-a" }) });
+    assert.equal(fixedScopePipeline.status, 201, await fixedScopePipeline.clone().text());
+    const fixedScopePipelineId = ((await fixedScopePipeline.json()) as any).data.id;
+    assert.equal((await database.db.collection("pipelines").findOne({ _id: fixedScopePipelineId }))?.ventureId, "venture-a");
+    assert.equal((await fetch(`${origin}/v1/pipelines`, { method: "POST", headers, body: JSON.stringify({ ...pipelineInput, ventureId: "venture-b" }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/pipelines`, { method: "POST", headers: bHeaders, body: JSON.stringify({ ...pipelineInput, ventureId: "venture-b" }) })).status, 403);
+    const headPipelines = ((await (await fetch(`${origin}/v1/pipelines`, { headers })).json()) as any).data;
+    assert.equal(headPipelines.some((pipeline: any) => pipeline.id === fixedScopePipelineId), true);
+    assert.equal(headPipelines.some((pipeline: any) => pipeline.id === allScopePipelineId), false);
     await database.db.collection("pipelines").insertOne({ _id: "pipeline-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Initial", updatedAt: now });
     await database.db.collection("opportunities").insertOne({ _id: "opportunity-a", workspaceId: "workspace-a", ventureId: "venture-a", pipelineId: "pipeline-a", ownerId: "user-peer", stage: "identified", updatedAt: now });
     for (const [path, body] of [["decisions/decision-a", { status: "approved" }], ["classes/class-a", { status: "completed" }], ["outcomes/outcome-a", { status: "active" }], ["pipelines/pipeline-a", { status: "paused" }], ["opportunities/opportunity-a", { stage: "qualified" }]] as const) {
@@ -1091,6 +1148,165 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     if (restrictedIo) await restrictedIo.close();
     if (restrictedServer) { restrictedServer.close(); await once(restrictedServer, "close"); }
     await ioServer.close();
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("real Mongo regressions: canonical dates, safe evidence, latest pages, and client error mapping", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_regressions`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  assert.equal(database.transactions, true);
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "Regression", slug: "regression", createdAt: now });
+  await db.collection("users").insertMany([
+    { _id: "user-lead", workspaceId: "workspace-a", email: "lead@example.invalid", name: "Lead", handle: "lead", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-admin", workspaceId: "workspace-a", email: "admin@example.invalid", name: "Admin", handle: "admin", status: "active", createdAt: now, updatedAt: now },
+  ]);
+  await db.collection("memberships").insertMany([
+    { _id: "membership-lead", workspaceId: "workspace-a", userId: "user-lead", role: "venture_head", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-admin", workspaceId: "workspace-a", userId: "user-admin", role: "admin", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now },
+  ]);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Allowed", status: "active", goal30Day: "", createdAt: now });
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now });
+  await db.collection("channels").insertOne({ _id: "channel-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", name: "general", createdAt: now });
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const headers = { "content-type": "application/json", "x-dev-user-id": "user-lead" };
+  const adminHeaders = { "content-type": "application/json", "x-dev-user-id": "user-admin" };
+  const post = (path: string, body: unknown, requestHeaders: Record<string, string> = headers) => fetch(`${origin}${path}`, { method: "POST", headers: requestHeaders, body: JSON.stringify(body) });
+  const later = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString().replace("Z", "+00:00");
+  try {
+    // Create routes store BSON dates, matching updates and seeds, so the context packet and date-range reads work.
+    const task = await post("/v1/tasks", { ventureId: "venture-a", groupId: "group-a", title: "Dated task", outcome: "Stored as a date", assigneeId: "user-lead", dueAt: later(4), reviewAt: later(5), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Done", evidenceRequirement: "Proof" });
+    assert.equal(task.status, 201, await task.clone().text());
+    const taskId = ((await task.json()) as any).data.id;
+    const storedTask = await db.collection("tasks").findOne({ _id: taskId });
+    assert.ok(storedTask?.dueAt instanceof Date && storedTask.reviewAt instanceof Date);
+    const packet = await fetch(`${origin}/v1/context-packets/tasks/${taskId}`, { headers });
+    assert.equal(packet.status, 200, await packet.clone().text());
+    assert.match(((await packet.json()) as any).data.markdown, /Due: \d{4}-\d{2}-\d{2}T/);
+    const outcome = await post("/v1/outcomes", { ventureId: "venture-a", title: "Dated outcome", description: "Dates", ownerId: "user-lead", priority: "high", startAt: later(1), reviewAt: later(48), successEvidence: "Evidence", status: "active" });
+    assert.equal(outcome.status, 201, await outcome.clone().text());
+    const storedOutcome = await db.collection("outcomes").findOne({ _id: ((await outcome.json()) as any).data.id });
+    assert.ok(storedOutcome?.startAt instanceof Date && storedOutcome.reviewAt instanceof Date);
+    const decision = await post("/v1/decisions", { ventureId: "venture-a", title: "Dated decision", text: "Decide", ownerId: "user-lead", decidedAt: later(0), evidence: [], reason: "Because", affectedWork: [], reviewTrigger: "", status: "approved" });
+    assert.equal(decision.status, 201, await decision.clone().text());
+    assert.ok((await db.collection("decisions").findOne({ _id: ((await decision.json()) as any).data.id }))?.decidedAt instanceof Date);
+    const lesson = await post("/v1/classes", { ventureId: "venture-a", title: "Dated class", objective: "Learn", scheduledAt: later(24), durationMinutes: 30, facilitatorId: "user-lead", participantIds: ["user-lead"], status: "scheduled" });
+    assert.equal(lesson.status, 201, await lesson.clone().text());
+    assert.ok((await db.collection("classes").findOne({ _id: ((await lesson.json()) as any).data.id }))?.scheduledAt instanceof Date);
+    const dashboard = (await (await fetch(`${origin}/v1/dashboard`, { headers })).json()) as any;
+    assert.equal(dashboardResponseSchema.safeParse(dashboard).success, true);
+    assert.equal(JSON.stringify(dashboard.data).includes("Dated class"), true);
+    const information = await post("/v1/information-requests", { ventureId: "venture-a", respondentId: "user-admin", question: "When?", purpose: "Plan", dueAt: later(24) });
+    assert.equal(information.status, 201, await information.clone().text());
+    assert.ok((await db.collection("information_requests").findOne({ _id: ((await information.json()) as any).data.id }))?.dueAt instanceof Date);
+
+    // Evidence rejects unsafe URI schemes and omits an absent URI instead of persisting null.
+    assert.equal((await post(`/v1/tasks/${taskId}/evidence`, { title: "Bad link", description: "Unsafe", uri: "javascript:alert(1)" })).status, 400);
+    assert.equal((await post(`/v1/tasks/${taskId}/evidence`, { description: "Missing title" })).status, 400);
+    const note = await post(`/v1/tasks/${taskId}/evidence`, { type: "note", title: "Note", description: "Observed in review" });
+    assert.equal(note.status, 201, await note.clone().text());
+    assert.equal(Object.hasOwn((await db.collection("evidence_items").findOne({ _id: ((await note.json()) as any).data.id }))!, "uri"), false);
+    const link = await post(`/v1/tasks/${taskId}/evidence`, { title: "Link", description: "Source", uri: "https://example.com/proof" });
+    assert.equal(link.status, 201, await link.clone().text());
+    assert.equal(((await link.json()) as any).data.uri, "https://example.com/proof");
+    await db.collection("evidence_items").insertOne({ _id: "evidence-legacy-null", workspaceId: "workspace-a", taskId, type: "note", title: "Legacy", uri: null, description: "Stored before the fix", submittedBy: "user-lead", submittedAt: new Date(), reviewStatus: "pending" });
+    const detail = (await (await fetch(`${origin}/v1/tasks/${taskId}`, { headers })).json()) as any;
+    assert.equal(detail.data.evidence.length, 3);
+    assert.equal(evidenceItemSchema.array().safeParse(detail.data.evidence).success, true);
+    const reviewed = await post("/v1/evidence/evidence-legacy-null/review", { status: "accepted" });
+    assert.equal(reviewed.status, 200, await reviewed.clone().text());
+    assert.equal(evidenceItemSchema.safeParse(((await reviewed.json()) as any).data).success, true);
+
+    // Channel history keeps forward paging by default; order=latest starts at the newest page and walks backward.
+    const base = Date.now() - 60_000;
+    await db.collection("messages").insertMany(Array.from({ length: 5 }, (_, index) => ({ _id: `message-${index}`, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-lead", body: `Message ${index}`, mentionUserIds: [], clientId: `client-${index}`, createdAt: new Date(base + index * 1000) })));
+    const page = async (query: string) => ((await (await fetch(`${origin}/v1/channels/channel-a/messages?${query}`, { headers })).json()) as any).data;
+    const ids = (value: any) => value.items.map((item: any) => item.id);
+    assert.deepEqual(ids(await page("limit=2")), ["message-0", "message-1"]);
+    const newest = await page("limit=2&order=latest");
+    assert.deepEqual(ids(newest), ["message-3", "message-4"]);
+    const older = await page(`limit=2&order=latest&cursor=${newest.nextCursor}`);
+    assert.deepEqual(ids(older), ["message-1", "message-2"]);
+    const oldest = await page(`limit=2&order=latest&cursor=${older.nextCursor}`);
+    assert.deepEqual(ids(oldest), ["message-0"]);
+    assert.equal(oldest.nextCursor, undefined);
+    assert.equal(messageSchema.array().safeParse(newest.items).success, true);
+
+    // Replay without a cursor returns the newest window, so a client cursor never starts deep in history.
+    const eventBase = { workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", version: 1, actorId: "user-lead", type: "message.created", payload: {} };
+    await db.collection("events").insertMany(Array.from({ length: 502 }, (_, index) => { const id = `event-${String(index).padStart(3, "0")}`; return { _id: id, eventId: id, occurredAt: new Date(base + index), ...eventBase }; }));
+    const recent = ((await (await fetch(`${origin}/v1/events`, { headers })).json()) as any).data;
+    assert.equal(recent.length, 500);
+    assert.equal(recent[0].eventId, "event-002");
+    assert.equal(recent.at(-1).eventId, "event-501");
+    assert.equal(eventEnvelopeSchema.array().safeParse(recent).success, true);
+    const afterCursor = ((await (await fetch(`${origin}/v1/events?after=event-499`, { headers })).json()) as any).data;
+    assert.deepEqual(afterCursor.map((item: any) => item.eventId), ["event-500", "event-501"]);
+
+    // Client-caused failures raised outside route code use the safe envelope rather than a 500.
+    const malformed = await fetch(`${origin}/v1/tasks`, { method: "POST", headers, body: "{\"title\":" });
+    assert.equal(malformed.status, 400);
+    assert.equal(((await malformed.json()) as any).error.code, "BAD_REQUEST");
+    const oversized = await fetch(`${origin}/v1/tasks`, { method: "POST", headers, body: JSON.stringify({ title: "x".repeat(2 * 1024 * 1024 + 1) }) });
+    assert.equal(oversized.status, 413);
+    assert.equal(((await oversized.json()) as any).error.code, "BAD_REQUEST");
+    const duplicateVenture = await post("/v1/admin/ventures", { name: "Allowed", ownerId: "user-admin", goal30Day: "Duplicate" }, adminHeaders);
+    assert.equal(duplicateVenture.status, 409, await duplicateVenture.clone().text());
+    assert.equal(((await duplicateVenture.json()) as any).error.code, "CONFLICT");
+
+    // An opportunity without a next-action date is stored without the field, and legacy nulls never break the list contract.
+    const pipeline = await post("/v1/pipelines", { ventureId: "venture-a", name: "Regression pipeline", offerName: "Offer" });
+    assert.equal(pipeline.status, 201, await pipeline.clone().text());
+    const pipelineId = ((await pipeline.json()) as any).data.id;
+    const undated = await post("/v1/opportunities", { pipelineId, companyName: "Undated", contactName: "", source: "Referral", observedSignal: "Signal", fitReason: "Fit", evidenceConfidence: "low", stage: "identified", ownerId: "user-lead", nextAction: "Call" });
+    assert.equal(undated.status, 201, await undated.clone().text());
+    const undatedId = ((await undated.json()) as any).data.id;
+    assert.equal(Object.hasOwn((await db.collection("opportunities").findOne({ _id: undatedId }))!, "nextActionAt"), false);
+    await db.collection("opportunities").insertOne({ _id: "opportunity-legacy-null", workspaceId: "workspace-a", ventureId: "venture-a", pipelineId, companyName: "Legacy", contactName: "", source: "Old", observedSignal: "Signal", fitReason: "Fit", evidenceConfidence: "low", stage: "identified", ownerId: "user-lead", nextAction: "", nextActionAt: null, createdAt: now, updatedAt: now });
+    const opportunities = (await (await fetch(`${origin}/v1/opportunities`, { headers })).json()) as any;
+    assert.equal(opportunities.data.length, 2);
+    assert.equal(opportunitySchema.array().safeParse(opportunities.data).success, true);
+    const legacyUpdate = await fetch(`${origin}/v1/opportunities/opportunity-legacy-null`, { method: "PATCH", headers, body: JSON.stringify({ stage: "qualified" }) });
+    assert.equal(legacyUpdate.status, 200, await legacyUpdate.clone().text());
+    assert.equal(opportunitySchema.safeParse(((await legacyUpdate.json()) as any).data).success, true);
+
+    // MCP venture status stays inside the caller's workspace even when another workspace reuses a venture ID.
+    await db.collection("outcomes").insertOne({ _id: "outcome-foreign", workspaceId: "workspace-other", ventureId: "venture-a", title: "Foreign outcome", status: "active" });
+    await db.collection("decisions").insertOne({ _id: "decision-foreign", workspaceId: "workspace-other", ventureId: "venture-a", title: "Foreign decision", status: "approved", decidedAt: new Date() });
+    const pat = await post("/v1/pats", { name: "regression", scopes: ["ventures:read"] });
+    assert.equal(pat.status, 201, await pat.clone().text());
+    const mcp = new McpReadService(db, await authenticatePat(db, ((await pat.json()) as any).data.token));
+    const ventureStatus = JSON.stringify((await mcp.ventureStatus("venture-a")).data);
+    assert.equal(ventureStatus.includes("Dated outcome"), true);
+    assert.equal(ventureStatus.includes("Foreign"), false);
+
+    // Migration 003 converts legacy string dates in place and leaves unparseable values for manual review.
+    await db.collection("tasks").insertOne({ _id: "task-legacy-string", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: "Legacy", dueAt: "2026-09-28T12:00:00+05:30", reviewAt: "not a date", status: "accepted" });
+    await db.collection("classes").insertOne({ _id: "class-legacy-string", workspaceId: "workspace-a", ventureId: "venture-a", title: "Legacy class", scheduledAt: "2026-10-01T10:00:00.000Z" });
+    assert.equal(await backfillStringDates(db), 2);
+    const legacyTask = await db.collection("tasks").findOne({ _id: "task-legacy-string" });
+    assert.ok(legacyTask?.dueAt instanceof Date);
+    assert.equal((legacyTask!.dueAt as Date).toISOString(), "2026-09-28T06:30:00.000Z");
+    assert.equal(legacyTask?.reviewAt, "not a date");
+    assert.ok((await db.collection("classes").findOne({ _id: "class-legacy-string" }))?.scheduledAt instanceof Date);
+    assert.equal(await backfillStringDates(db), 0);
+  } finally {
     server.close();
     await once(server, "close");
     await database.native.dropDatabase();

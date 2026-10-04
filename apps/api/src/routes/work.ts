@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createOutcomeSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createEvidenceSchema, createOutcomeSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
-import { jsonValue } from "../json.js";
+import { jsonValue, omitNullFields, withDates } from "../json.js";
 import { z } from "zod";
 
 export function workRoutes(database: Database): Router {
@@ -41,7 +41,7 @@ export function workRoutes(database: Database): Router {
       db.collection("evidence_items").find({ taskId: id }).sort({ submittedAt: 1 }).toArray(),
       db.collection("files").find({ taskId: id, workspaceId: task.workspaceId, ventureId: task.ventureId, groupId: task.groupId, status: "ready" }).sort({ createdAt: 1 }).toArray(),
     ]);
-    res.json({ ok: true, data: jsonValue({ ...task, updates, evidence, attachments }) });
+    res.json({ ok: true, data: jsonValue({ ...task, updates, evidence: evidence.map((item) => omitNullFields(item, ["uri"])), attachments }) });
   });
 
   router.post("/tasks", async (req, res) => {
@@ -54,7 +54,7 @@ export function workRoutes(database: Database): Router {
     const now = new Date();
     const id = randomUUID();
     const deadlineRisk = hasDeadlineRisk(input.dueAt, input.estimatedMinutes, now);
-    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...input, creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
+    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...withDates(input, ["dueAt", "reviewAt"]), creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       const currentActor = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentActor || !can(currentActor as unknown as Parameters<typeof can>[0], "task:create", { ventureId: input.ventureId, groupId: input.groupId })) throw new AppError(403, "FORBIDDEN", "You cannot create tasks in this scope");
@@ -137,9 +137,9 @@ export function workRoutes(database: Database): Router {
     const id = idSchema.parse(req.params.id);
     const actor = req.actor!;
     const task = await accessibleTask(db, actor, id);
-    const body = req.body as Record<string, unknown>;
-    if (typeof body.title !== "string" || typeof body.description !== "string") throw new AppError(400, "BAD_REQUEST", "title and description are required");
-    const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: body.type ?? "link", title: body.title, uri: body.uri, description: body.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending" };
+    const input = createEvidenceSchema.parse(req.body);
+    // Omit an absent URI: the driver would persist `undefined` as null, which the published contract rejects.
+    const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: input.type, title: input.title, ...(input.uri ? { uri: input.uri } : {}), description: input.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending" };
     await atomic(database, async (session) => {
       await db.collection("evidence_items").insertOne(evidence, { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.evidence.add", objectType: "task", objectId: id, ventureId: String(task.ventureId), result: "success" }, session);
@@ -167,7 +167,8 @@ export function workRoutes(database: Database): Router {
     const elevated = actor.membership.role === "admin" || actor.membership.role === "venture_head" || task.reviewerId === actor.id;
     if (!elevated) throw new AppError(403, "FORBIDDEN", "Only the assigned reviewer or venture lead may review evidence");
     await db.collection("evidence_items").updateOne({ _id: id }, { $set: { reviewStatus: status, reviewedBy: actor.id, reviewedAt: new Date() } });
-    res.json({ ok: true, data: jsonValue(await db.collection("evidence_items").findOne({ _id: id })) });
+    const reviewed = await db.collection("evidence_items").findOne({ _id: id });
+    res.json({ ok: true, data: reviewed ? jsonValue(omitNullFields(reviewed, ["uri"])) : null });
   });
 
   router.post("/outcomes", async (req, res) => {
@@ -175,7 +176,7 @@ export function workRoutes(database: Database): Router {
     const actor = req.actor!;
     if (!can(actor.membership, "outcome:write", { ventureId: input.ventureId })) throw new AppError(403, "FORBIDDEN", "You cannot create outcomes in this venture");
     const now = new Date();
-    const outcome = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, createdAt: now, updatedAt: now };
+    const outcome = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...withDates(input, ["startAt", "reviewAt"]), createdAt: now, updatedAt: now };
     await db.collection("outcomes").insertOne(outcome);
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "outcome.create", objectType: "outcome", objectId: String(outcome._id), ventureId: input.ventureId, result: "success" });
     res.status(201).json({ ok: true, data: jsonValue(outcome) });

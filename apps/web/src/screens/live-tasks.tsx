@@ -1,6 +1,7 @@
 "use client";
 
 import { Select } from "@/components/ui/select";
+import { useStudio } from "@/lib/studio-store";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowRight, Plus, RefreshCw, Search } from "@/components/ui/icons";
@@ -84,8 +85,8 @@ function TaskDetail({ id, session, onClose, onChanged }: { id: string; session: 
   </DetailDrawer>;
 }
 
-function NewTask({ session, onClose, onCreated }: { session: Session; onClose: () => void; onCreated: (task: Task) => void }) {
-  const firstVenture = session.hierarchy.ventures[0];
+function NewTask({ session, activeVentureId, onClose, onCreated }: { session: Session; activeVentureId: string; onClose: () => void; onCreated: (task: Task) => void }) {
+  const firstVenture = session.hierarchy.ventures.find((item) => item.id === activeVentureId);
   const [ventureId, setVentureId] = useState(firstVenture?.id ?? "");
   const [groupId, setGroupId] = useState(firstVenture?.groups[0]?.id ?? "");
   const [title, setTitle] = useState("");
@@ -113,7 +114,7 @@ function NewTask({ session, onClose, onCreated }: { session: Session; onClose: (
   }
 
   return <DetailDrawer title="Create task" subtitle="Assign a member of this venture and group" onClose={onClose}><form onSubmit={save} className="grid gap-4 sm:grid-cols-2">
-    <Field label="Venture"><Select className={inputClass} value={ventureId} onChange={(event) => { const next = session.hierarchy.ventures.find((item) => item.id === event.target.value); setVentureId(event.target.value); setGroupId(next?.groups[0]?.id ?? ""); setAssigneeId(""); setReviewerId(""); }}>{session.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
+    {activeVentureId ? <div aria-label="Task destination" className="rounded-xl bg-neutral-50 p-3 text-sm"><span className="block text-xs font-semibold text-neutral-500">Venture</span><span className="font-bold text-neutral-800">{firstVenture?.name}</span></div> : <Field label="Venture"><Select className={inputClass} value={ventureId} onChange={(event) => { const next = session.hierarchy.ventures.find((item) => item.id === event.target.value); setVentureId(event.target.value); setGroupId(next?.groups[0]?.id ?? ""); setAssigneeId(""); setReviewerId(""); }}><option value="">Choose venture</option>{session.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>}
     <Field label="Group"><Select className={inputClass} value={groupId} onChange={(event) => { setGroupId(event.target.value); setAssigneeId(""); setReviewerId(""); }}>{groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
     <LiveMemberPicker label="Assignee" value={assigneeId} onChange={setAssigneeId} ventureId={ventureId} groupId={groupId} />
     <LiveMemberPicker label="Reviewer" value={reviewerId} onChange={setReviewerId} ventureId={ventureId} groupId={groupId} optional />
@@ -131,6 +132,7 @@ function NewTask({ session, onClose, onCreated }: { session: Session; onClose: (
 }
 
 export function LiveTasksScreen() {
+  const { activeVentureId: ventureId } = useStudio();
   const params = useSearchParams();
   const [session, setSession] = useState<Session | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -138,7 +140,6 @@ export function LiveTasksScreen() {
   const [cursor, setCursor] = useState<string | undefined>();
   const [selectedId, setSelectedId] = useState<string | null>(params.get("task"));
   const [creating, setCreating] = useState(params.get("new") === "1");
-  const [ventureId, setVentureId] = useState("");
   const [status, setStatus] = useState("");
   const [query, setQuery] = useState("");
   const [mine, setMine] = useState(false);
@@ -173,11 +174,11 @@ export function LiveTasksScreen() {
 
   return <PageFrame><PageTitle title="Tasks" description="Track assignments, evidence, reviews, and activity." action={<div className="flex flex-wrap gap-2"><button type="button" onClick={() => setRevision((value) => value + 1)} className={secondaryClass}><RefreshCw size={15} />Refresh</button>{session && ["admin", "venture_head", "contributor"].includes(session.membership.role) && <button type="button" onClick={() => setCreating(true)} className={primaryClass}><Plus size={16} />Create task</button>}</div>} />
     {error && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
-    <Panel><div className="grid gap-2 border-b border-neutral-100 p-4 sm:grid-cols-2 xl:grid-cols-[minmax(200px,1fr)_repeat(3,160px)]"><label className="relative"><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input aria-label="Search loaded tasks" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search loaded work and tags" className={`${inputClass} pl-9`} /></label><Select aria-label="Owner filter" value={mine ? "Mine" : "All owners"} onChange={(event) => setMine(event.target.value === "Mine")} className={inputClass}><option>All owners</option><option>Mine</option></Select><Select aria-label="Venture filter" value={ventureId} onChange={(event) => setVentureId(event.target.value)} className={inputClass}><option value="">All ventures</option>{session?.hierarchy.ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select><Select aria-label="Status filter" value={status} onChange={(event) => setStatus(event.target.value)} className={inputClass}><option value="">All statuses</option>{statuses.map((item) => <option key={item} value={item}>{label(item)}</option>)}</Select></div>
+    <Panel><div className="grid gap-2 border-b border-neutral-100 p-4 sm:grid-cols-2 xl:grid-cols-[minmax(200px,1fr)_repeat(2,160px)]"><label className="relative"><Search size={16} className="absolute left-3 top-3.5 text-neutral-400" /><input aria-label="Search loaded tasks" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search loaded work and tags" className={`${inputClass} pl-9`} /></label><Select aria-label="Owner filter" value={mine ? "Mine" : "All owners"} onChange={(event) => setMine(event.target.value === "Mine")} className={inputClass}><option>All owners</option><option>Mine</option></Select><Select aria-label="Status filter" value={status} onChange={(event) => setStatus(event.target.value)} className={inputClass}><option value="">All statuses</option>{statuses.map((item) => <option key={item} value={item}>{label(item)}</option>)}</Select></div>
       {visibleTasks.length ? <div data-vso-stagger-group className="divide-y divide-neutral-100">{visibleTasks.map((task) => <button key={task.id} type="button" onClick={() => setSelectedId(task.id)} className="flex w-full flex-wrap items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><span className="min-w-0 flex-1"><span className="mb-1 flex flex-wrap items-center gap-2"><span className="text-sm font-semibold text-neutral-800">{task.title}</span><Badge tone={task.priority === "high" || task.priority === "urgent" ? "red" : "neutral"}>{task.priority}</Badge></span><span className="block text-sm leading-5 text-neutral-500">{task.outcome}</span><span className="mt-1 block text-xs text-neutral-400">{session?.hierarchy.ventures.find((item) => item.id === task.ventureId)?.name ?? "Venture"} · {memberName(task.assigneeId)}{task.reviewerId ? ` → ${memberName(task.reviewerId)}` : ""}</span></span><span className="text-right"><Badge tone={task.status === "blocked" ? "red" : task.status === "done" ? "green" : "blue"}>{label(task.status)}</Badge><span className="mt-1 block text-xs font-semibold text-neutral-500">Due {displayDate(task.dueAt)}</span></span><ArrowRight size={15} className="text-neutral-400" /></button>)}</div> : busy ? <p className="p-8 text-sm text-neutral-500">Loading tasks…</p> : <Empty title="No matching tasks" body="No tasks are available in this scope." />}
       {cursor && <div className="border-t border-neutral-100 p-4 text-center"><button type="button" disabled={busy} onClick={more} className={secondaryClass}>{busy ? "Loading…" : "Load more"}</button></div>}
     </Panel>
     {session && selectedId && <TaskDetail key={selectedId} id={selectedId} session={session} onClose={() => setSelectedId(null)} onChanged={() => setRevision((value) => value + 1)} />}
-    {session && creating && <NewTask session={session} onClose={() => setCreating(false)} onCreated={(task) => { setCreating(false); setSelectedId(task.id); setRevision((value) => value + 1); }} />}
+    {session && creating && <NewTask key={ventureId || "all"} session={session} activeVentureId={ventureId} onClose={() => setCreating(false)} onCreated={(task) => { setCreating(false); setSelectedId(task.id); setRevision((value) => value + 1); }} />}
   </PageFrame>;
 }

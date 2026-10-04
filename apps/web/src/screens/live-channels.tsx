@@ -1,4 +1,6 @@
 "use client";
+import { notificationRefreshEvent } from "@/lib/notification-events";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -22,7 +24,7 @@ import { useActiveChatPresence } from "@/lib/chat-presence";
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Member = Awaited<ReturnType<typeof listLiveMembers>>["items"][number];
 type CreateKind = "venture" | "group" | "channel";
-const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "The request failed. Please try again.";
+const errorText = (cause: unknown) => describeError(cause, "The request failed. Please try again.");
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 
 export function LiveChannelsScreen() {
@@ -39,6 +41,7 @@ export function LiveChannelsScreen() {
   const [railExpanded, setRailExpanded] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const shownChannel = useRef("");
   const [messagesError, setMessagesError] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
   const [memberState, setMemberState] = useState<{ groupId: string; items: Member[]; loading: boolean; error: string }>({ groupId: "", items: [], loading: false, error: "" });
@@ -128,13 +131,25 @@ export function LiveChannelsScreen() {
   const selected = group?.channels.find((channel) => channel.id === selectedId);
   const attachments = useChatAttachments(selectedId, selected ? { ventureId: selectedVentureId, groupId: selectedGroupId } : null);
   useActiveChatPresence("channel", selectedId);
+  useEffect(() => { if (selectedId) window.dispatchEvent(new Event(notificationRefreshEvent)); }, [selectedId]);
   const arrived = useChatMessageArrival(selectedId, messages, session?.user.id, !messagesLoading);
   useEffect(() => { activeConversationId.current = selectedId; }, [selectedId]);
+  const [directory, setDirectory] = useState<Record<string, string>>({});
+  const sessionUserId = session?.user.id;
+  useEffect(() => {
+    if (!sessionUserId) return;
+    let active = true;
+    queueMicrotask(() => listLiveMembers({ limit: 100 }).then((page) => { if (active) setDirectory(Object.fromEntries(page.items.map((item) => [item.id, item.name]))); }).catch(() => { /* Names fall back to the group roster. */ }));
+    return () => { active = false; };
+  }, [sessionUserId]);
   const activeGroupId = group?.id ?? "";
   const members = memberState.groupId === activeGroupId ? memberState.items : [];
   const membersLoading = Boolean(activeGroupId) && (memberState.groupId !== activeGroupId || memberState.loading);
   const membersError = memberState.groupId === activeGroupId ? memberState.error : "";
   const canCreate = session?.membership.role === "admin";
+  // Learners can read channels but not post (the API refuses message:write).
+  const canPost = !!session && session.membership.role !== "learner";
+  const canCommand = session?.membership.role === "admin" || session?.membership.role === "venture_head";
   const mentionSuggestions = mentionRange ? members.filter((member) => member.id !== session?.user.id && member.handle && `${member.name} ${member.handle}`.toLowerCase().includes(mentionRange.query.toLowerCase())).slice(0, 6) : [];
 
   function trackMention(value: string, cursor: number) {
@@ -205,9 +220,9 @@ export function LiveChannelsScreen() {
   useEffect(() => {
     if (!selectedId || !session) return;
     let active = true;
-    queueMicrotask(() => { if (active) setMessagesLoading(true); });
+    queueMicrotask(() => { if (active && shownChannel.current !== selectedId) setMessagesLoading(true); });
     queueMicrotask(() => listLiveChannelMessages(selectedId).then((page) => {
-      if (active) { setMessages(page.items); setCursor(page.nextCursor); setMessagesError(""); setMessagesLoading(false); }
+      if (active) { shownChannel.current = selectedId; setMessages(page.items); setCursor(page.nextCursor); setMessagesError(""); setMessagesLoading(false); }
     }).catch((cause: unknown) => { if (active) { setMessagesError(errorText(cause)); setMessagesLoading(false); } }));
     return () => { active = false; };
   }, [selectedId, revision, session]);
@@ -364,6 +379,7 @@ export function LiveChannelsScreen() {
 
   function closeCreate() {
     setCreateKind(null);
+    setError("");
     requestAnimationFrame(() => (createReturnRef.current?.isConnected ? createReturnRef.current : listButtonRef.current)?.focus());
   }
 
@@ -402,7 +418,7 @@ export function LiveChannelsScreen() {
     finally { setBusy(false); }
   }
 
-  const memberName = (id: string) => id === session?.user.id ? session.user.name : members.find((item) => item.id === id)?.name ?? "Member";
+  const memberName = (id: string) => id === session?.user.id ? session.user.name : members.find((item) => item.id === id)?.name ?? directory[id] ?? "Former member";
   const createVentureParent = session?.hierarchy.ventures.find((item) => item.id === createParent || item.groups.some((entry) => entry.id === createParent));
   const createGroupParent = createVentureParent?.groups.find((item) => item.id === createParent);
   const createParentValid = createKind === "venture" || createKind === null || (createKind === "group" ? createVentureParent?.id === createParent : Boolean(createGroupParent));
@@ -438,20 +454,25 @@ export function LiveChannelsScreen() {
       {error && <p role="alert" className="mx-5 mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}{result && <p role="status" className="mx-5 mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{result}</p>}
       <div className="thin-scroll min-h-0 flex-1 space-y-5 overflow-y-auto px-4 pt-6 pb-28 sm:px-7">{!session ? <ChatEmpty title="Loading workspace…" detail="Checking your channel access." /> : selected ? messagesLoading ? <ChatEmpty title="Loading messages…" detail={`Opening #${selected.name}.`} /> : messagesError ? <ChatEmpty title="Messages unavailable" detail={messagesError} /> : messages.length ? <>{cursor && <button type="button" disabled={busy} onClick={more} className="mx-auto block min-h-8 text-[11px] font-semibold text-[var(--color-primary-700)]">Load older messages</button>}<div className="my-2 text-center text-[10px] font-semibold uppercase tracking-[.12em] text-[var(--color-neutral-400)]">Channel conversation</div>{messages.map((item) => {
           const mine = item.authorId === session?.user.id;
+          const threadRoot = item.threadRootId ? messages.find((message) => message.id === item.threadRootId) : undefined;
+          const replyCount = item.threadRootId ? 0 : messages.filter((message) => message.threadRootId === item.id).length;
+          const reactionEntries = Object.entries(item.reactions ?? {}).filter(([, count]) => count > 0);
           const actions = [
             { label: `👍 React (${item.reactions?.["👍"] ?? 0})`, onSelect: () => void updateMessage(item, "reaction"), disabled: busy },
             { label: item.savedByMe ? "Remove from saved" : "Save message", onSelect: () => void updateMessage(item, "save"), disabled: busy },
             ...((session?.membership.role === "admin" || session?.membership.role === "venture_head") ? [{ label: item.pinned ? "Unpin message" : "Pin message", onSelect: () => void updateMessage(item, "pin"), disabled: busy }] : []),
-            { label: "Reply", onSelect: () => { setReplyTo(item); setPreview(null); composerRef.current?.focus(); } },
+            { label: "Reply", onSelect: () => { setReplyTo(item.threadRootId ? threadRoot ?? item : item); setPreview(null); composerRef.current?.focus(); } },
           ];
           return <article key={item.id} className={clsx("flex items-start gap-2", arrived.has(item.id) && "chat-message-arrive", mine && "flex-row-reverse")}>
             <span className="mt-5 shrink-0"><ChatAvatar id={item.authorId} name={memberName(item.authorId)} size={25} /></span>
             <div className={clsx("max-w-[min(78%,620px)]", mine && "text-right")}>
-              <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : memberName(item.authorId)}</span><time className="text-[var(--color-neutral-400)]">{stamp(item.createdAt)}</time>{item.pinned && <span className="text-[var(--color-primary-600)]">Pinned</span>}</div>
+              <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : memberName(item.authorId)}</span><time className="text-[var(--color-neutral-400)]">{stamp(item.createdAt)}</time>{item.pinned && <span className="text-[var(--color-primary-600)]">Pinned</span>}{item.savedByMe && <span className="text-[var(--color-neutral-500)]">Saved</span>}{replyCount > 0 && <span className="text-[var(--color-neutral-500)]">{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>}</div>
+              {item.threadRootId && <p className={clsx("mb-1 truncate border-l-2 border-[var(--color-primary-300)] px-2 text-[10px] text-[var(--color-neutral-500)]", mine && "border-l-0 border-r-2")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : memberName(threadRoot.authorId)}: ${threadRoot.body.slice(0, 80) || "an attachment"}` : "an earlier message"}</p>}
               <ChatMessageMenu actions={actions} label={`Actions for message from ${mine ? "you" : memberName(item.authorId)}`}>
-                {item.body && <p className={clsx("inline-block whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[var(--color-primary-600)] text-white" : "rounded-bl-[5px] border border-[var(--color-neutral-100)] bg-white text-[var(--color-neutral-700)]")}>{item.body}</p>}
+                {item.body && <p className={clsx("inline-block max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-2xl px-4 py-2.5 text-left text-[12px] leading-[1.65]", mine ? "rounded-br-[5px] bg-[var(--color-primary-600)] text-white" : "rounded-bl-[5px] border border-[var(--color-neutral-100)] bg-white text-[var(--color-neutral-700)]")}>{item.body}</p>}
                 <MessageAttachmentList files={messageAttachments(item)} />
               </ChatMessageMenu>
+              {reactionEntries.length > 0 && <div className={clsx("mt-1 flex flex-wrap gap-1", mine && "justify-end")}>{reactionEntries.map(([emoji, count]) => emoji === "👍" ? <button key={emoji} type="button" disabled={busy} onClick={() => void updateMessage(item, "reaction")} aria-pressed={Boolean(item.myReactions?.includes(emoji))} aria-label={`${count} ${emoji} reaction${count === 1 ? "" : "s"}; toggle yours`} className={clsx("inline-flex min-h-6 items-center gap-1 rounded-full border px-2 text-[11px]", item.myReactions?.includes(emoji) ? "border-[var(--color-primary-300)] bg-[var(--color-primary-50)] text-[var(--color-primary-800)]" : "border-[var(--color-neutral-200)] bg-white text-[var(--color-neutral-600)]")}>{emoji} {count}</button> : <span key={emoji} className="inline-flex min-h-6 items-center gap-1 rounded-full border border-[var(--color-neutral-200)] bg-white px-2 text-[11px] text-[var(--color-neutral-600)]">{emoji} {count}</span>)}</div>}
             </div>
           </article>;
         })}<div ref={bottomRef} /></> : <ChatEmpty title="A fresh conversation" detail="Send the first update to this channel." />  : <ChatEmpty title={group ? "No channels in this group" : venture ? "Choose a group" : "Choose a venture"} detail={group ? "Create or choose a channel in this group to start a conversation." : "Use the navigator on the left to choose a conversation."} />}</div>
@@ -464,7 +485,7 @@ export function LiveChannelsScreen() {
             {mentionSuggestions.length ? mentionSuggestions.map((member, index) => <button id={`mention-option-${index}`} key={member.id} type="button" role="option" aria-selected={index === mentionIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(member)} className={clsx("flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[11px]", index === mentionIndex ? "bg-[var(--color-primary-100)] text-[var(--color-primary-700)]" : "text-[var(--color-neutral-700)] hover:bg-[var(--color-neutral-100)]")}><ChatAvatar id={member.id} name={member.name} size={25} /><span className="min-w-0"><span className="block truncate font-semibold">{member.name}</span><span className="block truncate text-[10px] text-[var(--color-neutral-400)]">@{member.handle}</span></span></button>) : <p className="px-3 py-3 text-[11px] text-[var(--color-neutral-400)]">{membersLoading ? "Loading group members…" : membersError || "No matching group members."}</p>}
           </div>}
           <div className="flex items-end gap-2 rounded-xl border border-[var(--color-neutral-200)] bg-white px-3 py-2 shadow-e2 focus-within:border-[var(--color-primary-400)]">
-            <AttachmentMenu attachments={attachments} disabled={busy} />
+            <AttachmentMenu attachments={attachments} disabled={busy || !canPost} />
             <label htmlFor="channel-composer" className="sr-only">Message or slash command</label>
             <textarea ref={composerRef} id="channel-composer" maxLength={10000} rows={1} value={composer} onChange={(event) => { setComposer(event.target.value); trackMention(event.target.value, event.target.selectionStart); setPreview(null); clientId.current = null; }} onSelect={(event) => trackMention(event.currentTarget.value, event.currentTarget.selectionStart)} onKeyDown={(event) => {
               if (mentionRange && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setMentionRange(null); return; }
@@ -472,8 +493,8 @@ export function LiveChannelsScreen() {
               if (mentionSuggestions.length && event.key === "ArrowUp") { event.preventDefault(); setMentionIndex((index) => (index + mentionSuggestions.length - 1) % mentionSuggestions.length); return; }
               if (mentionSuggestions.length && event.key === "Enter" && !event.shiftKey) { event.preventDefault(); chooseMention(mentionSuggestions[mentionIndex] ?? mentionSuggestions[0]!); return; }
               if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
-            }} aria-controls={mentionRange ? "channel-mention-options" : undefined} aria-activedescendant={mentionSuggestions.length ? `mention-option-${mentionIndex}` : undefined} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[var(--color-neutral-400)]" placeholder="Type a message, /assign or /notify..." />
-            <button type="submit" disabled={busy || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label={composer.trim().startsWith("/") ? "Preview command" : "Send message"} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-600)] text-white transition-colors hover:bg-[var(--color-primary-600)] disabled:opacity-40"><ChatSendIcon /></button>
+            }} aria-controls={mentionRange ? "channel-mention-options" : undefined} aria-activedescendant={mentionSuggestions.length ? `mention-option-${mentionIndex}` : undefined} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[var(--color-neutral-400)]" disabled={!canPost} placeholder={!canPost ? "Learners can read this channel but cannot post." : canCommand ? "Type a message, /assign or /notify..." : "Type a message..."} />
+            <button type="submit" disabled={!canPost || busy || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label={composer.trim().startsWith("/") ? "Preview command" : "Send message"} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-600)] text-white transition-colors hover:bg-[var(--color-primary-600)] disabled:opacity-40"><ChatSendIcon /></button>
           </div>
         </div>
       </form>}

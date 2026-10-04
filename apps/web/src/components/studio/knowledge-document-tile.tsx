@@ -59,12 +59,12 @@ export function KnowledgeDocumentTile({ title, venture, status, updatedAt, onOpe
     <button type="button" onClick={onOpen} aria-label={`Open ${title}`} className="knowledge-tile block w-full min-w-0 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2">
       <span className="knowledge-tile-preview relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 p-4">
         {fileId && displayType.startsWith("image/") ? <KnowledgeImagePreview fileId={fileId} name={displayName} contentType={displayType} /> : <KnowledgeFileIcon name={displayName} contentType={displayType} />}
-        <span className="absolute bottom-2 right-2 rounded-md border border-neutral-200 bg-white/95 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600">{fileExtension(displayName, displayType)}</span>
+        <span className="absolute bottom-2 right-2 rounded-md border border-neutral-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600">{fileExtension(displayName, displayType)}</span>
       </span>
       <span className="mt-2 block line-clamp-2 px-0.5 text-sm font-semibold leading-5 text-neutral-900" title={title}>{title}</span>
       <span className="mt-0.5 block truncate px-0.5 text-xs text-neutral-500">{venture} · {status} · {updatedAt}</span>
     </button>
-    {onEdit && <button type="button" onClick={onEdit} aria-label={`Edit ${title}`} title={`Edit ${title}`} className="absolute right-2 top-2 grid h-9 w-9 place-items-center rounded-lg border border-neutral-200 bg-white/95 text-neutral-700 shadow-sm hover:bg-primary-50 hover:text-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"><Edit size={16} /></button>}
-    {onSelect && <label className="absolute left-2 top-2 grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-neutral-200 bg-white/95 shadow-sm" title="Include in context packet"><input type="checkbox" checked={Boolean(selected)} onChange={(event) => onSelect(event.target.checked)} aria-label={`Include ${title} in context packet`} className="h-4 w-4 accent-primary-600" /></label>}
+    {onEdit && <button type="button" onClick={onEdit} aria-label={`Edit ${title}`} title={`Edit ${title}`} className="absolute right-2 top-2 grid h-9 w-9 place-items-center rounded-lg border border-neutral-200 bg-white text-neutral-700 shadow-sm hover:bg-primary-50 hover:text-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"><Edit size={16} /></button>}
+    {onSelect && <label className="absolute left-2 top-2 grid h-8 w-8 cursor-pointer place-items-center rounded-lg border border-neutral-200 bg-white shadow-sm" title="Include in context packet"><input type="checkbox" checked={Boolean(selected)} onChange={(event) => onSelect(event.target.checked)} aria-label={`Include ${title} in context packet`} className="h-4 w-4 accent-primary-600" /></label>}
   </div>;
 }

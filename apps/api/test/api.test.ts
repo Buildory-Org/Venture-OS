@@ -14,11 +14,11 @@ import { ensureIndexes, ensurePushEndpointIndex } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
 import { LocalObjectStore, type ObjectStore } from "../src/storage.js";
-import { attachRealtime } from "../src/collaboration.js";
+import { attachRealtime, isLocalDevOrigin } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { authenticatePat, McpReadService } from "../src/mcp-service.js";
 import { backfillStringDates } from "../src/date-backfill.js";
-import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema } from "@venture-studio/contracts";
+import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema, taskUpdateSchema } from "@venture-studio/contracts";
 import type { Request, Response } from "express";
 
 test("production configuration fails closed without delivery and storage credentials", () => {
@@ -144,6 +144,11 @@ test("first admin signup requires the configured verified email and closes after
     await database.native.dropDatabase();
     await database.client.close();
   }
+});
+
+test("local dev realtime accepts only loopback http origins", () => {
+  for (const origin of ["http://localhost:3012", "http://127.0.0.1:3012", "http://alice.localhost:3012"]) assert.equal(isLocalDevOrigin(origin), true, origin);
+  for (const origin of ["https://alice.localhost:3012", "https://evil.example", "http://localhost.evil.example", "http://evillocalhost:3012", "not a url"]) assert.equal(isLocalDevOrigin(origin), false, origin);
 });
 
 test("local object URLs are signed, operation-scoped, and expiring", async () => {
@@ -1180,10 +1185,16 @@ test("real Mongo regressions: canonical dates, safe evidence, latest pages, and 
   await db.collection("users").insertMany([
     { _id: "user-lead", workspaceId: "workspace-a", email: "lead@example.invalid", name: "Lead", handle: "lead", status: "active", createdAt: now, updatedAt: now },
     { _id: "user-admin", workspaceId: "workspace-a", email: "admin@example.invalid", name: "Admin", handle: "admin", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-contrib", workspaceId: "workspace-a", email: "contrib@example.invalid", name: "Contributor", handle: "contrib", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-reviewer", workspaceId: "workspace-a", email: "reviewer@example.invalid", name: "Reviewer", handle: "reviewer", status: "active", createdAt: now, updatedAt: now },
+    { _id: "user-learner", workspaceId: "workspace-a", email: "learner@example.invalid", name: "Learner", handle: "learner", status: "active", createdAt: now, updatedAt: now },
   ]);
   await db.collection("memberships").insertMany([
     { _id: "membership-lead", workspaceId: "workspace-a", userId: "user-lead", role: "venture_head", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
     { _id: "membership-admin", workspaceId: "workspace-a", userId: "user-admin", role: "admin", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-contrib", workspaceId: "workspace-a", userId: "user-contrib", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-reviewer", workspaceId: "workspace-a", userId: "user-reviewer", role: "reviewer", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
+    { _id: "membership-learner", workspaceId: "workspace-a", userId: "user-learner", role: "learner", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "active", createdAt: now, updatedAt: now },
   ]);
   await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Allowed", status: "active", goal30Day: "", createdAt: now });
   await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now });
@@ -1233,11 +1244,13 @@ test("real Mongo regressions: canonical dates, safe evidence, latest pages, and 
     const link = await post(`/v1/tasks/${taskId}/evidence`, { title: "Link", description: "Source", uri: "https://example.com/proof" });
     assert.equal(link.status, 201, await link.clone().text());
     assert.equal(((await link.json()) as any).data.uri, "https://example.com/proof");
-    await db.collection("evidence_items").insertOne({ _id: "evidence-legacy-null", workspaceId: "workspace-a", taskId, type: "note", title: "Legacy", uri: null, description: "Stored before the fix", submittedBy: "user-lead", submittedAt: new Date(), reviewStatus: "pending" });
+    await db.collection("evidence_items").insertOne({ _id: "evidence-legacy-null", workspaceId: "workspace-a", taskId, type: "note", title: "Legacy", uri: null, description: "Stored before the fix", submittedBy: "user-contrib", submittedAt: new Date(), reviewStatus: "pending" });
     const detail = (await (await fetch(`${origin}/v1/tasks/${taskId}`, { headers })).json()) as any;
     assert.equal(detail.data.evidence.length, 3);
     assert.equal(evidenceItemSchema.array().safeParse(detail.data.evidence).success, true);
-    const reviewed = await post("/v1/evidence/evidence-legacy-null/review", { status: "accepted" });
+    assert.equal((await post(`/v1/tasks/${taskId}/evidence`, { title: "Not mine", description: "Contributor on the lead's task" }, { "content-type": "application/json", "x-dev-user-id": "user-contrib" })).status, 403);
+    assert.equal((await post("/v1/evidence/evidence-legacy-null/review", { status: "accepted" })).status, 403);
+    const reviewed = await post("/v1/evidence/evidence-legacy-null/review", { status: "accepted" }, adminHeaders);
     assert.equal(reviewed.status, 200, await reviewed.clone().text());
     assert.equal(evidenceItemSchema.safeParse(((await reviewed.json()) as any).data).success, true);
 
@@ -1327,6 +1340,113 @@ test("real Mongo regressions: canonical dates, safe evidence, latest pages, and 
     // Blank Markdown is a validation error rather than a 500 from an empty chunk insert.
     assert.equal((await post("/v1/documents", { ventureId: "venture-a", title: "Blank", markdown: "  \n\n ", evidenceClass: "verified_fact", sensitivity: "team" })).status, 400);
     assert.equal((await putDocument({ markdown: " \n ", changeSummary: "Blank" })).status, 400);
+
+    // QA fixes: activity rows never carry a null status, evidence has separation of duties, stale needs approval, sensitivity stays readable.
+    const asUser = (userId: string) => ({ "content-type": "application/json", "x-dev-user-id": userId });
+    const qaTask = await post("/v1/tasks", { ventureId: "venture-a", groupId: "group-a", title: "QA duties", outcome: "Reviewed work", assigneeId: "user-contrib", reviewerId: "user-reviewer", dueAt: later(48), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Done", evidenceRequirement: "Proof" });
+    assert.equal(qaTask.status, 201, await qaTask.clone().text());
+    const qaTaskId = ((await qaTask.json()) as any).data.id;
+    const peopleOnly = await fetch(`${origin}/v1/tasks/${qaTaskId}`, { method: "PATCH", headers, body: JSON.stringify({ reviewerId: "user-lead" }) });
+    assert.equal(peopleOnly.status, 200, await peopleOnly.clone().text());
+    await db.collection("task_updates").insertOne({ _id: "task-update-legacy-null", workspaceId: "workspace-a", taskId: qaTaskId, authorId: "user-lead", type: "comment", body: "Task updated", fromStatus: "proposed", toStatus: null, createdAt: new Date() });
+    const qaDetail = (await (await fetch(`${origin}/v1/tasks/${qaTaskId}`, { headers })).json()) as any;
+    assert.equal(taskUpdateSchema.array().safeParse(qaDetail.data.updates).success, true);
+    assert.equal(await db.collection("task_updates").countDocuments({ taskId: qaTaskId, toStatus: { $type: "null" }, _id: { $ne: "task-update-legacy-null" } }), 0);
+    await fetch(`${origin}/v1/tasks/${qaTaskId}`, { method: "PATCH", headers, body: JSON.stringify({ reviewerId: "user-reviewer" }) });
+    const evidenceBy = (userId: string) => fetch(`${origin}/v1/tasks/${qaTaskId}/evidence`, { method: "POST", headers: asUser(userId), body: JSON.stringify({ title: `By ${userId}`, description: "Proof" }) });
+    assert.equal((await evidenceBy("user-learner")).status, 403);
+    assert.equal((await evidenceBy("user-reviewer")).status, 403);
+    const assigneeEvidence = await evidenceBy("user-contrib");
+    assert.equal(assigneeEvidence.status, 201, await assigneeEvidence.clone().text());
+    const leadEvidence = await evidenceBy("user-lead");
+    assert.equal(leadEvidence.status, 201);
+    const leadEvidenceId = ((await leadEvidence.json()) as any).data.id;
+    const review = (evidenceId: string, userId: string) => fetch(`${origin}/v1/evidence/${evidenceId}/review`, { method: "POST", headers: asUser(userId), body: JSON.stringify({ status: "accepted" }) });
+    assert.equal((await review(leadEvidenceId, "user-lead")).status, 403);
+    assert.equal((await review(leadEvidenceId, "user-reviewer")).status, 200);
+    const adminEvidence = await evidenceBy("user-admin");
+    assert.equal(adminEvidence.status, 201);
+    assert.equal((await review(((await adminEvidence.json()) as any).data.id, "user-admin")).status, 200);
+    const draftDoc = await post("/v1/documents", { ventureId: "venture-a", title: "Unreviewed", markdown: "# Draft only", evidenceClass: "verified_fact", sensitivity: "team" });
+    const draftDocId = ((await draftDoc.json()) as any).data.id;
+    const setStatus = (status: string) => fetch(`${origin}/v1/documents/${draftDocId}/metadata`, { method: "PATCH", headers, body: JSON.stringify({ status }) });
+    assert.equal((await setStatus("stale")).status, 409);
+    assert.equal((await setStatus("approved")).status, 200);
+    assert.equal((await setStatus("stale")).status, 200);
+    const contributorManagerDoc = await fetch(`${origin}/v1/documents`, { method: "POST", headers: asUser("user-contrib"), body: JSON.stringify({ ventureId: "venture-a", title: "Hidden from me", markdown: "# Secret", evidenceClass: "verified_fact", sensitivity: "manager" }) });
+    assert.equal(contributorManagerDoc.status, 403);
+    assert.equal((await fetch(`${origin}/v1/documents`, { method: "POST", headers: asUser("user-contrib"), body: JSON.stringify({ ventureId: "venture-a", title: "Visible to me", markdown: "# Team", evidenceClass: "verified_fact", sensitivity: "venture_restricted" }) })).status, 201);
+
+    // QA fixes for planning and sales: partial updates keep untouched fields, blank text and inverted dates are refused, request roles hold.
+    const stagePipeline = await post("/v1/pipelines", { ventureId: "venture-a", name: "Partial updates", offerName: "Offer", status: "paused" });
+    const stagePipelineId = ((await stagePipeline.json()) as any).data.id;
+    const renamed = await fetch(`${origin}/v1/pipelines/${stagePipelineId}`, { method: "PATCH", headers, body: JSON.stringify({ name: "Renamed pipeline" }) });
+    assert.equal(((await renamed.json()) as any).data.status, "paused");
+    const contactOpportunity = await post("/v1/opportunities", { pipelineId: stagePipelineId, companyName: "Contact Co", contactName: "Jane Doe", source: "Referral", observedSignal: "Signal", fitReason: "Fit", evidenceConfidence: "low", stage: "identified", ownerId: "user-lead", nextAction: "Call" });
+    const contactOpportunityId = ((await contactOpportunity.json()) as any).data.id;
+    const staged = await fetch(`${origin}/v1/opportunities/${contactOpportunityId}`, { method: "PATCH", headers, body: JSON.stringify({ stage: "qualified" }) });
+    const stagedBody = ((await staged.json()) as any).data;
+    assert.equal(stagedBody.stage, "qualified");
+    assert.equal(stagedBody.contactName, "Jane Doe");
+    assert.equal((await post("/v1/decisions", { ventureId: "venture-a", title: "   ", text: "Decide", ownerId: "user-lead", decidedAt: later(0), evidence: [], reason: "Because", affectedWork: [], reviewTrigger: "", status: "draft" })).status, 400);
+    assert.equal((await post("/v1/outcomes", { ventureId: "venture-a", title: "Inverted", description: "Dates", ownerId: "user-lead", priority: "high", startAt: later(48), reviewAt: later(24), successEvidence: "Evidence", status: "draft" })).status, 400);
+    const askContributor = await post("/v1/information-requests", { ventureId: "venture-a", respondentId: "user-contrib", question: "What changed?", purpose: "Plan", dueAt: later(24) });
+    assert.equal(askContributor.status, 201, await askContributor.clone().text());
+    const askId = ((await askContributor.json()) as any).data.id;
+    const patchRequest = (userId: string, body: unknown) => fetch(`${origin}/v1/information-requests/${askId}`, { method: "PATCH", headers: asUser(userId), body: JSON.stringify(body) });
+    assert.equal((await patchRequest("user-contrib", { status: "closed" })).status, 403);
+    assert.equal((await patchRequest("user-contrib", { status: "answered", responseMarkdown: "   " })).status, 400);
+    assert.equal((await patchRequest("user-contrib", { status: "answered", responseMarkdown: "Here is the answer" })).status, 200);
+    assert.equal((await patchRequest("user-contrib", { status: "reviewed" })).status, 403);
+    assert.equal((await patchRequest("user-lead", { status: "reviewed", responseMarkdown: "Overwritten by reviewer" })).status, 200);
+    const reviewedRequest = await db.collection("information_requests").findOne({ _id: askId });
+    assert.equal(reviewedRequest?.responseMarkdown, "Here is the answer");
+    assert.equal(reviewedRequest?.reviewedBy, "user-lead");
+    assert.equal((await patchRequest("user-lead", { status: "closed" })).status, 200);
+    assert.equal((await patchRequest("user-contrib", { status: "answered", responseMarkdown: "Sneaky rewrite" })).status, 409);
+    assert.equal((await patchRequest("user-lead", { status: "reviewed" })).status, 409);
+    assert.equal((await patchRequest("user-lead", { status: "open" })).status, 200);
+    assert.equal((await patchRequest("user-lead", { status: "reviewed" })).status, 409);
+    assert.equal((await patchRequest("user-contrib", { status: "answered", responseMarkdown: "Second answer" })).status, 200);
+    const reanswered = await db.collection("information_requests").findOne({ _id: askId });
+    assert.equal(reanswered?.responseMarkdown, "Second answer");
+    assert.equal(Object.hasOwn(reanswered!, "reviewedBy"), false);
+    const selfAsk = await post("/v1/information-requests", { ventureId: "venture-a", respondentId: "user-lead", question: "Note to self", purpose: "Plan", dueAt: later(24) });
+    const selfAskId = ((await selfAsk.json()) as any).data.id;
+    assert.equal((await fetch(`${origin}/v1/information-requests/${selfAskId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "answered", responseMarkdown: "Mine" }) })).status, 200);
+    assert.equal((await fetch(`${origin}/v1/information-requests/${selfAskId}`, { method: "PATCH", headers, body: JSON.stringify({ status: "reviewed" }) })).status, 403);
+    await db.collection("outcomes").insertOne({ _id: "outcome-legacy-inverted", workspaceId: "workspace-a", ventureId: "venture-a", title: "Legacy", description: "Old", ownerId: "user-lead", priority: "low", startAt: new Date("2026-11-01T00:00:00Z"), reviewAt: new Date("2026-10-01T00:00:00Z"), successEvidence: "Evidence", status: "active", createdAt: now, updatedAt: now });
+    assert.equal((await fetch(`${origin}/v1/outcomes/outcome-legacy-inverted`, { method: "PATCH", headers, body: JSON.stringify({ status: "cancelled" }) })).status, 200);
+    assert.equal((await fetch(`${origin}/v1/outcomes/outcome-legacy-inverted`, { method: "PATCH", headers, body: JSON.stringify({ reviewAt: "2026-09-01T00:00:00Z" }) })).status, 400);
+
+    // Notifications can be marked read for one conversation or all at once, only for the caller.
+    const notice = (id: string, userId: string, extra: Record<string, unknown>) => ({ _id: id, outboxId: id, workspaceId: "workspace-a", userId, type: "message", title: "Note", body: "Body", resourceType: "message", resourceId: id, createdAt: new Date(), ...extra });
+    await db.collection("notifications").insertMany([
+      notice("read-dm-1", "user-lead", { chatKind: "direct", chatId: "user-contrib" }),
+      notice("read-dm-2", "user-lead", { chatKind: "direct", chatId: "user-contrib" }),
+      notice("read-channel-1", "user-lead", { type: "mention", chatKind: "channel", chatId: "channel-a" }),
+      notice("read-other-user", "user-contrib", { chatKind: "direct", chatId: "user-lead" }),
+    ]);
+    const markRead = (body: unknown) => fetch(`${origin}/v1/notifications/read`, { method: "POST", headers, body: JSON.stringify(body) });
+    assert.equal((await markRead({ chatKind: "direct" })).status, 400);
+    assert.equal(((await (await markRead({ chatKind: "direct", chatId: "user-contrib" })).json()) as any).data.read, 2);
+    assert.equal(await db.collection("notifications").countDocuments({ _id: "read-channel-1", readAt: { $exists: false } }), 1);
+    assert.equal(((await (await markRead({})).json()) as any).data.read >= 1, true);
+    assert.equal(await db.collection("notifications").countDocuments({ _id: "read-other-user", readAt: { $exists: false } }), 1);
+
+    // Admin: names are unique regardless of case, and an unchanged access save keeps inherited venture access inherited.
+    const caseVenture = await post("/v1/admin/ventures", { name: "Case Venture", ownerId: "user-admin", goal30Day: "" }, adminHeaders);
+    assert.equal(caseVenture.status, 201, await caseVenture.clone().text());
+    const caseVentureId = ((await caseVenture.json()) as any).data.id;
+    assert.equal((await post("/v1/admin/ventures", { name: "case venture", ownerId: "user-admin", goal30Day: "" }, adminHeaders)).status, 409);
+    const caseGroup = await post("/v1/admin/groups", { ventureId: caseVentureId, name: "Alpha Team" }, adminHeaders);
+    assert.equal(caseGroup.status, 201, await caseGroup.clone().text());
+    const caseGroupId = ((await caseGroup.json()) as any).data.id;
+    assert.equal((await post("/v1/admin/groups", { ventureId: caseVentureId, name: "alpha team" }, adminHeaders)).status, 409);
+    await db.collection("memberships").updateOne({ _id: "membership-learner" }, { $set: { ventureIds: ["venture-a", caseVentureId], groupIds: ["group-a", caseGroupId], inheritedVentureIds: [caseVentureId] } });
+    const unchangedSave = await fetch(`${origin}/v1/admin/memberships/membership-learner`, { method: "PUT", headers: adminHeaders, body: JSON.stringify({ role: "learner", ventureIds: ["venture-a", caseVentureId], groupIds: ["group-a", caseGroupId] }) });
+    assert.equal(unchangedSave.status, 200, await unchangedSave.clone().text());
+    assert.deepEqual((await db.collection("memberships").findOne({ _id: "membership-learner" }))?.inheritedVentureIds, [caseVentureId]);
 
     // MCP venture status stays inside the caller's workspace even when another workspace reuses a venture ID.
     await db.collection("outcomes").insertOne({ _id: "outcome-foreign", workspaceId: "workspace-other", ventureId: "venture-a", title: "Foreign outcome", status: "active" });

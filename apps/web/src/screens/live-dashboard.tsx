@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useMemo, useState } from "react";
 import { useStudio } from "@/lib/studio-store";
@@ -60,7 +61,7 @@ export function LiveDashboard() {
         setLoading(false);
       }).catch((cause: unknown) => {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : "Could not load the connected dashboard.");
+        setError(describeError(cause, "Could not load the connected dashboard."));
         setLoading(false);
       });
     });
@@ -83,7 +84,7 @@ export function LiveDashboard() {
       await updateLiveTask(id, { status: "in_progress" });
       setRevision((value) => value + 1);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update the task.");
+      setError(describeError(cause, "Could not update the task."));
     } finally {
       setBusyId(null);
     }
@@ -98,7 +99,7 @@ export function LiveDashboard() {
       const next = await listLiveTasks(cursor, scope ? { ventureId: scope } : {});
       setData((current) => current ? { ...current, taskPage: { items: [...current.taskPage.items, ...next.items], nextCursor: next.nextCursor } } : current);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load more tasks.");
+      setError(describeError(cause, "Could not load more tasks."));
     } finally {
       setLoadingMore(false);
     }

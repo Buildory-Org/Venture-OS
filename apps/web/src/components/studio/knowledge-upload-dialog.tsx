@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -15,7 +16,7 @@ export function KnowledgeUploadDialog({ mode, session, activeVentureId, onClose,
   session: UploadSession;
   activeVentureId: string;
   onClose: () => void;
-  onComplete: () => void;
+  onComplete: (summary: { failed: number }) => void;
   onMarkdown?: (file: File, markdown: string, ventureId: string) => Promise<void>;
   onFile?: (file: File, ventureId: string, progress: (percent: number, phase: "uploading" | "finalizing") => void) => Promise<void>;
   demo?: boolean;
@@ -48,6 +49,7 @@ export function KnowledgeUploadDialog({ mode, session, activeVentureId, onClose,
     if (!items.some((item) => item.status === "queued" || item.status === "failed")) return;
     setError(""); setUploading(true);
     let completed = false;
+    let failed = 0;
     for (const item of items.filter((item) => item.status === "queued" || item.status === "failed")) {
       try {
         if (mode === "markdown" || /\.(md|markdown|txt)$/i.test(item.file.name)) {
@@ -68,11 +70,12 @@ export function KnowledgeUploadDialog({ mode, session, activeVentureId, onClose,
         completed = true;
         update(item.id, { status: "done", progress: 100 });
       } catch (cause) {
-        update(item.id, { status: "failed", error: cause instanceof Error ? cause.message : "Upload failed." });
+        failed += 1;
+        update(item.id, { status: "failed", error: describeError(cause, "Upload failed.") });
       }
     }
     setUploading(false);
-    if (completed) onComplete();
+    if (completed) onComplete({ failed });
   }
 
   const title = mode === "markdown" ? "Upload Markdown" : "Upload files";

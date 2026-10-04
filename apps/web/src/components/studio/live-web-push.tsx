@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import { BellRing } from "@/components/ui/icons";
@@ -7,7 +8,7 @@ import { primaryClass, secondaryClass } from "@/components/studio/primitives";
 
 type State = "checking" | "unavailable" | "unsupported" | "denied" | "ready" | "enabled" | "error";
 const workerPath = "/push-sw.js";
-const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "Web Push could not be updated.";
+const errorText = (cause: unknown) => describeError(cause, "Web Push could not be updated.");
 
 function supported() {
   return window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;

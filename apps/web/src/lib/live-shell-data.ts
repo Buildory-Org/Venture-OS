@@ -79,7 +79,7 @@ export function connectedDashboardData(session: Session, input: {
       ownerId: item.ownerId, lastAction: "", nextAction: item.nextAction, nextAt: item.nextActionAt ?? item.updatedAt,
       evidence: item.fitReason, result: "",
     })),
-    classes: input.classes.filter((item) => !!item.ventureId).map((item) => ({
+    classes: input.classes.filter((item) => !!item.ventureId && item.status === "scheduled").map((item) => ({
       id: item.id, ventureId: item.ventureId!, title: item.title, objective: item.objective,
       date: item.scheduledAt, participantIds: item.participantIds, material: item.materialDocumentId ?? "",
       practice: "", assignment: "", assessment: "", gap: "", nextLesson: "",

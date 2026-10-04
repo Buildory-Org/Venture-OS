@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import { prepareLiveFileDownload, uploadLiveFile } from "@/lib/studio-api";
@@ -24,7 +25,7 @@ export function LiveFileUpload({ ventureId, groupId, taskId, onUploaded }: {
     try {
       const uploaded = await uploadLiveFile(file, { ventureId, ...(groupId ? { groupId } : {}), ...(taskId ? { taskId } : {}) });
       setFile(null); form.reset(); onUploaded(uploaded);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "The upload failed."); }
+    } catch (cause) { setError(describeError(cause, "The upload failed.")); }
     finally { setBusy(false); }
   }
 
@@ -41,7 +42,7 @@ export function LiveFileDownload({ id, name }: { id: string; name: string }) {
   async function prepare() {
     setBusy(true); setError("");
     try { setObjectUrl(await prepareLiveFileDownload(id)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not download this file."); }
+    catch (cause) { setError(describeError(cause, "Could not download this file.")); }
     finally { setBusy(false); }
   }
 

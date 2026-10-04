@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useState } from "react";
 import Link from "next/link";
@@ -21,7 +22,7 @@ export function SignupForm({ status }: { status: Status | null }) {
       const response = await fetch("/api/auth/sign-in/magic-link", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: email.trim(), name: name.trim(), callbackURL: `${window.location.origin}/signup/complete` }) });
       if (!response.ok) throw new Error(`Could not send a verification link (HTTP ${response.status}).`);
       setSent(true);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request a verification link."); }
+    } catch (cause) { setError(describeError(cause, "Could not request a verification link.")); }
     finally { setBusy(false); }
   }
 

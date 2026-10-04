@@ -1,11 +1,12 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, RefreshCw } from "@/components/ui/icons";
-import { getLiveNotificationPreferences, getLiveReminder, listLiveNotifications, listLiveReminders, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
-import { notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
+import { getLiveNotificationPreferences, getLiveReminder, listLiveNotifications, listLiveReminders, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder, updateLiveNotificationPreferences } from "@/lib/studio-api";
+import { notificationHref, notificationRefreshEvent, notificationSnapshotEvent } from "@/lib/notification-events";
 import { Badge, Empty, PageFrame, PageTitle, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { LiveWebPush } from "@/components/studio/live-web-push";
 
@@ -33,7 +34,7 @@ export function LiveNotificationsScreen() {
     let active = true;
     queueMicrotask(() => Promise.all([listLiveNotifications(), listLiveReminders(), getLiveNotificationPreferences()]).then(([nextItems, page, nextPreferences]) => {
       if (active) { setItems(nextItems); setReminders((current) => { const linked = current.find((item) => item.id === new URLSearchParams(window.location.search).get("reminder")); return linked && !page.items.some((item) => item.id === linked.id) ? [linked, ...page.items] : page.items; }); setReminderCursor(page.nextCursor); setPreferences(nextPreferences); setLoading(false); setError(""); }
-    }).catch((cause: unknown) => { if (active) { setError(cause instanceof Error ? cause.message : "Could not load your inbox."); setLoading(false); } }));
+    }).catch((cause: unknown) => { if (active) { setError(describeError(cause, "Could not load your inbox.")); setLoading(false); } }));
     return () => { active = false; };
   }, [revision]);
 
@@ -68,7 +69,7 @@ export function LiveNotificationsScreen() {
   async function act(id: string, action: () => Promise<unknown>) {
     setBusyId(id); setError(""); setResult("");
     try { await action(); setRevision((value) => value + 1); window.dispatchEvent(new Event(notificationRefreshEvent)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update the record."); }
+    catch (cause) { setError(describeError(cause, "Could not update the record.")); }
     finally { setBusyId(null); }
   }
 
@@ -77,7 +78,7 @@ export function LiveNotificationsScreen() {
     if (!preferences) return;
     setBusyId("preferences"); setError(""); setResult("");
     try { setPreferences(await updateLiveNotificationPreferences(preferences)); setResult("Notification preferences saved."); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save preferences."); }
+    catch (cause) { setError(describeError(cause, "Could not save preferences.")); }
     finally { setBusyId(null); }
   }
 
@@ -85,7 +86,7 @@ export function LiveNotificationsScreen() {
     if (!reminderCursor) return;
     setBusyId("reminders"); setError("");
     try { const page = await listLiveReminders(reminderCursor); setReminders((current) => [...current, ...page.items]); setReminderCursor(page.nextCursor); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load more reminders."); }
+    catch (cause) { setError(describeError(cause, "Could not load more reminders.")); }
     finally { setBusyId(null); }
   }
 
@@ -96,15 +97,15 @@ export function LiveNotificationsScreen() {
     {linkedReminderError && <p role="alert" className="mb-4 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{linkedReminderError}</p>}
     {result && <p role="status" className="mb-4 rounded-xl bg-success-surface p-3 text-sm font-semibold text-success-text">{result}</p>}
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_350px]">
-      <Panel><div className="flex gap-2 border-b border-neutral-100 p-3"><button type="button" onClick={() => setUnreadOnly(false)} className={`min-h-9 rounded-lg px-3 text-sm font-semibold ${!unreadOnly ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>All</button><button type="button" onClick={() => setUnreadOnly(true)} className={`min-h-9 rounded-lg px-3 text-sm font-semibold ${unreadOnly ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>Unread</button></div>
+      <Panel><div className="flex gap-2 border-b border-neutral-100 p-3"><button type="button" onClick={() => setUnreadOnly(false)} className={`min-h-9 rounded-lg px-3 text-sm font-semibold ${!unreadOnly ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>All</button><button type="button" onClick={() => setUnreadOnly(true)} className={`min-h-9 rounded-lg px-3 text-sm font-semibold ${unreadOnly ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-50"}`}>Unread</button>{items.some((item) => !item.readAt) && <button type="button" disabled={busyId === "all"} onClick={() => act("all", () => markLiveNotificationsRead())} className="min-h-9 rounded-lg px-3 text-sm font-semibold text-[var(--color-primary-700)] hover:bg-neutral-50 disabled:opacity-40">Mark all read</button>}</div>
         {loading && !items.length ? <p className="p-8 text-sm text-neutral-500">Loading notifications…</p> : visible.length ? <div className="divide-y divide-neutral-100">{visible.map((item) => {
           const reminderId = item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
-          return <article key={item.id} className={`flex flex-wrap items-start gap-3 p-4 ${!item.readAt ? "bg-primary-50/40" : ""}`}><span className="grid h-9 w-9 place-items-center rounded-xl bg-primary-50 text-primary-700"><Bell size={17} /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-neutral-800">{item.title}</p><Badge tone={item.readAt ? "neutral" : "blue"}>{item.readAt ? "Read" : "Unread"}</Badge></div><p className="mt-1 text-sm text-neutral-500">{item.body}</p><p className="mt-1 text-xs text-neutral-400">{stamp(item.createdAt)} · {item.type}</p></div><div className="flex flex-wrap gap-2">{item.resourceType === "task" && <Link href={`/tasks/live?task=${encodeURIComponent(item.resourceId)}`} className={secondaryClass}>Open task</Link>}{!item.readAt && <button type="button" disabled={busyId === item.id} onClick={() => act(item.id, () => readLiveNotification(item.id))} className={secondaryClass}>Mark read</button>}{reminderId && <Select aria-label={`Snooze ${item.title}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(reminderId, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Never</option></Select>}</div></article>;
+          return <article key={item.id} className={`flex flex-wrap items-start gap-3 p-4 ${!item.readAt ? "bg-primary-50/40" : ""}`}><span className="grid h-9 w-9 place-items-center rounded-xl bg-primary-50 text-primary-700"><Bell size={17} /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-neutral-800">{item.title}</p><Badge tone={item.readAt ? "neutral" : "blue"}>{item.readAt ? "Read" : "Unread"}</Badge></div><p className="mt-1 text-sm text-neutral-500">{item.body}</p><p className="mt-1 text-xs text-neutral-400">{stamp(item.createdAt)} · {item.type}</p></div><div className="flex flex-wrap gap-2">{notificationHref(item).href !== "/notifications/live" && <Link href={notificationHref(item).href} className={secondaryClass}>{notificationHref(item).label}</Link>}{!item.readAt && <button type="button" disabled={busyId === item.id} onClick={() => act(item.id, () => readLiveNotification(item.id))} className={secondaryClass}>Mark read</button>}{reminderId && <Select aria-label={`Snooze ${item.title}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(reminderId, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Cancel reminder</option></Select>}</div></article>;
         })}</div> : <Empty title="Inbox clear" body="No notifications in this view." />}
       </Panel>
       <div className="space-y-4"><Panel><PanelHead title="Delivery preferences" /><form onSubmit={savePreferences} className="space-y-2 p-4">{preferences ? (Object.keys(preferenceLabels) as (keyof Preferences)[]).map((key) => <label key={key} className="flex min-h-10 items-center justify-between gap-3 rounded-xl bg-neutral-50 px-3 text-sm font-semibold text-neutral-700"><span>{preferenceLabels[key]}</span><input type="checkbox" role="switch" className="vso-toggle" checked={preferences[key]} onChange={(event) => setPreferences((current) => current ? { ...current, [key]: event.target.checked } : current)} /></label>) : <p className="text-sm text-neutral-500">Loading preferences…</p>}<button disabled={!preferences || busyId === "preferences"} className={`${primaryClass} mt-2`}>Save preferences</button></form></Panel>
         <Panel><PanelHead title="Browser push" /><LiveWebPush preferenceEnabled={preferences?.webPush} /></Panel>
-        <Panel><PanelHead title="Your reminders" aside={<Badge tone="blue">{reminders.length}{reminderCursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{reminders.length ? reminders.map((item) => <article key={item.id} id={`reminder-${item.id}`} tabIndex={-1} className={`p-4 outline-none ${linkedReminderId === item.id ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : ""}`}><p className="text-sm font-semibold text-neutral-800">{item.message}</p><p className="mt-1 text-xs text-neutral-500">{stamp(item.scheduledAt)} · {item.state} · {item.timezone}</p>{item.taskId && <Link href={`/tasks/live?task=${encodeURIComponent(item.taskId)}`} className="mt-2 inline-block text-xs font-semibold text-primary-700 underline">Open task</Link>}{item.state === "scheduled" && <Select aria-label={`Snooze reminder ${item.id}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(item.id, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="mt-2 block min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Never</option></Select>}</article>) : <Empty title="No reminders" body="Nothing has been scheduled for your account." />}</div>{reminderCursor && <button type="button" disabled={busyId === "reminders"} onClick={moreReminders} className="m-4 text-xs font-semibold text-primary-700 underline">Load more reminders</button>}</Panel>
+        <Panel><PanelHead title="Your reminders" aside={<Badge tone="blue">{reminders.length}{reminderCursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{reminders.length ? reminders.map((item) => <article key={item.id} id={`reminder-${item.id}`} tabIndex={-1} className={`p-4 outline-none ${linkedReminderId === item.id ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : ""}`}><p className="break-words text-sm font-semibold text-neutral-800 [overflow-wrap:anywhere]">{item.message}</p><p className="mt-1 text-xs text-neutral-500">{stamp(item.scheduledAt)} · {item.state}</p>{item.taskId && <Link href={`/tasks/live?task=${encodeURIComponent(item.taskId)}`} className="mt-2 inline-block text-xs font-semibold text-primary-700 underline">Open task</Link>}{item.state === "scheduled" && <Select aria-label={`Snooze reminder ${item.id}`} disabled={busyId === item.id} defaultValue="" onChange={(event) => { const value = event.target.value; if (value) act(item.id, () => snoozeLiveReminder(item.id, value === "never" ? "never" : Number(value) as 10 | 20 | 30)); event.currentTarget.value = ""; }} className="mt-2 block min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-xs font-semibold text-neutral-700"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Cancel reminder</option></Select>}</article>) : <Empty title="No reminders" body="Nothing has been scheduled for your account." />}</div>{reminderCursor && <button type="button" disabled={busyId === "reminders"} onClick={moreReminders} className="m-4 text-xs font-semibold text-primary-700 underline">Load more reminders</button>}</Panel>
       </div>
     </div>
   </PageFrame>;

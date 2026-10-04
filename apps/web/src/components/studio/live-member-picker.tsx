@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useEffect, useState } from "react";
@@ -29,7 +30,7 @@ export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, e
       setBusy(true);
       listLiveMembers({ ventureId, groupId, ...(query ? { q: query } : {}), limit: 50 }).then((page) => {
         if (active) { setMembers(page.items); setCursor(page.nextCursor); setError(""); setBusy(false); }
-      }).catch((cause: unknown) => { if (active) { setError(cause instanceof Error ? cause.message : "Could not load members."); setBusy(false); } });
+      }).catch((cause: unknown) => { if (active) { setError(describeError(cause, "Could not load members.")); setBusy(false); } });
     });
     return () => { active = false; };
   }, [ventureId, groupId, query]);
@@ -40,7 +41,7 @@ export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, e
     try {
       const page = await listLiveMembers({ ventureId, groupId, ...(query ? { q: query } : {}), cursor, limit: 50 });
       setMembers((items) => [...items, ...page.items]); setCursor(page.nextCursor);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load more members."); }
+    } catch (cause) { setError(describeError(cause, "Could not load more members.")); }
     finally { setBusy(false); }
   }
 

@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -67,7 +68,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
           return;
         }
         setSnapshot(null);
-        setError(cause instanceof Error ? cause.message : "Could not open your workspace.");
+        setError(describeError(cause, "Could not open your workspace."));
       }
     });
     return () => { active = false; };

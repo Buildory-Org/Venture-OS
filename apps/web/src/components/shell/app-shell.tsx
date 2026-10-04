@@ -9,10 +9,13 @@ import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 import { workspaceHref } from "./workspace-link";
 import { ChatSidebarContext } from "./chat-sidebar-context";
+import { LiveNotificationPulse } from "./live-notification-pulse";
+import { useStudio } from "@/lib/studio-store";
 
 type ChatEntry = { path: string; phase: "waiting" | "leaving" };
 
 export function AppShell({ children, connected = false }: { children: React.ReactNode; connected?: boolean }) {
+  const { currentUserId } = useStudio();
   const router = useRouter();
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
@@ -133,6 +136,7 @@ export function AppShell({ children, connected = false }: { children: React.Reac
         <Sidebar collapsed={collapsed} mobileOpen={mobileOpen} immersive={immersive} onCloseMobile={() => { setMobileOpen(false); if (isChat) setRevealedChatPath(null); }} onOpenChat={openChat} />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {isChat && connected && <LiveNotificationPulse userId={currentUserId} showBell={false} />}
         <div className="vso-shell-topbar relative z-20 h-14 shrink-0" aria-hidden={isChat} inert={isChat}>
         {!isChat && <Topbar
           collapsed={collapsed}

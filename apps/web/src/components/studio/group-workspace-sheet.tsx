@@ -1,5 +1,6 @@
 /* eslint-disable @next/next/no-img-element -- Blob URLs are fetched on demand and cannot use Next image optimization. */
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useKanbanDnd } from "@/components/ui/use-kanban-dnd";
@@ -23,7 +24,7 @@ type Group = { id: string; name: string; channels: { id: string; name: string }[
 const statuses: Task["status"][] = ["draft", "proposed", "accepted", "backlog", "todo", "in_progress", "blocked", "review", "done", "cancelled", "parked"];
 const tabs: WorkspaceTab[] = ["kanban", "attachments", "saved", "knowledge"];
 const label = (value: string) => value.replaceAll("_", " ");
-const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "The request failed. Please try again.";
+const errorText = (cause: unknown) => describeError(cause, "The request failed. Please try again.");
 const mediaAccept = "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,audio/mpeg,audio/mp4,audio/ogg,audio/webm,audio/wav";
 const emptyPage = <T,>(): Page<T> => ({ scope: "", items: [], loading: false, error: "" });
 

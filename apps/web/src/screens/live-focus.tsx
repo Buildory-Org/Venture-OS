@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -22,7 +23,7 @@ export function LiveFocusScreen() {
 
   useEffect(() => {
     let active = true;
-    queueMicrotask(() => Promise.all([getCurrentLiveFocus(), listLiveFocusHistory()]).then(([value, page]) => { if (active) { setFocus(value); setHistory(page.items); setCursor(page.nextCursor); setLoading(false); setError(""); } }).catch((cause: unknown) => { if (active) { setError(cause instanceof Error ? cause.message : "Could not load the focus sessions."); setLoading(false); } }));
+    queueMicrotask(() => Promise.all([getCurrentLiveFocus(), listLiveFocusHistory()]).then(([value, page]) => { if (active) { setFocus(value); setHistory(page.items); setCursor(page.nextCursor); setLoading(false); setError(""); } }).catch((cause: unknown) => { if (active) { setError(describeError(cause, "Could not load the focus sessions.")); setLoading(false); } }));
     return () => { active = false; };
   }, [revision]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
@@ -30,7 +31,7 @@ export function LiveFocusScreen() {
   async function act(action: () => Promise<Focus>) {
     setBusy(true); setError("");
     try { const next = await action(); setFocus(next?.completedAt ? null : next); setRevision((value) => value + 1); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update the focus session. Refresh before retrying."); }
+    catch (cause) { setError(describeError(cause, "Could not update the focus session. Refresh before retrying.")); }
     finally { setBusy(false); }
   }
 
@@ -38,7 +39,7 @@ export function LiveFocusScreen() {
     if (!cursor) return;
     setBusy(true); setError("");
     try { const page = await listLiveFocusHistory(cursor); setHistory((items) => [...items, ...page.items]); setCursor(page.nextCursor); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load more focus sessions."); }
+    catch (cause) { setError(describeError(cause, "Could not load more focus sessions.")); }
     finally { setBusy(false); }
   }
 

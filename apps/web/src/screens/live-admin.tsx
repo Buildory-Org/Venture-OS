@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useEffect, useState } from "react";
@@ -36,7 +37,7 @@ export function LiveAdminScreen() {
       if (value.membership.role !== "admin") { setError(""); return; }
       const [next, directory] = await Promise.all([listLiveMemberships(), listLiveMembers({ limit: 100 }).catch(() => null)]);
       if (active) { setMemberships(next); setMembers(directory?.items ?? []); setError(""); }
-    }).catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : "Could not load administration records."); }));
+    }).catch((cause: unknown) => { if (active) setError(describeError(cause, "Could not load administration records.")); }));
     return () => { active = false; };
   }, [revision]);
 
@@ -63,7 +64,7 @@ export function LiveAdminScreen() {
       const updated = await updateLiveMembership(selected.id, { role, ventureIds, groupIds });
       setMemberships((items) => items.map((item) => item.id === updated.id ? updated : item));
       setSelected(null); setResult("Member access updated.");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update membership."); }
+    } catch (cause) { setError(describeError(cause, "Could not update membership.")); }
     finally { setBusy(false); }
   }
 
@@ -73,7 +74,7 @@ export function LiveAdminScreen() {
     try {
       const created = await createLiveChannel({ groupId: channelGroupId, name: channelName });
       setChannelName(""); setResult(`#${created.name} created in ${groupName(created.groupId)}.`); setRevision((value) => value + 1);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not create channel."); }
+    } catch (cause) { setError(describeError(cause, "Could not create channel.")); }
     finally { setBusy(false); }
   }
 

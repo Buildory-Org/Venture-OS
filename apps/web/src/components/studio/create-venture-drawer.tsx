@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -27,11 +28,11 @@ export function CreateVentureDrawer({ workspaceName, ownerId, onClose, onCreated
       window.dispatchEvent(new Event("venture:hierarchy-changed"));
       onCreated(venture);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the venture.");
+      setError(describeError(cause, "Could not create the venture."));
     } finally {
       setBusy(false);
     }
   }
 
-  return createPortal(<DetailDrawer title="Create venture" subtitle={`Destination · ${workspaceName}`} onClose={onClose}><form onSubmit={create} className="space-y-5"><Field label="Venture name"><input ref={nameInput} required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="Venture name" /></Field><Field label="30-day goal"><textarea maxLength={500} value={goal} onChange={(event) => setGoal(event.target.value)} className={`${inputClass} min-h-28 py-3`} placeholder="What should this venture prove next?" /></Field><p className="text-xs text-neutral-500">The venture will be created in your current workspace.</p>{error && <p role="alert" className="text-sm text-danger-text">{error}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={onClose} className={secondaryClass}>Cancel</button><button type="submit" disabled={busy} className={primaryClass}>{busy ? "Creating…" : "Create venture"}</button></div></form></DetailDrawer>, document.body);
+  return createPortal(<DetailDrawer title="Create venture" subtitle={`Destination · ${workspaceName}`} onClose={onClose}><form onSubmit={create} className="space-y-5"><Field label="Venture name"><input ref={nameInput} required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="Venture name" /></Field><Field label="30-day goal"><textarea maxLength={500} value={goal} onChange={(event) => setGoal(event.target.value)} className={`${inputClass} min-h-28 py-3`} placeholder="What should this venture prove next?" /></Field><p className="text-xs text-neutral-500">The venture will be created in your current workspace.</p>{error && <p role="alert" className="text-sm text-danger-text">{error}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={onClose} className={secondaryClass}>Cancel</button><button type="submit" disabled={busy || !name.trim()} className={primaryClass}>{busy ? "Creating…" : "Create venture"}</button></div></form></DetailDrawer>, document.body);
 }

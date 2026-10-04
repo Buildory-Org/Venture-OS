@@ -13,6 +13,8 @@ import { jsonValue, slug } from "../json.js";
 const inviteSchema = z.object({ email: z.email(), role: appRoleSchema, ventureIds: z.array(idSchema), groupIds: z.array(idSchema) });
 const ventureSchema = z.object({ name: z.string().trim().min(1).max(120), ownerId: idSchema, goal30Day: z.string().trim().max(500).default("") });
 const groupSchema = z.object({ ventureId: idSchema, name: z.string().trim().min(1).max(120) });
+// Unique indexes compare names exactly; reject case-only duplicates ("Alpha" vs "alpha") explicitly.
+const caseInsensitive = { locale: "en", strength: 2 } as const;
 
 export function adminRoutes(database: Database, config: AppConfig): Router {
   const db = database.db;
@@ -63,6 +65,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const actor = req.actor!;
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create ventures");
     const input = ventureSchema.parse(req.body); const now = new Date(); const id = randomUUID();
+    if (await db.collection("ventures").findOne({ workspaceId: actor.membership.workspaceId, name: input.name }, { collation: caseInsensitive })) throw new AppError(409, "CONFLICT", "A venture with this name already exists");
     const venture = { _id: id, workspaceId: actor.membership.workspaceId, ...input, slug: slug(input.name), status: "active", createdAt: now, updatedAt: now };
     await db.collection("ventures").insertOne(venture);
     res.status(201).json({ ok: true, data: jsonValue(venture) });
@@ -72,6 +75,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create groups");
     const input = groupSchema.parse(req.body); const venture = await db.collection("ventures").findOne({ _id: input.ventureId, workspaceId: actor.membership.workspaceId });
     if (!venture) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    if (await db.collection("groups").findOne({ workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, name: input.name }, { collation: caseInsensitive })) throw new AppError(409, "CONFLICT", "A group with this name already exists in this venture");
     const now = new Date(); const groupId = randomUUID(); const channelId = randomUUID();
     const group = { _id: groupId, workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, name: input.name, createdAt: now };
     const channel = { _id: channelId, workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, groupId, name: "general", createdAt: now };
@@ -112,8 +116,12 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (ventures !== input.ventureIds.length || groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Membership scopes must be valid groups within assigned ventures");
     const updatedAt = new Date();
+    // The editor submits inherited ventures as ordinary checked boxes; keep them inherited while a group still grants them,
+    // so removing the last group later still revokes that access instead of leaving an accidental explicit grant.
+    const groupVentures = new Set(groups.map((group) => String(group.ventureId)));
+    const inheritedVentureIds = ((current.inheritedVentureIds ?? []) as string[]).filter((ventureId) => input.ventureIds.includes(ventureId) && groupVentures.has(ventureId));
     await atomic(database, async (session) => {
-      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active" }, { $set: { ...input, inheritedVentureIds: [], updatedAt } }, { session });
+      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active", updatedAt: current.updatedAt }, { $set: { ...input, inheritedVentureIds, updatedAt } }, { session });
       if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success" }, session);
     });

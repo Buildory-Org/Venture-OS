@@ -9,8 +9,12 @@ export function nextReminder(at: string | Date, minutes = REMINDER_REPEAT_MINUTE
   return new Date(new Date(at).getTime() + minutes * 60_000);
 }
 
-export function snoozeReminder(now: Date, minutes: Snooze): Date | null {
-  return minutes === "never" ? null : new Date(now.getTime() + minutes * 60_000);
+/** Postpone from the later of now and the current schedule, so snoozing a future reminder never moves it earlier. */
+export function snoozeReminder(now: Date, minutes: Snooze, scheduledAt?: Date | string): Date | null {
+  if (minutes === "never") return null;
+  const current = scheduledAt ? new Date(scheduledAt).getTime() : Number.NaN;
+  const base = Number.isFinite(current) && current > now.getTime() ? current : now.getTime();
+  return new Date(base + minutes * 60_000);
 }
 
 export function retryAt(attempt: number, now = new Date()): Date {

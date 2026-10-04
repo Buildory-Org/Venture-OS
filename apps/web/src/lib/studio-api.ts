@@ -1,3 +1,5 @@
+import { localDevUserId } from "@/lib/dev-identity";
+import { validationSummary } from "@/lib/errors";
 import {
   createTaskSchema,
   createOutcomeSchema,
@@ -13,6 +15,7 @@ import {
   commandPreviewSchema,
   dashboardResponseSchema,
   evidenceItemSchema,
+  markNotificationsReadSchema,
   fileSchema,
   groupFileSchema,
   uploadIntentSchema,
@@ -74,22 +77,21 @@ export class StudioApiError extends Error {
 }
 
 async function request(path: string, init?: RequestInit, options: { devAuth?: boolean } = {}): Promise<unknown> {
-  const localDevAuth = options.devAuth !== false && process.env.NODE_ENV === "development" &&
-    typeof window !== "undefined" && window.location.hostname === "localhost";
+  const devUserId = options.devAuth !== false ? localDevUserId() : null;
   const response = await fetch(path, {
     ...init,
     cache: "no-store",
     credentials: "same-origin",
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
-      ...(localDevAuth ? { "x-dev-user-id": "user-divyansh" } : {}),
+      ...(devUserId ? { "x-dev-user-id": devUserId } : {}),
       ...init?.headers,
     },
   });
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const error = errorEnvelopeSchema.safeParse(body);
-    if (error.success) throw new StudioApiError(error.data.error.message, error.data.error.code, error.data.error.requestId);
+    if (error.success) throw new StudioApiError(error.data.error.issues?.length ? validationSummary(error.data.error.issues) : error.data.error.message, error.data.error.code, error.data.error.requestId);
     throw new StudioApiError(`The API returned HTTP ${response.status}.`);
   }
   return body;
@@ -244,12 +246,12 @@ export async function prepareLiveFileDownload(id: string, contentType?: string) 
 }
 
 export async function loadLiveImageThumbnail(id: string, signal?: AbortSignal) {
-  const localDevAuth = process.env.NODE_ENV === "development" && typeof window !== "undefined" && window.location.hostname === "localhost";
+  const devUserId = localDevUserId();
   const response = await fetch(`/v1/files/${encodeURIComponent(id)}/thumbnail`, {
     credentials: "same-origin",
     cache: "no-store",
     signal,
-    headers: localDevAuth ? { "x-dev-user-id": "user-divyansh" } : undefined,
+    headers: devUserId ? { "x-dev-user-id": devUserId } : undefined,
   });
   if (!response.ok) throw new StudioApiError(`The image thumbnail returned HTTP ${response.status}.`);
   return response.blob();
@@ -431,6 +433,15 @@ export async function listLiveReminders(cursor?: string) {
 
 export async function getLiveReminder(id: string) {
   return successEnvelope(reminderSchema).parse(await request(`/v1/reminders/${encodeURIComponent(id)}`)).data;
+}
+
+/** Mark the caller's unread notifications read: all of them, or one conversation's. Returns how many changed. */
+export async function markLiveNotificationsRead(scope: { chatKind?: "direct" | "channel"; chatId?: string } = {}): Promise<number> {
+  const valid = markNotificationsReadSchema.parse(scope);
+  const result = await request("/v1/notifications/read", { method: "POST", body: JSON.stringify(valid) });
+  const read = result && typeof result === "object" && "data" in result && result.data && typeof result.data === "object" && "read" in result.data ? result.data.read : undefined;
+  if (typeof read !== "number") throw new StudioApiError("The notification response was invalid.");
+  return read;
 }
 
 export async function readLiveNotification(id: string) {

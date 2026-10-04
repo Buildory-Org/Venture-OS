@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useEffect, useRef, useState } from "react";
@@ -11,7 +12,7 @@ import { SlidingTabs } from "@/components/ui/sliding-tabs";
 type Member = Awaited<ReturnType<typeof listLiveMembers>>["items"][number];
 type InviteRole = "venture_head" | "contributor" | "reviewer" | "learner";
 type Mode = "existing" | "invite";
-const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "The request failed. Please try again.";
+const errorText = (cause: unknown) => describeError(cause, "The request failed. Please try again.");
 
 export function GroupPeople({ ventureId, ventureName, groupId, groupName, members, loading, error, canManage, onOpen, onRefresh }: {
   ventureId: string;

@@ -47,6 +47,9 @@ export const createDirectMessageSchema = createChannelMessageSchema.extend({
 
 export const messageListQuerySchema = cursorQuerySchema.extend({ afterEventId: idSchema.optional() });
 
+/** Mark the caller's unread notifications read: all of them, or one conversation's (chatKind + chatId). */
+export const markNotificationsReadSchema = z.object({ chatKind: z.enum(["direct", "channel"]).optional(), chatId: idSchema.optional() })
+  .refine((value) => Boolean(value.chatKind) === Boolean(value.chatId), "chatKind and chatId must be provided together");
 export const notificationSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,

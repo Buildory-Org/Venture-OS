@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -31,7 +32,7 @@ export function ChannelSearchDialog({ groupId, groupName, channels, onClose, onO
       searchLiveGroupContent(term, groupId).then((items) => {
         if (active) setResult({ query: term, items, error: "" });
       }).catch((cause: unknown) => {
-        if (active) setResult({ query: term, items: [], error: cause instanceof Error ? cause.message : "Search failed." });
+        if (active) setResult({ query: term, items: [], error: describeError(cause, "Search failed.") });
       });
     }, 220);
     return () => { active = false; window.clearTimeout(timer); };
@@ -45,7 +46,7 @@ export function ChannelSearchDialog({ groupId, groupName, channels, onClose, onO
       link.href = url; link.download = file.title; link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (cause) {
-      setResult((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Download failed." }));
+      setResult((current) => ({ ...current, error: describeError(cause, "Download failed.") }));
     } finally { setDownloading(""); }
   }
 

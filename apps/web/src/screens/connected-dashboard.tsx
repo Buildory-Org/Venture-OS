@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import { StudioDashboard } from "./studio-dashboard";
@@ -29,7 +30,7 @@ export function ConnectedDashboard({ view = "dashboard" }: { view?: "dashboard" 
         setError("");
       } catch (cause) {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : "The dashboard could not load.");
+        setError(describeError(cause, "The dashboard could not load."));
       }
     });
     return () => { active = false; };

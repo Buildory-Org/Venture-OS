@@ -51,6 +51,10 @@ For Cloudflare R2 development uploads, use a private development bucket and a bu
 
 Member notifications default to in-app delivery, plus browser push once the member subscribes and VAPID keys are configured. Email notifications are opt-in, so repeating task reminders do not flood inboxes when Resend is configured; invitation and sign-in emails use their separate delivery flow.
 
+### Testing as several users locally
+
+With `APP_MODE=local` and `ALLOW_DEV_AUTH=true` (never in production; startup refuses it), the API accepts a seeded user ID instead of a real session. In a development build of the web app, each browser origin can pick its user: open `http://alice.localhost:3012` (any `*.localhost`, `localhost`, or `127.0.0.1` origin; each has separate storage), run `localStorage.setItem("vso-dev-user-id", "user-alice")`, and reload. Without that key the origin acts as `user-divyansh`. Realtime accepts these loopback origins only while dev auth is enabled. Use a separate test database for this; production starts from a fresh database.
+
 ### First admin account
 
 Set `BOOTSTRAP_ADMIN_EMAIL` in the ignored root `.env` to the first owner's real email address. Configure `RESEND_API_KEY` and a verified `EMAIL_FROM`, and run the API against a MongoDB replica set. Restart the API, open `/signup` on the web app, and request the verification link for that address. Opening the link signs in and claims admin access to the existing single workspace (or creates the first workspace if none exists). The claim is single-use; `/signup` returns 404 after a real admin exists. Remove `BOOTSTRAP_ADMIN_EMAIL` from the environment after claiming. In local development, the sanitized seeded admin is not a real email account and does not close the signup path. Afterward, create a venture and group if needed, then invite members from the group's People controls. The `/sign-in/live` page is for existing members; requesting a sign-in link alone does not grant membership.

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { AppDb } from "../db.js";
-import { idSchema, notificationPreferencesSchema } from "@venture-studio/contracts";
+import { idSchema, markNotificationsReadSchema, notificationPreferencesSchema } from "@venture-studio/contracts";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 import { isTrustedPushEndpoint } from "@venture-studio/core";
@@ -19,6 +19,12 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   router.get("/notifications", async (req, res) => {
     const actor = req.actor!;
     res.json({ ok: true, data: jsonValue(await listVisibleNotifications(db, actor)) });
+  });
+  router.post("/notifications/read", async (req, res) => {
+    const actor = req.actor!;
+    const { chatKind, chatId } = markNotificationsReadSchema.parse(req.body ?? {});
+    const result = await db.collection("notifications").updateMany({ workspaceId: actor.membership.workspaceId, userId: actor.id, readAt: { $exists: false }, ...(chatKind ? { chatKind, chatId } : {}) }, { $set: { readAt: new Date() } });
+    res.json({ ok: true, data: { read: result.modifiedCount } });
   });
   router.post("/notifications/:id/read", async (req, res) => {
     const actor = req.actor!;

@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
@@ -24,7 +25,7 @@ function ConnectedSignIn() {
       const response = await fetch("/api/auth/sign-in/magic-link", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: email.trim(), ...(name.trim() ? { name: name.trim() } : {}), callbackURL: `${window.location.origin}${next}` }) });
       if (!response.ok) throw new Error(`Sign-in request failed (HTTP ${response.status}).`);
       setSent(true);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not request a sign-in link."); }
+    } catch (cause) { setError(describeError(cause, "Could not request a sign-in link.")); }
     finally { setBusy(false); }
   }
 

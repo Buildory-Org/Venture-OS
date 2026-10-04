@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useState } from "react";
@@ -21,7 +22,7 @@ export function LiveFileLibrary({ session }: { session: Session | null }) {
     event.preventDefault();
     setBusy(true); setError("");
     try { setHits(await searchLiveFiles(query.trim(), ventureId || undefined)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "File search failed."); }
+    catch (cause) { setError(describeError(cause, "File search failed.")); }
     finally { setBusy(false); }
   }
 

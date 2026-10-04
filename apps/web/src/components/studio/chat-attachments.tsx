@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 /* eslint-disable @next/next/no-img-element -- Authorized blob previews cannot use Next image optimization. */
 
 import { useEffect, useRef, useState } from "react";
@@ -18,7 +19,7 @@ const typeByExtension: Record<string, string> = {
   webp: "image/webp", gif: "image/gif", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
   mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav",
 };
-const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "The file could not be uploaded.";
+const errorText = (cause: unknown) => describeError(cause, "The file could not be uploaded.");
 const fileSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 export function messageAttachments(message: Message): ChatAttachment[] {

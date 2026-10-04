@@ -8,6 +8,7 @@ import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, omitNullFields, withDates } from "../json.js";
+import { assertNotBlank, assertOrderedDates } from "../validation.js";
 import { z } from "zod";
 
 export function workRoutes(database: Database): Router {
@@ -41,7 +42,7 @@ export function workRoutes(database: Database): Router {
       db.collection("evidence_items").find({ taskId: id }).sort({ submittedAt: 1 }).toArray(),
       db.collection("files").find({ taskId: id, workspaceId: task.workspaceId, ventureId: task.ventureId, groupId: task.groupId, status: "ready" }).sort({ createdAt: 1 }).toArray(),
     ]);
-    res.json({ ok: true, data: jsonValue({ ...task, updates, evidence: evidence.map((item) => omitNullFields(item, ["uri"])), attachments }) });
+    res.json({ ok: true, data: jsonValue({ ...task, updates: updates.map((item) => omitNullFields(item, ["fromStatus", "toStatus"])), evidence: evidence.map((item) => omitNullFields(item, ["uri"])), attachments }) });
   });
 
   router.post("/tasks", async (req, res) => {
@@ -105,7 +106,7 @@ export function workRoutes(database: Database): Router {
       if (input.status === "in_progress" && !current.startedAt) $set.startedAt = now;
       if (input.status === "done") $set.completedAt = now;
       await db.collection("tasks").updateOne({ _id: id }, input.blocker === null ? { $set, $unset: { blocker: "" } } : { $set }, { session });
-      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? "Task updated", fromStatus: current.status, toStatus: input.status, createdAt: now }, { session });
+      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? "Task updated", fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
       if (assigneeChanged) {
         await db.collection("notification_outbox").updateMany({ resourceType: "task", resourceId: id, userId: current.assigneeId, type: { $in: ["assignment", "deadline_warning", "reminder"] }, state: "pending" }, { $set: { state: "cancelled", updatedAt: now } }, { session });
         await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: current.title, body: current.outcome, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:reassigned:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
@@ -137,6 +138,8 @@ export function workRoutes(database: Database): Router {
     const id = idSchema.parse(req.params.id);
     const actor = req.actor!;
     const task = await accessibleTask(db, actor, id);
+    const lead = actor.membership.role === "admin" || (actor.membership.role === "venture_head" && actor.membership.ventureIds.includes(String(task.ventureId)));
+    if (task.assigneeId !== actor.id && !lead) throw new AppError(403, "FORBIDDEN", "Only the assignee or a venture lead may submit evidence for this task");
     const input = createEvidenceSchema.parse(req.body);
     // Omit an absent URI: the driver would persist `undefined` as null, which the published contract rejects.
     const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: input.type, title: input.title, ...(input.uri ? { uri: input.uri } : {}), description: input.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending" };
@@ -166,6 +169,8 @@ export function workRoutes(database: Database): Router {
     const task = await accessibleTask(db, actor, String(evidence.taskId));
     const elevated = actor.membership.role === "admin" || actor.membership.role === "venture_head" || task.reviewerId === actor.id;
     if (!elevated) throw new AppError(403, "FORBIDDEN", "Only the assigned reviewer or venture lead may review evidence");
+    if (evidence.submittedBy === actor.id && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "You cannot review evidence you submitted; ask the assigned reviewer or a venture lead");
+    if (task.assigneeId === actor.id && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "You cannot review evidence for your own task; ask the assigned reviewer or another venture lead");
     await db.collection("evidence_items").updateOne({ _id: id }, { $set: { reviewStatus: status, reviewedBy: actor.id, reviewedAt: new Date() } });
     const reviewed = await db.collection("evidence_items").findOne({ _id: id });
     res.json({ ok: true, data: reviewed ? jsonValue(omitNullFields(reviewed, ["uri"])) : null });
@@ -175,6 +180,8 @@ export function workRoutes(database: Database): Router {
     const input = createOutcomeSchema.parse(req.body);
     const actor = req.actor!;
     if (!can(actor.membership, "outcome:write", { ventureId: input.ventureId })) throw new AppError(403, "FORBIDDEN", "You cannot create outcomes in this venture");
+    assertNotBlank(input, ["title", "description", "successEvidence"]);
+    assertOrderedDates(input.startAt, input.reviewAt, "The review date must be after the start date");
     const now = new Date();
     const outcome = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...withDates(input, ["startAt", "reviewAt"]), createdAt: now, updatedAt: now };
     await db.collection("outcomes").insertOne(outcome);
@@ -195,6 +202,9 @@ export function workRoutes(database: Database): Router {
     if (!existing || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(existing.ventureId)))) throw new AppError(404, "NOT_FOUND", "Outcome not found");
     if (!can(actor.membership, "outcome:write", { ventureId: String(existing.ventureId) })) throw new AppError(403, "FORBIDDEN", "You cannot edit this outcome");
     const input = updateOutcomeSchema.parse(req.body);
+    assertNotBlank(input, ["title", "description", "successEvidence"]);
+    // Only date changes are checked, so status-only updates keep working on older records with inverted dates.
+    if (input.startAt || input.reviewAt) assertOrderedDates(input.startAt ?? existing.startAt, input.reviewAt ?? existing.reviewAt, "The review date must be after the start date");
     await db.collection("outcomes").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.startAt ? { startAt: new Date(input.startAt) } : {}), ...(input.reviewAt ? { reviewAt: new Date(input.reviewAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "outcome.update", objectType: "outcome", objectId: id, ventureId: String(existing.ventureId), result: "success" });
     res.json({ ok: true, data: jsonValue(await db.collection("outcomes").findOne({ _id: id })) });
@@ -269,7 +279,12 @@ export function workRoutes(database: Database): Router {
       const task = await db.collection("tasks").findOne({ _id: reminder.taskId, workspaceId: actor.membership.workspaceId });
       if (task?.startedAt || task?.completedAt || ["done", "cancelled"].includes(String(task?.status))) throw new AppError(409, "CONFLICT", "A reminder for started or terminal work cannot be snoozed");
     }
-    const scheduledAt = snoozeReminder(new Date(), minutes);
+    // A repeating reminder is rescheduled one repeat ahead right after delivery; snoozing then counts from now, not from that slot.
+    const snoozedAt = new Date();
+    const nextSlot = reminder.scheduledAt ? new Date(reminder.scheduledAt as Date | string).getTime() : Number.NaN;
+    // The two-minute margin absorbs clock skew between the worker that set the slot and this API.
+    const farAhead = Number.isFinite(nextSlot) && nextSlot - snoozedAt.getTime() > Number(reminder.repeatMinutes ?? 0) * 60_000 + 120_000;
+    const scheduledAt = snoozeReminder(snoozedAt, minutes, farAhead ? reminder.scheduledAt as Date | string : undefined);
     const allowedStates = reminder.state === "completed" ? ["completed"] : ["scheduled"];
     const update = scheduledAt
       ? { $set: { scheduledAt, state: "scheduled", updatedAt: new Date() }, $unset: { leaseUntil: "", claimedBy: "", completionReason: "" }, $inc: { sequence: 1 } }

@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +26,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -36,7 +38,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
       setSourceUri(nextDetail.version.sourceUri ?? "");
       setLoading(false);
     }).catch((cause: unknown) => {
-      if (active) { setError(cause instanceof Error ? cause.message : "Could not open the editor."); setLoading(false); }
+      if (active) { setError(describeError(cause, "Could not open the editor.")); setLoading(false); }
     });
     return () => { active = false; };
   }, [documentId]);
@@ -52,6 +54,23 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  // In-app links (sidebar, top bar) bypass beforeunload; hold the destination and ask before leaving unsaved edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const intercept = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      event.preventDefault(); event.stopPropagation();
+      setPendingHref(`${url.pathname}${url.search}${url.hash}`);
+      setConfirmDiscard(true);
+    };
+    document.addEventListener("click", intercept, true);
+    return () => document.removeEventListener("click", intercept, true);
   }, [dirty]);
 
   useEffect(() => {
@@ -95,7 +114,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
       await updateLiveDocument(documentId, { markdown, changeSummary: summary.trim(), baseVersionId: detail.version.id, ...(sourceUri ? { sourceUri } : {}) });
       router.push(`/knowledge/live?doc=${encodeURIComponent(documentId)}`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save this document.");
+      setError(describeError(cause, "Could not save this document."));
       setSaving(false);
     }
   }
@@ -134,13 +153,13 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
       <p className="mt-2 text-xs text-neutral-500">Saving creates a new draft version. It does not approve or publish the record to evidence search.</p>
       {error && <p role="alert" className="mt-2 rounded-lg bg-danger-surface px-3 py-2 text-xs font-semibold text-danger-text">{error}</p>}
     </div>
-    {createPortal(<dialog ref={discardDialog} aria-labelledby="knowledge-discard-title" onCancel={(event) => { event.preventDefault(); setConfirmDiscard(false); }} className="w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-neutral-200 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60">
+    {createPortal(<dialog ref={discardDialog} aria-labelledby="knowledge-discard-title" onCancel={(event) => { event.preventDefault(); setConfirmDiscard(false); setPendingHref(null); }} className="m-auto w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-neutral-200 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60">
       <div className="p-5">
         <h2 id="knowledge-discard-title" className="text-lg font-bold">Discard unsaved edits?</h2>
         <p className="mt-2 text-sm text-neutral-600">Your changes to this record will be lost.</p>
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" autoFocus onClick={() => setConfirmDiscard(false)} className="min-h-10 rounded-xl border border-neutral-200 px-4 text-sm font-semibold hover:bg-neutral-100">Keep editing</button>
-          <button type="button" onClick={() => { setConfirmDiscard(false); router.push(`/knowledge/live?doc=${encodeURIComponent(documentId)}`); }} className="min-h-10 rounded-xl bg-danger-surface px-4 text-sm font-semibold text-danger-text hover:opacity-80">Discard edits</button>
+          <button type="button" autoFocus onClick={() => { setConfirmDiscard(false); setPendingHref(null); }} className="min-h-10 rounded-xl border border-neutral-200 px-4 text-sm font-semibold hover:bg-neutral-100">Keep editing</button>
+          <button type="button" onClick={() => { setConfirmDiscard(false); router.push(pendingHref ?? `/knowledge/live?doc=${encodeURIComponent(documentId)}`); }} className="min-h-10 rounded-xl bg-danger-surface px-4 text-sm font-semibold text-danger-text hover:opacity-80">Discard edits</button>
         </div>
       </div>
     </dialog>, document.body)}

@@ -48,6 +48,9 @@ test("reminders and PATs use deterministic boundary rules", () => {
   assert.equal(snoozeReminder(new Date("2026-11-01T05:55:00.000Z"), 10)?.toISOString(), "2026-11-01T06:05:00.000Z");
   assert.equal(snoozeReminder(now, 20)?.toISOString(), "2026-09-23T10:20:00.000Z");
   assert.equal(snoozeReminder(now, "never"), null);
+  // Snoozing a reminder that is still weeks away postpones it from its own time instead of pulling it earlier.
+  assert.equal(snoozeReminder(now, 30, "2026-10-25T10:30:00.000Z")?.toISOString(), "2026-10-25T11:00:00.000Z");
+  assert.equal(snoozeReminder(now, 30, new Date("2026-09-01T00:00:00.000Z"))?.toISOString(), "2026-09-23T10:30:00.000Z");
   const pat = createPat();
   assert.equal(matchesPat(pat.token, pat.hash), true);
   assert.equal(matchesPat(`${pat.token}x`, pat.hash), false);

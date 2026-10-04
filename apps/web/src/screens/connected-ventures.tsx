@@ -1,9 +1,10 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Plus } from "@/components/ui/icons";
-import { PageFrame, PageTitle, Panel, primaryClass } from "@/components/studio/primitives";
+import { PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { CreateVentureDrawer } from "@/components/studio/create-venture-drawer";
 import { VenturesScreen } from "./studio-ventures";
 import { useStudio } from "@/lib/studio-store";
@@ -22,12 +23,17 @@ export function ConnectedVentures() {
   const [data, setData] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [missing, setMissing] = useState(false);
 
   useEffect(() => {
     let active = true;
     queueMicrotask(async () => {
       try {
         const nextSession = await loadLiveSession();
+        if (selectedId && !nextSession.hierarchy.ventures.some((venture) => venture.id === selectedId)) {
+          if (active) { setSession(nextSession); setMissing(true); setError(""); }
+          return;
+        }
         const ventureId = selectedId ?? (activeVentureId || nextSession.hierarchy.ventures[0]?.id);
         const [tasks, outcomes, decisions, documents, opportunities, members] = await Promise.all([
           listLiveTasks(), listLiveOutcomes(), listLiveDecisions(), listLiveDocuments(),
@@ -40,10 +46,11 @@ export function ConnectedVentures() {
         });
         snapshot.people = snapshot.people.map((person) => ({ ...person, ventureIds: ventureId && members.items.some((member) => member.id === person.id) ? [ventureId] : [] }));
         setSession(nextSession);
+        setMissing(false);
         setData(snapshot);
         setError("");
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : "Could not load venture spaces.");
+        if (active) setError(describeError(cause, "Could not load venture spaces."));
       }
     });
     return () => { active = false; };
@@ -52,7 +59,8 @@ export function ConnectedVentures() {
   const action = session?.membership.role === "admin" ? <button type="button" onClick={() => setCreating(true)} className={primaryClass}><Plus size={15} />Create venture</button> : undefined;
   return <>
     {error && <div role="alert" className="mx-6 mt-5 rounded-xl border border-danger-surface bg-white p-4 text-sm text-danger-text">{error}</div>}
-    {!data ? <PageFrame><Panel className="p-6 text-sm text-neutral-500">Loading venture spaces…</Panel></PageFrame>
+    {missing ? <PageFrame><PageTitle title="Ventures" description="Goals, work, evidence, and decisions for each venture." action={action} /><Panel className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-neutral-600"><p role="alert">This venture is not available. It may have been removed, or you may not have access to it.</p><button type="button" onClick={() => router.replace("/ventures/live")} className={secondaryClass}>Back to ventures</button></Panel></PageFrame>
+      : !data ? error ? null : <PageFrame><Panel className="p-6 text-sm text-neutral-500"><p role="status">Loading venture spaces…</p></Panel></PageFrame>
       : data.ventures.length ? <VenturesScreen snapshot={data} action={action} />
       : <PageFrame><PageTitle title="Ventures" description="Create the first venture space for your team." action={action} /><Panel className="p-6 text-sm text-neutral-500">No ventures have been created yet.</Panel></PageFrame>}
     {creating && session && <CreateVentureDrawer workspaceName={session.hierarchy.workspace.name} ownerId={session.user.id} onClose={() => setCreating(false)} onCreated={(venture) => { setCreating(false); router.push(`/ventures/live?venture=${encodeURIComponent(venture.id)}`); }} />}

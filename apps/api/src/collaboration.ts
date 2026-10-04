@@ -291,9 +291,17 @@ export function collaborationRoutes(database: Database): Router {
   return router;
 }
 
+/** Local dev auth only: other loopback origins (e.g. alice.localhost:3012) let several test users connect side by side. */
+export function isLocalDevOrigin(origin: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === "http:" && (hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".localhost"));
+  } catch { return false; }
+}
+
 export function attachRealtime(server: HttpServer, database: Database, resolveActor: ReturnType<typeof createActorResolver>, appOrigin: string, allowDevAuth = false): Server {
   const trustedOrigin = new URL(appOrigin).origin;
-  const io = new Server(server, { cors: { origin: trustedOrigin, credentials: true }, allowRequest: (request, callback) => callback(null, !request.headers.origin || request.headers.origin === trustedOrigin) });
+  const io = new Server(server, { cors: { origin: trustedOrigin, credentials: true }, allowRequest: (request, callback) => callback(null, !request.headers.origin || request.headers.origin === trustedOrigin || (allowDevAuth && isLocalDevOrigin(request.headers.origin))) });
   publishers.set(database, async (value) => {
     if (typeof value.channelId === "string") await emitAuthorizedToChannel(io, database.db, resolveActor, value.channelId, jsonValue(value));
     else if (Array.isArray(value.audienceUserIds)) await emitAuthorizedToUsers(io, resolveActor, value, jsonValue(value));

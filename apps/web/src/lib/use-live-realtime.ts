@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { eventEnvelopeSchema } from "@venture-studio/contracts";
 import { listLiveEvents } from "@/lib/studio-api";
+import { localDevUserId } from "@/lib/dev-identity";
 
 export type RealtimeState = "connecting" | "live" | "unavailable";
 
@@ -14,20 +15,20 @@ export function useLiveRealtime(onEvent: () => void, channelId?: string) {
   useEffect(() => { callback.current = onEvent; }, [onEvent]);
 
   useEffect(() => {
-    const localDevAuth = process.env.NODE_ENV === "development" && window.location.hostname === "localhost";
+    const devUserId = localDevUserId();
     const socket = io({
       path: "/socket.io",
       addTrailingSlash: false,
       transports: ["polling"],
       withCredentials: true,
       auth: async (done) => {
-        if (!localDevAuth) { done({}); return; }
+        if (!devUserId) { done({}); return; }
         try {
           const response = await fetch("/api/auth/get-session", { credentials: "same-origin" });
           const session = await response.json() as { user?: { id?: string } } | null;
-          done(session?.user?.id ? {} : { devUserId: "user-divyansh" });
+          done(session?.user?.id ? {} : { devUserId });
         } catch {
-          done({ devUserId: "user-divyansh" });
+          done({ devUserId });
         }
       },
     });

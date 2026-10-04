@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
@@ -18,7 +19,7 @@ function ConnectedInvite() {
   async function accept() {
     setBusy(true); setError("");
     try { await acceptLiveInvitation(token); setAccepted(true); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not accept the invitation."); }
+    catch (cause) { setError(describeError(cause, "Could not accept the invitation.")); }
     finally { setBusy(false); }
   }
 

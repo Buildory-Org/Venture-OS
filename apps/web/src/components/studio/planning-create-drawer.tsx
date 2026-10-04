@@ -1,4 +1,5 @@
 "use client";
+import { describeError } from "@/lib/errors";
 
 import { Select } from "@/components/ui/select";
 import { useState } from "react";
@@ -60,7 +61,7 @@ export function PlanningCreateDrawer({ kind, ventureId, ventureName, session, on
         if (created.ventureId !== destinationId) throw new Error("The request was created outside the selected venture.");
       }
       onCreated(kind, title, destinationId);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not create the record."); }
+    } catch (cause) { setError(describeError(cause, "Could not create the record.")); }
     finally { setBusy(false); }
   }
 

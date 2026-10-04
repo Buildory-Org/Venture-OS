@@ -10,6 +10,7 @@ import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, slug, withDates } from "../json.js";
+import { assertNotBlank } from "../validation.js";
 
 type Actor = NonNullable<Express.Request["actor"]>;
 
@@ -23,6 +24,7 @@ export function knowledgeRoutes(database: Database): Router {
     if (!can(actor.membership, "knowledge:write", { ventureId: input.ventureId })) throw new AppError(403, "FORBIDDEN", "You cannot add knowledge in this scope");
     if (!input.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create workspace-wide knowledge");
     if (input.sensitivity === "founder_private" && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create founder-private documents");
+    if (!readableSensitivities(actor.membership.role).includes(input.sensitivity)) throw new AppError(403, "FORBIDDEN", "Choose a sensitivity level you can read; this one would hide the record from you");
     const now = new Date();
     const documentId = randomUUID();
     const versionId = randomUUID();
@@ -88,8 +90,11 @@ export function knowledgeRoutes(database: Database): Router {
     const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
     if (!document.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may approve workspace-wide knowledge");
     if (actor.membership.role !== "admin" && actor.membership.role !== "venture_head") throw new AppError(403, "FORBIDDEN", "Only an admin or venture head may approve knowledge metadata");
+    if (req.body?.status === "stale" && !["approved", "stale"].includes(String(document.status))) throw new AppError(409, "CONFLICT", "Only an approved record can be marked stale; approve it first");
     const input = z.object({ status: z.enum(["draft", "approved", "stale", "archived"]).optional(), lastReviewedAt: z.iso.datetime({ offset: true }).optional(), authoritativeRank: z.number().int().min(0).max(100).optional() }).refine((value) => Object.keys(value).length > 0).parse(req.body);
-    await db.collection("documents").updateOne({ _id: document._id }, { $set: { ...input, ...(input.lastReviewedAt ? { lastReviewedAt: new Date(input.lastReviewedAt) } : {}), updatedAt: new Date() } });
+    // Re-check approval in the write itself so a concurrent edit back to draft cannot be published as stale.
+    const metadataResult = await db.collection("documents").updateOne({ _id: document._id, ...(input.status === "stale" ? { status: { $in: ["approved", "stale"] } } : {}) }, { $set: { ...input, ...(input.lastReviewedAt ? { lastReviewedAt: new Date(input.lastReviewedAt) } : {}), updatedAt: new Date() } });
+    if (!metadataResult.matchedCount) throw new AppError(409, "CONFLICT", "Only an approved record can be marked stale; approve it first");
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.metadata.update", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" });
     res.json({ ok: true, data: documentJson(await db.collection("documents").findOne({ _id: document._id })) });
   });
@@ -133,6 +138,7 @@ export function knowledgeRoutes(database: Database): Router {
     if (!item) throw new AppError(404, "NOT_FOUND", "Decision not found");
     assertLeadScope(actor, item.ventureId);
     const input = updateDecisionSchema.parse(req.body);
+    assertNotBlank(input, ["title", "text", "reason"]);
     await db.collection("decisions").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.decidedAt ? { decidedAt: new Date(input.decidedAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "decision.update", objectType: "decision", objectId: id, ventureId: item.ventureId ? String(item.ventureId) : undefined, result: "success" });
     res.json({ ok: true, data: jsonValue(await db.collection("decisions").findOne({ _id: id })) });
@@ -159,6 +165,7 @@ export function knowledgeRoutes(database: Database): Router {
     if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
     assertLeadScope(actor, item.ventureId);
     const input = updateClassSchema.parse(req.body);
+    assertNotBlank(input, ["title", "objective"]);
     await assertClassPeople(db, actor.membership.workspaceId, item.ventureId, input.facilitatorId ?? String(item.facilitatorId), input.participantIds ?? item.participantIds);
     await db.collection("classes").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.scheduledAt ? { scheduledAt: new Date(input.scheduledAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "class.update", objectType: "class", objectId: id, ventureId: item.ventureId ? String(item.ventureId) : undefined, result: "success" });
@@ -171,8 +178,22 @@ export function knowledgeRoutes(database: Database): Router {
     const item = await db.collection("information_requests").findOne({ _id: id, workspaceId: actor.membership.workspaceId, $or: [{ requesterId: actor.id }, { respondentId: actor.id }, { reviewedBy: actor.id }] });
     if (!item) throw new AppError(404, "NOT_FOUND", "Information request not found");
     const input = z.object({ status: z.enum(["open", "answered", "reviewed", "closed"]), responseMarkdown: z.string().max(100_000).optional(), sourceRefs: z.array(z.string()).max(100).optional() }).parse(req.body);
-    if (input.status === "answered" && item.respondentId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the respondent may answer this request");
-    await db.collection("information_requests").updateOne({ _id: id }, { $set: { ...input, updatedAt: new Date() } });
+    // open → answered (respondent, may revise) → reviewed (requester or lead, not the respondent) → closed; requester or lead may close or reopen.
+    const allowedFrom = { answered: ["open", "answered"], reviewed: ["answered"], closed: ["open", "answered", "reviewed"], open: ["answered", "reviewed", "closed"] }[input.status];
+    if (input.status === "answered") {
+      if (item.respondentId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the respondent may answer this request");
+      if (!input.responseMarkdown?.trim()) throw new AppError(400, "BAD_REQUEST", "Write an answer before marking the request answered");
+    } else {
+      const lead = actor.membership.role === "admin" || (actor.membership.role === "venture_head" && actor.membership.ventureIds.includes(String(item.ventureId)));
+      if (item.requesterId !== actor.id && !lead) throw new AppError(403, "FORBIDDEN", "Only the requester or a venture lead may review, close, or reopen this request");
+      if (input.status === "reviewed" && item.respondentId === actor.id) throw new AppError(403, "FORBIDDEN", "You cannot review your own answer; ask the requester or another venture lead");
+    }
+    const stateError = () => new AppError(409, "CONFLICT", input.status === "answered" ? "This request is not open for answers; ask the requester to reopen it" : input.status === "reviewed" ? "Only an answered request can be marked reviewed" : `This request is already ${input.status}`);
+    if (!allowedFrom.includes(String(item.status))) throw stateError();
+    // Only the respondent's answer writes the response; review/close/reopen never overwrite it. A new answer clears the earlier review.
+    const change = input.status === "answered" ? { $set: { ...input, updatedAt: new Date() }, $unset: { reviewedBy: "" } } : { $set: { status: input.status, ...(input.status === "reviewed" ? { reviewedBy: actor.id } : {}), updatedAt: new Date() } };
+    const changed = await db.collection("information_requests").updateOne({ _id: id, status: { $in: allowedFrom } }, change);
+    if (!changed.matchedCount) throw stateError();
     res.json({ ok: true, data: jsonValue(await db.collection("information_requests").findOne({ _id: id })) });
   });
   router.post("/classes/:id/applications", async (req, res) => {
@@ -245,8 +266,12 @@ async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unkn
   if (count !== people.length) throw new AppError(400, "BAD_REQUEST", "Class people must be active members of the class venture");
 }
 
+function readableSensitivities(role: string): string[] {
+  return role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
+}
+
 function authorizedDocumentFilter(actor: Actor, ventureId?: string): Filter<AppDocument> {
-  const sensitivities = actor.membership.role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : actor.membership.role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
+  const sensitivities = readableSensitivities(actor.membership.role);
   const ventures = actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : actor.membership.ventureIds;
   return { workspaceId: actor.membership.workspaceId, sensitivity: { $in: sensitivities }, status: { $ne: "archived" }, ...(ventures ? { $or: [{ ventureId: null }, { ventureId: { $in: ventures } }] } : {}) };
 }
@@ -281,6 +306,7 @@ function chunks(markdown: string): Array<{ heading: string; text: string }> {
 async function createSimple(db: AppDb, req: Request, res: Response, collection: string, schema: { parse(value: unknown): Record<string, unknown> }, action: string, extra: Record<string, unknown> = {}) {
   const actor = req.actor!;
   const input = schema.parse(req.body);
+  assertNotBlank(input, ["title", "text", "reason", "objective", "question", "purpose"]);
   const ventureId = typeof input.ventureId === "string" ? input.ventureId : undefined;
   if ((collection === "decisions" || collection === "classes") && !ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create workspace-wide records");
   if (ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(ventureId)) throw new AppError(403, "FORBIDDEN", "Venture access denied");

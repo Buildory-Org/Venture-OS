@@ -9,7 +9,7 @@ import sharp from "sharp";
 import { loadConfig, trustProxySetting } from "../src/config.js";
 import { connectDatabase, type AppDb } from "../src/db.js";
 import { AppError } from "../src/errors.js";
-import { rateLimit } from "../src/middleware.js";
+import { clientAddressFromHeader, rateLimit, rateLimitAddress } from "../src/middleware.js";
 import { ensureIndexes, ensurePushEndpointIndex } from "../src/indexes.js";
 import { createAuth } from "../src/auth.js";
 import { createApp } from "../src/app.js";
@@ -36,6 +36,37 @@ test("production configuration fails closed without delivery and storage credent
   assert.throws(() => loadConfig({ APP_MODE: "production", APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "https://api.example.com", BETTER_AUTH_SECRET: "a".repeat(32) }), /HTTPS/);
   assert.throws(() => loadConfig({ FILE_STORAGE: "r2" }), /FILE_STORAGE=r2 requires/);
   assert.throws(() => loadConfig({ R2_ENDPOINT: "https://example.r2.cloudflarestorage.com" }), /R2 settings require FILE_STORAGE=r2/);
+  // Blank values from an env file mean "not set" instead of failing validation.
+  const blanks = loadConfig({ BOOTSTRAP_ADMIN_EMAIL: "", RESEND_API_KEY: " ", R2_ENDPOINT: "", TRUST_PROXY: "", CLIENT_IP_HEADER: "" });
+  assert.equal(blanks.BOOTSTRAP_ADMIN_EMAIL, undefined);
+  assert.equal(blanks.RESEND_API_KEY, undefined);
+  assert.equal(blanks.CLIENT_IP_HEADER, undefined);
+  assert.equal(loadConfig({ CLIENT_IP_HEADER: "CF-Connecting-IP" }).CLIENT_IP_HEADER, "cf-connecting-ip");
+  assert.throws(() => loadConfig({ CLIENT_IP_HEADER: "x forwarded: for" }), /CLIENT_IP_HEADER/);
+  assert.throws(() => loadConfig({ APP_MODE: "" }), /APP_MODE/);
+  assert.equal(rateLimitAddress("203.0.113.9"), "203.0.113.9");
+  assert.equal(rateLimitAddress("::ffff:203.0.113.9"), "203.0.113.9");
+  assert.equal(rateLimitAddress("2001:db8:1:2:aaaa::1"), "2001:0db8:0001:0002::/64");
+  assert.equal(rateLimitAddress("2001:db8:1:2::ffff"), rateLimitAddress("2001:db8:1:2:9::1"));
+  assert.notEqual(rateLimitAddress("2001:db8:1:2::1"), rateLimitAddress("2001:db8:1:3::1"));
+});
+
+test("a configured client address header keys per-IP limits and ignores invalid values", async () => {
+  const seen: string[] = [];
+  const db = { collection: () => ({ findOneAndUpdate: async ({ _id }: { _id: string }) => { seen.push(_id); return { count: 1 }; } }) } as unknown as AppDb;
+  const { default: express } = await import("express");
+  const app = express();
+  app.use(clientAddressFromHeader("cf-connecting-ip"));
+  app.get("/probe", rateLimit(db, 10, 60_000, "probe-ip"), (_req, res) => { res.json({ ok: true }); });
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const { port } = server.address() as { port: number };
+  try {
+    await fetch(`http://127.0.0.1:${port}/probe`, { headers: { "cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "1.1.1.1" } });
+    await fetch(`http://127.0.0.1:${port}/probe`, { headers: { "cf-connecting-ip": "not-an-ip" } });
+  } finally { server.close(); }
+  assert.match(seen[0]!, /^probe-ip:203\.0\.113\.9:/);
+  assert.doesNotMatch(seen[1]!, /not-an-ip/);
 });
 
 test("read and write rate limits have separate actor buckets and a retry time", async () => {

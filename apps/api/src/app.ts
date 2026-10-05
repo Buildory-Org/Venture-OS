@@ -5,7 +5,7 @@ import { trustProxySetting, type AppConfig } from "./config.js";
 import type { Auth } from "./auth.js";
 import type { ObjectStore } from "./storage.js";
 import { LocalObjectStore } from "./storage.js";
-import { createActorResolver, createIdentityResolver, rateLimit, requestContext, requireActor, requireIdentity } from "./middleware.js";
+import { clientAddressFromHeader, createActorResolver, createIdentityResolver, rateLimit, requestContext, requireActor, requireIdentity } from "./middleware.js";
 import { createErrorHandler } from "./errors.js";
 import { hierarchyRoutes } from "./routes/hierarchy.js";
 import { workRoutes } from "./routes/work.js";
@@ -23,6 +23,7 @@ import { firstAdminRoutes } from "./routes/first-admin.js";
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
   const app = express();
   if (config.TRUST_PROXY) app.set("trust proxy", trustProxySetting(config.TRUST_PROXY));
+  if (config.CLIENT_IP_HEADER) app.use(clientAddressFromHeader(config.CLIENT_IP_HEADER));
   const resolveIdentity = createIdentityResolver(auth, database.db, config);
   const resolveActor = createActorResolver(auth, database.db, config);
   app.use(requestContext);

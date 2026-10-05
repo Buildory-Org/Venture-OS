@@ -15,7 +15,8 @@ const schema = z.object({
 });
 export type WorkerConfig = z.infer<typeof schema>;
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const value = schema.parse(source);
+  // Blank values in an env file mean "not set"; a blank APP_MODE still fails rather than silently meaning local.
+  const value = schema.parse(Object.fromEntries(Object.entries(source).filter(([key, entry]) => entry !== undefined && (key === "APP_MODE" || entry.trim() !== ""))));
   if (value.NODE_ENV === "production" && value.APP_MODE !== "production") throw new Error("NODE_ENV=production requires APP_MODE=production so the production safety checks run");
   if (value.APP_MODE === "production" && (!value.RESEND_API_KEY || !value.VAPID_PUBLIC_KEY || !value.VAPID_PRIVATE_KEY)) throw new Error("Production notification credentials are required");
   return value;

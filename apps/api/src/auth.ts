@@ -38,6 +38,8 @@ export function createAuth(db: Db, config: AppConfig) {
     baseURL: config.APP_ORIGIN,
     secret: config.BETTER_AUTH_SECRET,
     trustedOrigins: [config.APP_ORIGIN],
+    // Sign-in rate limits use the edge's client-address header when one is configured (see CLIENT_IP_HEADER).
+    ...(config.CLIENT_IP_HEADER ? { advanced: { ipAddress: { ipAddressHeaders: [config.CLIENT_IP_HEADER] } } } : {}),
     database: mongodbAdapter(db),
     plugins: [magicLink({ sendMagicLink: ({ email, url }) => sendMagicLink(config, email, url) })],
   });

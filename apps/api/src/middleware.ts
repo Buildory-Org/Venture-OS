@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import type { NextFunction, Request, Response } from "express";
@@ -90,10 +91,33 @@ export function authorize(db: AppDb, action: Action, scope: (req: Request) => { 
   };
 }
 
+/** Uses a header the edge always overwrites (e.g. Cloudflare's cf-connecting-ip) as req.ip when it holds a valid address. */
+export function clientAddressFromHeader(header: string) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    const value = req.headers[header];
+    const address = typeof value === "string" ? value.trim() : "";
+    if (isIP(address)) Object.defineProperty(req, "ip", { value: address, configurable: true });
+    next();
+  };
+}
+
+/** Rate-limit key for an address: IPv4 as is (also IPv4-mapped IPv6), IPv6 by its /64 network so rotating addresses
+ * inside one allocation shares a bucket (as better-auth does for sign-in). */
+export function rateLimitAddress(address: string): string {
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
+  if (mapped) return mapped[1]!;
+  if (isIP(address) !== 6) return address;
+  const [head = "", tail = ""] = address.toLowerCase().split("%")[0]!.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = address.includes("::") ? [...left, ...Array<string>(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${groups.slice(0, 4).map((group) => group.padStart(4, "0")).join(":")}::/64`;
+}
+
 export function rateLimit(db: AppDb, max: number, windowMs: number, bucket = "default") {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const now = Date.now();
-    const key = `${bucket}:${req.actor?.id ?? req.identity?.id ?? req.ip ?? "unknown"}`;
+    const key = `${bucket}:${req.actor?.id ?? req.identity?.id ?? (req.ip ? rateLimitAddress(req.ip) : "unknown")}`;
     const windowStart = Math.floor(now / windowMs) * windowMs;
     try {
       const entry = await db.collection("api_rate_limits").findOneAndUpdate(

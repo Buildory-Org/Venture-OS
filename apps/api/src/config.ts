@@ -25,6 +25,9 @@ const schema = z.object({
   LOCAL_UPLOAD_DIR: z.string().default(".data/uploads"),
   // Express "trust proxy" (e.g. "loopback" behind nginx/Caddy on the same host). Unset trusts no forwarding headers.
   TRUST_PROXY: z.string().trim().min(1).optional(),
+  // A header that the edge always overwrites with the visitor's address (Cloudflare: cf-connecting-ip). Only set it when
+  // every request reaches the API through that edge; it then keys per-IP rate limits for both the API and sign-in.
+  CLIENT_IP_HEADER: z.string().trim().toLowerCase().regex(/^[a-z0-9-]+$/, "CLIENT_IP_HEADER must be a header name").optional(),
 });
 
 export type AppConfig = z.infer<typeof schema>;
@@ -36,8 +39,12 @@ export function trustProxySetting(value: string): boolean | number | string {
   return /^\d+$/.test(value) ? Number(value) : value;
 }
 
+/** Blank values (e.g. `RESEND_API_KEY=` in an env file) mean "not set". The mode switches stay strict: a blank one fails. */
+const strictWhenBlank = new Set(["APP_MODE", "NODE_ENV"]);
+export const withoutBlankValues = (source: NodeJS.ProcessEnv) => Object.fromEntries(Object.entries(source).filter(([key, value]) => value !== undefined && (strictWhenBlank.has(key) || value.trim() !== "")));
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
-  const config = schema.parse(source);
+  const config = schema.parse(withoutBlankValues(source));
   if (config.FILE_STORAGE === "r2" && (!config.R2_ENDPOINT || !config.R2_ACCESS_KEY_ID || !config.R2_SECRET_ACCESS_KEY || !config.R2_BUCKET)) throw new Error("FILE_STORAGE=r2 requires R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET");
   if (config.FILE_STORAGE === "local" && (config.R2_ENDPOINT || config.R2_ACCESS_KEY_ID || config.R2_SECRET_ACCESS_KEY || config.R2_BUCKET)) throw new Error("R2 settings require FILE_STORAGE=r2; storage will not fall back silently");
   if (config.RESEND_API_KEY && config.EMAIL_FROM.includes("example.invalid")) throw new Error("EMAIL_FROM must be a verified Resend sender when RESEND_API_KEY is set");

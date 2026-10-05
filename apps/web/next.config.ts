@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { resolve } from "node:path";
 
 const apiOrigin = process.env.VSO_API_ORIGIN ?? "http://localhost:4000";
 // Mirrors src/lib/demo.ts: production hides the sample-data prototype unless NEXT_PUBLIC_ENABLE_DEMO=true.
@@ -6,6 +7,8 @@ const demoEnabled = process.env.NODE_ENV !== "production" || process.env.NEXT_PU
 
 const nextConfig: NextConfig = {
   distDir: process.env.VSO_NEXT_DIST_DIR ?? ".next",
+  // Docker production images run the self-contained server; the monorepo root is traced so workspace packages are included.
+  ...(process.env.VSO_NEXT_OUTPUT === "standalone" ? { output: "standalone" as const, outputFileTracingRoot: resolve(process.cwd(), "../..") } : {}),
   images: { remotePatterns: [{ protocol: "https", hostname: "api.dicebear.com", pathname: "/10.x/adventurer/svg" }] },
   async redirects() {
     const connected = ["dashboard", "today", "tasks", "board", "channels", "messages", "knowledge", "sales", "notifications", "focus", "planning", "admin"];

@@ -19,6 +19,7 @@ import { notificationRoutes } from "./routes/notifications.js";
 import { salesRoutes } from "./routes/sales.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
+import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
 
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
   const app = express();
@@ -48,6 +49,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", fileRoutes(database.db, store, localStore));
   app.use("/v1", patRoutes(database.db, config));
   app.use("/v1", adminRoutes(database, config));
+  app.use("/v1", ventureLifecycleRoutes(database));
   app.use("/v1", notificationRoutes(database.db, config.VAPID_PUBLIC_KEY));
   app.use("/v1", salesRoutes(database.db));
   app.use("/v1", searchRoutes(database.db));

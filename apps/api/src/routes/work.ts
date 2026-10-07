@@ -7,6 +7,7 @@ import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
+import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue, omitNullFields, withDates } from "../json.js";
 import { assertNotBlank, assertOrderedDates } from "../validation.js";
 import { z } from "zod";
@@ -26,7 +27,10 @@ export function workRoutes(database: Database): Router {
     if (query.priority) filter.priority = query.priority;
     if (query.tag) filter.tags = query.tag;
     if (query.cursor) filter._id = { $gt: query.cursor };
-    if (actor.membership.role !== "admin") {
+    if (actor.membership.role === "admin") {
+      if (query.ventureId && inArchivedVenture(actor.membership, query.ventureId)) filter.ventureId = { $in: [] };
+      else if (!query.ventureId) Object.assign(filter, notArchived(actor.membership));
+    } else {
       filter.ventureId = query.ventureId && actor.membership.ventureIds.includes(query.ventureId) ? query.ventureId : query.ventureId ? { $in: [] } : { $in: actor.membership.ventureIds };
       filter.groupId = query.groupId && actor.membership.groupIds.includes(query.groupId) ? query.groupId : query.groupId ? { $in: [] } : { $in: actor.membership.groupIds };
     }
@@ -192,14 +196,16 @@ export function workRoutes(database: Database): Router {
   router.get("/outcomes", async (req, res) => {
     const actor = req.actor!;
     const ventureId = typeof req.query.ventureId === "string" ? idSchema.parse(req.query.ventureId) : undefined;
-    const allowed = actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } };
-    const items = await db.collection("outcomes").find({ workspaceId: actor.membership.workspaceId, ...allowed, ...(ventureId ? { ventureId } : {}) }).sort({ reviewAt: 1 }).toArray();
+    // A requested venture must also be in scope: archived ventures for everyone, and other ventures for members.
+    const inScope = !ventureId || (!inArchivedVenture(actor.membership, ventureId) && (actor.membership.role === "admin" || actor.membership.ventureIds.includes(ventureId)));
+    const allowed = actor.membership.role === "admin" ? notArchived(actor.membership) : { ventureId: { $in: actor.membership.ventureIds } };
+    const items = inScope ? await db.collection("outcomes").find({ workspaceId: actor.membership.workspaceId, $and: [allowed, ventureId ? { ventureId } : {}] }).sort({ reviewAt: 1 }).toArray() : [];
     res.json({ ok: true, data: jsonValue(items) });
   });
   router.patch("/outcomes/:id", async (req, res) => {
     const actor = req.actor!; const id = idSchema.parse(req.params.id);
     const existing = await db.collection("outcomes").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
-    if (!existing || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(existing.ventureId)))) throw new AppError(404, "NOT_FOUND", "Outcome not found");
+    if (!existing || inArchivedVenture(actor.membership, existing.ventureId) || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(existing.ventureId)))) throw new AppError(404, "NOT_FOUND", "Outcome not found");
     if (!can(actor.membership, "outcome:write", { ventureId: String(existing.ventureId) })) throw new AppError(403, "FORBIDDEN", "You cannot edit this outcome");
     const input = updateOutcomeSchema.parse(req.body);
     assertNotBlank(input, ["title", "description", "successEvidence"]);
@@ -279,12 +285,12 @@ export function workRoutes(database: Database): Router {
     const cursor = query.cursor ? await db.collection("reminders").findOne({ _id: idSchema.parse(query.cursor), ...scope }) : null;
     if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Reminder cursor not found");
     const after = cursor ? { $or: [{ scheduledAt: { $lt: cursor.scheduledAt } }, { scheduledAt: cursor.scheduledAt, _id: { $lt: cursor._id } }] } : {};
-    const rows = await db.collection("reminders").find({ ...scope, ...after }).sort({ scheduledAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
+    const rows = await db.collection("reminders").find({ ...scope, ...after, ...await notArchivedReminders(db, actor) }).sort({ scheduledAt: -1, _id: -1 }).limit(query.limit + 1).toArray();
     res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
   });
   router.get("/reminders/:id", async (req, res) => {
     const actor = req.actor!;
-    const item = await db.collection("reminders").findOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, userId: actor.id });
+    const item = await db.collection("reminders").findOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, userId: actor.id, ...await notArchivedReminders(db, actor) });
     if (!item) throw new AppError(404, "NOT_FOUND", "Reminder not found");
     res.json({ ok: true, data: jsonValue(item) });
   });
@@ -292,7 +298,7 @@ export function workRoutes(database: Database): Router {
     const id = idSchema.parse(req.params.id);
     const { minutes } = snoozeSchema.parse(req.body);
     const actor = req.actor!;
-    const reminder = await db.collection("reminders").findOne({ _id: id, workspaceId: actor.membership.workspaceId, userId: actor.id });
+    const reminder = await db.collection("reminders").findOne({ _id: id, workspaceId: actor.membership.workspaceId, userId: actor.id, ...await notArchivedReminders(db, actor) });
     if (!reminder) throw new AppError(404, "NOT_FOUND", "Reminder not found");
     if (reminder.state === "claimed") throw new AppError(409, "CONFLICT", "Reminder is currently being delivered; retry snooze shortly");
     if (reminder.state === "cancelled" || (reminder.state === "completed" && reminder.completionReason !== "delivered")) throw new AppError(409, "CONFLICT", "A terminal reminder cannot be snoozed");
@@ -320,9 +326,17 @@ export function workRoutes(database: Database): Router {
   return router;
 }
 
+/** Reminders of archived ventures (by their task, or the channel venture of a /remind) stay hidden and frozen until restore. */
+async function notArchivedReminders(db: AppDb, actor: NonNullable<Express.Request["actor"]>): Promise<Record<string, unknown>> {
+  const archived = actor.membership.archivedVentureIds ?? [];
+  if (!archived.length) return {};
+  const tasks = await db.collection("tasks").find({ workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }, { projection: { _id: 1 } }).toArray();
+  return { taskId: { $nin: tasks.map((task) => task._id) }, ventureId: { $nin: archived } };
+}
+
 async function accessibleTask(db: AppDb, actor: NonNullable<Express.Request["actor"]>, id: string) {
   const task = await db.collection("tasks").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
-  if (!task || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(task.ventureId)) || !actor.membership.groupIds.includes(String(task.groupId))))) throw new AppError(404, "NOT_FOUND", "Task not found");
+  if (!task || inArchivedVenture(actor.membership, task.ventureId) || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(task.ventureId)) || !actor.membership.groupIds.includes(String(task.groupId))))) throw new AppError(404, "NOT_FOUND", "Task not found");
   return task;
 }
 

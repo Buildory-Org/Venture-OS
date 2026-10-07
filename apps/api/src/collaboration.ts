@@ -9,6 +9,7 @@ import type { AppDb, Database } from "./db.js";
 import { atomic } from "./db.js";
 import { audit } from "./audit.js";
 import { AppError } from "./errors.js";
+import { inArchivedVenture, notArchived } from "./archive-scope.js";
 import { jsonValue } from "./json.js";
 import type { createActorResolver } from "./middleware.js";
 
@@ -22,7 +23,7 @@ async function publish(database: Database, value?: Record<string, unknown>) {
 
 async function channelScope(db: AppDb, actor: Actor, channelId: string) {
   const channel = await db.collection("channels").findOne({ _id: channelId, workspaceId: actor.membership.workspaceId });
-  if (!channel || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(channel.ventureId)) || !actor.membership.groupIds.includes(String(channel.groupId))))) throw new AppError(404, "NOT_FOUND", "Channel not found");
+  if (!channel || inArchivedVenture(actor.membership, channel.ventureId) || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(channel.ventureId)) || !actor.membership.groupIds.includes(String(channel.groupId))))) throw new AppError(404, "NOT_FOUND", "Channel not found");
   return channel;
 }
 
@@ -279,7 +280,7 @@ export function collaborationRoutes(database: Database): Router {
     const cursor = after ? await db.collection("events").findOne({ _id: after, workspaceId: actor.membership.workspaceId }) : undefined;
     if (after && (!cursor || !eventAccessible(cursor, actor))) throw new AppError(404, "NOT_FOUND", "Event cursor not found");
     const audience = actor.membership.role === "admin"
-      ? { $or: [{ audienceUserIds: actor.id }, { groupId: { $exists: true }, audienceUserIds: { $exists: false } }] }
+      ? { $or: [{ audienceUserIds: actor.id }, { groupId: { $exists: true }, audienceUserIds: { $exists: false }, ...notArchived(actor.membership) }] }
       : { $or: [{ audienceUserIds: actor.id }, { groupId: { $in: actor.membership.groupIds }, ventureId: { $in: actor.membership.ventureIds }, audienceUserIds: { $exists: false } }] };
     const afterFilter = cursor ? { $or: [{ occurredAt: { $gt: cursor.occurredAt } }, { occurredAt: cursor.occurredAt, _id: { $gt: cursor._id } }] } : {};
     // Without a cursor a client is establishing one, so return the newest window (still ascending) rather than the oldest history.
@@ -369,7 +370,7 @@ async function emitAuthorizedToUsers(io: Server, resolveActor: ReturnType<typeof
 
 function eventAccessible(value: Record<string, any>, actor: Actor): boolean {
   if (Array.isArray(value.audienceUserIds)) return value.audienceUserIds.includes(actor.id);
-  if (typeof value.groupId === "string") return actor.membership.role === "admin" || (actor.membership.groupIds.includes(value.groupId) && actor.membership.ventureIds.includes(value.ventureId));
+  if (typeof value.groupId === "string") return !inArchivedVenture(actor.membership, value.ventureId) && (actor.membership.role === "admin" || (actor.membership.groupIds.includes(value.groupId) && actor.membership.ventureIds.includes(value.ventureId)));
   return false;
 }
 

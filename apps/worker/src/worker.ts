@@ -5,6 +5,9 @@ import type { WorkerConfig } from "./config.js";
 import { Delivery } from "./delivery.js";
 import { reminderTransition } from "./rules.js";
 
+// How long a reminder or notice for an archived venture waits before it is checked again.
+const HOLD_MS = 6 * 60 * 60_000;
+
 export class Worker {
   private readonly delivery: Delivery;
   constructor(private readonly client: MongoClient, private readonly db: Db, private readonly config: WorkerConfig, private readonly transactions: boolean) { this.delivery = new Delivery(db, config); }
@@ -25,6 +28,11 @@ export class Worker {
   private async processReminder(reminder: Record<string, any>, now: Date): Promise<void> {
     await this.transaction(async (session) => {
       const task = reminder.taskId ? await this.db.collection("tasks").findOne({ _id: reminder.taskId, workspaceId: reminder.workspaceId }, { session }) : null;
+      // Hold reminders of archived ventures: re-check later, and restoring the venture re-arms them (heldForArchive).
+      if (await this.ventureArchived(reminder.workspaceId, task ? task.ventureId : reminder.ventureId)) {
+        await this.db.collection("reminders").updateOne({ _id: reminder._id, state: "claimed", claimedBy: this.config.WORKER_ID }, { $set: { state: "scheduled", scheduledAt: new Date(now.getTime() + HOLD_MS), heldForArchive: true, updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
+        return;
+      }
       const taskState = task ? { startedAt: task.startedAt as Date | undefined, completedAt: task.completedAt as Date | undefined, status: task.status as string | undefined } : null;
       const transition = reminderTransition({ repeatMinutes: reminder.repeatMinutes as number | null, sequence: Number(reminder.sequence) }, taskState, now);
       const updated = await this.db.collection("reminders").updateOne({ _id: reminder._id, state: "claimed", claimedBy: this.config.WORKER_ID }, { $set: { state: transition.state, completionReason: transition.state === "completed" ? transition.reason : undefined, sequence: transition.nextSequence, ...(transition.nextAt ? { scheduledAt: transition.nextAt } : {}), updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
@@ -35,6 +43,10 @@ export class Worker {
   }
   private async processOutbox(item: Record<string, any>, now: Date): Promise<void> {
     try {
+      if (await this.forArchivedVenture(item)) {
+        await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: "pending", nextAttemptAt: new Date(now.getTime() + HOLD_MS), heldForArchive: true, updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } });
+        return;
+      }
       if (await this.isStaleTaskNotice(item)) {
         await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: "cancelled", cancelReason: "task_changed", updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } });
         return;
@@ -45,6 +57,23 @@ export class Worker {
       const attempts = Number(item.attempts ?? 0) + 1;
       await this.db.collection("notification_outbox").updateOne({ _id: item._id, claimedBy: this.config.WORKER_ID }, { $set: { state: attempts >= 8 ? "dead" : "pending", attempts, nextAttemptAt: retryAt(attempts, now), lastError: error instanceof Error ? error.message.slice(0, 500) : "Unknown delivery error", updatedAt: new Date() }, $unset: { leaseUntil: "", claimedBy: "" } });
     }
+  }
+
+  private async ventureArchived(workspaceId: unknown, ventureId: unknown): Promise<boolean> {
+    return typeof ventureId === "string" && Boolean(await this.db.collection("ventures").findOne({ _id: ventureId as never, workspaceId, status: "archived" }, { projection: { _id: 1 } }));
+  }
+
+  /** Whether an outbox item points at a task, channel, or channel message inside an archived venture. */
+  private async forArchivedVenture(item: Record<string, any>): Promise<boolean> {
+    if (item.resourceType === "task") {
+      const task = await this.db.collection("tasks").findOne({ _id: item.resourceId, workspaceId: item.workspaceId }, { projection: { ventureId: 1 } });
+      return Boolean(task && await this.ventureArchived(item.workspaceId, task.ventureId));
+    }
+    let channelId = item.chatKind === "channel" ? item.chatId : undefined;
+    if (!channelId && item.resourceType === "message") channelId = (await this.db.collection("messages").findOne({ _id: item.resourceId, workspaceId: item.workspaceId }, { projection: { channelId: 1 } }))?.channelId;
+    if (typeof channelId !== "string") return false;
+    const channel = await this.db.collection("channels").findOne({ _id: channelId as never, workspaceId: item.workspaceId }, { projection: { ventureId: 1 } });
+    return Boolean(channel && await this.ventureArchived(item.workspaceId, channel.ventureId));
   }
 
   private async isStaleTaskNotice(item: Record<string, any>): Promise<boolean> {

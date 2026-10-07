@@ -3,14 +3,15 @@ import { searchQuerySchema } from "@venture-studio/contracts";
 import type { AppDb } from "../db.js";
 import { audit } from "../audit.js";
 import { jsonValue } from "../json.js";
+import { inArchivedVenture, notArchived } from "../archive-scope.js";
 
 export function searchRoutes(db: AppDb): Router {
   const router = Router();
   router.get("/search", async (req, res) => {
     const query = searchQuerySchema.parse({ ...req.query, types: typeof req.query.types === "string" ? req.query.types.split(",") : undefined });
     const actor = req.actor!;
-    const ventureIds = actor.membership.role === "admin" ? (query.ventureId ? [query.ventureId] : undefined) : query.ventureId ? (actor.membership.ventureIds.includes(query.ventureId) ? [query.ventureId] : []) : actor.membership.ventureIds;
-    const ventureScope = ventureIds ? { ventureId: { $in: ventureIds } } : {};
+    const ventureIds = actor.membership.role === "admin" ? (query.ventureId ? (inArchivedVenture(actor.membership, query.ventureId) ? [] : [query.ventureId]) : undefined) : query.ventureId ? (actor.membership.ventureIds.includes(query.ventureId) ? [query.ventureId] : []) : actor.membership.ventureIds;
+    const ventureScope = ventureIds ? { ventureId: { $in: ventureIds } } : notArchived(actor.membership);
     const allowedGroup = !query.groupId || actor.membership.role === "admin" || actor.membership.groupIds.includes(query.groupId);
     const groupScope = query.groupId ? { groupId: allowedGroup ? query.groupId : { $in: [] as string[] } } : actor.membership.role === "admin" ? {} : { groupId: { $in: actor.membership.groupIds } };
     const channels = query.types.includes("message") ? await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ...ventureScope, ...groupScope }).project({ _id: 1, groupId: 1 }).toArray() : [];

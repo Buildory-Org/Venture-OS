@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { AppDb } from "../db.js";
 import { jsonValue } from "../json.js";
 import { dashboardReadModelSchema, idSchema, memberDirectoryQuerySchema } from "@venture-studio/contracts";
+import { notArchived } from "../archive-scope.js";
 import { AppError } from "../errors.js";
 import { listVisibleNotifications } from "../notification-visibility.js";
 
@@ -20,7 +21,7 @@ export function hierarchyRoutes(db: AppDb): Router {
       ventureId = String(group.ventureId);
     }
     if (ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(ventureId)) throw new AppError(404, "NOT_FOUND", "Venture not found");
-    if (ventureId && !await db.collection("ventures").findOne({ _id: ventureId, workspaceId })) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    if (ventureId && !await db.collection("ventures").findOne({ _id: ventureId, workspaceId, status: { $ne: "archived" } })) throw new AppError(404, "NOT_FOUND", "Venture not found");
     const scope = query.groupId
       ? { $or: [{ ventureIds: ventureId, groupIds: query.groupId }, { role: "admin" }] }
       : ventureId ? { $or: [{ ventureIds: ventureId }, { role: "admin" }] } : {};
@@ -36,7 +37,9 @@ export function hierarchyRoutes(db: AppDb): Router {
   router.get("/session/bootstrap", async (req, res) => {
     const actor = req.actor!;
     const hierarchy = await loadHierarchy(db, actor.membership.workspaceId, actor.membership.role === "admin" ? undefined : actor.membership.ventureIds, actor.membership.role === "admin" ? undefined : actor.membership.groupIds);
-    res.json({ ok: true, data: { user: { id: actor.id, name: actor.name, email: actor.email }, membership: actor.membership, hierarchy } });
+    // The per-request archive fields stay on the server; they would tell members which hidden ventures exist.
+    const { archivedVentureIds: _ventures, archivedGroupIds: _groups, ...membership } = actor.membership;
+    res.json({ ok: true, data: { user: { id: actor.id, name: actor.name, email: actor.email }, membership, hierarchy } });
   });
   router.get("/hierarchy", async (req, res) => {
     const actor = req.actor!;
@@ -45,9 +48,9 @@ export function hierarchyRoutes(db: AppDb): Router {
   router.get("/dashboard", async (req, res) => {
     const actor = req.actor!;
     const workspaceId = actor.membership.workspaceId;
-    const ventureFilter = actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } };
-    const classFilter = actor.membership.role === "admin" ? {} : { $or: [{ ventureId: { $exists: false } }, ventureFilter] };
-    const taskFilter = actor.membership.role === "admin" ? {} : { ...ventureFilter, groupId: { $in: actor.membership.groupIds } };
+    const ventureFilter = actor.membership.role === "admin" ? notArchived(actor.membership) : { ventureId: { $in: actor.membership.ventureIds } };
+    const classFilter = actor.membership.role === "admin" ? notArchived(actor.membership) : { $or: [{ ventureId: { $exists: false } }, ventureFilter] };
+    const taskFilter = actor.membership.role === "admin" ? notArchived(actor.membership) : { ...ventureFilter, groupId: { $in: actor.membership.groupIds } };
     const [tasks, reviews, blockers, classes, outcomes, mentions] = await Promise.all([
       db.collection("tasks").find({ workspaceId, ...taskFilter, assigneeId: actor.id, status: { $nin: ["done", "cancelled"] } }).sort({ dueAt: 1 }).limit(10).toArray(),
       db.collection("tasks").find({ workspaceId, ...taskFilter, reviewerId: actor.id, status: "review" }).sort({ reviewAt: 1 }).limit(10).toArray(),
@@ -64,7 +67,8 @@ export function hierarchyRoutes(db: AppDb): Router {
 
 async function loadHierarchy(db: AppDb, workspaceId: string, ventureIds?: string[], groupIds?: string[]): Promise<unknown> {
   const workspace = await db.collection("workspaces").findOne({ _id: workspaceId });
-  const ventures = await db.collection("ventures").find({ workspaceId, ...(ventureIds ? { _id: { $in: ventureIds } } : {}) }).sort({ name: 1 }).toArray();
+  // Archived ventures (and so their groups and channels) leave the navigation for everyone until restored.
+  const ventures = await db.collection("ventures").find({ workspaceId, status: { $ne: "archived" }, ...(ventureIds ? { _id: { $in: ventureIds } } : {}) }).sort({ name: 1 }).toArray();
   const ventureIdList = ventures.map((venture) => String(venture._id));
   const [groups, channels] = await Promise.all([
     db.collection("groups").find({ ventureId: { $in: ventureIdList }, ...(groupIds ? { _id: { $in: groupIds } } : {}) }).sort({ name: 1 }).toArray(),

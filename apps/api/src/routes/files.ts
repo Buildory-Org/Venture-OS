@@ -8,6 +8,7 @@ import type { ObjectStore } from "../storage.js";
 import { LocalObjectStore } from "../storage.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
+import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue } from "../json.js";
 
 export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjectStore): Router {
@@ -52,12 +53,12 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
   router.get("/files", async (req, res) => {
     const actor = req.actor!;
     const query = cursorQuerySchema.extend({ ventureId: idSchema.optional() }).parse(req.query);
-    if (query.ventureId && actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(query.ventureId)) throw new AppError(404, "NOT_FOUND", "Venture not found");
+    if (query.ventureId && (inArchivedVenture(actor.membership, query.ventureId) || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(query.ventureId)))) throw new AppError(404, "NOT_FOUND", "Venture not found");
     const scope = {
       workspaceId: actor.membership.workspaceId,
       recipientId: { $exists: false },
       status: "ready",
-      ...(query.ventureId ? { ventureId: query.ventureId } : actor.membership.role === "admin" ? {} : { ventureId: { $in: actor.membership.ventureIds } }),
+      ...(query.ventureId ? { ventureId: query.ventureId } : actor.membership.role === "admin" ? notArchived(actor.membership) : { ventureId: { $in: actor.membership.ventureIds } }),
       ...(actor.membership.role === "admin" ? {} : { $or: [{ groupId: { $exists: false } }, { groupId: { $in: actor.membership.groupIds } }] }),
     };
     const cursor = query.cursor ? await db.collection("files").findOne({ ...scope, _id: idSchema.parse(query.cursor) }) : undefined;
@@ -214,6 +215,6 @@ async function accessibleFile(db: AppDb, actor: NonNullable<Express.Request["act
   if (!file || (allowPending && file.ownerId !== actor.id)) throw new AppError(404, "NOT_FOUND", "File not found");
   if (file.recipientId) {
     if (file.ownerId !== actor.id && file.recipientId !== actor.id) throw new AppError(404, "NOT_FOUND", "File not found");
-  } else if (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(file.ventureId)) || (file.groupId && !actor.membership.groupIds.includes(String(file.groupId))))) throw new AppError(404, "NOT_FOUND", "File not found");
+  } else if (inArchivedVenture(actor.membership, file.ventureId) || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(file.ventureId)) || (file.groupId && !actor.membership.groupIds.includes(String(file.groupId)))))) throw new AppError(404, "NOT_FOUND", "File not found");
   return file;
 }

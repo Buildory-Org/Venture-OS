@@ -9,6 +9,7 @@ import { appRoleSchema, createChannelSchema, idSchema, updateMembershipSchema, u
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, slug } from "../json.js";
+import { inArchivedVenture } from "../archive-scope.js";
 
 const inviteSchema = z.object({ email: z.email(), role: appRoleSchema, ventureIds: z.array(idSchema), groupIds: z.array(idSchema) });
 const ventureSchema = z.object({ name: z.string().trim().min(1).max(120), ownerId: idSchema, goal30Day: z.string().trim().max(500).default("") });
@@ -23,8 +24,8 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const actor = req.actor!;
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may invite members");
     const input = inviteSchema.parse(req.body);
-    const ventures = await db.collection("ventures").countDocuments({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId });
-    if (ventures !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace");
+    const ventures = await db.collection("ventures").countDocuments({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId, status: { $ne: "archived" } });
+    if (ventures !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace and not be archived");
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Every invited group must belong to an invited venture");
     const email = input.email.toLowerCase();
@@ -78,7 +79,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     if (role !== "admin" && !(role === "venture_head" && ventureIds.includes(ventureId))) throw new AppError(403, "FORBIDDEN", "Only an admin or this venture's head may edit its goal");
     const input = updateVentureSchema.parse(req.body);
     const venture = await atomic(database, async (session) => {
-      const updated = await db.collection("ventures").findOneAndUpdate({ _id: ventureId, workspaceId }, { $set: { goal30Day: input.goal30Day, updatedAt: new Date() } }, { returnDocument: "after", session });
+      const updated = await db.collection("ventures").findOneAndUpdate({ _id: ventureId, workspaceId, status: { $ne: "archived" } }, { $set: { goal30Day: input.goal30Day, updatedAt: new Date() } }, { returnDocument: "after", session });
       if (!updated) throw new AppError(404, "NOT_FOUND", "Venture not found");
       await audit(db, { workspaceId, ventureId, actorId: actor.id, channel: "api", action: "venture.goal.update", objectType: "venture", objectId: ventureId, result: "success", metadata: { cleared: input.goal30Day === "" } }, session);
       return updated;
@@ -88,7 +89,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
   router.post("/admin/groups", async (req, res) => {
     const actor = req.actor!;
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create groups");
-    const input = groupSchema.parse(req.body); const venture = await db.collection("ventures").findOne({ _id: input.ventureId, workspaceId: actor.membership.workspaceId });
+    const input = groupSchema.parse(req.body); const venture = await db.collection("ventures").findOne({ _id: input.ventureId, workspaceId: actor.membership.workspaceId, status: { $ne: "archived" } });
     if (!venture) throw new AppError(404, "NOT_FOUND", "Venture not found");
     if (await db.collection("groups").findOne({ workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, name: input.name }, { collation: caseInsensitive })) throw new AppError(409, "CONFLICT", "A group with this name already exists in this venture");
     const now = new Date(); const groupId = randomUUID(); const channelId = randomUUID();
@@ -102,7 +103,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create channels");
     const input = createChannelSchema.parse(req.body);
     const group = await db.collection("groups").findOne({ _id: input.groupId, workspaceId: actor.membership.workspaceId });
-    if (!group) throw new AppError(404, "NOT_FOUND", "Group not found");
+    if (!group || inArchivedVenture(actor.membership, group.ventureId)) throw new AppError(404, "NOT_FOUND", "Group not found");
     const name = slug(input.name);
     if (!name || name.length > 80) throw new AppError(400, "BAD_REQUEST", "Channel name must produce a valid slug of at most 80 characters");
     const channel = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: group.ventureId, groupId: input.groupId, name, createdAt: new Date() };
@@ -150,7 +151,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const userId = idSchema.parse(req.params.userId);
     const workspaceId = actor.membership.workspaceId;
     const group = await db.collection("groups").findOne({ _id: groupId, workspaceId });
-    if (!group) throw new AppError(404, "NOT_FOUND", "Group not found");
+    if (!group || inArchivedVenture(actor.membership, group.ventureId)) throw new AppError(404, "NOT_FOUND", "Group not found");
     const updated = await atomic(database, async (session) => {
       const membership = await db.collection("memberships").findOne({ workspaceId, userId, status: "active" }, { session });
       const user = await db.collection("users").findOne({ _id: userId, workspaceId, status: "active" }, { session });

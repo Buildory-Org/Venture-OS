@@ -50,6 +50,9 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensurePushEndpointIndex(db.collection("push_subscriptions"));
   await Promise.all([
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
+    // Recovery copies from permanent venture deletes expire on their own after 30 days.
+    db.collection("deleted_records").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    db.collection("deleted_records").createIndex({ deletionId: 1 }),
     db.collection("memberships").createIndex({ workspaceId: 1, userId: 1 }, { unique: true }),
     db.collection("memberships").createIndex({ userId: 1 }, { unique: true, partialFilterExpression: { status: "active" } }),
     db.collection("ventures").createIndex({ workspaceId: 1, name: 1 }, { unique: true }),

@@ -1654,3 +1654,119 @@ test("focus sessions pause, resume, and finish with paused time counted, only fo
     await database.client.close();
   }
 });
+
+test("ventures archive (hidden and frozen for everyone), restore, and delete permanently with a recovery copy", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_venture_lifecycle`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  const later = new Date(Date.now() + 86_400_000);
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  const people = [
+    ["admin", "admin", [], []], ["lead", "venture_head", ["venture-a"], ["group-a"]], ["other-lead", "venture_head", ["venture-b"], ["group-b"]],
+    ["contrib", "contributor", ["venture-a", "venture-b"], ["group-a", "group-b"]],
+  ] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: handle, handle, status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], status: "active", createdAt: now, updatedAt: now })));
+  for (const key of ["a", "b"]) {
+    await db.collection("ventures").insertOne({ _id: `venture-${key}`, workspaceId: "workspace-a", name: key === "a" ? "Alpha" : "Beta", status: "active", goal30Day: "", createdAt: now });
+    await db.collection("groups").insertOne({ _id: `group-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, name: "Core", createdAt: now });
+    await db.collection("channels").insertOne({ _id: `channel-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, name: "general", createdAt: now });
+    await db.collection("tasks").insertOne({ _id: `task-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, title: `Task ${key}`, outcome: "o", assigneeId: "user-contrib", reviewerId: "user-lead", priority: "medium", status: "accepted", dueAt: later, reviewAt: later, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", tags: [], dependencies: [], createdBy: "user-admin", createdAt: now, updatedAt: now });
+    await db.collection("messages").insertOne({ _id: `message-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, channelId: `channel-${key}`, authorId: "user-contrib", clientId: `client-${key}`, body: `hello ${key}`, attachments: [], createdAt: now });
+    await db.collection("message_reactions").insertOne({ _id: `reaction-${key}`, messageId: `message-${key}`, userId: "user-lead", emoji: "+1", createdAt: now });
+    await db.collection("reminders").insertOne({ _id: `reminder-${key}`, workspaceId: "workspace-a", userId: "user-contrib", taskId: `task-${key}`, state: "scheduled", scheduledAt: later, sequence: 0, message: "m", createdAt: now });
+  }
+  await db.collection("outcomes").insertOne({ _id: "outcome-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Alpha outcome", status: "active", reviewAt: later, createdAt: now, updatedAt: now });
+  await db.collection("reminders").insertOne({ _id: "reminder-cmd-a", workspaceId: "workspace-a", userId: "user-contrib", ventureId: "venture-a", channelId: "channel-a", state: "scheduled", scheduledAt: later, sequence: 0, message: "chat reminder", createdAt: now });
+  await db.collection("documents").insertOne({ _id: "doc-global", workspaceId: "workspace-a", title: "Workspace handbook", sensitivity: "team", status: "active", createdAt: now, updatedAt: now });
+  await db.collection("invitations").insertOne({ _id: "invite-a", workspaceId: "workspace-a", email: "new@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], status: "pending", tokenHash: "x", expiresAt: later, createdAt: now });
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const ventureNames = async (handle: string) => (await json(await call("GET", "/session/bootstrap", handle))).hierarchy.ventures.map((venture: any) => venture.name).sort();
+  const taskIds = async (handle: string) => (await json(await call("GET", "/tasks", handle))).items.map((task: any) => task.id).sort();
+  try {
+    // Only an admin or the venture's own head may archive it.
+    assert.equal((await call("POST", "/ventures/venture-a/archive", "contrib")).status, 403);
+    assert.equal((await call("POST", "/ventures/venture-a/archive", "other-lead")).status, 403);
+    const archived = await call("POST", "/ventures/venture-a/archive", "lead");
+    assert.equal(archived.status, 200, await archived.clone().text());
+    assert.equal((await call("POST", "/ventures/venture-a/archive", "lead")).status, 404);
+    // Hidden for everyone, admins included: navigation, task lists, single reads, and chat.
+    for (const handle of ["admin", "lead", "contrib"]) assert.ok(!(await ventureNames(handle)).includes("Alpha"), handle);
+    assert.deepEqual(await taskIds("admin"), ["task-b"]);
+    assert.deepEqual(await taskIds("contrib"), ["task-b"]);
+    assert.equal((await call("GET", "/tasks/task-a", "admin")).status, 404);
+    assert.equal((await call("GET", "/channels/channel-a/messages", "admin")).status, 404);
+    assert.deepEqual((await json(await call("GET", "/tasks?ventureId=venture-a", "admin"))).items, []);
+    assert.deepEqual(await json(await call("GET", "/outcomes?ventureId=venture-a", "admin")), []);
+    assert.deepEqual(await json(await call("GET", "/outcomes?ventureId=venture-b", "lead")), []);
+    // Reminders of the archived venture (task-based and chat /remind) are hidden from their owner.
+    assert.deepEqual((await json(await call("GET", "/reminders", "contrib"))).items.map((item: any) => item.id).sort(), ["reminder-b"]);
+    // The session sent to browsers never lists the archived venture ids.
+    const bootstrap = await json(await call("GET", "/session/bootstrap", "contrib"));
+    assert.equal(bootstrap.membership.archivedVentureIds, undefined);
+    // Frozen: no new tasks, groups, or invitations go into it.
+    assert.equal((await call("POST", "/tasks", "admin", { ventureId: "venture-a", groupId: "group-a", title: "x", outcome: "x", assigneeId: "user-contrib", dueAt: later.toISOString().replace("Z", "+00:00"), reviewAt: new Date(later.getTime() + 3_600_000).toISOString().replace("Z", "+00:00"), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "x", evidenceRequirement: "Proof" })).status, 403);
+    assert.equal((await call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name: "New" })).status, 404);
+    assert.equal((await call("POST", "/admin/invitations", "admin", { email: "x@example.invalid", role: "contributor", ventureIds: ["venture-a"], groupIds: [] })).status, 400);
+    // The archived list: admins see all, heads see their own, others nothing.
+    assert.deepEqual((await json(await call("GET", "/ventures/archived", "admin"))).map((item: any) => item.name), ["Alpha"]);
+    assert.deepEqual((await json(await call("GET", "/ventures/archived", "lead"))).map((item: any) => item.name), ["Alpha"]);
+    assert.deepEqual(await json(await call("GET", "/ventures/archived", "other-lead")), []);
+    assert.deepEqual(await json(await call("GET", "/ventures/archived", "contrib")), []);
+    // Restore brings everything back, and held reminders become due again.
+    await db.collection("reminders").updateOne({ _id: "reminder-a" }, { $set: { heldForArchive: true } });
+    assert.equal((await call("POST", "/ventures/venture-a/restore", "other-lead")).status, 403);
+    assert.equal((await call("POST", "/ventures/venture-a/restore", "lead")).status, 200);
+    assert.ok((await ventureNames("contrib")).includes("Alpha"));
+    assert.deepEqual(await taskIds("admin"), ["task-a", "task-b"]);
+    const rearmed = await db.collection("reminders").findOne({ _id: "reminder-a" });
+    assert.equal(rearmed?.heldForArchive, undefined);
+    assert.ok(new Date(rearmed!.scheduledAt).getTime() <= Date.now());
+    // Permanent delete: admins only, archived first, exact name.
+    assert.equal((await call("DELETE", "/ventures/venture-a", "admin", { confirmName: "Alpha" })).status, 409);
+    assert.equal((await call("POST", "/ventures/venture-a/archive", "admin")).status, 200);
+    assert.equal((await call("DELETE", "/ventures/venture-a", "lead", { confirmName: "Alpha" })).status, 403);
+    assert.equal((await call("DELETE", "/ventures/venture-a", "admin", { confirmName: "alpha" })).status, 400);
+    const deleted = await call("DELETE", "/ventures/venture-a", "admin", { confirmName: "Alpha" });
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    const result = await json(deleted);
+    assert.equal(result.counts.tasks, 1);
+    assert.equal(result.counts.message_reactions, 1);
+    for (const [collection, id] of [["ventures", "venture-a"], ["groups", "group-a"], ["channels", "channel-a"], ["tasks", "task-a"], ["messages", "message-a"], ["message_reactions", "reaction-a"], ["reminders", "reminder-a"], ["reminders", "reminder-cmd-a"], ["outcomes", "outcome-a"]] as const) {
+      assert.equal(await db.collection(collection).countDocuments({ _id: id }), 0, collection);
+    }
+    // Everything of the other venture and the workspace-wide records stay.
+    for (const [collection, id] of [["ventures", "venture-b"], ["tasks", "task-b"], ["messages", "message-b"], ["message_reactions", "reaction-b"], ["documents", "doc-global"]] as const) {
+      assert.equal(await db.collection(collection).countDocuments({ _id: id }), 1, collection);
+    }
+    // Access to the deleted venture is gone from memberships and pending invitations; the old versions are recoverable.
+    const contrib = await db.collection("memberships").findOne({ _id: "membership-contrib" });
+    assert.deepEqual(contrib?.ventureIds, ["venture-b"]);
+    assert.deepEqual(contrib?.groupIds, ["group-b"]);
+    assert.equal((await db.collection("invitations").findOne({ _id: "invite-a" }))?.status, "superseded");
+    const copies = await db.collection("deleted_records").find({ deletionId: result.deletionId }).toArray();
+    assert.ok(copies.some((copy) => copy.collection === "ventures" && copy.document._id === "venture-a"));
+    assert.ok(copies.some((copy) => copy.collection === "memberships" && copy.document._id === "membership-contrib" && copy.document.ventureIds.includes("venture-a")));
+    assert.ok(copies.every((copy) => copy.expiresAt instanceof Date && copy.expiresAt.getTime() > Date.now()));
+    assert.equal(await db.collection("audit_events").countDocuments({ action: { $in: ["venture.archive", "venture.restore", "venture.delete"] }, ventureId: "venture-a" }), 4);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});

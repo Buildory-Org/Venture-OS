@@ -7,6 +7,7 @@ import type { Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
+import { inArchivedVenture } from "../archive-scope.js";
 import { jsonValue } from "../json.js";
 
 export function commandRoutes(database: Database): Router {
@@ -67,7 +68,8 @@ export function commandRoutes(database: Database): Router {
         await recordExecution(db, actor, input.idempotencyKey, preview, result, session);
       });
     } else {
-      const reminder = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: target._id, message: preview.command.message, scheduledAt: new Date(preview.command.scheduledAt), timezone: preview.command.timezone, repeatMinutes: null, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now };
+      // The channel's venture travels with the reminder so archiving or deleting the venture also holds or removes it.
+      const reminder = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: target._id, ventureId: stored.ventureId, channelId: stored.channelId, message: preview.command.message, scheduledAt: new Date(preview.command.scheduledAt), timezone: preview.command.timezone, repeatMinutes: null, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now };
       result = { reminder };
       await atomic(database, async (session) => {
         await fenceCommandMembers(session);
@@ -96,7 +98,7 @@ function assertCommandManager(membership: NonNullable<Express.Request["actor"]>[
 
 async function accessibleChannel(db: AppDb, actor: NonNullable<Express.Request["actor"]>, id: string) {
   const channel = await db.collection("channels").findOne({ _id: id, workspaceId: actor.membership.workspaceId });
-  if (!channel || (actor.membership.role !== "admin" && !actor.membership.groupIds.includes(String(channel.groupId)))) throw new AppError(404, "NOT_FOUND", "Channel not found");
+  if (!channel || inArchivedVenture(actor.membership, channel.ventureId) || (actor.membership.role !== "admin" && !actor.membership.groupIds.includes(String(channel.groupId)))) throw new AppError(404, "NOT_FOUND", "Channel not found");
   return channel;
 }
 

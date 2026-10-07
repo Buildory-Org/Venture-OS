@@ -2,6 +2,7 @@ import { forwardRef } from "react";
 import { HugeiconsIcon, type HugeiconsIconProps, type IconSvgElement } from "@hugeicons/react";
 import {
   AlertTriangle as AlertTriangleSvg,
+  Archive02Icon,
   ArrowLeft as ArrowLeftSvg,
   ArrowRight as ArrowRightSvg,
   ArrowUpRight as ArrowUpRightSvg,
@@ -90,6 +91,7 @@ function icon(svg: IconSvgElement) {
 export type Icon = ReturnType<typeof icon>;
 
 export const AlertTriangle = icon(AlertTriangleSvg);
+export const Archive = icon(Archive02Icon);
 export const ArrowLeft = icon(ArrowLeftSvg);
 export const ArrowRight = icon(ArrowRightSvg);
 export const ArrowUpRight = icon(ArrowUpRightSvg);

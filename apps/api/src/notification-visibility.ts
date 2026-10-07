@@ -6,7 +6,9 @@ type Actor = NonNullable<Express.Request["actor"]>;
 export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: Record<string, unknown> = {}, limit = 100) {
   const visible: Record<string, any>[] = [];
   let before: { createdAt: Date; _id: string } | null = null;
-  const scopedChannels = actor.membership.role === "admin" ? null : await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ventureId: { $in: actor.membership.ventureIds }, groupId: { $in: actor.membership.groupIds } }).project({ _id: 1 }).toArray();
+  const archived = actor.membership.archivedVentureIds ?? [];
+  // Admins see every channel except those in archived ventures; members only their own channels (archived ones already dropped).
+  const scopedChannels = actor.membership.role === "admin" ? (archived.length ? await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ventureId: { $nin: archived } }).project({ _id: 1 }).toArray() : null) : await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ventureId: { $in: actor.membership.ventureIds }, groupId: { $in: actor.membership.groupIds } }).project({ _id: 1 }).toArray();
   const modernScope = scopedChannels ? { $or: [{ chatKind: { $ne: "channel" } }, { chatKind: "channel", chatId: { $in: scopedChannels.map((channel) => String(channel._id)) } }] } : null;
   while (visible.length < limit) {
     const page = await db.collection("notifications").find({ workspaceId: actor.membership.workspaceId, userId: actor.id, ...filter, ...((modernScope || before) ? { $and: [...(modernScope ? [modernScope] : []), ...(before ? [{ $or: [{ createdAt: { $lt: before.createdAt } }, { createdAt: before.createdAt, _id: { $lt: before._id } }] }] : [])] } : {}) }).sort({ createdAt: -1, _id: -1 }).limit(100).toArray();
@@ -17,12 +19,16 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
     const messageById = new Map(legacyMessages.map((message) => [String(message._id), message]));
     const channelIds = [...new Set(page.map((item) => item.chatKind === "channel" ? String(item.chatId) : messageById.get(String(item.resourceId))?.channelId).filter((id): id is string => typeof id === "string"))];
     const channels = channelIds.length ? await db.collection("channels").find({ _id: { $in: channelIds }, workspaceId: actor.membership.workspaceId }).project({ _id: 1, ventureId: 1, groupId: 1 }).toArray() : [];
-    const accessible = new Set(channels.filter((channel) => actor.membership.role === "admin" || (actor.membership.ventureIds.includes(String(channel.ventureId)) && actor.membership.groupIds.includes(String(channel.groupId)))).map((channel) => String(channel._id)));
+    const accessible = new Set(channels.filter((channel) => !archived.includes(String(channel.ventureId)) && (actor.membership.role === "admin" || (actor.membership.ventureIds.includes(String(channel.ventureId)) && actor.membership.groupIds.includes(String(channel.groupId))))).map((channel) => String(channel._id)));
+    // Task notices for tasks in archived ventures stay hidden until the venture is restored.
+    const taskIds = archived.length ? [...new Set(page.filter((item) => item.resourceType === "task").map((item) => String(item.resourceId)))] : [];
+    const archivedTaskIds = new Set(taskIds.length ? (await db.collection("tasks").find({ _id: { $in: taskIds }, workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }).project({ _id: 1 }).toArray()).map((task) => String(task._id)) : []);
     for (const item of page) {
       const legacy = !item.chatKind && item.resourceType === "message" ? messageById.get(String(item.resourceId)) : undefined;
       if (!item.chatKind && item.resourceType === "message" && !legacy) continue;
       const channelId = item.chatKind === "channel" ? String(item.chatId) : legacy?.channelId;
       if (channelId && !accessible.has(String(channelId))) continue;
+      if (item.resourceType === "task" && archivedTaskIds.has(String(item.resourceId))) continue;
       visible.push(item);
       if (visible.length === limit) break;
     }

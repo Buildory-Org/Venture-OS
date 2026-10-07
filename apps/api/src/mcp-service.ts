@@ -2,6 +2,7 @@ import type { AppDb } from "./db.js";
 import { hashPat } from "@venture-studio/core";
 import { membershipSchema, type Membership } from "@venture-studio/contracts";
 import { audit } from "./audit.js";
+import { notArchived, notArchivedGroup, withArchiveScope } from "./archive-scope.js";
 import { AppError } from "./errors.js";
 import { jsonValue } from "./json.js";
 
@@ -14,7 +15,7 @@ export async function authenticatePat(db: AppDb, token: string): Promise<McpActo
   const member = await db.collection("memberships").findOne({ workspaceId: pat.workspaceId, userId: pat.userId, status: "active" });
   if (!member) throw new AppError(401, "UNAUTHENTICATED", "Membership is inactive");
   await db.collection("pats").updateOne({ _id: pat._id }, { $set: { lastUsedAt: now } });
-  return { patId: String(pat._id), id: String(pat.userId), workspaceId: String(pat.workspaceId), scopes: pat.scopes as string[], membership: membershipSchema.parse({ ...member, id: member._id, createdAt: (member.createdAt as Date).toISOString(), updatedAt: (member.updatedAt as Date).toISOString() }) };
+  return { patId: String(pat._id), id: String(pat.userId), workspaceId: String(pat.workspaceId), scopes: pat.scopes as string[], membership: await withArchiveScope(db, membershipSchema.parse({ ...member, id: member._id, createdAt: (member.createdAt as Date).toISOString(), updatedAt: (member.updatedAt as Date).toISOString() })) };
 }
 
 export class McpReadService {
@@ -29,25 +30,27 @@ export class McpReadService {
     }
     await this.db.collection("pats").updateOne({ _id: pat._id, revokedAt: { $exists: false } }, { $set: { lastUsedAt: now } });
     this.actor.scopes = pat.scopes as string[];
-    this.actor.membership = membershipSchema.parse({ ...membership, id: membership._id, createdAt: (membership.createdAt as Date).toISOString(), updatedAt: (membership.updatedAt as Date).toISOString() });
+    this.actor.membership = await withArchiveScope(this.db, membershipSchema.parse({ ...membership, id: membership._id, createdAt: (membership.createdAt as Date).toISOString(), updatedAt: (membership.updatedAt as Date).toISOString() }));
     if (!this.actor.scopes.includes(required)) {
       await audit(this.db, { workspaceId: this.actor.workspaceId, actorId: this.actor.id, channel: "mcp", action: `mcp.${tool}`, objectType: "tool", result: "denied", metadata: { requiredScope: required } });
       throw new AppError(403, "FORBIDDEN", "PAT scope does not allow this tool");
     }
   }
+  // Admins see every venture except archived ones; archived ventures are hidden from everyone until restored.
+  private archived(ventureId: string): boolean { return Boolean(this.actor.membership.archivedVentureIds?.includes(ventureId)); }
   private ventures(ventureId?: string): Record<string, unknown> {
-    const ids = this.actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
-    return ids ? { ventureId: { $in: ids } } : {};
+    const ids = this.actor.membership.role === "admin" ? (ventureId ? (this.archived(ventureId) ? [] : [ventureId]) : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
+    return ids ? { ventureId: { $in: ids } } : notArchived(this.actor.membership);
   }
   private classes(ventureId?: string): Record<string, unknown> {
-    const ids = this.actor.membership.role === "admin" ? (ventureId ? [ventureId] : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
-    return ids ? { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: ids } }] } : {};
+    const ids = this.actor.membership.role === "admin" ? (ventureId ? (this.archived(ventureId) ? [] : [ventureId]) : undefined) : ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
+    return ids ? { $or: [{ ventureId: { $exists: false } }, { ventureId: { $in: ids } }] } : notArchived(this.actor.membership);
   }
   private groups(): Record<string, unknown> {
-    return this.actor.membership.role === "admin" ? {} : { groupId: { $in: this.actor.membership.groupIds } };
+    return this.actor.membership.role === "admin" ? notArchivedGroup(this.actor.membership) : { groupId: { $in: this.actor.membership.groupIds } };
   }
   private documents(ventureId?: string): Record<string, unknown> {
-    if (this.actor.membership.role === "admin") return ventureId ? { $or: [{ ventureId: null }, { ventureId }] } : {};
+    if (this.actor.membership.role === "admin") return ventureId ? (this.archived(ventureId) ? { ventureId: null } : { $or: [{ ventureId: null }, { ventureId }] }) : notArchived(this.actor.membership);
     const ventures = ventureId ? (this.actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : this.actor.membership.ventureIds;
     return { $or: [{ ventureId: null }, { ventureId: { $in: ventures } }] };
   }
@@ -57,7 +60,7 @@ export class McpReadService {
   }
   async listVentures() {
     await this.scope("ventures:read", "list_ventures");
-    const filter = this.actor.membership.role === "admin" ? { workspaceId: this.actor.workspaceId } : { workspaceId: this.actor.workspaceId, _id: { $in: this.actor.membership.ventureIds } };
+    const filter = this.actor.membership.role === "admin" ? { workspaceId: this.actor.workspaceId, status: { $ne: "archived" } } : { workspaceId: this.actor.workspaceId, _id: { $in: this.actor.membership.ventureIds } };
     const items = await this.db.collection("ventures").find(filter).project({ name: 1, status: 1, goal30Day: 1, ownerId: 1, updatedAt: 1 }).toArray();
     return this.result("list_ventures", items, items.map((item) => `venture:${item._id}`));
   }
@@ -89,7 +92,7 @@ export class McpReadService {
   }
   async ventureStatus(ventureId: string) {
     await this.scope("ventures:read", "get_venture_status");
-    const venture = await this.db.collection("ventures").findOne({ _id: ventureId, workspaceId: this.actor.workspaceId, ...(this.actor.membership.role === "admin" ? {} : { _id: { $in: this.actor.membership.ventureIds } }) });
+    const venture = await this.db.collection("ventures").findOne({ _id: ventureId, workspaceId: this.actor.workspaceId, status: { $ne: "archived" }, ...(this.actor.membership.role === "admin" ? {} : { _id: { $in: this.actor.membership.ventureIds } }) });
     if (!venture) { await this.failure("get_venture_status", ventureId, "not_found"); throw new AppError(404, "NOT_FOUND", "Venture not found"); }
     const [outcomes, blockers, decisions] = await Promise.all([
       this.db.collection("outcomes").find({ workspaceId: this.actor.workspaceId, ventureId, status: { $in: ["approved", "active", "at_risk"] } }).toArray(),

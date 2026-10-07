@@ -64,6 +64,8 @@ import {
   updateDecisionSchema,
   updateMembershipSchema,
   updateVentureSchema,
+  archivedVentureSchema,
+  deletedVentureSchema,
   updateOpportunitySchema,
   updateOutcomeSchema,
   updatePipelineSchema,
@@ -657,6 +659,25 @@ export async function createLiveChannel(input: unknown) {
 
 export async function createLiveVenture(input: { name: string; ownerId: string; goal30Day: string }) {
   return successEnvelope(ventureSchema).parse(await request("/v1/admin/ventures", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+/** Archived ventures this person may restore (admins: all; venture heads: their own). */
+export async function listArchivedLiveVentures() {
+  return successEnvelope(archivedVentureSchema.array()).parse(await request("/v1/ventures/archived")).data;
+}
+
+export async function archiveLiveVenture(id: string) {
+  await request(`/v1/ventures/${encodeURIComponent(id)}/archive`, { method: "POST" });
+}
+
+export async function restoreLiveVenture(id: string) {
+  await request(`/v1/ventures/${encodeURIComponent(id)}/restore`, { method: "POST" });
+}
+
+/** Permanently deletes an archived venture; `confirmName` must match its name exactly. Returns when recovery copies expire. */
+export async function deleteLiveVenture(id: string, confirmName: string) {
+  const body = await request(`/v1/ventures/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ confirmName }) });
+  return successEnvelope(deletedVentureSchema).parse(body).data;
 }
 
 export async function updateLiveVentureGoal(id: string, goal30Day: string) {

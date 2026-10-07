@@ -10,6 +10,7 @@ import type { AppConfig } from "./config.js";
 import type { Auth } from "./auth.js";
 import { AppError } from "./errors.js";
 import { audit } from "./audit.js";
+import { withArchiveScope } from "./archive-scope.js";
 
 type Actor = { id: string; email: string; name: string; membership: Membership };
 
@@ -24,7 +25,7 @@ export function createActorResolver(auth: Auth, db: AppDb, config: AppConfig) {
     if (!user) return undefined;
     const memberships = await db.collection("memberships").find({ userId: user.id, status: "active" }).limit(2).toArray();
     if (memberships.length !== 1) return undefined;
-    return { ...user, membership: membershipValue(memberships[0]!) };
+    return { ...user, membership: await withArchiveScope(db, membershipValue(memberships[0]!)) };
   };
 }
 

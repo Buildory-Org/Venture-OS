@@ -15,6 +15,9 @@ const roleActions: Record<AppRole, ReadonlySet<Action>> = {
 
 export function can(membership: Membership, action: Action, scope: { ventureId?: string; groupId?: string } = {}): boolean {
   if (!roleActions[membership.role].has(action)) return false;
+  // Archived ventures are frozen for everyone, admins included, until restored.
+  if (scope.ventureId && membership.archivedVentureIds?.includes(scope.ventureId)) return false;
+  if (scope.groupId && membership.archivedGroupIds?.includes(scope.groupId)) return false;
   if (membership.role === "admin") return true;
   if (scope.ventureId && !membership.ventureIds.includes(scope.ventureId)) return false;
   if (scope.groupId && !membership.groupIds.includes(scope.groupId)) return false;

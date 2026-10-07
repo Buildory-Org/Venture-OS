@@ -5,11 +5,12 @@ import { useKanbanDnd } from "@/components/ui/use-kanban-dnd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "@/components/shell/demo-link";
-import { Clock3, Filter, Plus, Search } from "@/components/ui/icons";
+import { Clock3, Plus, Search } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { displayDate, personName, type Task, type TaskStatus, ventureName } from "@/lib/studio-demo";
-import { Badge, DetailDrawer, Empty, Field, inputClass, PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { Badge, DetailDrawer, Empty, Field, filterControl, inputClass, PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { FilterRow, FilterToggle, useFilterToggle } from "@/components/studio/filter-bar";
 
 const statuses: TaskStatus[] = ["Backlog", "Ready", "In progress", "In review", "Blocked", "Done"];
 const newTask = (ventureId: string, groupId: string, userId: string): Task => ({ id: `task-${Date.now()}`, ventureId, groupId, title: "", outcome: "", ownerId: userId, reviewerId: userId, priority: "P2", dueAt: "2026-09-30", reviewAt: "2026-09-30", effort: "", doneWhen: "", dependencies: "", evidence: "", status: "Backlog", blocker: "", accepted: false, tags: [], activity: ["Draft created"], reminderAt: "" });
@@ -80,18 +81,23 @@ export function BoardScreen() {
   const [tag,setTag] = useState("All tags");
   const [deadline,setDeadline] = useState("Any deadline");
   const [selected,setSelected] = useState<Task | null>(null);
+  const filterView = useFilterToggle("board");
   const tags = [...new Set(data.tasks.flatMap((task) => task.tags))];
   const filtered = data.tasks.filter((task) => (venture === "All ventures" || task.ventureId === venture) && (group === "All groups" || task.groupId === group) && (owner === "All people" || task.ownerId === owner) && (tag === "All tags" || task.tags.includes(tag)) && (deadline !== "Due this week" || task.dueAt <= "2026-09-27"));
   const move = (task: Task, status: TaskStatus) => { if (status === task.status) return; if ((status === "Done" && !task.evidence.trim()) || (status === "Blocked" && !task.blocker.trim())) { setSelected({ ...task, status }); return; } updateSection("tasks", (items) => items.map((item) => item.id === task.id ? { ...item, status, activity: [...item.activity, `Moved to ${status}`] } : item)); };
   const dnd = useKanbanDnd<TaskStatus>((taskId, status) => { const task = filtered.find((item) => item.id === taskId); if (task) move(task, status); });
-  return <PageFrame><PageTitle title="Kanban board" description="Filter work by venture, group, person, tag, and deadline. Drag cards between columns, or use their Move menu." action={<span className="inline-flex items-center gap-2 text-sm font-semibold text-neutral-500"><Filter size={16} />{filtered.length} cards</span>} />
-    <Panel className="mb-4 grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-5">{[
-      { label:"Venture", value:venture, set:setVenture, values:[["All ventures","All ventures"],...data.ventures.map((item)=>[item.id,item.name])] },
-      { label:"Group", value:group, set:setGroup, values:[["All groups","All groups"],...data.groups.map((item)=>[item.id,item.name])] },
-      { label:"Person", value:owner, set:setOwner, values:[["All people","All people"],...data.people.map((item)=>[item.id,item.name])] },
-      { label:"Tag", value:tag, set:setTag, values:[["All tags","All tags"],...tags.map((item)=>[item,item])] },
-      { label:"Deadline", value:deadline, set:setDeadline, values:[["Any deadline","Any deadline"],["Due this week","Due this week"]] },
-    ].map((filter) => <label key={filter.label}><span className="mb-1 block text-xs font-semibold text-neutral-500">{filter.label}</span><Select value={filter.value} onChange={(event) => filter.set(event.target.value)} className={inputClass}>{filter.values.map(([value,label])=><option key={value} value={value}>{label}</option>)}</Select></label>)}</Panel>
+  const filters = [
+    { label:"Venture", value:venture, set:setVenture, values:[["All ventures","All ventures"],...data.ventures.map((item)=>[item.id,item.name])] },
+    { label:"Group", value:group, set:setGroup, values:[["All groups","All groups"],...data.groups.map((item)=>[item.id,item.name])] },
+    { label:"Person", value:owner, set:setOwner, values:[["All people","All people"],...data.people.map((item)=>[item.id,item.name])] },
+    { label:"Tag", value:tag, set:setTag, values:[["All tags","All tags"],...tags.map((item)=>[item,item])] },
+    { label:"Deadline", value:deadline, set:setDeadline, values:[["Any deadline","Any deadline"],["Due this week","Due this week"]] },
+  ];
+  // The first option of each filter is its "everything" state.
+  const activeFilters = filters.filter((filter) => filter.value !== filter.values[0][0]).length;
+  const clearFilters = () => filters.forEach((filter) => filter.set(filter.values[0][0]));
+  return <PageFrame><PageTitle title="Kanban board" description="Filter work by venture, group, person, tag, and deadline. Drag cards between columns, or use their Move menu." action={<FilterToggle open={filterView.open} onToggle={filterView.toggle} rowId={filterView.rowId} count={filtered.length} noun="card" active={activeFilters} />} />
+    <FilterRow open={filterView.open} rowId={filterView.rowId} active={activeFilters} onClear={clearFilters}>{filters.map((filter) => <Select key={filter.label} aria-label={filter.label} value={filter.value} onChange={(event) => filter.set(event.target.value)} className={filterControl(filter.value !== filter.values[0][0])}>{filter.values.map(([value,label])=><option key={value} value={value}>{label}</option>)}</Select>)}</FilterRow>
     <div className="grid gap-3 lg:grid-cols-3 2xl:grid-cols-6">{statuses.map((status) => <div key={status} {...dnd.columnProps(status)}><Panel className={clsx("min-h-52 p-3 transition-[border-color,box-shadow] duration-150", dnd.overStatus === status && "border-primary-500 ring-2 ring-primary-300")}><div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-neutral-800">{status}</h2><Badge>{filtered.filter((task) => task.status === status).length}</Badge></div><div className="space-y-2">{filtered.filter((task) => task.status === status).map((task) => <article key={task.id} {...dnd.cardProps(task.id)} className={clsx("cursor-grab rounded-xl border border-neutral-100 bg-neutral-50 p-3 active:cursor-grabbing", dnd.draggingId === task.id && "opacity-45")}><button type="button" onClick={() => setSelected(task)} className="w-full text-left"><Badge tone={task.priority === "P1" ? "red" : "neutral"}>{task.priority}</Badge><h3 className="mt-2 text-sm font-semibold text-neutral-800">{task.title}</h3><p className="mt-1 text-xs text-neutral-500">{ventureName(data,task.ventureId)}</p><p className="mt-2 flex items-center gap-1 text-xs text-neutral-500"><Clock3 size={12} />{displayDate(task.dueAt)} · {personName(data,task.ownerId)}</p></button><Select aria-label={`Move ${task.title}`} value={task.status} onChange={(event) => move(task,event.target.value as TaskStatus)} className="mt-3 w-full rounded-lg border border-neutral-200 bg-white px-2 py-1.5 text-xs font-semibold text-neutral-600">{statuses.map((item) => <option key={item}>{item}</option>)}</Select></article>)}</div></Panel></div>)}</div>
     {selected && <TaskEditor key={selected.id} task={selected} fresh={false} onClose={() => setSelected(null)} />}
   </PageFrame>;

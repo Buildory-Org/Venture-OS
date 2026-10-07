@@ -603,3 +603,21 @@ button {
 .vso-auth-frame { animation: vso-auth-in 600ms cubic-bezier(.22, 1, .36, 1) both; }
 .vso-auth-rise { animation: vso-auth-rise 260ms cubic-bezier(.22, 1, .36, 1) both; }
 .vso-auth-shake { animation: vso-auth-shake 400ms ease-out; }
+
+/* Role pills: one soft gradient per role family (People & access, member lists). */
+.vso-role { border: 1px solid transparent; }
+.vso-role-admin { background-image: linear-gradient(135deg, #f3f0ff, #e1dbff); border-color: #d4cbfb; color: #3c3489; }
+.vso-role-head { background-image: linear-gradient(135deg, #ecfbe9, #cdf0d2); border-color: #b7e3c0; color: #14532d; }
+.vso-role-ops { background-image: linear-gradient(135deg, #fff7e8, #fde3b5); border-color: #f6d391; color: #7a4508; }
+.vso-role-review { background-image: linear-gradient(135deg, #eef6ff, #d3e6fb); border-color: #bcd7f5; color: #0c447c; }
+.vso-role-contrib { background-image: linear-gradient(135deg, #e9fbf6, #c8efe2); border-color: #a9e2cf; color: #085041; }
+.vso-role-learn { background-image: linear-gradient(135deg, #fdf0f5, #f6d5e2); border-color: #efbfd2; color: #72243e; }
+.vso-role-other { background-image: linear-gradient(135deg, #f7f7f6, #e9e8e5); border-color: #dddbd6; color: #444441; }
+.vso-role:hover { filter: saturate(1.15) brightness(.99); }
+:root[data-theme="dark"] .vso-role-admin { background-image: linear-gradient(135deg, #2b2650, #3c3489); border-color: #534ab7; color: #e6e2ff; }
+:root[data-theme="dark"] .vso-role-head { background-image: linear-gradient(135deg, #12351f, #1b5631); border-color: #2c7a48; color: #d6f5de; }
+:root[data-theme="dark"] .vso-role-ops { background-image: linear-gradient(135deg, #3d2606, #5c3a0b); border-color: #85540f; color: #fde3b5; }
+:root[data-theme="dark"] .vso-role-review { background-image: linear-gradient(135deg, #0b2a4a, #12406d); border-color: #185fa5; color: #d3e6fb; }
+:root[data-theme="dark"] .vso-role-contrib { background-image: linear-gradient(135deg, #06342b, #0b4f41); border-color: #0f6e56; color: #c8efe2; }
+:root[data-theme="dark"] .vso-role-learn { background-image: linear-gradient(135deg, #43172a, #66223e); border-color: #993556; color: #f6d5e2; }
+:root[data-theme="dark"] .vso-role-other { background-image: linear-gradient(135deg, #262624, #353533); border-color: #4a4a47; color: #e2e1dc; }

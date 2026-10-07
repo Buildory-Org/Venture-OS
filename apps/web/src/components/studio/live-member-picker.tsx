@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { listLiveMembers } from "@/lib/studio-api";
-import { inputClass } from "@/components/studio/primitives";
+import { filterControlClass, inputClass } from "@/components/studio/primitives";
 import { Check, ChevronDown, RefreshCw, Search } from "@/components/ui/icons";
 import { prefersReducedMotion } from "@/lib/motion";
 
@@ -21,7 +21,8 @@ function Avatar({ name, muted = false }: { name: string; muted?: boolean }) {
  * Type-ahead member picker scoped to a venture/group: results update as you type (after two characters),
  * arrow keys move through them, Enter picks. Opening and closing with the pointer animate; keyboard stays instant.
  */
-export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, excludeIds = [], optional = false }: {
+/** `compact` renders a label-less pill for filter bars; `emptyLabel` names the "no one chosen" state there (e.g. "All assignees"). */
+export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, excludeIds = [], optional = false, compact = false, emptyLabel }: {
   label: string;
   value: string;
   onChange: (id: string, member?: Member) => void;
@@ -29,6 +30,8 @@ export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, e
   groupId?: string;
   excludeIds?: string[];
   optional?: boolean;
+  compact?: boolean;
+  emptyLabel?: string;
 }) {
   const baseId = useId().replaceAll(":", "");
   const [open, setOpen] = useState(false);
@@ -154,15 +157,15 @@ export function LiveMemberPicker({ label, value, onChange, ventureId, groupId, e
 
   const listId = `${baseId}-list`;
   const searching = query.trim().length >= 2 && (busy || term !== query.trim());
-  return <div className="min-w-0">
-    <span id={`${baseId}-label`} className="mb-1.5 block text-xs font-semibold text-neutral-600">{label}</span>
-    <span className="relative block">
+  return <div className={compact ? "min-w-0 shrink-0" : "min-w-0"}>
+    <span id={`${baseId}-label`} className={compact ? "sr-only" : "mb-1.5 block text-xs font-semibold text-neutral-600"}>{label}</span>
+    <span className={compact ? "relative inline-flex" : "relative block"}>
       <button ref={trigger} type="button" aria-labelledby={`${baseId}-label ${baseId}-value`} aria-haspopup="listbox" aria-expanded={open && motion !== "closing"}
         onClick={() => open && motion !== "closing" ? hide(true) : show()}
         onKeyDown={(event) => { if (["ArrowDown", "Enter", " "].includes(event.key) && !open) { event.preventDefault(); show(true); } }}
-        className={clsx(inputClass, "flex items-center gap-2.5 pr-9 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600")}>
-        {value ? <Avatar name={selected?.name ?? "?"} muted={!selected} /> : null}
-        <span id={`${baseId}-value`} className={clsx("min-w-0 flex-1 truncate", !value && "text-neutral-400")}>{value ? selected ? <>{selected.name}{selected.handle && <span className="ml-1.5 text-neutral-400">@{selected.handle}</span>}</> : "Selected member" : optional ? "None" : "Choose a member"}</span>
+        className={clsx(compact ? filterControlClass : inputClass, "flex items-center gap-2.5 pr-9 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600")}>
+        {value && !compact ? <Avatar name={selected?.name ?? "?"} muted={!selected} /> : null}
+        <span id={`${baseId}-value`} className={clsx("min-w-0 flex-1 truncate", !value && "text-neutral-400")}>{value ? selected ? <>{selected.name}{selected.handle && <span className="ml-1.5 text-neutral-400">@{selected.handle}</span>}</> : "Selected member" : optional ? emptyLabel ?? "None" : "Choose a member"}</span>
         <ChevronDown size={15} aria-hidden="true" className={clsx("pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 transition-transform duration-150", open && motion !== "closing" && "rotate-180")} />
       </button>
       <input tabIndex={-1} aria-hidden="true" required={!optional} value={value} onChange={() => {}} onInvalid={(event) => { event.preventDefault(); show(); }} className="pointer-events-none absolute bottom-0 left-4 h-px w-px opacity-0" />

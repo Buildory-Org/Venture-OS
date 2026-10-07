@@ -18,7 +18,7 @@ export function SlidingTabs({
   onChange,
   label,
   className,
-  fitContent = false,
+  fitContent = true,
   tone = "light",
 }: {
   tabs: SlidingTab[];

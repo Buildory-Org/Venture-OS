@@ -5,7 +5,10 @@ import clsx from "clsx";
 import { Check, RefreshCw, X } from "@/components/ui/icons";
 import { prefersReducedMotion, useExitTransition } from "@/lib/motion";
 
-export const inputClass = "min-h-11 min-w-0 w-full max-w-full rounded-xl border border-neutral-200 bg-white px-3 text-sm font-medium text-neutral-800 outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-neutral-400 focus:border-primary-400 focus:ring-2 focus:ring-primary-100";
+/** Label-less pill controls for filter rows; they size to their content and turn green while filtering. */
+export const filterControlClass = "min-h-9 max-w-60 rounded-full border border-neutral-200 bg-white px-3.5 text-[13px] font-semibold text-neutral-700 outline-none transition-[border-color,background-color,color,box-shadow] duration-150 placeholder:font-medium placeholder:text-neutral-400 hover:border-neutral-300 focus:border-primary-400 focus:ring-2 focus:ring-primary-100";
+export const filterControl = (active: boolean) => active ? `${filterControlClass} !border-primary-300 !bg-primary-50 !text-primary-800` : filterControlClass;
+export const inputClass ="min-h-11 min-w-0 w-full max-w-full rounded-xl border border-neutral-200 bg-white px-3 text-sm font-medium text-neutral-800 outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-neutral-400 focus:border-primary-400 focus:ring-2 focus:ring-primary-100";
 export const primaryClass = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-primary-700 px-4 text-sm font-semibold text-white transition-[background-color,transform,opacity] duration-150 hover:bg-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary-700 disabled:active:scale-100";
 export const secondaryClass = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 text-sm font-semibold text-neutral-700 shadow-sm transition-[background-color,transform,opacity] duration-150 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white disabled:active:scale-100";
 

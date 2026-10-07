@@ -153,6 +153,8 @@ export const focusSessionSchema = z.object({
   id: idSchema, workspaceId: idSchema, userId: idSchema, taskId: idSchema.optional(),
   plannedMinutes: z.number().int().min(1).max(240), startedAt: isoDateSchema,
   endsAt: isoDateSchema, completedAt: isoDateSchema.optional(), cancelledAt: isoDateSchema.optional(),
+  // While paused, `pausedAt` is set and the clock stands still; resuming pushes `endsAt` back by the pause. `pausedMs` totals every pause.
+  pausedAt: isoDateSchema.optional(), pausedMs: z.number().int().min(0).optional(),
 });
 
 export const startFocusSchema = z.object({ taskId: idSchema.optional(), plannedMinutes: z.number().int().min(1).max(240).default(25) });

@@ -3,11 +3,11 @@ import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Database, Play, Square } from "@/components/ui/icons";
+import { Database, Pause, Play, Square } from "@/components/ui/icons";
 import clsx from "clsx";
 import { SlidingTabs } from "@/components/ui/sliding-tabs";
 import { toast } from "@/components/ui/toast";
-import { completeLiveFocus, getCurrentLiveFocus, listLiveFocusHistory, startLiveFocus } from "@/lib/studio-api";
+import { completeLiveFocus, getCurrentLiveFocus, listLiveFocusHistory, pauseLiveFocus, resumeLiveFocus, startLiveFocus } from "@/lib/studio-api";
 import { ActionLabel, Badge, Empty, Notice, PageFrame, PageTitle, Panel, PanelHead, primaryClass, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
 import { publishFocus } from "@/lib/focus-events";
 
@@ -54,7 +54,8 @@ export function LiveFocusScreen() {
     try {
       const next = await action();
       if (next?.completedAt) {
-        const spent = Math.max(1, Math.round((new Date(next.completedAt).getTime() - new Date(next.startedAt).getTime()) / 60000));
+        // Paused time isn't focus time.
+        const spent = Math.max(1, Math.round((new Date(next.completedAt).getTime() - new Date(next.startedAt).getTime() - (next.pausedMs ?? 0)) / 60000));
         toast({ title: "Focus session saved", body: `${spent} minute${spent === 1 ? "" : "s"} logged to your workspace.` });
         setFreshId(next.id);
       }
@@ -72,7 +73,9 @@ export function LiveFocusScreen() {
     finally { setBusy(false); }
   }
 
-  const seconds = focus ? Math.max(0, Math.ceil((new Date(focus.endsAt).getTime() - now) / 1000)) : 0;
+  // While paused the clock stands still at the moment of the pause.
+  const paused = Boolean(focus?.pausedAt);
+  const seconds = focus ? Math.max(0, Math.ceil((new Date(focus.endsAt).getTime() - (focus.pausedAt ? new Date(focus.pausedAt).getTime() : now)) / 1000)) : 0;
   const clock = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   const fraction = focus ? Math.min(1, seconds / Math.max(1, focus.plannedMinutes * 60)) : 1;
   const canStart = !busy && minutes >= 1 && minutes <= 240;
@@ -80,9 +83,14 @@ export function LiveFocusScreen() {
   return <PageFrame><PageTitle title="Focus session" description="Your active timer stays available after refresh or reconnect." action={<RefreshButton busy={loading} onClick={() => { setLoading(true); setRevision((value) => value + 1); }} />} />
     <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>Focus time is saved to your workspace. <Link href="/tasks/live" className="font-bold underline">Open tasks</Link>.</p></div>
     <Notice tone="error" message={error} onDismiss={() => setError("")} className="pb-4" />
-    <Panel className="mx-auto max-w-xl p-6 text-center sm:p-8">{loading && !focus ? <div role="status" aria-label="Checking for an active session" className="grid justify-items-center gap-3 py-4"><span className="vso-skeleton h-[200px] w-[200px] rounded-full" /><span className="vso-skeleton h-4 w-48" /></div> : focus ? <div key="active" className="vso-fade-enter"><p className="text-xs font-semibold uppercase tracking-wide text-primary-700">{seconds ? "Active focus session" : "Planned time is up"}</p>
+    <Panel className="mx-auto max-w-xl p-6 text-center sm:p-8">{loading && !focus ? <div role="status" aria-label="Checking for an active session" className="grid justify-items-center gap-3 py-4"><span className="vso-skeleton h-[200px] w-[200px] rounded-full" /><span className="vso-skeleton h-4 w-48" /></div> : focus ? <div key="active" className="vso-fade-enter"><p className={clsx("text-xs font-semibold uppercase tracking-wide", paused ? "text-amber-700" : "text-primary-700")}>{paused ? "Paused" : seconds ? "Active focus session" : "Planned time is up"}</p>
       <FocusRing fraction={fraction} done={!seconds}><p className="font-mono text-[clamp(2.75rem,10vw,3.75rem)] font-extrabold leading-none tracking-tight text-neutral-900 tnum" role="timer" aria-live="off">{clock}</p><p className="mt-2 text-xs font-semibold text-neutral-400">of {focus.plannedMinutes} min</p></FocusRing>
-      <p className="mt-4 text-sm leading-6 text-neutral-500">Started {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(focus.startedAt))}{seconds === 0 ? " · Complete it when you finish." : ""}</p><button type="button" disabled={busy} onClick={() => act(() => completeLiveFocus(focus.id))} className={clsx(primaryClass, "mt-6")}><Square size={14} /><ActionLabel busy={busy} busyText="Saving…" idle="Complete session" /></button></div>
+      <p className="mt-4 text-sm leading-6 text-neutral-500">Started {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(focus.startedAt))}{paused ? " · The clock waits until you resume." : seconds === 0 ? " · Complete it when you finish." : ""}</p>
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        {/* Pause only while time is left; once the planned time is up there is nothing to hold. */}
+        {(paused || seconds > 0) && <button type="button" disabled={busy} onClick={() => act(() => paused ? resumeLiveFocus(focus.id) : pauseLiveFocus(focus.id))} className={paused ? primaryClass : secondaryClass}>{paused ? <Play size={14} /> : <Pause size={14} />}<ActionLabel busy={busy} busyText={paused ? "Resuming…" : "Pausing…"} idle={paused ? "Resume" : "Pause"} /></button>}
+        <button type="button" disabled={busy} onClick={() => act(() => completeLiveFocus(focus.id))} className={paused ? secondaryClass : primaryClass}><Square size={14} /><ActionLabel busy={busy} busyText="Saving…" idle="Complete session" /></button>
+      </div></div>
       : <div key="ready" className="vso-fade-enter"><p className="text-xs font-semibold uppercase tracking-wide text-primary-700">Ready to focus</p><h2 className="mt-2 text-xl font-bold text-neutral-900">Start a focused work block</h2><p className="mt-2 text-sm leading-6 text-neutral-500">Your start and end times are saved. Refreshing this page will not reset the session.</p>
         <div className="mt-5 flex justify-center"><SlidingTabs fitContent label="Planned minutes" active={custom ? "custom" : String(minutes)} onChange={(key) => { if (key === "custom") { setCustom(true); return; } setCustom(false); setMinutes(Number(key)); }} tabs={[...PRESETS.map((value) => ({ key: String(value), label: `${value} min` })), { key: "custom", label: "Custom" }]} /></div>
         <div data-open={custom} className="vso-collapse"><div><label className="mx-auto mt-4 flex max-w-48 flex-col text-left text-xs font-semibold text-neutral-600">Planned minutes<input type="number" min={1} max={240} tabIndex={custom ? 0 : -1} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); start(); } }} className="mt-1 min-h-11 rounded-xl border border-neutral-200 bg-white px-3 text-sm text-neutral-800 outline-none transition-[border-color,box-shadow] duration-150 focus:border-primary-400 focus:ring-2 focus:ring-primary-100" /></label></div></div>

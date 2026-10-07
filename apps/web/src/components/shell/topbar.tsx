@@ -20,18 +20,20 @@ function LiveFocusLink() {
   // The focus page shows the full timer, so the top bar stays an icon there.
   const onFocusPage = /^\/(?:demo\/)?focus(?:\/|$)/.test(usePathname());
   const endsAt = focus && !onFocusPage ? new Date(focus.endsAt).getTime() : 0;
+  // A paused session's clock stands still at the moment it was paused.
+  const pausedAt = focus?.pausedAt ? new Date(focus.pausedAt).getTime() : 0;
   useEffect(() => { ensureFocusLoaded(); }, []);
   useEffect(() => {
-    if (!endsAt) return;
+    if (!endsAt || pausedAt) return;
     const tick = () => setNow(Date.now());
     const timer = window.setInterval(tick, 1000);
     queueMicrotask(tick);
     return () => window.clearInterval(timer);
-  }, [endsAt]);
+  }, [endsAt, pausedAt]);
   if (!endsAt) return <Link href="/focus" aria-label="Open focus sprint" className={clsx(iconButton, "text-primary-600 hover:bg-primary-50")}><TimerReset size={18} /></Link>;
-  const seconds = Math.max(0, Math.ceil((endsAt - now) / 1000));
-  const clock = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  return <Link href="/focus" aria-label={seconds ? `Focus session running, ${Math.ceil(seconds / 60)} minutes left` : "Focus session finished, open it to complete"} className="vso-fade-enter flex h-10 shrink-0 items-center gap-2 rounded-xl bg-primary-50 px-3 text-xs font-semibold text-primary-700 transition-[background-color,transform] duration-150 hover:bg-primary-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"><span aria-hidden="true" className={clsx("h-2 w-2 rounded-full", seconds ? "bg-primary-600" : "bg-success")} /><span className="tnum">{seconds ? clock : "Done"}</span></Link>;
+  const seconds = Math.max(0, Math.ceil((endsAt - (pausedAt || now)) / 1000));
+  const clock = `${pausedAt ? "Paused · " : ""}${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  return <Link href="/focus" aria-label={pausedAt ? `Focus session paused, ${Math.ceil(seconds / 60)} minutes left` : seconds ? `Focus session running, ${Math.ceil(seconds / 60)} minutes left` : "Focus session finished, open it to complete"} className="vso-fade-enter flex h-10 shrink-0 items-center gap-2 rounded-xl bg-primary-50 px-3 text-xs font-semibold text-primary-700 transition-[background-color,transform] duration-150 hover:bg-primary-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"><span aria-hidden="true" className={clsx("h-2 w-2 rounded-full", pausedAt ? "bg-amber-500" : seconds ? "bg-primary-600" : "bg-success")} /><span className="tnum">{seconds ? clock : "Done"}</span></Link>;
 }
 
 export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen, onToggleFocus }: Props) {

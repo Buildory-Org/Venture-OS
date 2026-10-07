@@ -55,7 +55,8 @@ import {
   Play as PlaySvg,
   Plus as PlusSvg,
   RefreshCw as RefreshCwSvg,
-  RotateCcw as RotateCcwSvg,
+  Undo02Icon,
+  ArrowTurnBackwardIcon,
   Scale as ScaleSvg,
   Search as SearchSvg,
   Send as SendSvg,
@@ -142,7 +143,9 @@ export const Pin = icon(PinSvg);
 export const Play = icon(PlaySvg);
 export const Plus = icon(PlusSvg);
 export const RefreshCw = icon(RefreshCwSvg);
-export const RotateCcw = icon(RotateCcwSvg);
+// A counter-clockwise arrow (the set's own RotateCcw draws a hand gesture, which reads as nothing).
+export const RotateCcw = icon(Undo02Icon);
+export const Reply = icon(ArrowTurnBackwardIcon);
 export const Scale = icon(ScaleSvg);
 export const Search = icon(SearchSvg);
 export const Send = icon(SendSvg);

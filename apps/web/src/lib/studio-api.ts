@@ -495,6 +495,14 @@ export async function startLiveFocus(input: unknown) {
   return successEnvelope(focusSessionSchema).parse(await request("/v1/focus", { method: "POST", body: JSON.stringify(valid) })).data;
 }
 
+export async function pauseLiveFocus(id: string) {
+  return successEnvelope(focusSessionSchema).parse(await request(`/v1/focus/${encodeURIComponent(id)}/pause`, { method: "POST" })).data;
+}
+
+export async function resumeLiveFocus(id: string) {
+  return successEnvelope(focusSessionSchema).parse(await request(`/v1/focus/${encodeURIComponent(id)}/resume`, { method: "POST" })).data;
+}
+
 export async function completeLiveFocus(id: string) {
   return successEnvelope(focusSessionSchema).parse(await request(`/v1/focus/${encodeURIComponent(id)}/complete`, { method: "POST" })).data;
 }

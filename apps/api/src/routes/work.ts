@@ -235,9 +235,30 @@ export function workRoutes(database: Database): Router {
     res.json({ ok: true, data: { items: jsonValue(rows.slice(0, query.limit)), nextCursor: rows.length > query.limit ? String(rows[query.limit - 1]?._id) : undefined } });
   });
 
+  // Pause and resume are single atomic updates on the caller's own active session, so a double click can't apply twice.
+  const activeFocus = (actor: { id: string; membership: { workspaceId: string } }, id: string) => ({ _id: id, workspaceId: actor.membership.workspaceId, userId: actor.id, completedAt: { $exists: false }, cancelledAt: { $exists: false } });
+  router.post("/focus/:id/pause", async (req, res) => {
+    const actor = req.actor!; const id = idSchema.parse(req.params.id); const now = new Date();
+    const updated = await db.collection("focus_sessions").findOneAndUpdate({ ...activeFocus(actor, id), pausedAt: { $exists: false }, endsAt: { $gt: now } }, { $set: { pausedAt: now } }, { returnDocument: "after" });
+    if (!updated) throw new AppError(409, "CONFLICT", "Only a running focus session with time left can be paused");
+    res.json({ ok: true, data: jsonValue(updated) });
+  });
+  router.post("/focus/:id/resume", async (req, res) => {
+    const actor = req.actor!; const id = idSchema.parse(req.params.id); const now = new Date();
+    const paused = { $subtract: [now, "$pausedAt"] };
+    const updated = await db.collection("focus_sessions").findOneAndUpdate({ ...activeFocus(actor, id), pausedAt: { $exists: true } },
+      [{ $set: { endsAt: { $add: ["$endsAt", paused] }, pausedMs: { $add: [{ $ifNull: ["$pausedMs", 0] }, paused] } } }, { $unset: "pausedAt" }], { returnDocument: "after" });
+    if (!updated) throw new AppError(409, "CONFLICT", "Only a paused focus session can be resumed");
+    res.json({ ok: true, data: jsonValue(updated) });
+  });
+
   router.post("/focus/:id/complete", async (req, res) => {
-    const actor = req.actor!; const id = idSchema.parse(req.params.id);
-    const result = await db.collection("focus_sessions").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, userId: actor.id, completedAt: { $exists: false }, cancelledAt: { $exists: false } }, { $set: { completedAt: new Date() } });
+    const actor = req.actor!; const id = idSchema.parse(req.params.id); const now = new Date();
+    // Finishing while paused counts the pause up to now, so `pausedMs` always holds every paused moment.
+    const result = await db.collection("focus_sessions").updateOne(activeFocus(actor, id), [
+      { $set: { completedAt: now, pausedMs: { $add: [{ $ifNull: ["$pausedMs", 0] }, { $cond: [{ $ifNull: ["$pausedAt", false] }, { $subtract: [now, "$pausedAt"] }, 0] }] } } },
+      { $unset: "pausedAt" },
+    ]);
     if (!result.matchedCount) throw new AppError(404, "NOT_FOUND", "Active focus session not found");
     res.json({ ok: true, data: jsonValue(await db.collection("focus_sessions").findOne({ _id: id })) });
   });

@@ -1589,3 +1589,68 @@ test("venture goal edits are limited to admins and that venture's head, inside t
     await database.client.close();
   }
 });
+
+test("focus sessions pause, resume, and finish with paused time counted, only for their owner", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_focus_pause`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  for (const handle of ["owner", "peer"]) {
+    await db.collection("users").insertOne({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: handle, handle, status: "active", createdAt: now, updatedAt: now });
+    await db.collection("memberships").insertOne({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role: "contributor", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now });
+  }
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const post = (path: string, handle = "owner", body?: unknown) => fetch(`${origin}/v1${path}`, { method: "POST", headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    const started = await post("/focus", "owner", { plannedMinutes: 25 });
+    assert.equal(started.status, 201, await started.clone().text());
+    const session = ((await started.json()) as any).data;
+    const originalEnd = new Date(session.endsAt).getTime();
+    // Someone else can't pause it, and a session that isn't paused can't be resumed.
+    assert.equal((await post(`/focus/${session.id}/pause`, "peer")).status, 409);
+    assert.equal((await post(`/focus/${session.id}/resume`)).status, 409);
+    const paused = await post(`/focus/${session.id}/pause`);
+    assert.equal(paused.status, 200, await paused.clone().text());
+    assert.ok(((await paused.json()) as any).data.pausedAt);
+    assert.equal((await post(`/focus/${session.id}/pause`)).status, 409);
+    // The current-session read shows the pause, so a reload keeps the clock still.
+    assert.ok(((await (await fetch(`${origin}/v1/focus/current`, { headers: { "x-dev-user-id": "user-owner" } })).json()) as any).data.pausedAt);
+    await wait(1100);
+    const resumed = await post(`/focus/${session.id}/resume`);
+    assert.equal(resumed.status, 200, await resumed.clone().text());
+    const afterResume = ((await resumed.json()) as any).data;
+    assert.equal(afterResume.pausedAt, undefined);
+    assert.ok(afterResume.pausedMs >= 1000, `pausedMs ${afterResume.pausedMs}`);
+    assert.equal(new Date(afterResume.endsAt).getTime() - originalEnd, afterResume.pausedMs);
+    // Finishing while paused adds the open pause to the total.
+    assert.equal((await post(`/focus/${session.id}/pause`)).status, 200);
+    await wait(600);
+    const completed = await post(`/focus/${session.id}/complete`);
+    assert.equal(completed.status, 200, await completed.clone().text());
+    const done = ((await completed.json()) as any).data;
+    assert.ok(done.completedAt);
+    assert.equal(done.pausedAt, undefined);
+    assert.ok(done.pausedMs >= afterResume.pausedMs + 500, `pausedMs ${done.pausedMs}`);
+    // A finished session can no longer be paused or resumed.
+    assert.equal((await post(`/focus/${session.id}/pause`)).status, 409);
+    assert.equal((await post(`/focus/${session.id}/resume`)).status, 409);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});

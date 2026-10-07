@@ -3,13 +3,13 @@
 import { getCurrentLiveFocus } from "@/lib/studio-api";
 
 /* The running focus session, shared by the focus screen and the top-bar timer. `undefined` means not loaded yet. */
-type FocusSnapshot = { endsAt: string } | null | undefined;
+type FocusSnapshot = { endsAt: string; pausedAt?: string } | null | undefined;
 let current: FocusSnapshot;
 let requested = false;
 const listeners = new Set<() => void>();
 
-export function publishFocus(value: { endsAt: string; completedAt?: string | null } | null) {
-  current = value && !value.completedAt ? { endsAt: value.endsAt } : null;
+export function publishFocus(value: { endsAt: string; pausedAt?: string; completedAt?: string | null } | null) {
+  current = value && !value.completedAt ? { endsAt: value.endsAt, ...(value.pausedAt ? { pausedAt: value.pausedAt } : {}) } : null;
   listeners.forEach((listener) => listener());
 }
 

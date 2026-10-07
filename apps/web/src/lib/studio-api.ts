@@ -69,6 +69,7 @@ import {
   updatePipelineSchema,
   type Task,
 } from "@venture-studio/contracts";
+import type { AppRole } from "@venture-studio/contracts";
 
 export class StudioApiError extends Error {
   constructor(message: string, readonly code?: string, readonly requestId?: string) {
@@ -151,10 +152,16 @@ export async function removeLiveGroupMember(groupId: string, userId: string) {
 }
 
 export async function createLiveGroupInvitation(input: { email: string; role: "venture_head" | "contributor" | "reviewer" | "learner"; ventureId: string; groupId: string }) {
-  const body = await request("/v1/admin/invitations", { method: "POST", body: JSON.stringify({ email: input.email, role: input.role, ventureIds: [input.ventureId], groupIds: [input.groupId] }) });
+  return createLiveInvitation({ email: input.email, role: input.role, ventureIds: [input.ventureId], groupIds: [input.groupId] });
+}
+
+/** Invites someone by email with a role and venture/group access; returns a manual link when email delivery is off. */
+export async function createLiveInvitation(input: { email: string; role: AppRole; ventureIds: string[]; groupIds: string[] }) {
+  const body = await request("/v1/admin/invitations", { method: "POST", body: JSON.stringify(input) });
   if (!body || typeof body !== "object" || !("ok" in body) || body.ok !== true || !("data" in body) || !body.data || typeof body.data !== "object") throw new StudioApiError("The invitation response was invalid.");
   const invitation = "invitation" in body.data ? body.data.invitation : null;
-  if (!invitation || typeof invitation !== "object" || !("ventureIds" in invitation) || !Array.isArray(invitation.ventureIds) || !invitation.ventureIds.includes(input.ventureId) || !("groupIds" in invitation) || !Array.isArray(invitation.groupIds) || !invitation.groupIds.includes(input.groupId)) throw new StudioApiError("The invitation response did not match the selected group.");
+  const sameIds = (value: unknown, expected: string[]) => Array.isArray(value) && value.length === expected.length && expected.every((id) => value.includes(id));
+  if (!invitation || typeof invitation !== "object" || !("ventureIds" in invitation) || !sameIds(invitation.ventureIds, input.ventureIds) || !("groupIds" in invitation) || !sameIds(invitation.groupIds, input.groupIds)) throw new StudioApiError("The invitation response did not match the selected access.");
   if ("token" in body.data && typeof body.data.token === "string" && body.data.token) return { kind: "manual" as const, token: body.data.token };
   const delivery = "delivery" in body.data ? body.data.delivery : null;
   if (delivery && typeof delivery === "object" && "mode" in delivery && delivery.mode === "email" && "status" in delivery && delivery.status === "sent") return { kind: "email" as const };

@@ -109,6 +109,48 @@ switch ($Command.ToLowerInvariant()) {
   "init" { Initialize-Settings }
   "check" { if (-not (Test-Settings)) { exit 1 } }
   "edit" { if (-not (Test-Path $EnvFile)) { Initialize-Settings }; Start-Process notepad.exe -ArgumentList ('"' + $EnvFile + '"') }
+  "capture" {
+    # Watches the clipboard for up to 5 minutes and saves, as they are copied in the Cloudflare dashboard:
+    # the R2 Access Key ID (32 hex), the R2 Secret Access Key (64 hex), and the tunnel token (or its Docker command).
+    # Values are written straight into deploy\.env, never printed, and the clipboard is cleared after each one.
+    if (-not (Test-Path $EnvFile)) { Initialize-Settings }
+    $need = @{ "R2_ACCESS_KEY_ID" = $true; "R2_SECRET_ACCESS_KEY" = $true; "TUNNEL_TOKEN" = $true }
+    $deadline = (Get-Date).AddMinutes(5)
+    Write-Host "Watching the clipboard for 5 minutes: copy the R2 Access Key ID, the Secret Access Key, and the tunnel command."
+    while ((Get-Date) -lt $deadline -and $need.Count -gt 0) {
+      $clip = ""
+      try { $clip = Get-Clipboard -Raw } catch { $clip = "" }
+      if ($clip) {
+        $value = $clip.Trim(); $name = $null
+        if ($value -match '--token\s+(\S+)') { $value = $Matches[1] }
+        if ($value -match '^[0-9a-f]{32}$') { $name = "R2_ACCESS_KEY_ID" }
+        elseif ($value -match '^[0-9a-f]{64}$') { $name = "R2_SECRET_ACCESS_KEY" }
+        elseif ($value -match '^eyJ[A-Za-z0-9_\-=.]{40,}$') { $name = "TUNNEL_TOKEN" }
+        if ($name -and $need.ContainsKey($name)) {
+          Set-Setting $name $value
+          [void]$need.Remove($name)
+          Set-Clipboard -Value " "
+          Write-Host "Saved $name ($($value.Length) characters)."
+        }
+      }
+      Start-Sleep -Milliseconds 500
+    }
+    if ($need.Count -gt 0) { Write-Host ("Still missing: " + (@($need.Keys) -join ", ")) -ForegroundColor Yellow; exit 1 }
+    Write-Host "All three saved to deploy\.env; the clipboard was cleared." -ForegroundColor Green
+  }
+  "set-tunnel" {
+    # Copy the tunnel's Docker command (or just its token) in the Cloudflare dashboard, then run this.
+    # The token goes straight from the clipboard into deploy\.env and is never printed.
+    if (-not (Test-Path $EnvFile)) { Initialize-Settings }
+    $clip = (Get-Clipboard -Raw)
+    if (-not $clip) { Write-Host "The clipboard is empty. Copy the tunnel command in Cloudflare first." -ForegroundColor Yellow; exit 1 }
+    $token = $clip.Trim()
+    if ($token -match '--token\s+(\S+)') { $token = $Matches[1] }
+    if ($token -notmatch '^eyJ[A-Za-z0-9_\-=.]+$') { Write-Host "The clipboard does not contain a tunnel token. Copy it again from the tunnel's install step." -ForegroundColor Yellow; exit 1 }
+    Set-Setting "TUNNEL_TOKEN" $token
+    Set-Clipboard -Value " "
+    Write-Host "Tunnel token saved to deploy\.env ($($token.Length) characters); the clipboard was cleared." -ForegroundColor Green
+  }
   "up" {
     if (-not (Test-Settings)) { Write-Host "Not starting until the settings above are fixed." -ForegroundColor Red; exit 1 }
     Invoke-Compose @("up", "-d", "--build", "--remove-orphans")
@@ -159,6 +201,7 @@ Venture Studio production (local Docker) - deploy\prod.cmd <command>
 
   init                 create deploy\.env and generate secrets and push keys
   edit                 open deploy\.env in Notepad
+  set-tunnel           save the Cloudflare tunnel token from the clipboard into deploy\.env
   check                list settings that still need values
   up                   build and start everything (also applies changed settings)
   status               show containers and their health

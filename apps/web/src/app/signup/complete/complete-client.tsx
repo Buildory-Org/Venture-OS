@@ -3,12 +3,12 @@ import { describeError } from "@/lib/errors";
 
 import { useState } from "react";
 import Link from "next/link";
-import { MailCheck } from "@/components/ui/icons";
-import { primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { AuthHeading, AuthMessage, AuthShell, authLink, authPrimary } from "@/components/auth/auth-shell";
 
 export function CompleteSignupClient() {
   const [state, setState] = useState<"ready" | "claiming" | "done" | "error">("ready");
   const [error, setError] = useState("");
+  const [failures, setFailures] = useState(0);
 
   async function claim() {
     setState("claiming"); setError("");
@@ -17,8 +17,19 @@ export function CompleteSignupClient() {
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error?.message ?? `Setup failed (HTTP ${response.status}).`);
       setState("done");
-    } catch (cause) { setError(describeError(cause, "Could not finish setup.")); setState("error"); }
+    } catch (cause) { setError(describeError(cause, "Could not finish setup.")); setState("error"); setFailures((value) => value + 1); }
   }
 
-  return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-12 w-12 place-items-center rounded-xl bg-primary-50 text-primary-700"><MailCheck size={22} /></span><h1 className="mt-5 text-2xl font-bold text-neutral-900">Finish workspace setup</h1>{state === "done" ? <><p role="status" className="mt-3 text-sm text-success-text">Your admin account is ready. First-admin signup is now closed.</p><Link href="/dashboard/live" className={`${primaryClass} mt-5 w-full`}>Open workspace</Link></> : <><p className="mt-3 text-sm leading-6 text-neutral-500">After opening the verification link for the configured owner email, complete the one-time admin setup.</p>{state === "claiming" && <p role="status" className="mt-3 text-sm text-neutral-500">Creating admin access…</p>}{error && <p role="alert" className="mt-3 text-sm text-danger-text">{error}</p>}<button type="button" disabled={state === "claiming"} onClick={claim} className={`${primaryClass} mt-5 w-full`}>Complete admin setup</button><Link href="/sign-in/live" className={`${secondaryClass} mt-3 w-full`}>Sign in first</Link></>}</section></main>;
+  const done = state === "done";
+  return <AuthShell headline="Start your studio's operating system." blurb="Create the first admin account, then invite your team into each venture and group.">
+    <div key={failures} className={`w-full max-w-[400px] ${failures ? "vso-auth-shake" : ""}`}>
+      <AuthHeading swapKey={done ? "done" : "ready"} title={done ? "You're all set" : "Finish setup"} subtitle={done ? "Your admin account is ready. First-admin signup is now closed." : "Your email is verified. Create the admin account to activate the workspace."} />
+      <div className="mt-8 flex flex-col gap-4">
+        {error && <AuthMessage tone="error">{error}</AuthMessage>}
+        {done ? <Link href="/dashboard/live" className={authPrimary}>Open workspace</Link>
+          : <button type="button" disabled={state === "claiming"} onClick={claim} className={authPrimary}>{state === "claiming" ? "Creating admin access…" : "Complete admin setup"}</button>}
+      </div>
+      {!done && <p className="mt-7 text-center text-[0.75rem] leading-5 text-[#71717a]">Link expired or opened on another device? <Link href="/signup" className={authLink}>Start again</Link></p>}
+    </div>
+  </AuthShell>;
 }

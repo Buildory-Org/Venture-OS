@@ -4,40 +4,65 @@ import { describeError } from "@/lib/errors";
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { MailCheck } from "@/components/ui/icons";
-import { acceptLiveInvitation, hasLiveAuthSession, signOutLive } from "@/lib/studio-api";
-import { primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { AuthHeading, AuthMessage, AuthShell, authPrimary, authSecondary } from "@/components/auth/auth-shell";
+import { acceptLiveInvitation, liveAuthIdentity, signOutLive } from "@/lib/studio-api";
+
+type Identity = Awaited<ReturnType<typeof liveAuthIdentity>>;
 
 function ConnectedInvite() {
   const params = useSearchParams();
   const token = params.get("token") ?? "";
+  // undefined while checking, null when signed out.
+  const [identity, setIdentity] = useState<Identity | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState("");
-  // Unknown until checked, so neither choice flashes before the session check settles.
-  const [signedIn, setSignedIn] = useState<boolean | null>(null);
-  const [signingOut, setSigningOut] = useState(false);
+  const [failures, setFailures] = useState(0);
   const invitePath = `/invite/live?token=${encodeURIComponent(token)}`;
   const signInUrl = `/sign-in/live?next=${encodeURIComponent(invitePath)}`;
 
-  // Signed in already (maybe as someone else): offer a switch instead of sign-in, which would only bounce back here.
   useEffect(() => {
     let active = true;
-    hasLiveAuthSession().then((value) => { if (active) setSignedIn(value); }, () => { if (active) setSignedIn(false); });
+    liveAuthIdentity().then((value) => { if (active) setIdentity(value); }, () => { if (active) setIdentity(null); });
     return () => { active = false; };
   }, []);
 
   async function accept() {
+    if (busy) return;
     setBusy(true); setError("");
     try { await acceptLiveInvitation(token); setAccepted(true); }
-    catch (cause) { setError(describeError(cause, "Could not accept the invitation.")); }
+    catch (cause) { setError(describeError(cause, "Could not accept the invitation.")); setFailures((value) => value + 1); }
     finally { setBusy(false); }
   }
 
-  return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-12 w-12 place-items-center rounded-xl bg-primary-50 text-primary-700"><MailCheck size={22} /></span><h1 className="mt-5 text-2xl font-extrabold text-neutral-900">Join Venture Studio</h1><p className="mt-2 text-sm leading-6 text-neutral-500">Sign in with the invited email address, then accept your invitation. Invitations may expire or be limited to a specific workspace.</p>
-    {accepted ? <div role="status" className="mt-5 rounded-xl bg-success-surface p-4 text-sm font-semibold text-success-text">Invitation accepted. Your workspace access is now active.</div> : token ? <><button disabled={busy} type="button" onClick={accept} className={`${primaryClass} mt-5 w-full`}>{busy ? "Checking invitation…" : "Accept invitation"}</button>{error && <p role="alert" className="mt-3 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}</> : <p role="alert" className="mt-5 rounded-xl bg-warning-surface p-3 text-sm font-semibold text-warning-text">This invitation link is incomplete. Ask the sender for a new link.</p>}
-    <div className="mt-4 flex flex-wrap gap-2">{signedIn === true && <button type="button" disabled={signingOut} onClick={() => { setSigningOut(true); setError(""); signOutLive(invitePath).catch((cause) => { setSigningOut(false); setError(describeError(cause, "Could not sign out. Try again.")); }); }} className={secondaryClass}>{signingOut ? "Signing out…" : "Use a different account"}</button>}{signedIn === false && <Link href={signInUrl} className={secondaryClass}>Sign in first</Link>}<Link href="/dashboard/live" className={secondaryClass}>Go to dashboard</Link></div>
-  </section></main>;
+  function switchAccount() {
+    setSigningOut(true); setError("");
+    signOutLive(invitePath).catch((cause) => { setSigningOut(false); setError(describeError(cause, "Could not sign out. Try again.")); });
+  }
+
+  const heading = !token ? { key: "broken", title: "Link incomplete", subtitle: "This invitation link is missing its code. Ask the person who invited you for a new link." }
+    : accepted ? { key: "accepted", title: "You're in", subtitle: "Your invitation is accepted and your workspace access is active." }
+    : identity ? { key: "signed-in", title: "You're invited", subtitle: <>Accept to join Venture Studio as <strong className="font-semibold text-[#3f3f46]">{identity.email}</strong>. Use the email address the invitation was sent to.</> }
+    : { key: "signed-out", title: "You're invited", subtitle: "Sign in with the email address this invitation was sent to, then accept it here." };
+
+  return <AuthShell headline="Your team is waiting for you." blurb="Join the ventures and groups you were invited to: shared goals, tasks, channels, and decisions.">
+    <div key={failures} className={`w-full max-w-[400px] ${failures ? "vso-auth-shake" : ""}`}>
+      <AuthHeading swapKey={heading.key} title={heading.title} subtitle={heading.subtitle} />
+      <div className="mt-8 flex flex-col gap-3">
+        {error && <AuthMessage tone="error">{error}</AuthMessage>}
+        {!token ? <Link href="/sign-in/live" className={authSecondary}>Go to sign in</Link>
+          : accepted ? <Link href="/dashboard/live" className={authPrimary}>Open workspace</Link>
+          : identity === undefined ? <div role="status" aria-label="Checking your sign-in" className="vso-skeleton h-[50px] rounded-xl" />
+          : identity ? <>
+            <button type="button" disabled={busy || signingOut} onClick={accept} className={authPrimary}>{busy ? "Accepting…" : "Accept invitation"}</button>
+            <button type="button" disabled={busy || signingOut} onClick={switchAccount} className={authSecondary}>{signingOut ? "Signing out…" : "Use a different account"}</button>
+          </>
+          : <Link href={signInUrl} className={authPrimary}>Sign in to accept</Link>}
+      </div>
+      <p className="mt-7 text-center text-[0.75rem] leading-5 text-[#71717a]">Invitations expire after 7 days and work once. If yours has expired, ask a workspace admin to send a new one.</p>
+    </div>
+  </AuthShell>;
 }
 
-export default function Page() { return <Suspense fallback={<main className="min-h-dvh bg-canvas p-6">Loading invitation…</main>}><ConnectedInvite /></Suspense>; }
+export default function Page() { return <Suspense fallback={null}><ConnectedInvite /></Suspense>; }

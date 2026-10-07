@@ -118,6 +118,14 @@ export async function hasLiveAuthSession(): Promise<boolean> {
   return typeof session?.user?.id === "string";
 }
 
+/** The signed-in account's email and name, or null when the browser has no Better Auth session. */
+export async function liveAuthIdentity(): Promise<{ email: string; name: string } | null> {
+  const response = await fetch("/api/auth/get-session", { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) return null;
+  const session = await response.json().catch(() => null) as { user?: { email?: unknown; name?: unknown } } | null;
+  return typeof session?.user?.email === "string" ? { email: session.user.email, name: typeof session.user.name === "string" ? session.user.name : "" } : null;
+}
+
 /**
  * Ends the Better Auth session, then reloads on the sign-in page so no workspace state survives in memory.
  * Throws when the session could not be ended: going to sign-in anyway would just bounce a still-signed-in user back.

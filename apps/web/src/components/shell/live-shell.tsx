@@ -9,7 +9,7 @@ import { AppShell } from "./app-shell";
 import { StudioProvider } from "@/lib/studio-store";
 import { connectedNotices, connectedShellData } from "@/lib/live-shell-data";
 import { notificationSnapshotEvent } from "@/lib/notification-events";
-import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession } from "@/lib/studio-api";
+import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
 import { useChatPushResponder } from "@/lib/chat-presence";
 import { demoEnabled } from "@/lib/demo";
 
@@ -21,6 +21,10 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
+  // Signed in, but the account has no workspace access: offer sign-out, since sign-in would send them straight back here.
+  const [noAccess, setNoAccess] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState("");
   const [hierarchyRevision, setHierarchyRevision] = useState(0);
 
   useEffect(() => {
@@ -45,7 +49,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
         const session = await loadLiveSession();
         if (!active) return;
         setSnapshot({ session, data: connectedShellData(session) });
-        setError("");
+        setError(""); setNoAccess(false);
         const [tasks, notifications, members] = await Promise.allSettled([
           listLiveTasks(), listLiveNotifications(), listLiveMembers({ limit: 100 }),
         ]);
@@ -64,6 +68,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
           if (!active) return;
           if (!signedIn) { router.replace(`/sign-in/live?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`); return; }
           setSnapshot(null);
+          setNoAccess(true);
           setError("You're signed in, but this account doesn't have access to this workspace yet. Ask a workspace admin to invite you, or sign in with a different email.");
           return;
         }
@@ -74,7 +79,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
     return () => { active = false; };
   }, [hierarchyRevision, router]);
 
-  if (error) return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-11 w-11 place-items-center rounded-xl bg-danger-surface text-danger-text"><Layers3 size={20} /></span><h1 className="mt-4 text-xl font-bold text-neutral-900">Workspace unavailable</h1><p role="alert" className="mt-2 text-sm leading-6 text-neutral-500">{error}</p><div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => { setError(""); setHierarchyRevision((value) => value + 1); }} className="min-h-10 rounded-xl bg-primary-700 px-4 py-2.5 text-xs font-semibold text-white transition-[background-color,transform] duration-150 hover:bg-primary-800 active:scale-[0.97]">Try again</button><Link href="/sign-in/live" className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-semibold text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-50 active:scale-[0.97]">Sign in</Link>{demoEnabled && <Link href="/demo" className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-semibold text-neutral-700">Explore demo</Link>}</div></section></main>;
+  if (error) return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-11 w-11 place-items-center rounded-xl bg-danger-surface text-danger-text"><Layers3 size={20} /></span><h1 className="mt-4 text-xl font-bold text-neutral-900">Workspace unavailable</h1><p role="alert" className="mt-2 text-sm leading-6 text-neutral-500">{error}</p><div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => { setError(""); setHierarchyRevision((value) => value + 1); }} className="min-h-10 rounded-xl bg-primary-700 px-4 py-2.5 text-xs font-semibold text-white transition-[background-color,transform] duration-150 hover:bg-primary-800 active:scale-[0.97]">Try again</button>{noAccess && <button type="button" disabled={signingOut} onClick={() => { setSigningOut(true); setSignOutError(""); signOutLive().catch((cause) => { setSigningOut(false); setSignOutError(describeError(cause, "Could not sign out. Try again.")); }); }} className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-semibold text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-50 active:scale-[0.97] disabled:opacity-60">{signingOut ? "Signing out…" : "Sign out"}</button>}{demoEnabled && <Link href="/demo" className="min-h-10 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-semibold text-neutral-700">Explore demo</Link>}</div>{signOutError && <p role="alert" className="mt-3 text-sm font-semibold text-danger-text">{signOutError}</p>}</section></main>;
   // The loading state already has the shell's shape, so the workspace settles in place instead of jumping.
   if (!snapshot) return <main aria-busy="true" className="vso-fade-enter flex h-dvh overflow-hidden bg-white"><span role="status" className="sr-only">Loading workspace…</span>
     <div aria-hidden="true" className="hidden w-[248px] shrink-0 flex-col gap-2 p-3 lg:flex"><div className="flex items-center gap-2.5"><span className="vso-skeleton h-8 w-8 rounded-[10px]" /><span className="grid flex-1 gap-1.5"><span className="vso-skeleton h-3 w-28" /><span className="vso-skeleton h-2.5 w-20" /></span></div><span className="vso-skeleton mt-4 h-11 rounded-xl" /><span className="vso-skeleton mt-3 mb-1 h-2.5 w-16" />{Array.from({ length: 10 }, (_, index) => <span key={index} className="vso-skeleton h-9 rounded-xl" style={{ opacity: 1 - index * 0.07 }} />)}</div>

@@ -1,38 +1,44 @@
-"use client";
-import { describeError } from "@/lib/errors";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { safeNextPath } from "@/lib/safe-next";
+import { SignInForm } from "./sign-in-form";
 
-import { Suspense, useState } from "react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Layers3, LockKeyhole, Mail } from "@/components/ui/icons";
-import { inputClass, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { demoEnabled } from "@/lib/demo";
+const apiOrigin = () => process.env.VSO_API_ORIGIN ?? "http://localhost:4000";
+// A slow API must not hold the sign-in page hostage: past this, the visitor just gets the form.
+const API_TIMEOUT_MS = 3000;
+// First-admin setup can only be closed, never reopened, so once it is seen closed this server stops asking.
+let setupClosed = false;
 
-function ConnectedSignIn() {
-  const params = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState("");
-  const nextParam = params.get("next") ?? "/dashboard/live";
-  const next = nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard/live";
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError("");
-    try {
-      const response = await fetch("/api/auth/sign-in/magic-link", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: email.trim(), ...(name.trim() ? { name: name.trim() } : {}), callbackURL: `${window.location.origin}${next}` }) });
-      if (!response.ok) throw new Error(`Sign-in request failed (HTTP ${response.status}).`);
-      setSent(true);
-    } catch (cause) { setError(describeError(cause, "Could not request a sign-in link.")); }
-    finally { setBusy(false); }
-  }
-
-  return <main className="grid min-h-dvh place-items-center bg-canvas p-4"><section className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-7 shadow-card"><span className="grid h-11 w-11 place-items-center rounded-xl bg-primary-600 text-white"><Layers3 size={21} /></span><p className="mt-5 text-xs font-semibold uppercase tracking-[.1em] text-primary-600">Connected workspace</p><h1 className="mt-1 text-2xl font-extrabold tracking-tight text-neutral-900">Sign in to Venture Studio</h1><p className="mt-2 text-sm leading-6 text-neutral-500">Use your invited email address to request a one-time sign-in link.</p>
-    {sent ? <div role="status" className="mt-5 rounded-xl bg-success-surface p-4 text-sm leading-6 text-success-text"><Mail size={17} className="mr-2 inline" />Sign-in link requested for {email.trim()}. If email delivery is enabled for this workspace, check your inbox. If nothing arrives, ask a workspace admin for help.</div> : <form onSubmit={submit} className="mt-5 space-y-3"><label className="block"><span className="mb-1.5 block text-xs font-semibold text-neutral-600">Email</span><input required type="email" autoComplete="email" className={inputClass} value={email} onChange={(event) => setEmail(event.target.value)} /></label><label className="block"><span className="mb-1.5 block text-xs font-semibold text-neutral-600">Name, if this is your first sign-in</span><input autoComplete="name" className={inputClass} value={name} onChange={(event) => setName(event.target.value)} /></label>{error && <p role="alert" className="rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}<button disabled={busy} className={`${primaryClass} w-full`}>{busy ? "Requesting…" : "Request sign-in link"}</button></form>}
-    <div className="mt-4 flex flex-wrap gap-2">{demoEnabled && <Link href="/demo/sign-in" className={secondaryClass}>Explore demo</Link>}<Link href="/dashboard/live" className={secondaryClass}>Open workspace</Link></div><p className="mt-4 flex items-start gap-2 text-xs leading-5 text-neutral-400"><LockKeyhole size={14} className="mt-0.5 shrink-0" />Use an invited email to access your workspace.{demoEnabled && " The demo only shows sample data."}</p>
-  </section></main>;
+/** Whether the visitor's cookies hold a Better Auth session. Any failure counts as signed out, so the form still shows. */
+async function hasSession(cookie: string | null, forward: Record<string, string>) {
+  if (!cookie) return false;
+  try {
+    const response = await fetch(`${apiOrigin()}/api/auth/get-session`, { cache: "no-store", headers: { cookie, ...forward }, signal: AbortSignal.timeout(API_TIMEOUT_MS) });
+    if (!response.ok) return false;
+    const session = await response.json().catch(() => null) as { user?: { id?: unknown } } | null;
+    return typeof session?.user?.id === "string";
+  } catch { return false; }
 }
 
-export default function Page() { return <Suspense fallback={<main className="min-h-dvh bg-canvas p-6">Loading sign-in…</main>}><ConnectedSignIn /></Suspense>; }
+/** Whether first-admin setup is still open, so the page can point a brand-new workspace's owner to /signup. */
+async function setupAvailable(forward: Record<string, string>) {
+  if (setupClosed) return false;
+  try {
+    const response = await fetch(`${apiOrigin()}/v1/setup/first-admin`, { cache: "no-store", headers: forward, signal: AbortSignal.timeout(API_TIMEOUT_MS) });
+    if (!response.ok) return false;
+    const body = await response.json().catch(() => null) as { data?: { available?: unknown; complete?: unknown } } | null;
+    if (body?.data?.complete === true) setupClosed = true;
+    return body?.data?.available === true && body.data.complete !== true;
+  } catch { return false; }
+}
+
+export default async function Page({ searchParams }: { searchParams: Promise<{ [key: string]: string | string[] | undefined }> }) {
+  const next = safeNextPath((await searchParams).next);
+  const requestHeaders = await headers();
+  // Pass the visitor's Cloudflare address along so the API rate-limits them, not this server.
+  const visitor = requestHeaders.get("cf-connecting-ip");
+  const forward: Record<string, string> = visitor ? { "cf-connecting-ip": visitor } : {};
+  // Already signed in: skip the form and continue to where they were going.
+  if (await hasSession(requestHeaders.get("cookie"), forward)) redirect(next);
+  return <SignInForm next={next} setupAvailable={await setupAvailable(forward)} />;
+}

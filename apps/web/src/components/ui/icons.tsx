@@ -39,6 +39,7 @@ import {
   LayoutDashboard as LayoutDashboardSvg,
   ListTodo as ListTodoSvg,
   LockKeyhole as LockKeyholeSvg,
+  LogOut as LogOutSvg,
   Mail as MailSvg,
   MailCheck as MailCheckSvg,
   Menu as MenuSvg,
@@ -125,6 +126,7 @@ export const Layers3 = icon(Layers01Icon);
 export const LayoutDashboard = icon(LayoutDashboardSvg);
 export const ListTodo = icon(ListTodoSvg);
 export const LockKeyhole = icon(LockKeyholeSvg);
+export const LogOut = icon(LogOutSvg);
 export const Mail = icon(MailSvg);
 export const MailCheck = icon(MailCheckSvg);
 export const Menu = icon(MenuSvg);

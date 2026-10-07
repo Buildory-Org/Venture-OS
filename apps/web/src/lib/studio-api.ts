@@ -116,6 +116,16 @@ export async function hasLiveAuthSession(): Promise<boolean> {
   return typeof session?.user?.id === "string";
 }
 
+/**
+ * Ends the Better Auth session, then reloads on the sign-in page so no workspace state survives in memory.
+ * Throws when the session could not be ended: going to sign-in anyway would just bounce a still-signed-in user back.
+ */
+export async function signOutLive(next?: string) {
+  const response = await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+  if (!response.ok) throw new Error(`Could not sign out (HTTP ${response.status}). Try again.`);
+  window.location.replace(next ? `/sign-in/live?next=${encodeURIComponent(next)}` : "/sign-in/live");
+}
+
 export async function loadLiveSession() {
   return sessionBootstrapResponseSchema.parse(await request("/v1/session/bootstrap")).data;
 }

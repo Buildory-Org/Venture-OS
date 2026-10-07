@@ -5,11 +5,14 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prefersReducedMotion } from "@/lib/motion";
-import { Bell, BookOpenText, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, Layers3, ListTodo, MessageSquareText, Plus, Scale, Settings, TrendingUp, Users, X } from "@/components/ui/icons";
+import { Bell, BookOpenText, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, TrendingUp, Users, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { Select } from "@/components/ui/select";
 import { CreateVentureDrawer } from "@/components/studio/create-venture-drawer";
+import { signOutLive } from "@/lib/studio-api";
+import { describeError } from "@/lib/errors";
+import { toast } from "@/components/ui/toast";
 
 const sections = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -119,6 +122,12 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
   function onTipOut(event: PointerEvent<HTMLElement>) { if (tipFor.current && tipTarget(event.relatedTarget) !== tipFor.current) hideTip(); }
   function onTipFocus(event: FocusEvent<HTMLElement>) { const target = tipTarget(event.target); if (target?.matches(":focus-visible")) showTip(target, true); }
   const [creatingVenture, setCreatingVenture] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const signOut = () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    signOutLive().catch((cause) => { setSigningOut(false); toast({ tone: "error", title: "Still signed in", body: describeError(cause, "Could not sign out. Try again.") }); });
+  };
   // A new venture is unknown to the scope until the shell reloads; hand it over then, unless the member picked another scope meanwhile.
   const [pendingScope, setPendingScope] = useState<{ ventureId: string; from: string } | null>(null);
   useEffect(() => {
@@ -149,7 +158,7 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
         })}</div>
         {quickGroup && <div className={clsx("mt-4 rounded-xl bg-neutral-50 p-2", collapsed && "lg:hidden")}><div className="mb-1 flex items-center gap-2 px-2 py-1"><Users size={14} className="text-neutral-400" /><p className="truncate text-[10px] font-semibold uppercase tracking-[.08em] text-neutral-500">{data.ventures.find((item) => item.id === quickGroup.ventureId)?.name} · {quickGroup.name}</p></div>{data.channels.filter((channel) => channel.groupId === quickGroup.id).map((channel) => <Link key={channel.id} href={`/channels?channel=${channel.id}`} onClick={(event) => { onCloseMobile(); onOpenChat(`/channels?channel=${channel.id}`, event); }} className={clsx("flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-neutral-500 hover:bg-white", press)}><Hash size={14} /><span className="flex-1">{channel.name}</span>{channel.unread > 0 && <span className="h-1.5 w-1.5 rounded-full bg-primary-600" />}</Link>)}</div>}
       </nav>
-      <div className="border-t border-neutral-100 p-3">{mode === "demo" && <Link href="/settings" onClick={onCloseMobile} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold text-neutral-500 hover:bg-neutral-100", press)}><Settings size={16} /><span className={clsx(collapsed && "lg:hidden")}>Settings</span></Link>}{showAccess && <Link href="/admin" onClick={onCloseMobile} data-tip={collapsed ? "People & access" : undefined} aria-label={collapsed ? "People & access" : undefined} aria-current={path === "/admin" ? "page" : undefined} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold", press, path === "/admin" ? "bg-primary-700 text-white shadow-sm" : "text-neutral-500 hover:bg-neutral-100")}><Users size={16} /><span className={clsx("vso-nav-label", collapsed && "lg:hidden")}>People & access</span></Link>}<div className={clsx("flex min-h-11 items-center gap-2.5 rounded-xl bg-neutral-50 px-2.5", collapsed && "lg:justify-center lg:px-1")}><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary-400 to-primary-700 text-[10px] font-semibold text-white">{currentUser.initials}</span><span className={clsx("vso-nav-label min-w-0", collapsed && "lg:hidden")}><span className="block truncate text-xs font-semibold text-neutral-800">{currentUser.name}</span><span className="block truncate text-[10px] font-medium text-neutral-400">{role}</span></span></div></div>
+      <div className="border-t border-neutral-100 p-3">{mode === "demo" && <Link href="/settings" onClick={onCloseMobile} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold text-neutral-500 hover:bg-neutral-100", press)}><Settings size={16} /><span className={clsx(collapsed && "lg:hidden")}>Settings</span></Link>}{showAccess && <Link href="/admin" onClick={onCloseMobile} data-tip={collapsed ? "People & access" : undefined} aria-label={collapsed ? "People & access" : undefined} aria-current={path === "/admin" ? "page" : undefined} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold", press, path === "/admin" ? "bg-primary-700 text-white shadow-sm" : "text-neutral-500 hover:bg-neutral-100")}><Users size={16} /><span className={clsx("vso-nav-label", collapsed && "lg:hidden")}>People & access</span></Link>}<div className={clsx("flex min-h-11 items-center gap-2.5 rounded-xl bg-neutral-50 px-2.5", collapsed && "lg:flex-col lg:justify-center lg:gap-1 lg:px-1 lg:py-1.5")}><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary-400 to-primary-700 text-[10px] font-semibold text-white">{currentUser.initials}</span><span className={clsx("vso-nav-label min-w-0", collapsed && "lg:hidden")}><span className="block truncate text-xs font-semibold text-neutral-800">{currentUser.name}</span><span className="block truncate text-[10px] font-medium text-neutral-400">{role}</span></span>{mode === "connected" && <button type="button" onClick={signOut} disabled={signingOut} aria-label="Sign out" data-tip={collapsed ? "Sign out" : undefined} title={collapsed ? undefined : "Sign out"} className={clsx("ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-neutral-400 hover:bg-white hover:text-neutral-700 disabled:opacity-50", press, collapsed && "lg:ml-0")}><LogOut size={16} /></button>}</div></div>
     </aside>
     {tip && collapsed && createPortal(<div role="tooltip" data-instant={tip.instant} className="vso-tooltip pointer-events-none fixed z-[95] -translate-y-1/2 whitespace-nowrap rounded-lg bg-neutral-900 px-2.5 py-1.5 text-xs font-semibold text-white shadow-e3" style={{ top: tip.top, left: tip.left }}>{tip.label}</div>, document.body)}
     {creatingVenture && <CreateVentureDrawer workspaceName={workspaceName} ownerId={currentUserId} onClose={() => setCreatingVenture(false)} onCreated={(venture) => { setCreatingVenture(false); setPendingScope({ ventureId: venture.id, from: activeVentureId }); onCloseMobile(); router.push(`/ventures/live?venture=${encodeURIComponent(venture.id)}`); }} />}

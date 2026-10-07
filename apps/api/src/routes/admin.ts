@@ -5,7 +5,7 @@ import type { Database } from "../db.js";
 import { atomic } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { sendInvitationEmail } from "../auth.js";
-import { appRoleSchema, createChannelSchema, idSchema, updateMembershipSchema } from "@venture-studio/contracts";
+import { appRoleSchema, createChannelSchema, idSchema, updateMembershipSchema, updateVentureSchema } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, slug } from "../json.js";
@@ -69,6 +69,21 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const venture = { _id: id, workspaceId: actor.membership.workspaceId, ...input, slug: slug(input.name), status: "active", createdAt: now, updatedAt: now };
     await db.collection("ventures").insertOne(venture);
     res.status(201).json({ ok: true, data: jsonValue(venture) });
+  });
+  // The 30-day goal changes as a venture moves on, so an admin or that venture's own head can rewrite it.
+  router.patch("/ventures/:ventureId", async (req, res) => {
+    const actor = req.actor!;
+    const ventureId = idSchema.parse(req.params.ventureId);
+    const { workspaceId, role, ventureIds } = actor.membership;
+    if (role !== "admin" && !(role === "venture_head" && ventureIds.includes(ventureId))) throw new AppError(403, "FORBIDDEN", "Only an admin or this venture's head may edit its goal");
+    const input = updateVentureSchema.parse(req.body);
+    const venture = await atomic(database, async (session) => {
+      const updated = await db.collection("ventures").findOneAndUpdate({ _id: ventureId, workspaceId }, { $set: { goal30Day: input.goal30Day, updatedAt: new Date() } }, { returnDocument: "after", session });
+      if (!updated) throw new AppError(404, "NOT_FOUND", "Venture not found");
+      await audit(db, { workspaceId, ventureId, actorId: actor.id, channel: "api", action: "venture.goal.update", objectType: "venture", objectId: ventureId, result: "success", metadata: { cleared: input.goal30Day === "" } }, session);
+      return updated;
+    });
+    res.json({ ok: true, data: jsonValue(venture) });
   });
   router.post("/admin/groups", async (req, res) => {
     const actor = req.actor!;

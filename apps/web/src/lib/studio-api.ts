@@ -63,6 +63,7 @@ import {
   updateClassSchema,
   updateDecisionSchema,
   updateMembershipSchema,
+  updateVentureSchema,
   updateOpportunitySchema,
   updateOutcomeSchema,
   updatePipelineSchema,
@@ -633,6 +634,11 @@ export async function createLiveChannel(input: unknown) {
 
 export async function createLiveVenture(input: { name: string; ownerId: string; goal30Day: string }) {
   return successEnvelope(ventureSchema).parse(await request("/v1/admin/ventures", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+export async function updateLiveVentureGoal(id: string, goal30Day: string) {
+  const valid = updateVentureSchema.parse({ goal30Day });
+  return successEnvelope(ventureSchema).parse(await request(`/v1/ventures/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
 }
 
 export async function createLiveGroup(input: { ventureId: string; name: string }) {

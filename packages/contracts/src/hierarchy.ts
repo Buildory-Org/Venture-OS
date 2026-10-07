@@ -35,6 +35,8 @@ export const channelSchema = z.object({
   createdAt: isoDateSchema,
 });
 export const createChannelSchema = z.object({ groupId: idSchema, name: z.string().trim().min(1).max(80) });
+// Only the 30-day goal is editable after creation; an empty string clears it.
+export const updateVentureSchema = z.object({ goal30Day: z.string().trim().max(500) }).strict();
 export const updateMembershipSchema = z.object({ role: appRoleSchema, ventureIds: z.array(idSchema).max(100), groupIds: z.array(idSchema).max(500) });
 
 export const membershipSchema = z.object({

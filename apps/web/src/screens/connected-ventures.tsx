@@ -11,7 +11,7 @@ import { CreateVentureDrawer } from "@/components/studio/create-venture-drawer";
 import { VenturesScreen } from "./studio-ventures";
 import { useStudio } from "@/lib/studio-store";
 import { connectedDashboardData } from "@/lib/live-shell-data";
-import { listLiveDecisions, listLiveDocuments, listLiveMembers, listLiveOpportunities, listLiveOutcomes, listLiveTasks, loadLiveSession } from "@/lib/studio-api";
+import { listLiveDecisions, listLiveDocuments, listLiveMembers, listLiveOpportunities, listLiveOutcomes, listLiveTasks, loadLiveSession, updateLiveVentureGoal } from "@/lib/studio-api";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Snapshot = ReturnType<typeof connectedDashboardData>;
@@ -63,12 +63,21 @@ export function ConnectedVentures() {
     return () => { active = false; };
   }, [selectedId, activeVentureId, revision]);
 
+  // Mirrors the API rule: an admin, or a venture head assigned to that venture.
+  const canEditGoal = (ventureId: string) => Boolean(session && (session.membership.role === "admin" || (session.membership.role === "venture_head" && session.membership.ventureIds.includes(ventureId))));
+  const saveGoal = async (ventureId: string, goal: string) => {
+    const updated = await updateLiveVentureGoal(ventureId, goal);
+    setData((current) => current && { ...current, ventures: current.ventures.map((venture) => venture.id === updated.id ? { ...venture, goal: updated.goal30Day } : venture) });
+    // The shell keeps its own copy of the hierarchy (dashboard, venture menu); have it reload.
+    window.dispatchEvent(new Event("venture:hierarchy-changed"));
+    toast({ title: goal ? "Goal updated" : "Goal cleared", body: goal ? "Others see the new 30-day goal the next time they open this venture." : "This venture has no 30-day goal now." });
+  };
   const action = session?.membership.role === "admin" ? <button type="button" onClick={() => setCreating(true)} className={primaryClass}><Plus size={15} />Create venture</button> : undefined;
   return <>
     {error && <div role="alert" className="vso-fade-enter mx-6 mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger-surface bg-white p-4 text-sm text-danger-text"><span>{error}</span><button type="button" onClick={() => { setError(""); setRevision((value) => value + 1); }} className={secondaryClass}>Try again</button></div>}
     {missing ? <PageFrame><PageTitle title="Ventures" description="Goals, work, evidence, and decisions for each venture." action={action} /><Panel className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-neutral-600"><p role="alert">This venture is not available. It may have been removed, or you may not have access to it.</p><button type="button" onClick={() => router.replace("/ventures/live")} className={secondaryClass}>Back to ventures</button></Panel></PageFrame>
       : !data ? error ? null : <PageFrame><div role="status" aria-label="Loading venture spaces"><span className="vso-skeleton h-9 w-60" /><span className="vso-skeleton mt-2 h-4 w-96 max-w-full" /><span className="vso-skeleton mt-6 h-11 w-[520px] max-w-full rounded-xl" /><span className="vso-skeleton mt-4 h-40 rounded-2xl" /><div className="mt-4 grid gap-4 xl:grid-cols-3"><span className="vso-skeleton h-56 rounded-2xl xl:col-span-2" /><span className="vso-skeleton h-56 rounded-2xl" /></div></div></PageFrame>
-      : data.ventures.length ? <div aria-busy={loading || undefined} className={clsx("transition-opacity duration-200", loading && "pointer-events-none opacity-60")}><VenturesScreen snapshot={data} action={action} /></div>
+      : data.ventures.length ? <div aria-busy={loading || undefined} className={clsx("transition-opacity duration-200", loading && "pointer-events-none opacity-60")}><VenturesScreen snapshot={data} action={action} onSaveGoal={saveGoal} canEditGoal={canEditGoal} /></div>
       : <PageFrame><PageTitle title="Ventures" description="Create the first venture space for your team." action={action} /><Panel className="p-6 text-sm text-neutral-500">No ventures have been created yet.</Panel></PageFrame>}
     {creating && session && <CreateVentureDrawer workspaceName={session.hierarchy.workspace.name} ownerId={session.user.id} onClose={() => setCreating(false)} onCreated={(venture) => { setCreating(false); toast({ title: "Venture created", body: `${venture.name} is ready for its first group and outcome.` }); router.push(`/ventures/live?venture=${encodeURIComponent(venture.id)}`); }} />}
   </>;

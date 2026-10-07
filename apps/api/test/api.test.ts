@@ -1506,3 +1506,86 @@ test("real Mongo regressions: canonical dates, safe evidence, latest pages, and 
     await database.client.close();
   }
 });
+
+test("venture goal edits are limited to admins and that venture's head, inside their workspace", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_venture_goal`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertMany([{ _id: "workspace-a", name: "A", slug: "a", createdAt: now }, { _id: "workspace-b", name: "B", slug: "b", createdAt: now }]);
+  const people = [
+    ["admin", "workspace-a", "admin", []], ["lead", "workspace-a", "venture_head", ["venture-a"]], ["other-lead", "workspace-a", "venture_head", ["venture-c"]],
+    ["contrib", "workspace-a", "contributor", ["venture-a"]], ["outside-admin", "workspace-b", "admin", []],
+  ] as const;
+  await db.collection("users").insertMany(people.map(([handle, workspaceId]) => ({ _id: `user-${handle}`, workspaceId, email: `${handle}@example.invalid`, name: handle, handle, status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("memberships").insertMany(people.map(([handle, workspaceId, role, ventureIds]) => ({ _id: `membership-${handle}`, workspaceId, userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [], status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("ventures").insertMany([
+    { _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now },
+    { _id: "venture-c", workspaceId: "workspace-a", name: "Gamma", status: "active", goal30Day: "Gamma goal", createdAt: now },
+    { _id: "venture-b", workspaceId: "workspace-b", name: "Beta", status: "active", goal30Day: "Beta goal", createdAt: now },
+  ]);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const patch = (ventureId: string, body: unknown, handle: string) => fetch(`${origin}/v1/ventures/${ventureId}`, { method: "PATCH", headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, body: JSON.stringify(body) });
+  const goalOf = async (ventureId: string) => (await db.collection("ventures").findOne({ _id: ventureId }))?.goal30Day;
+  try {
+    // An admin sets the goal; surrounding whitespace is trimmed.
+    const set = await patch("venture-a", { goal30Day: "  Ship the first sales-ready offer  " }, "admin");
+    assert.equal(set.status, 200, await set.clone().text());
+    assert.equal(((await set.json()) as any).data.goal30Day, "Ship the first sales-ready offer");
+    assert.equal(await goalOf("venture-a"), "Ship the first sales-ready offer");
+    // The venture's own head may rewrite it.
+    assert.equal((await patch("venture-a", { goal30Day: "Lead's goal" }, "lead")).status, 200);
+    assert.equal(await goalOf("venture-a"), "Lead's goal");
+    // A head of a different venture, and a contributor, may not.
+    assert.equal((await patch("venture-c", { goal30Day: "Taken over" }, "lead")).status, 403);
+    assert.equal((await patch("venture-a", { goal30Day: "Taken over" }, "other-lead")).status, 403);
+    assert.equal((await patch("venture-a", { goal30Day: "Taken over" }, "contrib")).status, 403);
+    // A head learns nothing about ventures outside their scope: missing and existing look the same.
+    assert.equal((await patch("venture-missing", { goal30Day: "Probe" }, "lead")).status, 403);
+    // No session at all is refused before anything else.
+    assert.equal((await fetch(`${origin}/v1/ventures/venture-a`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ goal30Day: "Anonymous" }) })).status, 401);
+    assert.equal(await goalOf("venture-a"), "Lead's goal");
+    assert.equal(await goalOf("venture-c"), "Gamma goal");
+    // Admins never reach another workspace's venture, and an unknown venture is not found.
+    assert.equal((await patch("venture-a", { goal30Day: "Cross-tenant" }, "outside-admin")).status, 404);
+    assert.equal((await patch("venture-b", { goal30Day: "Cross-tenant" }, "admin")).status, 404);
+    assert.equal((await patch("venture-missing", { goal30Day: "Nothing" }, "admin")).status, 404);
+    assert.equal(await goalOf("venture-a"), "Lead's goal");
+    assert.equal(await goalOf("venture-b"), "Beta goal");
+    // Only the goal is writable, and it is bounded.
+    assert.equal((await patch("venture-a", { goal30Day: "x".repeat(501) }, "admin")).status, 400);
+    assert.equal((await patch("venture-a", { goal30Day: "Renamed", name: "Renamed", workspaceId: "workspace-b" }, "admin")).status, 400);
+    assert.equal((await patch("venture-a", {}, "admin")).status, 400);
+    assert.equal((await patch("venture-a", { goal30Day: 42 }, "admin")).status, 400);
+    const stored = await db.collection("ventures").findOne({ _id: "venture-a" });
+    assert.equal(stored?.name, "Alpha");
+    assert.equal(stored?.workspaceId, "workspace-a");
+    // An empty or whitespace-only goal clears it.
+    assert.equal((await patch("venture-a", { goal30Day: "" }, "admin")).status, 200);
+    assert.equal(await goalOf("venture-a"), "");
+    assert.equal((await patch("venture-a", { goal30Day: "Temporary" }, "admin")).status, 200);
+    assert.equal((await patch("venture-a", { goal30Day: "   " }, "admin")).status, 200);
+    assert.equal(await goalOf("venture-a"), "");
+    // Each successful change leaves one audit event tied to the venture; refused attempts leave none.
+    const events = await db.collection("audit_events").find({ action: "venture.goal.update", workspaceId: "workspace-a" }).sort({ occurredAt: 1 }).toArray();
+    assert.equal(events.length, 5);
+    assert.ok(events.every((event) => event.objectId === "venture-a" && event.ventureId === "venture-a" && event.result === "success"));
+    assert.deepEqual(events.map((event) => event.metadata.cleared), [false, false, true, false, true]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});

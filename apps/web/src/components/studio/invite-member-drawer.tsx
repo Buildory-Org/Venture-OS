@@ -3,10 +3,10 @@ import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import clsx from "clsx";
 import { Select } from "@/components/ui/select";
 import { Check, Copy } from "@/components/ui/icons";
 import { ActionLabel, DetailDrawer, Field, inputClass, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { GroupAccessPicker, accessPayload, type GroupMode } from "@/components/studio/group-access-picker";
 import { StudioApiError, createLiveInvitation } from "@/lib/studio-api";
 
 type Role = "admin" | "venture_head" | "contributor" | "reviewer" | "learner";
@@ -30,6 +30,8 @@ export function InviteMemberDrawer({ ventures, onClose, onInvited }: { ventures:
   const [role, setRole] = useState<Role>("contributor");
   const [ventureIds, setVentureIds] = useState<string[]>([]);
   const [groupIds, setGroupIds] = useState<string[]>([]);
+  // A venture starts on "All groups"; the admin can narrow it to picked groups or none.
+  const [modes, setModes] = useState<Record<string, GroupMode>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Set only when email delivery is off: the admin shares this link themselves.
@@ -46,6 +48,7 @@ export function InviteMemberDrawer({ ventures, onClose, onInvited }: { ventures:
   function toggleVenture(id: string) {
     const next = ventureIds.includes(id) ? ventureIds.filter((item) => item !== id) : [...ventureIds, id];
     setVentureIds(next);
+    setModes((current) => next.includes(id) ? { ...current, [id]: current[id] ?? "all" } : current);
     // Groups only make sense inside a chosen venture.
     setGroupIds((current) => current.filter((groupId) => ventures.some((venture) => next.includes(venture.id) && venture.groups.some((group) => group.id === groupId))));
   }
@@ -59,7 +62,8 @@ export function InviteMemberDrawer({ ventures, onClose, onInvited }: { ventures:
     try {
       const address = email.trim().toLowerCase();
       // Admins already reach every venture, so their invitation carries no venture or group list.
-      const delivery = await createLiveInvitation({ email: address, role, ventureIds: isAdmin ? [] : ventureIds, groupIds: isAdmin ? [] : groupIds });
+      const access = accessPayload(ventureIds, modes, groupIds, ventures);
+      const delivery = await createLiveInvitation({ email: address, role, ventureIds: isAdmin ? [] : ventureIds, groupIds: isAdmin ? [] : access.groupIds, allGroupVentureIds: isAdmin ? [] : access.allGroupVentureIds });
       if (delivery.kind === "email") onInvited(address);
       else setManualLink(`${window.location.origin}/invite/live?token=${encodeURIComponent(delivery.token)}`);
     } catch (cause) {
@@ -96,11 +100,10 @@ export function InviteMemberDrawer({ ventures, onClose, onInvited }: { ventures:
             {ventures.map((venture) => <label key={venture.id} className={checkRow}><input type="checkbox" checked={ventureIds.includes(venture.id)} onChange={() => { toggleVenture(venture.id); setError(""); }} />{venture.name}</label>)}
             {!ventures.length && <p className="text-xs text-neutral-500">Create a venture first, then invite people into it.</p>}
           </div></fieldset>
-          <fieldset><legend className="mb-2 text-xs font-semibold text-neutral-600">Groups within selected ventures</legend><div className="space-y-2">
-            {chosenVentures.flatMap((venture) => venture.groups.map((group) => <label key={group.id} className={clsx(checkRow, "vso-row-enter")}><input type="checkbox" checked={groupIds.includes(group.id)} onChange={() => toggleGroup(group.id)} />{venture.name} · {group.name}</label>))}
-            {!chosenVentures.length && <p className="text-xs text-neutral-500">Choose a venture to see its groups.</p>}
-            {chosenVentures.length > 0 && !groupIds.length && <p className="text-xs leading-5 text-neutral-500">Without a group they can open the venture&apos;s pages, but not its tasks, board, or channels.</p>}
-          </div></fieldset>
+          <fieldset><legend className="mb-2 text-xs font-semibold text-neutral-600">Group access</legend>
+            {chosenVentures.length ? <GroupAccessPicker ventures={chosenVentures} modes={modes} groupIds={groupIds} onMode={(id, mode) => { setModes((current) => ({ ...current, [id]: mode })); setError(""); }} onToggleGroup={toggleGroup} />
+              : <p className="text-xs text-neutral-500">Choose a venture to set which of its groups they join.</p>}
+          </fieldset>
         </>}
       <p className="text-xs leading-5 text-neutral-500">They get an email with a one-time link that expires in 7 days. The invitation is recorded in the audit log.</p>
       {error && <p role="alert" className="text-sm text-danger-text">{error}</p>}

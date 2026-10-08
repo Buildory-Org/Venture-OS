@@ -151,16 +151,21 @@ export async function listLiveMembers(input: { ventureId?: string; groupId?: str
   return pagedSuccessEnvelope(memberDirectoryItemSchema).parse(await request(`/v1/members?${params}`)).data;
 }
 
-export async function addLiveGroupMember(groupId: string, ventureId: string, userId: string) {
-  const membership = successEnvelope(membershipSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "PUT" })).data;
+/** `allGroups` puts back "all groups" in the venture too: Undo after a removal that ended it (see removeLiveGroupMember). */
+export async function addLiveGroupMember(groupId: string, ventureId: string, userId: string, options: { allGroups?: boolean } = {}) {
+  const membership = successEnvelope(membershipSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "PUT", ...(options.allGroups ? { body: JSON.stringify({ allGroups: true }) } : {}) })).data;
   if (membership.userId !== userId || !membership.groupIds.includes(groupId) || !membership.ventureIds.includes(ventureId)) throw new StudioApiError("The group membership response did not match the selected person and group.");
   return membership;
 }
 
+/** `endedAllGroups`: they had every group in this venture; after this, new groups there are no longer added for them. */
 export async function removeLiveGroupMember(groupId: string, userId: string) {
-  const membership = successEnvelope(membershipSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" })).data;
+  const body = await request(`/v1/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" });
+  const membership = successEnvelope(membershipSchema).parse(body).data;
   if (membership.userId !== userId || membership.groupIds.includes(groupId)) throw new StudioApiError("The group membership response did not confirm removal from this group.");
-  return membership;
+  const meta = body && typeof body === "object" && "meta" in body ? body.meta : null;
+  const endedAllGroups = Boolean(meta && typeof meta === "object" && "endedAllGroups" in meta && meta.endedAllGroups === true);
+  return { membership, endedAllGroups };
 }
 
 export async function createLiveGroupInvitation(input: { email: string; role: "venture_head" | "contributor" | "reviewer" | "learner"; ventureId: string; groupId: string }) {
@@ -168,12 +173,13 @@ export async function createLiveGroupInvitation(input: { email: string; role: "v
 }
 
 /** Invites someone by email with a role and venture/group access; returns a manual link when email delivery is off. */
-export async function createLiveInvitation(input: { email: string; role: AppRole; ventureIds: string[]; groupIds: string[] }) {
-  const body = await request("/v1/admin/invitations", { method: "POST", body: JSON.stringify(input) });
+export async function createLiveInvitation(input: { email: string; role: AppRole; ventureIds: string[]; groupIds: string[]; allGroupVentureIds?: string[] }) {
+  const allGroupVentureIds = input.allGroupVentureIds ?? [];
+  const body = await request("/v1/admin/invitations", { method: "POST", body: JSON.stringify({ ...input, allGroupVentureIds }) });
   if (!body || typeof body !== "object" || !("ok" in body) || body.ok !== true || !("data" in body) || !body.data || typeof body.data !== "object") throw new StudioApiError("The invitation response was invalid.");
   const invitation = "invitation" in body.data ? body.data.invitation : null;
   const sameIds = (value: unknown, expected: string[]) => Array.isArray(value) && value.length === expected.length && expected.every((id) => value.includes(id));
-  if (!invitation || typeof invitation !== "object" || !("ventureIds" in invitation) || !sameIds(invitation.ventureIds, input.ventureIds) || !("groupIds" in invitation) || !sameIds(invitation.groupIds, input.groupIds)) throw new StudioApiError("The invitation response did not match the selected access.");
+  if (!invitation || typeof invitation !== "object" || !("ventureIds" in invitation) || !sameIds(invitation.ventureIds, input.ventureIds) || !("groupIds" in invitation) || !sameIds(invitation.groupIds, input.groupIds) || !("allGroupVentureIds" in invitation) || !sameIds(invitation.allGroupVentureIds, allGroupVentureIds)) throw new StudioApiError("The invitation response did not match the selected access.");
   if ("token" in body.data && typeof body.data.token === "string" && body.data.token) return { kind: "manual" as const, token: body.data.token };
   const delivery = "delivery" in body.data ? body.data.delivery : null;
   if (delivery && typeof delivery === "object" && "mode" in delivery && delivery.mode === "email" && "status" in delivery && delivery.status === "sent") return { kind: "email" as const };

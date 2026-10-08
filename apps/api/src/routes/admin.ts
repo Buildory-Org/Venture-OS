@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
+import type { ClientSession } from "mongodb";
 import { z } from "zod";
-import type { Database } from "../db.js";
+import type { AppDb, Database } from "../db.js";
 import { atomic } from "../db.js";
 import type { AppConfig } from "../config.js";
 import { sendInvitationEmail } from "../auth.js";
@@ -11,11 +12,26 @@ import { AppError } from "../errors.js";
 import { jsonValue, slug } from "../json.js";
 import { inArchivedVenture } from "../archive-scope.js";
 
-const inviteSchema = z.object({ email: z.email(), role: appRoleSchema, ventureIds: z.array(idSchema), groupIds: z.array(idSchema) });
+// allGroupVentureIds: invited ventures where they get every group, including ones created later (see allGroupsIn).
+const inviteSchema = z.object({ email: z.email(), role: appRoleSchema, ventureIds: z.array(idSchema), groupIds: z.array(idSchema), allGroupVentureIds: z.array(idSchema).max(100).default([]) });
 const ventureSchema = z.object({ name: z.string().trim().min(1).max(120), ownerId: idSchema, goal30Day: z.string().trim().max(500).default("") });
 const groupSchema = z.object({ ventureId: idSchema, name: z.string().trim().min(1).max(120) });
 // Unique indexes compare names exactly; reject case-only duplicates ("Alpha" vs "alpha") explicitly.
 const caseInsensitive = { locale: "en", strength: 2 } as const;
+const allGroupsScopeValid = (ventureIds: string[], allGroupVentureIds: string[]) => new Set(allGroupVentureIds).size === allGroupVentureIds.length && allGroupVentureIds.every((id) => ventureIds.includes(id));
+
+/**
+ * Every group now in the given ventures, for a member who gets all of them. Call it inside the transaction that saves the
+ * membership: it bumps each venture's groupsRevision first, as group creation does, so a group created at the same moment
+ * either shows up here or forces one of the two transactions to retry. The member can never miss a new group.
+ */
+async function allGroupsIn(db: AppDb, workspaceId: string, ventureIds: string[], session?: ClientSession): Promise<{ id: string; ventureId: string }[]> {
+  if (!ventureIds.length) return [];
+  const bumped = await db.collection("ventures").updateMany({ _id: { $in: ventureIds }, workspaceId }, { $inc: { groupsRevision: 1 } }, { session });
+  if (bumped.matchedCount !== ventureIds.length) throw new AppError(409, "CONFLICT", "A venture changed while access was being saved; please try again");
+  const groups = await db.collection("groups").find({ workspaceId, ventureId: { $in: ventureIds } }, { projection: { ventureId: 1 }, session }).toArray();
+  return groups.map((group) => ({ id: String(group._id), ventureId: String(group.ventureId) }));
+}
 
 export function adminRoutes(database: Database, config: AppConfig): Router {
   const db = database.db;
@@ -28,6 +44,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     if (ventureDocs.length !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace and not be archived");
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Every invited group must belong to an invited venture");
+    if (!allGroupsScopeValid(input.ventureIds, input.allGroupVentureIds)) throw new AppError(400, "BAD_REQUEST", "All-groups access must name each invited venture at most once");
     const email = input.email.toLowerCase();
     const currentUser = await db.collection("users").findOne({ workspaceId: actor.membership.workspaceId, email, status: "active" });
     if (currentUser && await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: currentUser._id, status: "active" })) throw new AppError(409, "CONFLICT", "This person is already a workspace member; use membership management instead");
@@ -36,7 +53,7 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const token = randomBytes(32).toString("base64url");
     const manual = !config.RESEND_API_KEY;
     const invite = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, email, tokenHash: createHash("sha256").update(token).digest("hex"), status: "pending", delivery: { mode: manual ? "manual" : "email", status: manual ? "not_sent" : "sending" }, invitedBy: actor.id, expiresAt: new Date(Date.now() + 7 * 86_400_000), createdAt: new Date() };
-    const safeInvite = { id: invite._id, workspaceId: invite.workspaceId, email, role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, expiresAt: invite.expiresAt, status: "pending" };
+    const safeInvite = { id: invite._id, workspaceId: invite.workspaceId, email, role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, allGroupVentureIds: invite.allGroupVentureIds, expiresAt: invite.expiresAt, status: "pending" };
     if (manual) {
       await atomic(database, async (session) => {
         await db.collection("invitations").insertOne(invite, { session });
@@ -51,7 +68,8 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     let providerId: string;
     // The email names who invited them and exactly what they get, in the order the admin picked.
     const ventureName = (id: unknown) => String(ventureDocs.find((venture) => venture._id === id)?.name ?? "Venture");
-    const details = { inviterName: actor.name || actor.email, workspaceName: String(workspace?.name ?? "Venture Studio"), role: input.role, ventures: input.ventureIds.map(ventureName), groups: groups.map((group) => `${ventureName(group.ventureId)} · ${String(group.name)}`), url: link.toString(), expiresAt: invite.expiresAt };
+    const groupLines = input.ventureIds.flatMap((id) => input.allGroupVentureIds.includes(id) ? [`All groups in ${ventureName(id)}`] : groups.filter((group) => group.ventureId === id).map((group) => `${ventureName(id)} · ${String(group.name)}`));
+    const details = { inviterName: actor.name || actor.email, workspaceName: String(workspace?.name ?? "Venture Studio"), role: input.role, ventures: input.ventureIds.map(ventureName), groups: groupLines, url: link.toString(), expiresAt: invite.expiresAt };
     try { providerId = await sendInvitationEmail(config, email, invite._id, details); }
     catch {
       // A timeout is ambiguous: Resend may have delivered the message. Keep its link usable.
@@ -100,7 +118,18 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const now = new Date(); const groupId = randomUUID(); const channelId = randomUUID();
     const group = { _id: groupId, workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, name: input.name, createdAt: now };
     const channel = { _id: channelId, workspaceId: actor.membership.workspaceId, ventureId: input.ventureId, groupId, name: "general", createdAt: now };
-    await atomic(database, async (session) => { await db.collection("groups").insertOne(group, { session }); await db.collection("channels").insertOne(channel, { session }); });
+    try { await atomic(database, async (session) => {
+      // Bumped first so this conflicts with a membership being saved with all of this venture's groups (see allGroupsIn).
+      // It also re-checks the venture, which may have been archived or deleted since the lookup above.
+      const bumped = await db.collection("ventures").updateOne({ _id: input.ventureId, workspaceId: actor.membership.workspaceId, status: { $ne: "archived" } }, { $inc: { groupsRevision: 1 } }, { session });
+      if (!bumped.matchedCount) throw new AppError(404, "NOT_FOUND", "Venture not found");
+      await db.collection("groups").insertOne(group, { session });
+      await db.collection("channels").insertOne(channel, { session });
+      // Members who have every group in this venture get the new one straight away.
+      const added = await db.collection("memberships").updateMany({ workspaceId: actor.membership.workspaceId, allGroupVentureIds: input.ventureId }, { $addToSet: { groupIds: groupId }, $set: { updatedAt: now } }, { session });
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "group.create", objectType: "group", objectId: groupId, ventureId: input.ventureId, result: "success", metadata: { membersAdded: added.modifiedCount } }, session);
+    }); }
+    catch (error) { if ((error as { code?: number }).code === 11000) throw new AppError(409, "CONFLICT", "A group with this name already exists in this venture"); throw error; }
     res.status(201).json({ ok: true, data: jsonValue({ ...group, channels: [channel] }) });
   });
   router.post("/admin/channels", async (req, res) => {
@@ -136,13 +165,17 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const ventures = await db.collection("ventures").countDocuments({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId });
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (ventures !== input.ventureIds.length || groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Membership scopes must be valid groups within assigned ventures");
+    if (!allGroupsScopeValid(input.ventureIds, input.allGroupVentureIds)) throw new AppError(400, "BAD_REQUEST", "All-groups access must name each assigned venture at most once");
     const updatedAt = new Date();
-    // The editor submits inherited ventures as ordinary checked boxes; keep them inherited while a group still grants them,
-    // so removing the last group later still revokes that access instead of leaving an accidental explicit grant.
-    const groupVentures = new Set(groups.map((group) => String(group.ventureId)));
-    const inheritedVentureIds = ((current.inheritedVentureIds ?? []) as string[]).filter((ventureId) => input.ventureIds.includes(ventureId) && groupVentures.has(ventureId));
     await atomic(database, async (session) => {
-      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active", updatedAt: current.updatedAt }, { $set: { ...input, inheritedVentureIds, updatedAt } }, { session });
+      // Picked groups plus every group in the all-groups ventures, read in this transaction so none created meanwhile is missed.
+      const everyGroup = await allGroupsIn(db, actor.membership.workspaceId, input.allGroupVentureIds, session);
+      const groupIds = [...new Set([...input.groupIds, ...everyGroup.map((group) => group.id)])];
+      // The editor submits inherited ventures as ordinary checked boxes; keep them inherited while a group still grants them,
+      // so removing the last group later still revokes that access instead of leaving an accidental explicit grant.
+      const groupVentures = new Set([...groups, ...everyGroup].map((group) => String(group.ventureId)));
+      const inheritedVentureIds = ((current.inheritedVentureIds ?? []) as string[]).filter((ventureId) => input.ventureIds.includes(ventureId) && groupVentures.has(ventureId));
+      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active", updatedAt: current.updatedAt }, { $set: { role: input.role, ventureIds: input.ventureIds, groupIds, allGroupVentureIds: input.allGroupVentureIds, inheritedVentureIds, updatedAt } }, { session });
       if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success" }, session);
     });
@@ -157,26 +190,36 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const workspaceId = actor.membership.workspaceId;
     const group = await db.collection("groups").findOne({ _id: groupId, workspaceId });
     if (!group || inArchivedVenture(actor.membership, group.ventureId)) throw new AppError(404, "NOT_FOUND", "Group not found");
+    // Undoing a removal that ended "all groups" puts that back too (the removal response says so; see below).
+    const restoreAllGroups = add && z.object({ allGroups: z.boolean().optional() }).parse(req.body ?? {}).allGroups === true;
+    const ventureId = String(group.ventureId);
+    let endedAllGroups = false;
     const updated = await atomic(database, async (session) => {
+      endedAllGroups = false; // set again on each transaction retry
+
       const membership = await db.collection("memberships").findOne({ workspaceId, userId, status: "active" }, { session });
       const user = await db.collection("users").findOne({ _id: userId, workspaceId, status: "active" }, { session });
       if (!membership || !user) throw new AppError(404, "NOT_FOUND", "Active workspace member not found");
       if (userId === actor.id) throw new AppError(403, "FORBIDDEN", "Admins cannot change their own group membership");
       if (!add && membership.role === "admin") throw new AppError(403, "FORBIDDEN", "Workspace admins retain access to every group");
-      const changed = add ? !membership.groupIds.includes(groupId) || !membership.ventureIds.includes(group.ventureId) : membership.groupIds.includes(groupId);
+      const allGroups = ((membership.allGroupVentureIds ?? []) as string[]).includes(ventureId);
+      const changed = add ? !membership.groupIds.includes(groupId) || !membership.ventureIds.includes(group.ventureId) || (restoreAllGroups && !allGroups) : membership.groupIds.includes(groupId);
       if (!changed) return membership;
+      endedAllGroups = !add && allGroups;
+      const everyGroup = restoreAllGroups ? (await allGroupsIn(db, workspaceId, [ventureId], session)).map((item) => item.id) : [];
       const inherited = add && !membership.ventureIds.includes(group.ventureId);
       const remainingGroupIds = add ? [] : membership.groupIds.filter((id: string) => id !== groupId);
       const otherGroupInVenture = !add && await db.collection("groups").findOne({ _id: { $in: remainingGroupIds }, workspaceId, ventureId: group.ventureId }, { session });
       const revokeInherited = !add && !otherGroupInVenture && (membership.inheritedVentureIds ?? []).includes(group.ventureId);
       const result = add
-        ? await db.collection("memberships").updateOne({ _id: membership._id, workspaceId, status: "active" }, { $addToSet: { ventureIds: group.ventureId, groupIds: groupId, ...(inherited ? { inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session })
-        : await database.native.collection<{ _id: string; workspaceId: string; status: string; groupIds: string[]; ventureIds: string[]; inheritedVentureIds: string[]; updatedAt: Date }>("memberships").updateOne({ _id: String(membership._id), workspaceId, status: "active" }, { $pull: { groupIds: groupId, ...(revokeInherited ? { ventureIds: group.ventureId, inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session });
+        ? await db.collection("memberships").updateOne({ _id: membership._id, workspaceId, status: "active" }, { $addToSet: { ventureIds: group.ventureId, groupIds: { $each: [groupId, ...everyGroup] }, ...(restoreAllGroups ? { allGroupVentureIds: ventureId } : {}), ...(inherited ? { inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session })
+        // Taking someone out of one group ends "all groups" for that venture: they keep the rest, and new groups are no longer added.
+        : await database.native.collection<{ _id: string; workspaceId: string; status: string; groupIds: string[]; ventureIds: string[]; inheritedVentureIds: string[]; allGroupVentureIds: string[]; updatedAt: Date }>("memberships").updateOne({ _id: String(membership._id), workspaceId, status: "active" }, { $pull: { groupIds: groupId, allGroupVentureIds: group.ventureId, ...(revokeInherited ? { ventureIds: group.ventureId, inheritedVentureIds: group.ventureId } : {}) }, $set: { updatedAt: new Date() } }, { session });
       if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
-      await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: add ? "group.member.add" : "group.member.remove", objectType: "membership", objectId: String(membership._id), ventureId: String(group.ventureId), result: "success" }, session);
+      await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: add ? "group.member.add" : "group.member.remove", objectType: "membership", objectId: String(membership._id), ventureId: String(group.ventureId), result: "success", metadata: { ...(endedAllGroups ? { endedAllGroups } : {}), ...(restoreAllGroups ? { restoredAllGroups: true } : {}) } }, session);
       return db.collection("memberships").findOne({ _id: membership._id, workspaceId }, { session });
     });
-    res.json({ ok: true, data: jsonValue(updated) });
+    res.json({ ok: true, data: jsonValue(updated), ...(add ? {} : { meta: { endedAllGroups } }) });
   }
   router.put("/groups/:groupId/members/:userId", (req, res) => changeGroupMember(req, res, true));
   router.delete("/groups/:groupId/members/:userId", (req, res) => changeGroupMember(req, res, false));
@@ -200,14 +243,19 @@ export function invitationAcceptanceRoutes(database: Database): Router {
         db.collection("ventures").countDocuments({ _id: { $in: invite.ventureIds }, workspaceId: invite.workspaceId }, { session }),
         db.collection("groups").find({ _id: { $in: invite.groupIds }, workspaceId: invite.workspaceId }, { session }).toArray(),
       ]);
-      if (ventureCount !== invite.ventureIds.length || groups.length !== invite.groupIds.length || groups.some((group) => !invite.ventureIds.includes(group.ventureId))) throw new AppError(409, "CONFLICT", "Invitation scope is no longer valid");
+      // Invitations sent before all-groups access existed carry no list and keep exactly the groups they named.
+      const allGroupVentureIds = (invite.allGroupVentureIds ?? []) as string[];
+      if (ventureCount !== invite.ventureIds.length || groups.length !== invite.groupIds.length || groups.some((group) => !invite.ventureIds.includes(group.ventureId)) || !allGroupsScopeValid(invite.ventureIds, allGroupVentureIds)) throw new AppError(409, "CONFLICT", "Invitation scope is no longer valid");
       const activeMembership = await db.collection("memberships").findOne({ userId: identity.id, status: "active" }, { session });
       if (activeMembership && activeMembership.workspaceId !== invite.workspaceId) throw new AppError(409, "CONFLICT", "This account already has an active workspace membership");
       if (activeMembership) throw new AppError(409, "CONFLICT", "This account already has an active workspace membership");
       const handle = `${slug(identity.name).slice(0, 40) || "member"}-${createHash("sha256").update(identity.id).digest("hex").slice(0, 8)}`;
       const currentUser = await db.collection("users").findOne({ _id: identity.id }, { session });
       await db.collection("users").updateOne({ _id: identity.id }, { $set: { email: identity.email, name: identity.name, workspaceId: invite.workspaceId, status: "active", updatedAt: now, ...(!currentUser?.handle ? { handle } : {}) }, $setOnInsert: { createdAt: now } }, { upsert: true, session });
-      await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, inheritedVentureIds: [], status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
+      // All-groups ventures grant every group that exists now; later ones are added when they are created.
+      const everyGroup = await allGroupsIn(db, String(invite.workspaceId), allGroupVentureIds, session);
+      const groupIds = [...new Set([...(invite.groupIds as string[]), ...everyGroup.map((group) => group.id)])];
+      await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds, allGroupVentureIds, inheritedVentureIds: [], status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
       // Joining (or re-joining) starts with no Claude tokens: any left from an earlier membership stop working.
       await db.collection("pats").updateMany({ workspaceId: invite.workspaceId, userId: identity.id, revokedAt: { $exists: false } }, { $set: { revokedAt: now, revokedReason: "membership_renewed" } }, { session });
       const accepted = await db.collection("invitations").updateOne({ _id: invite._id, status: "accepting" }, { $set: { status: "accepted", acceptedAt: now, acceptedBy: identity.id } }, { session });

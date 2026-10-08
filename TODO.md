@@ -257,6 +257,20 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Invitation content:** the inviter, role, ventures, groups, a fallback link, the real expiry date, and "wrong address?" guidance. Subject: "<first name> invited you to <workspace>". The sign-in link email matches it, with an explicit 5-minute expiry.
   - **Accepted invitations:** the inviter gets a `member_joined` notification (in-app, plus push or email per their preferences). It is created in the accept transaction and delivered only while they are still an admin.
   - **Verified:** the API test asserts the subject, HTML, plain text, inline images, and the single notification. Backend smoke (core 4/4, API 12/12, worker 4/4); typechecks; web lint; an independent review whose findings were fixed; previews at desktop and phone width.
+- [x] Group access per venture (2026-10-08). Inviting or editing a member offers three choices for each venture.
+  - **The choices:** **All groups** (the default, and includes groups created later), **Pick groups** (only the ticked ones), or **No groups** (venture pages only). Each comes with a plain sentence saying what it means.
+  - **How it works:** memberships and invitations store `allGroupVentureIds`, and access is written into `groupIds`. Every existing permission check is unchanged.
+  - **New groups:** a new group is added to "all groups" members in the same transaction. A `groupsRevision` bump on the venture stops it racing a membership save or invitation accept.
+  - **Existing members:** they keep exactly the groups they had.
+  - **Removing someone from one group:** this switches that venture to picked groups for them. The Undo in the toast restores "all groups" as well.
+  - **Email and member list:** the invitation email says "All groups in <venture>". The member list shows "All".
+  - **Verified:**
+    - The API test covers the default, picked and none choices, accept, edit, remove and Undo, the audit entry, a create-versus-save race, the email line, and venture deletion.
+    - Backend smoke: core 4/4, API 13/13, worker 4/4.
+    - Typechecks and web lint pass.
+    - An independent review found no blockers, and its should-fix points were fixed.
+    - Tried end to end on an isolated local copy, at desktop and phone width, in light and dark.
+    - Two flaky MCP test checks (time of day, minute rollover) were hardened.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

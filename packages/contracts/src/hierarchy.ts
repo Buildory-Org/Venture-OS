@@ -41,7 +41,9 @@ export const archivedVentureSchema = z.object({ id: idSchema, name: z.string(), 
 export const deletedVentureSchema = z.object({ deleted: z.literal(true), deletionId: idSchema, counts: z.record(z.string(), z.number()), recoverableUntil: isoDateSchema });
 // Only the 30-day goal is editable after creation; an empty string clears it.
 export const updateVentureSchema = z.object({ goal30Day: z.string().trim().max(500) }).strict();
-export const updateMembershipSchema = z.object({ role: appRoleSchema, ventureIds: z.array(idSchema).max(100), groupIds: z.array(idSchema).max(500) });
+// allGroupVentureIds: ventures where the member has every group, including groups created later (each must also be in
+// ventureIds). Elsewhere groupIds alone decide: the picked groups, or none. Leaving it out means no venture gets new groups.
+export const updateMembershipSchema = z.object({ role: appRoleSchema, ventureIds: z.array(idSchema).max(100), groupIds: z.array(idSchema).max(500), allGroupVentureIds: z.array(idSchema).max(100).default([]) });
 
 export const membershipSchema = z.object({
   id: idSchema,
@@ -50,6 +52,8 @@ export const membershipSchema = z.object({
   role: appRoleSchema,
   ventureIds: z.array(idSchema),
   groupIds: z.array(idSchema),
+  // Ventures whose groups all belong to this member; new groups there are added to groupIds as they are created.
+  allGroupVentureIds: z.array(idSchema).optional(),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
   // Set per request (never stored): archived ventures and their groups. They are already removed from ventureIds/groupIds,

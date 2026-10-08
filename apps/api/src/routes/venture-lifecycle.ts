@@ -144,8 +144,8 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
     counts[`${collection} updated`] = documents.length;
     return documents;
   };
-  await rewrite("memberships", { $or: [{ ventureIds: ventureId }, { inheritedVentureIds: ventureId }, { groupIds: { $in: groupIds } }] }, { $pull: { ventureIds: ventureId, inheritedVentureIds: ventureId, groupIds: { $in: groupIds } }, $set: { updatedAt: deletedAt } });
-  const invitations = await rewrite("invitations", { status: "pending", $or: [{ ventureIds: ventureId }, { groupIds: { $in: groupIds } }] }, { $pull: { ventureIds: ventureId, groupIds: { $in: groupIds } }, $set: { updatedAt: deletedAt } });
+  await rewrite("memberships", { $or: [{ ventureIds: ventureId }, { inheritedVentureIds: ventureId }, { allGroupVentureIds: ventureId }, { groupIds: { $in: groupIds } }] }, { $pull: { ventureIds: ventureId, inheritedVentureIds: ventureId, allGroupVentureIds: ventureId, groupIds: { $in: groupIds } }, $set: { updatedAt: deletedAt } });
+  const invitations = await rewrite("invitations", { status: "pending", $or: [{ ventureIds: ventureId }, { allGroupVentureIds: ventureId }, { groupIds: { $in: groupIds } }] }, { $pull: { ventureIds: ventureId, allGroupVentureIds: ventureId, groupIds: { $in: groupIds } }, $set: { updatedAt: deletedAt } });
   // One of those invitations left with no venture would add a member who can open nothing (admins see everything regardless).
   await db.collection("invitations").updateMany({ _id: { $in: invitations.map((invite) => invite._id) }, role: { $ne: "admin" }, ventureIds: { $size: 0 } }, { $set: { status: "superseded", supersededReason: "venture_deleted", updatedAt: deletedAt } }, { session });
   await rewrite("focus_sessions", { taskId: { $in: taskIds } }, { $unset: { taskId: "" } }, true);

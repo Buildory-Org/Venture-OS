@@ -145,10 +145,10 @@ export function GroupPeople({ ventureId, ventureName, groupId, groupName, member
   async function remove(member: Member) {
     setBusyRemoveId(member.id); setRemoveError("");
     try {
-      await removeLiveGroupMember(groupId, member.id); setConfirmRemoveId("");
+      const { endedAllGroups } = await removeLiveGroupMember(groupId, member.id); setConfirmRemoveId("");
       setLeavingId(member.id);
       window.setTimeout(() => { onRefresh(); setLeavingId(""); }, 320);
-      toast({ title: `${member.name} removed from ${groupName}`, body: "Other access they have may remain.", action: { label: "Undo", onClick: () => { void addLiveGroupMember(groupId, ventureId, member.id).then(() => { onRefresh(); flashById(`member-${member.id}`); }).catch((cause: unknown) => toast({ tone: "error", title: "Could not add them back", body: errorText(cause) })); } } });
+      toast({ title: `${member.name} removed from ${groupName}`, body: endedAllGroups ? "They keep their other groups here, but new groups in this venture are no longer added for them." : "Other access they have may remain.", action: { label: "Undo", onClick: () => { void addLiveGroupMember(groupId, ventureId, member.id, { allGroups: endedAllGroups }).then(() => { onRefresh(); flashById(`member-${member.id}`); }).catch((cause: unknown) => toast({ tone: "error", title: "Could not add them back", body: errorText(cause) })); } } });
       requestAnimationFrame(() => addButtonRef.current?.focus()); }
     catch (cause) { setRemoveError(errorText(cause)); }
     finally { setBusyRemoveId(""); }

@@ -32,7 +32,7 @@ try {
   for (const user of users) {
     await db.collection("users").updateOne({ _id: user._id }, { $set: { workspaceId, email: user.email, name: user.name, status: "active", updatedAt: now }, $setOnInsert: { createdAt: now } }, { upsert: true });
     const userVentures = user.role === "admin" ? ventures.map((venture) => venture._id) : user._id === "user-adarsh" ? ["venture-buildory", "venture-spotlyst"] : user._id === "user-ashutosh" ? ["venture-edithood"] : user._id === "user-abhinav" ? ["venture-buildory"] : ["venture-buildory"];
-    await db.collection("memberships").updateOne({ workspaceId, userId: user._id }, { $set: { _id: `membership-${user.handle}`, workspaceId, userId: user._id, role: user.role, ventureIds: userVentures, groupIds: userVentures.map((id) => `group-${ventures.find((venture) => venture._id === id)!.slug}`), status: "active", createdAt: now, updatedAt: now } }, { upsert: true });
+    await db.collection("memberships").updateOne({ workspaceId, userId: user._id }, { $set: { _id: `membership-${user.handle}`, workspaceId, userId: user._id, role: user.role, ventureIds: userVentures, allGroupVentureIds: [], groupIds: userVentures.map((id) => `group-${ventures.find((venture) => venture._id === id)!.slug}`), status: "active", createdAt: now, updatedAt: now } }, { upsert: true });
   }
   for (const venture of ventures) {
     const outcomeId = `outcome-${venture.slug}`;

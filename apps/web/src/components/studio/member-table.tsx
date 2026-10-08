@@ -12,6 +12,8 @@ export type MemberRow = {
   allVentures?: boolean;
   ventures: string[];
   groups: number | null;
+  /** Every group in each of their ventures, including groups created later. */
+  allGroups?: boolean;
   action?: React.ReactNode;
   flashId?: string;
 };
@@ -49,7 +51,7 @@ export function MemberTable({ rows }: { rows: MemberRow[] }) {
           : row.ventures.length ? <>{row.ventures.slice(0, 2).map((name) => <span key={name} className="max-w-36 truncate rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-600">{name}</span>)}{row.ventures.length > 2 && <span title={row.ventures.slice(2).join(", ")} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-500">+{row.ventures.length - 2}</span>}</>
           : <span className="text-xs text-neutral-400">No ventures</span>}
       </div>
-      <div role="cell" className="text-xs text-neutral-500 tnum max-md:col-start-3 max-md:row-start-2 max-md:justify-self-end max-md:whitespace-nowrap"><span className="hidden md:inline">{row.groups ?? "—"}</span>{row.groups !== null && <span className="md:hidden">{row.groups} group{row.groups === 1 ? "" : "s"}</span>}</div>
+      <div role="cell" className="text-xs text-neutral-500 tnum max-md:col-start-3 max-md:row-start-2 max-md:justify-self-end max-md:whitespace-nowrap">{row.allGroups ? <span title="Every group in their ventures, including new ones"><span className="hidden md:inline">All</span><span className="md:hidden">All groups</span></span> : <><span className="hidden md:inline">{row.groups ?? "—"}</span>{row.groups !== null && <span className="md:hidden">{row.groups} group{row.groups === 1 ? "" : "s"}</span>}</>}</div>
       <div role="cell" className="flex justify-end max-md:col-start-3 max-md:row-start-1">{row.action}</div>
     </div>)}</div>
   </div>;

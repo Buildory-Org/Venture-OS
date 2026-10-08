@@ -1790,6 +1790,141 @@ test("ventures archive (hidden and frozen for everyone), restore, and delete per
   }
 });
 
+test("group access per venture: all groups follows new groups, picked groups and no groups do not", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_group_access`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  for (const [key, name] of [["a", "Alpha"], ["b", "Beta"]] as const) {
+    await db.collection("ventures").insertOne({ _id: `venture-${key}`, workspaceId: "workspace-a", name, status: "active", goal30Day: "", createdAt: now });
+    await db.collection("groups").insertOne({ _id: `group-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, name: "Core", createdAt: now });
+    await db.collection("channels").insertOne({ _id: `channel-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, name: "general", createdAt: now });
+  }
+  // all: every Alpha group; pick: only Alpha's Core; none: Alpha's pages only; both: every group in Alpha and Beta.
+  const people = [
+    ["admin", "admin", [], [], []], ["all", "contributor", ["venture-a"], ["group-a"], ["venture-a"]], ["pick", "contributor", ["venture-a"], ["group-a"], []],
+    ["none", "learner", ["venture-a"], [], []], ["both", "contributor", ["venture-a", "venture-b"], ["group-a", "group-b"], ["venture-a", "venture-b"]],
+  ] as const;
+  await db.collection("users").insertMany([...people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: handle, handle, status: "active", createdAt: now, updatedAt: now })), { _id: "user-newbie", email: "newbie@example.invalid", name: "Newbie", status: "active", createdAt: now, updatedAt: now }]);
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds, allGroupVentureIds]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], ...(allGroupVentureIds.length ? { allGroupVentureIds: [...allGroupVentureIds] } : {}), status: "active", createdAt: now, updatedAt: now })));
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const membershipOf = (handle: string) => db.collection("memberships").findOne({ userId: `user-${handle}`, status: "active" });
+  const groupsOf = async (handle: string) => [...((await membershipOf(handle))?.groupIds as string[])].sort();
+  const visibleGroups = async (handle: string) => (await json(await call("GET", "/session/bootstrap", handle))).hierarchy.ventures.flatMap((venture: any) => venture.groups.map((group: any) => group.name)).sort();
+  const originalFetch = globalThis.fetch;
+  try {
+    // The all-groups list must name chosen ventures, once each.
+    assert.equal((await call("POST", "/admin/invitations", "admin", { email: "newbie@example.invalid", role: "learner", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-b"] })).status, 400);
+    assert.equal((await call("POST", "/admin/invitations", "admin", { email: "newbie@example.invalid", role: "learner", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-a", "venture-a"] })).status, 400);
+    const invited = await call("POST", "/admin/invitations", "admin", { email: "newbie@example.invalid", role: "learner", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-a"] });
+    assert.equal(invited.status, 201, await invited.clone().text());
+    const invite = await json(invited);
+    assert.deepEqual(invite.invitation.allGroupVentureIds, ["venture-a"]);
+
+    // A new group in Alpha reaches the all-groups members only.
+    const design = await json(await call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name: "Design" }));
+    assert.deepEqual(await groupsOf("all"), ["group-a", design.id].sort());
+    assert.deepEqual(await groupsOf("both"), ["group-a", "group-b", design.id].sort());
+    assert.deepEqual(await groupsOf("pick"), ["group-a"]);
+    assert.deepEqual(await groupsOf("none"), []);
+    assert.deepEqual(await visibleGroups("all"), ["Core", "Design"]);
+    assert.deepEqual(await visibleGroups("pick"), ["Core"]);
+    assert.deepEqual(await visibleGroups("none"), []);
+
+    // Accepting grants every group Alpha has by then, and groups created later still follow.
+    const accepted = await call("POST", "/invitations/accept", "newbie", { token: invite.token });
+    assert.equal(accepted.status, 200, await accepted.clone().text());
+    assert.deepEqual(await groupsOf("newbie"), ["group-a", design.id].sort());
+    assert.deepEqual((await membershipOf("newbie"))?.allGroupVentureIds, ["venture-a"]);
+    const research = await json(await call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name: "Research" }));
+    assert.deepEqual(await groupsOf("newbie"), ["group-a", design.id, research.id].sort());
+    assert.deepEqual(await groupsOf("pick"), ["group-a"]);
+
+    // Editing to all groups grants every current group; a scope outside the chosen ventures is refused.
+    const toAll = await call("PUT", "/admin/memberships/membership-pick", "admin", { role: "contributor", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-a"] });
+    assert.equal(toAll.status, 200, await toAll.clone().text());
+    assert.deepEqual([...(await json(toAll)).groupIds].sort(), ["group-a", design.id, research.id].sort());
+    assert.equal((await call("PUT", "/admin/memberships/membership-none", "admin", { role: "learner", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-b"] })).status, 400);
+    // A client that leaves the list out turns all groups off, never on.
+    const narrowed = await call("PUT", "/admin/memberships/membership-pick", "admin", { role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] });
+    assert.equal(narrowed.status, 200, await narrowed.clone().text());
+    assert.deepEqual((await json(narrowed)).allGroupVentureIds, []);
+    assert.deepEqual(await groupsOf("pick"), ["group-a"]);
+
+    // Taking someone out of one group ends all groups in that venture: they keep the rest and get no new ones.
+    const removed = await call("DELETE", `/groups/${design.id}/members/user-all`, "admin");
+    assert.equal(removed.status, 200, await removed.clone().text());
+    assert.equal(((await removed.json()) as any).meta.endedAllGroups, true);
+    assert.deepEqual((await membershipOf("all"))?.allGroupVentureIds, []);
+    const later = await json(await call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name: "Later" }));
+    assert.deepEqual(await groupsOf("all"), ["group-a", research.id].sort());
+    assert.ok((await groupsOf("newbie")).includes(later.id));
+    // Group creation is audited with how many members it reached (newbie and both).
+    assert.equal((await db.collection("audit_events").findOne({ action: "group.create", objectId: later.id }))?.metadata.membersAdded, 2);
+    // Undo puts back the group and all groups, including the group created in between.
+    const undone = await call("PUT", `/groups/${design.id}/members/user-all`, "admin", { allGroups: true });
+    assert.equal(undone.status, 200, await undone.clone().text());
+    assert.deepEqual(await groupsOf("all"), ["group-a", design.id, research.id, later.id].sort());
+    assert.deepEqual((await membershipOf("all"))?.allGroupVentureIds, ["venture-a"]);
+    // Only a removal from someone with all groups reports that it ended them.
+    assert.equal(((await (await call("DELETE", `/groups/${research.id}/members/user-newbie`, "admin")).json()) as any).meta.endedAllGroups, true);
+    assert.equal(((await (await call("DELETE", "/groups/group-a/members/user-pick", "admin")).json()) as any).meta.endedAllGroups, false);
+
+    // Racing group creation against saving all groups: the save retries, and the member ends up with every group.
+    const raced = await Promise.all([
+      call("PUT", "/admin/memberships/membership-none", "admin", { role: "learner", ventureIds: ["venture-a"], groupIds: [], allGroupVentureIds: ["venture-a"] }),
+      ...["Race one", "Race two", "Race three"].map((name) => call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name })),
+    ]);
+    assert.deepEqual(raced.map((response) => response.status), [200, 201, 201, 201]);
+    const alphaGroups = (await db.collection("groups").find({ ventureId: "venture-a" }).toArray()).map((group) => String(group._id)).sort();
+    assert.deepEqual(await groupsOf("none"), alphaGroups);
+    assert.equal((await call("POST", "/admin/groups", "admin", { ventureId: "venture-a", name: "Race one" })).status, 409);
+
+    // The email says "All groups in <venture>" where that applies, and lists picked groups elsewhere.
+    config.RESEND_API_KEY = "re_test_mock_only";
+    config.EMAIL_FROM = "Studio <invites@example.com>";
+    let sent: { text: string; html: string } | undefined;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      if (String(args[0]) !== "https://api.resend.com/emails") return originalFetch(...args);
+      sent = JSON.parse(String(args[1]?.body));
+      return new Response(JSON.stringify({ id: "email-group-access" }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const emailed = await call("POST", "/admin/invitations", "admin", { email: "second@example.invalid", role: "contributor", ventureIds: ["venture-a", "venture-b"], groupIds: ["group-b"], allGroupVentureIds: ["venture-a"] });
+    assert.equal(emailed.status, 201, await emailed.clone().text());
+    assert.match(sent!.text, /Groups: All groups in Alpha, Beta · Core/);
+    assert.match(sent!.html, /All groups in Alpha/);
+    globalThis.fetch = originalFetch;
+
+    // Deleting a venture removes it from all-groups lists, on members and pending invitations alike.
+    await db.collection("invitations").insertOne({ _id: "invite-both", workspaceId: "workspace-a", email: "third@example.invalid", role: "contributor", ventureIds: ["venture-a", "venture-b"], groupIds: [], allGroupVentureIds: ["venture-a", "venture-b"], status: "pending", tokenHash: "unused", expiresAt: new Date(Date.now() + 86_400_000), createdAt: now });
+    assert.equal((await call("POST", "/ventures/venture-b/archive", "admin")).status, 200);
+    const deleted = await call("DELETE", "/ventures/venture-b", "admin", { confirmName: "Beta" });
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    assert.deepEqual((await membershipOf("both"))?.allGroupVentureIds, ["venture-a"]);
+    assert.deepEqual((await db.collection("invitations").findOne({ _id: "invite-both" }))?.allGroupVentureIds, ["venture-a"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
 test("hosted MCP: tokens, sign-in, every tool through the product API, permission boundaries, writes, limits, and switches", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   const dbName = `venture_studio_test_${process.pid}_${Date.now()}_mcp`;
   assert.match(dbName, /^venture_studio_test_/);
@@ -1906,7 +2041,8 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     const plate = await mcpTool(origin, member.token, "my_plate", { scope: "week", timezone: "Asia/Kolkata" });
     assert.equal(plate.isError, false, plate.text);
     assert.deepEqual(plate.data.overdue.map((row: any) => row.id), ["task-overdue"]);
-    assert.ok(plate.data.today.concat(plate.data.upcoming ?? []).some((row: any) => row.id === "task-today"));
+    // Due in 5 hours: after 19:00 in Kolkata that is tomorrow, so it is "upcoming" and the empty "today" list is left out.
+    assert.ok([...(plate.data.today ?? []), ...(plate.data.upcoming ?? [])].some((row: any) => row.id === "task-today"));
     assert.ok(!JSON.stringify(plate.data).includes("task-later"));
     assert.equal(plate.data.overdue[0].venture, "Alpha");
     assert.equal(plate.data.overdue[0].url, "http://localhost:3000/tasks/live?task=task-overdue");
@@ -2018,7 +2154,8 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     await db.collection("api_rate_limits").deleteMany({});
     const limited = await tokenFor("lead", ["tasks:read"]);
     let lastStatus = 200;
-    for (let index = 0; index < 125 && lastStatus !== 429; index++) lastStatus = (await mcpCall(origin, limited.token, "tools/list")).status;
+    // 120 a minute, counted per clock minute: 245 calls reach the limit even if the burst crosses into the next minute.
+    for (let index = 0; index < 245 && lastStatus !== 429; index++) lastStatus = (await mcpCall(origin, limited.token, "tools/list")).status;
     assert.equal(lastStatus, 429);
   } finally {
     server.close();

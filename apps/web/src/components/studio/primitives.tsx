@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import clsx from "clsx";
-import { Check, RefreshCw, X } from "@/components/ui/icons";
+import { Check, Inbox, RefreshCw, X, type Icon } from "@/components/ui/icons";
+import { EmptyState, type EmptyTone } from "@/components/ui/empty-state";
 import { prefersReducedMotion, useExitTransition } from "@/lib/motion";
 
 /** Label-less pill controls for filter rows; they size to their content and turn green while filtering. */
@@ -17,7 +18,12 @@ export function PageTitle({ title, description, action }: { title: string; descr
 export function Panel({ children, className }: { children: React.ReactNode; className?: string }) { return <section data-vso-stagger-group className={clsx("min-w-0 rounded-2xl border border-neutral-100 bg-white shadow-card", className)}>{children}</section>; }
 export function PanelHead({ title, aside }: { title: string; aside?: React.ReactNode }) { return <div className="flex items-center justify-between gap-3 border-b border-neutral-100 px-5 py-4"><h2 className="text-sm font-bold text-neutral-900">{title}</h2>{aside}</div>; }
 export function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "blue" | "green" | "amber" | "red" | "purple" }) { const tones = { neutral: "bg-neutral-100 text-neutral-600", blue: "bg-primary-50 text-primary-700", green: "bg-success-surface text-success-text", amber: "bg-warning-surface text-warning-text", red: "bg-danger-surface text-danger-text", purple: "bg-ai-surface text-ai-text" }; return <span className={clsx("inline-flex items-center rounded-md px-2 py-1 text-[11px] font-semibold transition-colors duration-200", tones[tone])}>{children}</span>; }
-export function Empty({ title, body, action }: { title: string; body: string; action?: React.ReactNode }) { return <div className="vso-fade-enter px-5 py-12 text-center"><p className="text-sm font-semibold text-neutral-800">{title}</p><p className="mt-1 text-sm text-neutral-500">{body}</p>{action && <div className="mt-4 flex justify-center">{action}</div>}</div>; }
+/** A card-style empty state (see components/ui/empty-state.tsx for the page, filtered, select, error, and column variants). */
+export function Empty({ title, body, action, icon = Inbox, tone = "green" }: { title: string; body: string; action?: React.ReactNode; icon?: Icon; tone?: EmptyTone }) { return <EmptyState variant="card" icon={icon} tone={tone} title={title} body={body}>{action}</EmptyState>; }
+
+/** Page-header actions: one row that never wraps. Secondary labels hide on phones (wrap them in `HeaderLabel`) so no button sits alone on a line. */
+export function HeaderActions({ children, className }: { children: React.ReactNode; className?: string }) { return <div className={clsx("flex shrink-0 flex-nowrap items-center gap-2", className)}>{children}</div>; }
+export function HeaderLabel({ children }: { children: React.ReactNode }) { return <span className="max-sm:sr-only">{children}</span>; }
 const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 /** A number whose digits roll like an odometer when it changes (decision 8C); the first value is static. */
 export function RollingNumber({ value, className }: { value: number | string; className?: string }) {
@@ -47,8 +53,9 @@ export function useFlag(ms = 1600): [string, (key: string) => void] {
 }
 
 /** Refresh control whose icon spins while the refetch runs. */
+/** Icon-only refresh; it comes first in a page header, before secondary and primary actions. */
 export function RefreshButton({ busy, onClick, label = "Refresh", className }: { busy: boolean; onClick: () => void; label?: string; className?: string }) {
-  return <button type="button" onClick={onClick} aria-busy={busy || undefined} className={clsx(secondaryClass, className)}><RefreshCw size={15} className={clsx(busy && "vso-spin")} />{label}</button>;
+  return <button type="button" onClick={onClick} aria-busy={busy || undefined} aria-label={label} title={label} className={clsx(secondaryClass, "!px-0 w-10 shrink-0", className)}><RefreshCw size={16} className={clsx(busy && "vso-spin")} /></button>;
 }
 
 /** Shimmering placeholder rows shaped like a list, shown on first load instead of "Loading…" text. */

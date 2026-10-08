@@ -9,6 +9,7 @@ import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { LiveNotificationBell } from "./live-notification-pulse";
+import { openNewTask } from "@/components/studio/new-task-dialog";
 
 type Props = { collapsed: boolean; onToggleSidebar: () => void; onOpenMobileNav: () => void; focusOpen: boolean; onToggleFocus: () => void };
 const iconButton = "relative grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]";
@@ -35,6 +36,9 @@ function LiveFocusLink() {
   const clock = `${pausedAt ? "Paused · " : ""}${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   return <Link href="/focus" aria-label={pausedAt ? `Focus session paused, ${Math.ceil(seconds / 60)} minutes left` : seconds ? `Focus session running, ${Math.ceil(seconds / 60)} minutes left` : "Focus session finished, open it to complete"} className="vso-fade-enter flex h-10 shrink-0 items-center gap-2 rounded-xl bg-primary-50 px-3 text-xs font-semibold text-primary-700 transition-[background-color,transform] duration-150 hover:bg-primary-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]"><span aria-hidden="true" className={clsx("h-2 w-2 rounded-full", pausedAt ? "bg-amber-500" : seconds ? "bg-primary-600" : "bg-success")} /><span className="tnum">{seconds ? clock : "Done"}</span></Link>;
 }
+
+// New task: an icon on phones, labelled from tablet up; the live app opens the task popup instead of navigating.
+const newTaskClass = "flex h-10 w-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-primary-700 text-xs font-semibold text-white transition-[background-color,transform] duration-150 hover:bg-primary-800 active:scale-[0.97] md:w-auto md:px-3.5";
 
 export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen, onToggleFocus }: Props) {
   const path = usePathname();
@@ -85,7 +89,7 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
     <button type="button" onClick={onToggleSidebar} className={clsx(iconButton,"hidden lg:grid")} aria-label={collapsed?"Expand navigation":"Collapse navigation"} title={collapsed ? "Expand navigation (Ctrl+B)" : "Collapse navigation (Ctrl+B)"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button>
     <span className="hidden shrink-0 px-1 text-xs font-semibold capitalize text-neutral-800 lg:block">{section}</span>
     <div className="mx-auto min-w-0 max-w-[520px] flex-1 px-1 sm:px-3"><button type="button" onClick={openSearch} className="flex h-10 w-full items-center gap-2.5 rounded-xl bg-neutral-100 px-3.5 text-[13px] text-neutral-400 transition-[background-color,transform] duration-150 hover:bg-neutral-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]"><Search size={15}/><span className="min-w-0 flex-1 truncate text-left">{mode === "connected" ? "Search tasks, people, ventures…" : "Search tasks, knowledge, ventures…"}</span><kbd className="hidden rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-400 shadow-sm md:block">Ctrl K</kbd></button></div>
-    {(mode === "demo" || ["admin", "venture_head", "contributor"].includes(role)) && <Link href="/tasks?new=1" className="hidden h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-primary-700 px-3.5 text-xs font-semibold text-white hover:bg-primary-800 md:flex"><Plus size={14}/>New task</Link>}
+    {(mode === "demo" || ["admin", "venture_head", "contributor"].includes(role)) && (mode === "demo" ? <Link href="/tasks?new=1" aria-label="New task" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></Link> : <button type="button" onClick={openNewTask} aria-label="New task" aria-haspopup="dialog" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></button>)}
     {mode === "demo" ? <button type="button" onClick={onToggleFocus} aria-label="Toggle focus sprint" aria-pressed={focusOpen} className={clsx(iconButton,focusOpen?"bg-primary-100 text-primary-700":"text-primary-600 hover:bg-primary-50")}><TimerReset size={18}/></button> : <LiveFocusLink />}
     <ThemeToggle />
     {mode === "connected" ? <LiveNotificationBell /> : <Link href="/notifications" aria-label={`Notifications, ${unread} unread`} className={iconButton}><Bell size={18}/>{unread>0&&<span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-white"/>}</Link>}

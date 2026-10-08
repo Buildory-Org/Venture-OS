@@ -12,6 +12,7 @@ import { notificationSnapshotEvent } from "@/lib/notification-events";
 import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
 import { useChatPushResponder } from "@/lib/chat-presence";
 import { demoEnabled } from "@/lib/demo";
+import { NewTaskHost } from "@/components/studio/new-task-dialog";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Snapshot = { session: Session; data: ReturnType<typeof connectedShellData> };
@@ -86,5 +87,5 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
     <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col"><div className="flex h-14 shrink-0 items-center gap-3 px-4"><span className="vso-skeleton h-10 w-10 rounded-xl" /><span className="vso-skeleton mx-auto h-10 w-full max-w-[520px] rounded-xl" /><span className="vso-skeleton h-10 w-10 rounded-xl" /><span className="vso-skeleton h-10 w-10 rounded-xl" /></div><div className="flex-1 rounded-tl-[22px] bg-canvas px-4 py-5 sm:px-6 lg:px-7 lg:py-6"><span className="vso-skeleton h-8 w-56" /><span className="vso-skeleton mt-2 h-4 w-80 max-w-full" /><div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((index) => <span key={index} className="vso-skeleton h-28 rounded-2xl" />)}</div><span className="vso-skeleton mt-4 h-64 rounded-2xl" /></div></div>
   </main>;
 
-  return <StudioProvider mode="connected" initialData={snapshot.data} initialUserId={snapshot.session.user.id} workspaceName={snapshot.session.hierarchy.workspace.name} role={snapshot.session.membership.role.replaceAll("_", " ")}><AppShell connected>{children}</AppShell></StudioProvider>;
+  return <StudioProvider mode="connected" initialData={snapshot.data} initialUserId={snapshot.session.user.id} workspaceName={snapshot.session.hierarchy.workspace.name} role={snapshot.session.membership.role.replaceAll("_", " ")}><AppShell connected>{children}<NewTaskHost /></AppShell></StudioProvider>;
 }

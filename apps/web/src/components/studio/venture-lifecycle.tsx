@@ -3,8 +3,9 @@ import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, RotateCcw } from "@/components/ui/icons";
-import { ActionLabel, DetailDrawer, Empty, inputClass, primaryClass, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
+import { AlertTriangle, Archive, RotateCcw } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ActionLabel, DetailDrawer, inputClass, primaryClass, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
 import { archiveLiveVenture, deleteLiveVenture, listArchivedLiveVentures, restoreLiveVenture } from "@/lib/studio-api";
 
 type Archived = Awaited<ReturnType<typeof listArchivedLiveVentures>>[number];
@@ -67,7 +68,7 @@ export function ArchivedVenturesDrawer({ isAdmin, onClose, onChanged }: { isAdmi
     <div className="space-y-3">
       {error && <p role="alert" className="rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{error}</p>}
       {!items ? !error && <SkeletonRows rows={2} label="Loading archived ventures" />
-        : !items.length ? <Empty title="No archived ventures" body="Archived ventures appear here, ready to restore." />
+        : !items.length ? <EmptyState variant="card" icon={Archive} tone="teal" title="No archived ventures" body="Archived ventures appear here, ready to restore." />
         : items.map((item) => <article key={item.id} className="rounded-xl border border-neutral-100 bg-white p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0"><p className="truncate text-sm font-semibold text-neutral-800">{item.name}</p><p className="mt-0.5 text-xs text-neutral-500">{item.archivedAt ? `Archived ${new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(item.archivedAt))}` : "Archived"}</p></div>

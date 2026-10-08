@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Edit, Plus } from "@/components/ui/icons";
+import { Edit, Plus, Target } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { describeError } from "@/lib/errors";
 
@@ -58,6 +59,6 @@ export function VentureGoal({ goal, onSave }: { goal: string; onSave?: (goal: st
     </div>
     {goal
       ? <p className="mt-2 max-w-3xl whitespace-pre-line break-words text-base font-semibold leading-7 text-neutral-700">{goal}</p>
-      : <p className="mt-2 max-w-3xl text-sm leading-6 text-neutral-500">No 30-day goal yet.{onSave ? " Set one so everyone knows what this venture is working toward." : ""}</p>}
+      : <EmptyState variant="compact" icon={Target} title="No 30-day goal yet." body={onSave ? "Set one so everyone knows what this venture is working toward." : undefined} className="mt-2 max-w-3xl" />}
   </div>;
 }

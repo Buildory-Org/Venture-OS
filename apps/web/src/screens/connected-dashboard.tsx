@@ -1,5 +1,6 @@
 "use client";
 import { describeError } from "@/lib/errors";
+import { TASK_CREATED_EVENT } from "@/components/studio/new-task-dialog";
 
 import { useEffect, useState } from "react";
 import { StudioDashboard } from "./studio-dashboard";
@@ -13,6 +14,7 @@ export function ConnectedDashboard({ view = "dashboard" }: { view?: "dashboard" 
   const [data, setData] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  useEffect(() => { const onCreated = () => setRevision((value) => value + 1); window.addEventListener(TASK_CREATED_EVENT, onCreated); return () => window.removeEventListener(TASK_CREATED_EVENT, onCreated); }, []);
 
   useEffect(() => {
     let active = true;

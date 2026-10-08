@@ -3,7 +3,8 @@ import { notificationRefreshEvent } from "@/lib/notification-events";
 import { describeError } from "@/lib/errors";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Bookmark, Info, RefreshCw, X } from "@/components/ui/icons";
+import { ArrowLeft, Bookmark, Info, MessageCircle, RefreshCw, Users, X } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/empty-state";
 import clsx from "clsx";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { Message } from "@venture-studio/contracts";
@@ -35,9 +36,13 @@ export function LiveMessagesScreen() {
   const [selectedRecipient, setSelectedRecipient] = useState<Member | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
+  // A failed conversation load shows as an error in the thread, never as "No messages yet".
+  const [messagesError, setMessagesError] = useState("");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [composer, setComposer] = useState("");
   const [error, setError] = useState("");
+  // The people list's own failure; a later successful conversation load must not hide it behind a skeleton.
+  const [peopleError, setPeopleError] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [revision, setRevision] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -69,8 +74,8 @@ export function LiveMessagesScreen() {
       setSession(identity);
       setMembers(page.items.filter((item) => item.id !== identity.user.id));
       setCursor(page.nextCursor);
-      setError("");
-    }).catch((cause: unknown) => { if (active) setError(errorText(cause)); }));
+      setError(""); setPeopleError("");
+    }).catch((cause: unknown) => { if (active) { setError(errorText(cause)); setPeopleError(errorText(cause)); } }));
     return () => { active = false; };
   }, []);
 
@@ -89,7 +94,7 @@ export function LiveMessagesScreen() {
     if (!recipientId) return;
     let active = true;
     queueMicrotask(() => { if (active) setReloading(true); });
-    queueMicrotask(() => listLiveDirectMessages(recipientId).then((items) => { if (active) { setMessages(items); setMessagesLoaded(true); setError(""); setReloading(false); } }).catch((cause: unknown) => { if (active) { setError(errorText(cause)); setMessagesLoaded(true); setReloading(false); } }));
+    queueMicrotask(() => listLiveDirectMessages(recipientId).then((items) => { if (active) { setMessages(items); setMessagesLoaded(true); setError(""); setMessagesError(""); setReloading(false); } }).catch((cause: unknown) => { if (active) { const message = errorText(cause); setError(message); setMessagesError(message); setMessagesLoaded(true); setReloading(false); } }));
     return () => { active = false; };
   }, [recipientId, revision]);
 
@@ -179,7 +184,7 @@ export function LiveMessagesScreen() {
 
   function openConversation(member: Member) {
     if (member.id === recipientId) return;
-    setRecipientId(member.id); setSelectedRecipient(member); setMessages([]); setMessagesLoaded(false); setComposer(""); setReplyTo(null); clientId.current = null;
+    setRecipientId(member.id); setSelectedRecipient(member); setMessages([]); setMessagesLoaded(false); setMessagesError(""); setComposer(""); setReplyTo(null); clientId.current = null;
     requestAnimationFrame(() => autosize(composerRef.current));
   }
 
@@ -228,24 +233,29 @@ export function LiveMessagesScreen() {
     return rows;
   }
 
+  const peopleLoading = !session && !peopleError;
+  const peopleFailed = !session && Boolean(peopleError);
+  const messagesFailed = Boolean(messagesError) && !messages.length && !conversationPending.length;
   const visible = term.length >= 2 ? members : members.filter((item) => `${item.name} ${item.handle ?? ""}`.toLowerCase().includes(term.toLowerCase()));
   const detailPanel = <aside className={clsx("chat-details thin-scroll border-l border-[var(--color-neutral-200)] bg-white p-5 xl:w-[290px] xl:shrink-0", detailsOpen ? "fixed inset-y-0 right-0 z-20 w-[min(320px,92vw)] shadow-2xl vso-enter-right xl:animate-none! xl:static xl:shadow-none" : "hidden xl:block")}>
+    <div className="flex min-h-full flex-col">
     <div className="flex items-center justify-between"><p className="text-xs font-semibold text-[var(--color-neutral-800)]">Contact Details</p><button type="button" aria-label="Close details" onClick={() => setDetailsOpen(false)} className="chat-icon xl:!hidden"><X size={17} /></button></div>
-    {recipient ? <><div className="mt-8 flex flex-col items-center text-center"><ChatAvatar id={recipient.id} name={recipient.name} size={78} /><h2 className="mt-3 text-sm font-semibold">{recipient.name}</h2><p className="mt-1 text-xs text-[var(--color-neutral-400)]">{recipient.handle ? `@${recipient.handle}` : recipient.role.replaceAll("_", " ")}</p></div><div className="mt-8 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Conversation</p><p className="mt-2 text-xs leading-5 text-[var(--color-neutral-400)]">{messages.length} recent messages with this workspace member. Direct messages are visible only to participants.</p></div><div className="mt-7 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Shared media</p><p className="mt-2 text-xs leading-5 text-[var(--color-neutral-400)]">Files in this conversation: {messages.reduce((count, item) => count + messageAttachments(item).length, 0)}.</p></div></> : <p className="mt-6 text-xs text-[var(--color-neutral-400)]">Choose a contact to see their details.</p>}
-    <div className="mt-8"><ChatCredit /></div>
+    {recipient ? <><div className="mt-8 flex flex-col items-center text-center"><ChatAvatar id={recipient.id} name={recipient.name} size={78} /><h2 className="mt-3 text-sm font-semibold">{recipient.name}</h2><p className="mt-1 text-xs text-[var(--color-neutral-400)]">{recipient.handle ? `@${recipient.handle}` : recipient.role.replaceAll("_", " ")}</p></div><div className="mt-8 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Conversation</p><p className="mt-2 text-xs leading-5 text-[var(--color-neutral-400)]">{messages.length} recent messages with this workspace member. Direct messages are visible only to participants.</p></div><div className="mt-7 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Shared media</p><p className="mt-2 text-xs leading-5 text-[var(--color-neutral-400)]">Files in this conversation: {messages.reduce((count, item) => count + messageAttachments(item).length, 0)}.</p></div></> : <EmptyState variant="select" icon={MessageCircle} title="Pick someone to message" body="Their profile, shared groups and files appear here." className="max-md:hidden flex-1" />}
+    <div className="mt-auto pt-8"><div className="border-t border-[var(--color-neutral-100)] pt-3 [&_p]:text-[9px]"><ChatCredit /></div></div>
+    </div>
   </aside>;
 
   return <ChatShell ready={Boolean(session) || Boolean(error)}>
     <aside className={clsx("chat-list flex w-full shrink-0 flex-col border-r border-[var(--color-neutral-200)] bg-white md:w-[282px] xl:w-[310px]", recipientId ? "hidden md:flex" : "flex")}>
       <div className="flex h-[68px] shrink-0 items-center justify-between border-b border-[var(--color-neutral-100)] px-5"><ChatNav mode="messages" /><span className="text-[10px] font-semibold text-[var(--color-neutral-400)]">VENTURE STUDIO</span></div>
       <div className="px-5 pb-3 pt-5"><div className="mb-4 flex items-center justify-between"><h1 className="text-[15px] font-bold tracking-tight">Messages <span aria-hidden="true" className="text-[var(--color-neutral-400)]">⌄</span></h1><button type="button" aria-label="Refresh messages" title="Refresh messages" className="chat-icon" onClick={() => setRevision((value) => value + 1)}><RefreshCw size={16} /></button></div><ChatSearch value={search} onChange={setSearch} placeholder="Search people..." /></div>
-      <div className="thin-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-4">{visible.map((member) => <button type="button" key={member.id} onClick={() => openConversation(member)} aria-current={recipientId === member.id ? "true" : undefined} className={clsx("flex min-h-[68px] w-full items-center gap-3 rounded-lg px-3 text-left transition-[background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-primary-500)] active:scale-[0.99]", recipientId === member.id ? "bg-[var(--color-primary-100)]" : "hover:bg-[var(--color-neutral-50)]")}><ChatAvatar id={member.id} name={member.name} size={39} /><span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{member.name}</span><span className="mt-1 block truncate text-[10px] text-[var(--color-neutral-400)]">{member.handle ? `@${member.handle}` : member.role.replaceAll("_", " ")}</span></span></button>)}{visible.length === 0 && <p className="px-4 py-8 text-center text-xs text-[var(--color-neutral-400)]">No workspace members found.</p>}{cursor && <button type="button" onClick={moreMembers} className="mx-3 mt-2 min-h-9 rounded-lg px-3 text-xs font-semibold text-[var(--color-primary-600)] transition-colors duration-150 hover:bg-[var(--color-primary-50)]">Load more people</button>}</div>
+      <div className="thin-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-4">{peopleLoading ? <div role="status" aria-label="Loading people" className="grid gap-1 pt-1">{[0, 1, 2, 3, 4].map((index) => <div key={index} className="flex min-h-[68px] items-center gap-3 px-3"><span className="vso-skeleton h-[39px] w-[39px] shrink-0 rounded-full" /><span className="grid min-w-0 flex-1 gap-2"><span className="vso-skeleton h-3" style={{ width: `${70 - (index % 3) * 12}%` }} /><span className="vso-skeleton h-2.5 w-1/3" /></span></div>)}</div> : peopleFailed ? <EmptyState variant="error" title="Could not load people" body={peopleError} action={{ label: "Try again", onClick: () => window.location.reload() }} /> : visible.map((member) => <button type="button" key={member.id} onClick={() => openConversation(member)} aria-current={recipientId === member.id ? "true" : undefined} className={clsx("flex min-h-[68px] w-full items-center gap-3 rounded-lg px-3 text-left transition-[background-color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-primary-500)] active:scale-[0.99]", recipientId === member.id ? "bg-[var(--color-primary-100)]" : "hover:bg-[var(--color-neutral-50)]")}><ChatAvatar id={member.id} name={member.name} size={39} /><span className="min-w-0 flex-1"><span className="block truncate text-[12px] font-semibold">{member.name}</span><span className="mt-1 block truncate text-[10px] text-[var(--color-neutral-400)]">{member.handle ? `@${member.handle}` : member.role.replaceAll("_", " ")}</span></span></button>)}{!peopleLoading && !peopleFailed && visible.length === 0 && (search.trim() ? <EmptyState variant="filtered" title={`No one matches "${search.trim()}"`} body="Check the spelling, or try a name or @handle." action={{ label: "Clear search", onClick: () => setSearch("") }} /> : <EmptyState variant="card" tone="teal" icon={Users} title="No one to message yet" body="Other workspace members appear here." />)}{cursor && <button type="button" onClick={moreMembers} className="mx-3 mt-2 min-h-9 rounded-lg px-3 text-xs font-semibold text-[var(--color-primary-600)] transition-colors duration-150 hover:bg-[var(--color-primary-50)]">Load more people</button>}</div>
       {session && <div className="flex items-center gap-2 border-t border-[var(--color-neutral-100)] px-5 py-3"><ChatAvatar id={session.user.id} name={session.user.name} size={30} /><span className="truncate text-[11px] font-semibold">{session.user.name}</span><span className="ml-auto inline-flex items-center gap-1.5 text-[9px] text-[var(--color-neutral-400)]"><span aria-hidden="true" className={clsx("h-1.5 w-1.5 rounded-full transition-colors duration-300", realtime === "live" ? "bg-[var(--color-success)]" : realtime === "connecting" ? "animate-pulse bg-[var(--color-warning)]" : "bg-[var(--color-neutral-300)]")} />{realtime === "live" ? "Live" : realtime === "connecting" ? "Connecting…" : "Offline"}</span></div>}
     </aside>
     <section key={recipientId ? "conversation" : "empty"} className={clsx("relative flex min-w-0 flex-1 flex-col bg-white", recipientId ? "vso-enter-right" : "hidden md:flex")}>
       <header className="flex h-[68px] shrink-0 items-center gap-3 border-b border-[var(--color-neutral-200)] px-4 sm:px-6"><button type="button" aria-label="Back to people" onClick={() => setRecipientId("")} className="chat-icon md:!hidden"><ArrowLeft size={18} /></button>{recipient ? <><ChatAvatar id={recipient.id} name={recipient.name} size={34} /><div className="min-w-0 flex-1"><h2 className="truncate text-[12px] font-semibold">{recipient.name}</h2><p className="truncate text-[10px] text-[var(--color-neutral-400)]">{recipient.handle ? `@${recipient.handle}` : "Workspace member"}</p></div></> : <h2 className="flex-1 text-sm font-semibold">Select a conversation</h2>}<ThemeToggle /><button type="button" aria-label="Show contact details" title="Contact details" aria-expanded={detailsOpen} onClick={() => setDetailsOpen(true)} className={clsx("chat-icon", detailsOpen && "chat-icon-active")}><Info size={17} /></button><button type="button" aria-label="Refresh conversation" title="Refresh" aria-busy={reloading || undefined} onClick={() => setRevision((value) => value + 1)} className="chat-icon"><RefreshCw size={16} className={clsx(reloading && "vso-spin")} /></button></header>
-      <Notice tone="error" message={error} onDismiss={() => setError("")} className="px-5 pt-3" />
-      <div ref={listRef} onScroll={scroll.onScroll} className="thin-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-2 sm:px-7">{recipient ? !messagesLoaded ? <div role="status" aria-label="Loading messages" className="space-y-6 pt-6">{[46, 34, 58].map((width, index) => <div key={index} className={clsx("flex items-start gap-2", index % 2 && "flex-row-reverse")}><span className="vso-skeleton mt-5 h-[25px] w-[25px] shrink-0 rounded-full" /><span className="grid gap-1.5" style={{ width: `${width}%` }}><span className={clsx("vso-skeleton h-2.5 w-16", index % 2 && "justify-self-end")} /><span className="vso-skeleton h-10 rounded-2xl" /></span></div>)}</div> : messages.length || conversationPending.length ? <div className="vso-fade-enter">{renderRows(recipient)}</div> : <ChatEmpty title="No messages yet" detail={`Say hello to ${recipient.name}.`} /> : <ChatEmpty title="Your conversations, together" detail="Choose someone from the left to send a direct message." />}</div>
+      <Notice tone="error" message={(messagesFailed && error === messagesError) || peopleFailed ? "" : error} onDismiss={() => setError("")} className="px-5 pt-3" />
+      <div ref={listRef} onScroll={scroll.onScroll} className="thin-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-2 sm:px-7">{recipient ? !messagesLoaded ? <div role="status" aria-label="Loading messages" className="space-y-6 pt-6">{[46, 34, 58].map((width, index) => <div key={index} className={clsx("flex items-start gap-2", index % 2 && "flex-row-reverse")}><span className="vso-skeleton mt-5 h-[25px] w-[25px] shrink-0 rounded-full" /><span className="grid gap-1.5" style={{ width: `${width}%` }}><span className={clsx("vso-skeleton h-2.5 w-16", index % 2 && "justify-self-end")} /><span className="vso-skeleton h-10 rounded-2xl" /></span></div>)}</div> : messagesFailed ? <EmptyState variant="error" title="Messages unavailable" body={messagesError} action={{ label: "Try again", onClick: () => setRevision((value) => value + 1) }} className="h-full" /> : messages.length || conversationPending.length ? <div className="vso-fade-enter">{renderRows(recipient)}</div> : <ChatEmpty title="No messages yet" detail={canPost ? `Say hello to ${recipient.name}.` : `Messages with ${recipient.name} will appear here.`} /> : <ChatEmpty title="Your conversations, together" detail="Choose someone from the left to send a direct message." />}</div>
       <NewMessagesPill count={scroll.unseen} onClick={scroll.jumpToLatest} className="bottom-28" />
       {recipient && <form onSubmit={send} className="shrink-0 border-t border-[var(--color-neutral-200)] bg-white p-3 sm:px-6 sm:py-4">
         <div data-open={Boolean(replyTo)} className="vso-collapse"><div><div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="min-w-0 truncate"><span className="font-semibold">Replying to {replyShown ? replyShown.authorId === session?.user.id ? "yourself" : recipient.name : ""}</span>{replyShown ? `: ${replyShown.body.slice(0, 80) || "an attachment"}` : ""}</span><button type="button" tabIndex={replyTo ? 0 : -1} aria-label="Cancel reply" title="Cancel reply (Esc)" onClick={() => { setReplyTo(null); composerRef.current?.focus(); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-primary-100)]"><X size={13} /></button></div></div></div>

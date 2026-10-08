@@ -4,11 +4,12 @@ import { describeError } from "@/lib/errors";
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import clsx from "clsx";
-import { MoreHorizontal, Plus } from "@/components/ui/icons";
+import { ArrowLeft, Layers3, MoreHorizontal, Plus } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Dropdown } from "@/components/ui/dropdown";
 import { Archive02Icon, ArchiveRestoreIcon } from "@hugeicons/core-free-icons";
 import { ArchivedVenturesDrawer, ArchiveVentureDrawer } from "@/components/studio/venture-lifecycle";
-import { PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { HeaderActions, PageFrame, PageTitle, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { toast } from "@/components/ui/toast";
 import { CreateVentureDrawer } from "@/components/studio/create-venture-drawer";
 import { VenturesScreen } from "./studio-ventures";
@@ -82,20 +83,22 @@ export function ConnectedVentures() {
   const openVenture = data?.ventures.find((venture) => venture.id === (selectedId ?? activeVentureId)) ?? data?.ventures[0];
   const canArchiveOpen = Boolean(openVenture && session && (role === "admin" || (role === "venture_head" && session.membership.ventureIds.includes(openVenture.id))));
   const lifecycleChanged = () => { window.dispatchEvent(new Event("venture:hierarchy-changed")); router.replace("/ventures/live"); setRevision((value) => value + 1); };
-  const action = role === "admin" || role === "venture_head" ? <div className="flex flex-wrap gap-2">
-    {role === "admin" && <button type="button" onClick={() => setCreating(true)} className={primaryClass}><Plus size={15} />Create venture</button>}
-    {/* Rare actions live in a menu so the header keeps room for the venture's name. */}
-    <Dropdown align="right" items={[
-      ...(canArchiveOpen && openVenture ? [{ label: `Archive ${openVenture.name}`, icon: Archive02Icon, onClick: () => setArchiving({ id: openVenture.id, name: openVenture.name }) }] : []),
-      { label: "Archived ventures", icon: ArchiveRestoreIcon, onClick: () => setShowArchived(true) },
-    ]} trigger={<button type="button" aria-label="More venture actions" title="More venture actions" className={clsx(secondaryClass, "!px-3")}><MoreHorizontal size={17} /></button>} />
-  </div> : undefined;
+  // Header order: the secondary menu first, the primary action (Create venture) last.
+  const createButton = role === "admin" ? <button type="button" onClick={() => setCreating(true)} className={primaryClass}><Plus size={15} />Create venture</button> : undefined;
+  // Rare actions live in a menu so the header keeps room for the venture's name.
+  const menu = role === "admin" || role === "venture_head" ? <Dropdown align="right" items={[
+    ...(canArchiveOpen && openVenture ? [{ label: `Archive ${openVenture.name}`, icon: Archive02Icon, onClick: () => setArchiving({ id: openVenture.id, name: openVenture.name }) }] : []),
+    { label: "Archived ventures", icon: ArchiveRestoreIcon, onClick: () => setShowArchived(true) },
+  ]} trigger={<button type="button" aria-label="More venture actions" title="More venture actions" className={clsx(secondaryClass, "!px-3")}><MoreHorizontal size={17} /></button>} /> : undefined;
+  const action = menu || createButton ? <HeaderActions>{menu}{createButton}</HeaderActions> : undefined;
   return <>
     {error && <div role="alert" className="vso-fade-enter mx-6 mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger-surface bg-white p-4 text-sm text-danger-text"><span>{error}</span><button type="button" onClick={() => { setError(""); setRevision((value) => value + 1); }} className={secondaryClass}>Try again</button></div>}
-    {missing ? <PageFrame><PageTitle title="Ventures" description="Goals, work, evidence, and decisions for each venture." action={action} /><Panel className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-neutral-600"><p role="alert">This venture is not available. It may have been removed, or you may not have access to it.</p><button type="button" onClick={() => router.replace("/ventures/live")} className={secondaryClass}>Back to ventures</button></Panel></PageFrame>
+    {missing ? <PageFrame><PageTitle title="Ventures" description="Goals, work, evidence, and decisions for each venture." action={action} /><Panel><div role="alert"><EmptyState variant="card" icon={Layers3} tone="green" title="This venture is not available" body="It may have been removed, or you may not have access to it." action={{ label: "Back to ventures", icon: ArrowLeft, onClick: () => router.replace("/ventures/live") }} /></div></Panel></PageFrame>
       : !data ? error ? null : <PageFrame><div role="status" aria-label="Loading venture spaces"><span className="vso-skeleton h-9 w-60" /><span className="vso-skeleton mt-2 h-4 w-96 max-w-full" /><span className="vso-skeleton mt-6 h-11 w-[520px] max-w-full rounded-xl" /><span className="vso-skeleton mt-4 h-40 rounded-2xl" /><div className="mt-4 grid gap-4 xl:grid-cols-3"><span className="vso-skeleton h-56 rounded-2xl xl:col-span-2" /><span className="vso-skeleton h-56 rounded-2xl" /></div></div></PageFrame>
-      : data.ventures.length ? <div aria-busy={loading || undefined} className={clsx("transition-opacity duration-200", loading && "pointer-events-none opacity-60")}><VenturesScreen snapshot={data} action={action} onSaveGoal={saveGoal} canEditGoal={canEditGoal} /></div>
-      : <PageFrame><PageTitle title="Ventures" description="Create the first venture space for your team." action={action} /><Panel className="p-6 text-sm text-neutral-500">No ventures have been created yet.</Panel></PageFrame>}
+      : data.ventures.length ? <div aria-busy={loading || undefined} className={clsx("transition-opacity duration-200", loading && "pointer-events-none opacity-60")}><VenturesScreen snapshot={data} action={createButton} menu={menu} onSaveGoal={saveGoal} canEditGoal={canEditGoal} /></div>
+      : <PageFrame><PageTitle title="Ventures" description={role === "admin" ? "Create the first venture space for your team." : "Goals, work, evidence, and decisions for each venture."} action={action} />{error ? null : role === "admin"
+        ? <EmptyState variant="page" icon={Layers3} tone="green" title="No ventures yet" body="Create the first venture space for your team. Its groups, tasks, and knowledge live inside it." action={{ label: "Create venture", icon: Plus, onClick: () => setCreating(true) }} />
+        : <EmptyState variant="page" icon={Layers3} tone="green" title="No ventures yet" body="Ask a workspace admin to add you to a venture. It will show up here." />}</PageFrame>}
     {archiving && <ArchiveVentureDrawer venture={archiving} onClose={() => setArchiving(null)} onArchived={() => {
       const archived = archiving; setArchiving(null); lifecycleChanged();
       toast({ title: `${archived.name} archived`, body: "It's hidden for everyone. Restore it from Archived.", action: { label: "Undo", onClick: () => { void restoreLiveVenture(archived.id).then(lifecycleChanged, () => toast({ tone: "error", title: "Could not restore", body: "Open Archived to try again." })); } } });

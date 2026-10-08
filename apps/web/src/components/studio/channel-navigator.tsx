@@ -2,7 +2,8 @@
 
 import { Select } from "@/components/ui/select";
 import { useSyncExternalStore } from "react";
-import { ChevronRight, Hash, Layers3, Plus } from "@/components/ui/icons";
+import { ChevronRight, Hash, Layers3, Plus, UserLock } from "@/components/ui/icons";
+import { EmptyState } from "@/components/ui/empty-state";
 import { getNotificationSnapshot, subscribeNotificationSnapshot } from "@/lib/notification-events";
 import clsx from "clsx";
 import { ChatAvatar, ChatNav } from "./chat-ui";
@@ -27,11 +28,28 @@ type Props = {
   onCreate: (kind: CreateKind, parent?: string) => void;
 };
 
+/** True for someone who cannot create spaces and sits in no group at all: there is nothing for them to choose. */
+export const lacksGroupAccess = (session: Session | null, canCreate: boolean) => !!session && !canCreate && !session.hierarchy.ventures.some((item) => item.groups.length > 0);
+
 export function ChannelNavigator(props: Props) {
   const { session, selectedVentureId, selectedGroupId, selectedChannelId, railExpanded, listOpen, realtime, canCreate, onVentureSelect, onGroupSelect, onChannelSelect, onToggleRail, onCreate } = props;
   const venture = session?.hierarchy.ventures.find((item) => item.id === selectedVentureId);
   const group = venture?.groups.find((item) => item.id === selectedGroupId);
   const channels = group?.channels ?? [];
+  const noAccess = lacksGroupAccess(session, canCreate);
+  const ventureCount = session?.hierarchy.ventures.length ?? 0;
+  // Nothing is selected: say why (no access, nothing created yet, or just pick one) instead of "Choose a venture".
+  const noGroupEmpty = !session || group ? null : noAccess
+    ? <EmptyState variant="card" tone="blue" icon={UserLock} title="You're not in a group yet" body="Ask a workspace admin to add you to a group to see its channels." />
+    : !venture
+      ? ventureCount === 0 && canCreate
+        ? <EmptyState variant="card" tone="teal" icon={Layers3} title="No ventures yet" body="Create a venture, then add a group to start conversations." action={{ label: "Create venture", icon: Plus, onClick: () => onCreate("venture") }} />
+        : <EmptyState variant="compact" icon={Layers3} title="Choose a venture" body="Pick one above." className="m-2" />
+      : venture.groups.length === 0
+        ? canCreate
+          ? <EmptyState variant="card" tone="teal" icon={Layers3} title="No groups in this venture yet" body={`Create a group to start conversations in ${venture.name}.`} action={{ label: "Create group", icon: Plus, onClick: () => onCreate("group", venture.id) }} />
+          : <EmptyState variant="card" tone="blue" icon={UserLock} title="No groups in this venture yet" body={`Ask a workspace admin to add you to a group in ${venture.name}.`} />
+        : <EmptyState variant="compact" icon={Layers3} title="Choose a group" body="Pick one from the rail." className="m-2" />;
   // Channel alerts are mentions-only; a dot marks channels with an unread mention for you.
   const snapshot = useSyncExternalStore(subscribeNotificationSnapshot, getNotificationSnapshot, () => null);
   const mentioned = new Set((snapshot ?? []).filter((item) => !item.readAt && item.chatKind === "channel" && item.chatId).map((item) => item.chatId!));
@@ -49,14 +67,15 @@ export function ChannelNavigator(props: Props) {
           <button type="button" aria-label={railExpanded ? "Collapse group rail" : "Expand group rail"} aria-expanded={railExpanded} onClick={onToggleRail} className="chat-icon !h-9 !w-9"><ChevronRight size={16} className={clsx("transition-transform duration-200", railExpanded && "rotate-180")} /></button>
         </div>
         {venture?.groups.map((item) => { const active = item.id === selectedGroupId; const short = item.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase(); return <button key={item.id} type="button" title={item.name} aria-label={`Open ${item.name} group`} aria-pressed={active} onClick={() => onGroupSelect(item.id)} className={clsx("mb-2 flex min-h-11 w-full items-center rounded-xl text-left transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)] active:scale-[0.97]", railExpanded ? "gap-2 px-1.5" : "justify-center", active ? "bg-[var(--color-primary-100)] text-[var(--color-primary-700)]" : "text-[var(--color-neutral-500)] hover:bg-white")}><span className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-[11px] text-[11px] font-semibold", active ? "bg-[var(--color-primary-600)] text-white" : "bg-white text-[var(--color-neutral-500)]")}>{short || <Layers3 size={17} />}</span>{railExpanded && <span className="min-w-0 truncate text-[11px] font-semibold">{item.name}</span>}</button>; })}
-        {venture && venture.groups.length === 0 && <p className="px-1 text-center text-[10px] leading-4 text-[var(--color-neutral-400)]">{railExpanded ? "No groups in this venture yet." : "No groups"}</p>}
+        {venture && venture.groups.length === 0 && <p className="px-1 text-center text-[10px] leading-4 text-[var(--color-neutral-400)]">{railExpanded ? noAccess ? "You're not in a group yet." : "No groups in this venture yet." : "No groups"}</p>}
         {canCreate && venture && <button type="button" onClick={() => onCreate("group", venture.id)} title={`Create group in ${venture.name}`} aria-label={`Create group in ${venture.name}`} className={clsx("mt-1 flex min-h-10 items-center rounded-xl text-[var(--color-primary-700)] hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)]", railExpanded ? "gap-2 px-2 text-[11px] font-semibold" : "justify-center")}><Plus size={17} />{railExpanded && <span>Create group</span>}</button>}
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex min-h-[58px] items-center justify-between gap-1 px-3 pt-2"><div className="min-w-0"><p className="text-[9px] font-bold uppercase tracking-[.08em] text-[var(--color-neutral-400)]">Channels</p><h1 className="truncate text-[13px] font-semibold text-[var(--color-neutral-800)]">{group?.name ?? (venture ? "Choose a group" : "Choose a venture")}</h1></div>{canCreate && group && <button type="button" aria-label={`Create channel in ${group.name}`} title={`Create channel in ${group.name}`} onClick={() => onCreate("channel", group.id)} className="chat-icon"><Plus size={17} /></button>}</div>
+        <div className="flex min-h-[58px] items-center justify-between gap-1 px-3 pt-2"><div className="min-w-0"><p className="text-[9px] font-bold uppercase tracking-[.08em] text-[var(--color-neutral-400)]">Channels</p><h1 className="truncate text-[13px] font-semibold text-[var(--color-neutral-800)]">{group?.name ?? (noAccess ? "Not in a group" : venture ? "Choose a group" : "Choose a venture")}</h1></div>{canCreate && group && <button type="button" aria-label={`Create channel in ${group.name}`} title={`Create channel in ${group.name}`} onClick={() => onCreate("channel", group.id)} className="chat-icon"><Plus size={17} /></button>}</div>
         <nav aria-label={group ? `Channels in ${group.name}` : "Channels"} className="thin-scroll min-h-0 flex-1 overflow-y-auto px-2 pb-4">
           {channels.map((channel) => <button key={channel.id} type="button" onClick={() => onChannelSelect(channel.id)} aria-pressed={channel.id === selectedChannelId} className={clsx("my-0.5 flex min-h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[11px] font-medium transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-600)] active:scale-[0.98]", selectedChannelId === channel.id ? "bg-[var(--color-primary-100)] font-semibold text-[var(--color-primary-700)]" : "text-[var(--color-neutral-600)] hover:bg-[var(--color-neutral-50)]")}><Hash size={14} className="shrink-0" /><span className="flex-1 truncate">{channel.name}</span>{mentioned.has(channel.id) && channel.id !== selectedChannelId && <span role="img" aria-label="Unread mention" title="You were mentioned" className="vso-badge-pop h-2 w-2 shrink-0 rounded-full bg-[var(--color-primary-600)]" />}</button>)}
-          {group && channels.length === 0 && <p className="px-2 py-5 text-[11px] leading-5 text-[var(--color-neutral-400)]">No channels in this group yet.</p>}
+          {group && channels.length === 0 && <EmptyState variant="compact" icon={Hash} title="No channels yet" body={canCreate ? undefined : "Ask a workspace admin to add one."} action={canCreate ? { label: "Create channel", onClick: () => onCreate("channel", group.id) } : undefined} className="m-1 mt-3" />}
+          {noGroupEmpty}
           {!session && <div role="status" aria-label="Loading channels" className="grid gap-2 px-2 py-2">{[70, 55, 62].map((width) => <span key={width} className="vso-skeleton h-8" style={{ width: `${width}%` }} />)}</div>}
         </nav>
       </div>

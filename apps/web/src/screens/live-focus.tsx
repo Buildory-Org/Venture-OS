@@ -3,17 +3,17 @@ import { describeError } from "@/lib/errors";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Database, Pause, Play, Square } from "@/components/ui/icons";
+import { Database, Pause, Play, Square, Timer } from "@/components/ui/icons";
 import clsx from "clsx";
-import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { EmptyState } from "@/components/ui/empty-state";
+import { FocusDial, formatDuration } from "@/components/studio/focus-dial";
 import { toast } from "@/components/ui/toast";
 import { completeLiveFocus, getCurrentLiveFocus, listLiveFocusHistory, pauseLiveFocus, resumeLiveFocus, startLiveFocus } from "@/lib/studio-api";
-import { ActionLabel, Badge, Empty, Notice, PageFrame, PageTitle, Panel, PanelHead, primaryClass, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
+import { ActionLabel, Badge, HeaderActions, Notice, PageFrame, PageTitle, Panel, PanelHead, primaryClass, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
 import { publishFocus } from "@/lib/focus-events";
 
 type Focus = Awaited<ReturnType<typeof getCurrentLiveFocus>>;
 type History = Awaited<ReturnType<typeof listLiveFocusHistory>>["items"][number];
-const PRESETS = [15, 25, 50, 90];
 const RING = 2 * Math.PI * 108;
 
 /** Decision 14B: the ring drains steadily (linear, one step per second) and turns green when the planned time is up. */
@@ -32,17 +32,18 @@ export function LiveFocusScreen() {
   const [history, setHistory] = useState<History[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [minutes, setMinutes] = useState(25);
-  const [custom, setCustom] = useState(false);
   const [freshId, setFreshId] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Only a failed load replaces the history list; a failed Start or Pause shows in the notice instead.
+  const [loadError, setLoadError] = useState("");
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     let active = true;
-    queueMicrotask(() => Promise.all([getCurrentLiveFocus(), listLiveFocusHistory()]).then(([value, page]) => { if (active) { setFocus(value); setHistory(page.items); setCursor(page.nextCursor); setLoading(false); setError(""); } }).catch((cause: unknown) => { if (active) { setError(describeError(cause, "Could not load the focus sessions.")); setLoading(false); } }));
+    queueMicrotask(() => Promise.all([getCurrentLiveFocus(), listLiveFocusHistory()]).then(([value, page]) => { if (active) { setFocus(value); setHistory(page.items); setCursor(page.nextCursor); setLoading(false); setError(""); setLoadError(""); } }).catch((cause: unknown) => { if (active) { setLoadError(describeError(cause, "Could not load the focus sessions.")); setLoading(false); } }));
     return () => { active = false; };
   }, [revision]);
   useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
@@ -80,10 +81,12 @@ export function LiveFocusScreen() {
   const fraction = focus ? Math.min(1, seconds / Math.max(1, focus.plannedMinutes * 60)) : 1;
   const canStart = !busy && minutes >= 1 && minutes <= 240;
   const start = () => { if (canStart) void act(() => startLiveFocus({ plannedMinutes: minutes })); };
-  return <PageFrame><PageTitle title="Focus session" description="Your active timer stays available after refresh or reconnect." action={<RefreshButton busy={loading} onClick={() => { setLoading(true); setRevision((value) => value + 1); }} />} />
+  const retry = () => { setLoading(true); setRevision((value) => value + 1); };
+  // One content width for the header, banner, and cards so they line up.
+  return <PageFrame><div className="mx-auto max-w-xl"><PageTitle title="Focus session" description="Your active timer stays available after refresh or reconnect." action={<HeaderActions><RefreshButton busy={loading} onClick={retry} /></HeaderActions>} />
     <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Database size={16} className="shrink-0" /><p>Focus time is saved to your workspace. <Link href="/tasks/live" className="font-bold underline">Open tasks</Link>.</p></div>
     <Notice tone="error" message={error} onDismiss={() => setError("")} className="pb-4" />
-    <Panel className="mx-auto max-w-xl p-6 text-center sm:p-8">{loading && !focus ? <div role="status" aria-label="Checking for an active session" className="grid justify-items-center gap-3 py-4"><span className="vso-skeleton h-[200px] w-[200px] rounded-full" /><span className="vso-skeleton h-4 w-48" /></div> : focus ? <div key="active" className="vso-fade-enter"><p className={clsx("text-xs font-semibold uppercase tracking-wide", paused ? "text-amber-700" : "text-primary-700")}>{paused ? "Paused" : seconds ? "Active focus session" : "Planned time is up"}</p>
+    <Panel className="p-6 text-center sm:p-8">{loading && !focus ? <div role="status" aria-label="Checking for an active session" className="grid justify-items-center gap-3 py-4"><span className="vso-skeleton h-[200px] w-[200px] rounded-full" /><span className="vso-skeleton h-4 w-48" /></div> : focus ? <div key="active" className="vso-fade-enter"><p className={clsx("text-xs font-semibold uppercase tracking-wide", paused ? "text-amber-700" : "text-primary-700")}>{paused ? "Paused" : seconds ? "Active focus session" : "Planned time is up"}</p>
       <FocusRing fraction={fraction} done={!seconds}><p className="font-mono text-[clamp(2.75rem,10vw,3.75rem)] font-extrabold leading-none tracking-tight text-neutral-900 tnum" role="timer" aria-live="off">{clock}</p><p className="mt-2 text-xs font-semibold text-neutral-400">of {focus.plannedMinutes} min</p></FocusRing>
       <p className="mt-4 text-sm leading-6 text-neutral-500">Started {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(focus.startedAt))}{paused ? " · The clock waits until you resume." : seconds === 0 ? " · Complete it when you finish." : ""}</p>
       <div className="mt-6 flex flex-wrap justify-center gap-2">
@@ -92,9 +95,9 @@ export function LiveFocusScreen() {
         <button type="button" disabled={busy} onClick={() => act(() => completeLiveFocus(focus.id))} className={paused ? secondaryClass : primaryClass}><Square size={14} /><ActionLabel busy={busy} busyText="Saving…" idle="Complete session" /></button>
       </div></div>
       : <div key="ready" className="vso-fade-enter"><p className="text-xs font-semibold uppercase tracking-wide text-primary-700">Ready to focus</p><h2 className="mt-2 text-xl font-bold text-neutral-900">Start a focused work block</h2><p className="mt-2 text-sm leading-6 text-neutral-500">Your start and end times are saved. Refreshing this page will not reset the session.</p>
-        <div className="mt-5 flex justify-center"><SlidingTabs fitContent label="Planned minutes" active={custom ? "custom" : String(minutes)} onChange={(key) => { if (key === "custom") { setCustom(true); return; } setCustom(false); setMinutes(Number(key)); }} tabs={[...PRESETS.map((value) => ({ key: String(value), label: `${value} min` })), { key: "custom", label: "Custom" }]} /></div>
-        <div data-open={custom} className="vso-collapse"><div><label className="mx-auto mt-4 flex max-w-48 flex-col text-left text-xs font-semibold text-neutral-600">Planned minutes<input type="number" min={1} max={240} tabIndex={custom ? 0 : -1} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); start(); } }} className="mt-1 min-h-11 rounded-xl border border-neutral-200 bg-white px-3 text-sm text-neutral-800 outline-none transition-[border-color,box-shadow] duration-150 focus:border-primary-400 focus:ring-2 focus:ring-primary-100" /></label></div></div>
-        <button type="button" disabled={!canStart} onClick={start} className={clsx(primaryClass, "mt-5")}><Play size={15} /><ActionLabel busy={busy} busyText="Starting…" idle={`Start ${minutes > 0 ? `${minutes} min ` : ""}session`} /></button></div>}</Panel>
-    <Panel className="mx-auto mt-4 max-w-xl"><PanelHead title="Completed sessions" aside={<Badge tone="blue">{history.length}{cursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{loading && !history.length ? <SkeletonRows rows={2} label="Loading completed sessions" /> : history.length ? history.map((item) => <article key={item.id} className={clsx("flex items-center justify-between gap-3 p-4", item.id === freshId && "vso-row-enter")}><div><p className="text-sm font-semibold text-neutral-800">{item.plannedMinutes} minute focus block</p><p className="mt-1 text-xs text-neutral-500">Started {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.startedAt))}</p></div><Badge tone="green">Completed</Badge></article>) : <Empty title="No completed sessions" body="Your completed focus blocks will appear here." />}</div>{cursor && <div className="p-4 text-center"><button type="button" disabled={busy} onClick={moreHistory} className={secondaryClass}>Load more sessions</button></div>}</Panel>
-  </PageFrame>;
+        <div className="mt-6"><FocusDial value={minutes} onChange={setMinutes} now={now} disabled={busy} /></div>
+        <p className="mt-3 text-xs text-neutral-500">Outer ring: minutes. Inner ring: hours. Arrow keys work too.</p>
+        <button type="button" disabled={!canStart} onClick={start} className={clsx(primaryClass, "mt-5")}><Play size={15} /><ActionLabel busy={busy} busyText="Starting…" idle={minutes > 0 ? `Start ${formatDuration(minutes)} session` : "Pick a duration"} /></button></div>}</Panel>
+    <Panel className="mt-4"><PanelHead title="Completed sessions" aside={<Badge tone="blue">{history.length}{cursor ? "+" : ""}</Badge>} /><div className="divide-y divide-neutral-100">{loading && !history.length ? <SkeletonRows rows={2} label="Loading completed sessions" /> : history.length ? history.map((item) => <article key={item.id} className={clsx("flex items-center justify-between gap-3 p-4", item.id === freshId && "vso-row-enter")}><div><p className="text-sm font-semibold text-neutral-800">{item.plannedMinutes} minute focus block</p><p className="mt-1 text-xs text-neutral-500">Started {new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.startedAt))}</p></div><Badge tone="green">Completed</Badge></article>) : loadError ? <EmptyState variant="error" title="Couldn't load your sessions" body={loadError} action={{ label: "Try again", onClick: retry }} /> : <EmptyState variant="card" icon={Timer} tone="amber" title="No focus sessions yet" body="Finished focus blocks and their minutes are listed here." />}</div>{cursor && <div className="p-4 text-center"><button type="button" disabled={busy} onClick={moreHistory} className={secondaryClass}>Load more sessions</button></div>}</Panel>
+  </div></PageFrame>;
 }

@@ -75,6 +75,16 @@ import {
   Volume2 as Volume2Svg,
   VolumeX as VolumeXSvg,
   X as XSvg,
+  SearchRemoveIcon,
+  FilterRemoveIcon,
+  CursorPointer01Icon,
+  InboxIcon,
+  Timer01Icon,
+  CheckmarkCircle02Icon,
+  GridViewIcon,
+  KanbanIcon,
+  Upload01Icon,
+  UserLock01Icon,
 } from "@hugeicons/core-free-icons";
 
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -165,3 +175,13 @@ export const Users = icon(UsersSvg);
 export const Volume2 = icon(Volume2Svg);
 export const VolumeX = icon(VolumeXSvg);
 export const X = icon(XSvg);
+export const SearchX = icon(SearchRemoveIcon);
+export const FilterX = icon(FilterRemoveIcon);
+export const PointerClick = icon(CursorPointer01Icon);
+export const Inbox = icon(InboxIcon);
+export const Timer = icon(Timer01Icon);
+export const CircleCheck = icon(CheckmarkCircle02Icon);
+export const LayoutGrid = icon(GridViewIcon);
+export const Kanban = icon(KanbanIcon);
+export const Upload = icon(Upload01Icon);
+export const UserLock = icon(UserLock01Icon);

@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Hash, MessageCircle, PanelLeftClose, PanelLeftOpen, Search, X } from "@/components/ui/icons";
+import { Hash, MessageCircle, PanelLeftClose, PanelLeftOpen, Search, X, type Icon } from "@/components/ui/icons";
+import { EmptyState, type EmptyAction, type EmptyTone } from "@/components/ui/empty-state";
 import { ChatSoundToggle } from "@/components/studio/chat-message-effects";
 import clsx from "clsx";
 import type { ReactNode } from "react";
@@ -45,8 +46,9 @@ export function ChatSearch({ value, onChange, placeholder }: { value: string; on
   return <label className="flex h-10 items-center gap-2 rounded-lg bg-[var(--color-neutral-100)] px-3 text-[var(--color-neutral-400)] transition-[background-color,box-shadow] duration-150 focus-within:bg-white focus-within:ring-2 focus-within:ring-[var(--color-primary-200)]"><Search size={15} /><span className="sr-only">{placeholder}</span><input ref={input} className="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--color-neutral-900)] outline-none placeholder:text-[var(--color-neutral-400)]" value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && value) { event.preventDefault(); event.stopPropagation(); onChange(""); } }} placeholder={placeholder} />{value && <button type="button" aria-label="Clear search" onClick={() => { onChange(""); input.current?.focus(); }} className="vso-fade-enter -mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-neutral-200)] hover:text-[var(--color-neutral-600)]"><X size={13} /></button>}</label>;
 }
 
-export function ChatEmpty({ title, detail }: { title: string; detail: string }) {
-  return <div className="vso-fade-enter flex h-full min-h-48 flex-col items-center justify-center px-6 text-center"><div className="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-[var(--color-primary-100)] text-[var(--color-primary-600)]"><MessageCircle size={23} /></div><p className="text-sm font-semibold text-[var(--color-neutral-800)]">{title}</p><p className="mt-1 max-w-xs text-xs leading-5 text-[var(--color-neutral-400)]">{detail}</p></div>;
+/** Empty message area: the kit's card empty (gradient tile over a soft dither), centred in the thread. */
+export function ChatEmpty({ title, detail, icon = MessageCircle, tone = "teal", action, className }: { title: string; detail: string; icon?: Icon; tone?: EmptyTone; action?: EmptyAction; className?: string }) {
+  return <EmptyState variant="card" icon={icon} tone={tone} title={title} body={detail} action={action} className={clsx("h-full", className)} />;
 }
 
 export function ChatCredit() {

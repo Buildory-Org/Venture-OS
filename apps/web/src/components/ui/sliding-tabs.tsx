@@ -51,6 +51,9 @@ export function SlidingTabs({
       indicator.style.height = `${target.height}px`;
       indicator.style.transform = `translate3d(${target.left - parent.left + list.scrollLeft}px, ${target.top - parent.top + list.scrollTop}px, 0)`;
       list.dataset.ready = "true";
+      // Fade the edge that has more tabs past it, so a clipped label reads as "scroll for more".
+      const before = list.scrollLeft > 4; const after = list.scrollLeft + list.clientWidth < list.scrollWidth - 4;
+      list.dataset.fade = before && after ? "both" : before ? "left" : after ? "right" : "none";
       // Keep the active tab visible in a scrolling tab bar (phones).
       if (list.scrollWidth > list.clientWidth) {
         const left = target.left - parent.left + list.scrollLeft;

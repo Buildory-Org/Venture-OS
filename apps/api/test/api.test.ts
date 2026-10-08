@@ -813,6 +813,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
       assert.equal(sentPayload?.from, "Studio <invites@example.com>");
       const emailedLink = String(sentPayload?.text).match(/https?:\/\/\S+\/invite\/live\?token=\S+/)?.[0];
       assert.ok(emailedLink);
+      // The designed email: who invited them, the access, HTML + plain text, and the inline (cid:) artwork it references.
+      assert.match(String(sentPayload?.subject), /invited you to /);
+      assert.match(String(sentPayload?.html), /You're invited to<br>Allowed/);
+      assert.match(String(sentPayload?.html), /<title>You&#39;re invited to Allowed<\/title>/);
+      assert.match(String(sentPayload?.text), /Role: Contributor/);
+      const attachments = sentPayload?.attachments as { content_id: string; content: string }[];
+      assert.deepEqual(attachments.map((item) => item.content_id).sort(), ["vso-button", "vso-hero", "vso-logo"]);
+      for (const item of attachments) assert.ok(String(sentPayload?.html).includes(`cid:${item.content_id}`) && item.content.length > 100);
       const emailedToken = new URL(emailedLink).searchParams.get("token");
       assert.ok(emailedToken);
       assert.equal(sentIdempotencyKey, `invitation/${emailedData.invitation.id}`);
@@ -972,6 +980,8 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(await database.db.collection("invitations").countDocuments({ tokenHash: createHash("sha256").update(invitationToken).digest("hex"), status: "accepted", "delivery.status": "unconfirmed" }), 1);
     assert.equal(await database.db.collection("invitations").countDocuments({ _id: manualInviteData.invitation.id, status: "superseded" }), 1);
     assert.equal((await database.db.collection("memberships").findOne({ userId: verifiedUser.id }))?.status, "active");
+    // The admin who sent the invitation hears that it was accepted, once.
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ userId: "user-admin", type: "member_joined", resourceType: "member", resourceId: verifiedUser.id }), 1);
     assert.match(String((await database.db.collection("users").findOne({ _id: verifiedUser.id }))?.handle), /^invited-user-[a-f0-9]{8}$/);
     assert.equal((await fetch(`${origin}/v1/invitations/accept`, { method: "POST", headers: sessionHeaders, body: JSON.stringify({ token: invitationToken }) })).status, 404);
     assert.equal((await fetch(`${origin}/v1/invitations/accept`, { method: "POST", headers: sessionHeaders, body: JSON.stringify({ token: wrongRecipientToken }) })).status, 404);

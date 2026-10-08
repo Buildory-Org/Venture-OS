@@ -18,6 +18,11 @@ export class Delivery {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.scopeSkippedAt": new Date() } });
       return;
     }
+    // "Someone accepted your invitation" only goes to an inviter who is still a workspace admin.
+    if (item.type === "member_joined" && !(await this.db.collection("memberships").findOne({ workspaceId: item.workspaceId, userId: item.userId, status: "active", role: "admin" }))) {
+      await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.scopeSkippedAt": new Date() } });
+      return;
+    }
     const channelId = item.chatKind === "channel" ? item.chatId : legacyMessage?.channelId;
     if (channelId) {
       const channel = await this.db.collection("channels").findOne({ _id: channelId, workspaceId: item.workspaceId });
@@ -29,8 +34,9 @@ export class Delivery {
     }
     const storedPreferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId });
     const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, ...storedPreferences };
-    const category = item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
-    if (preferences[category] === false) {
+    // "Someone accepted your invitation" has no preference switch of its own, so it always arrives in the inbox.
+    const category = item.type === "member_joined" ? null : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
+    if (category && preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
       return;
     }

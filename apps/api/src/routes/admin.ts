@@ -24,13 +24,15 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const actor = req.actor!;
     if (actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may invite members");
     const input = inviteSchema.parse(req.body);
-    const ventures = await db.collection("ventures").countDocuments({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId, status: { $ne: "archived" } });
-    if (ventures !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace and not be archived");
+    const ventureDocs = await db.collection("ventures").find({ _id: { $in: input.ventureIds }, workspaceId: actor.membership.workspaceId, status: { $ne: "archived" } }, { projection: { name: 1 } }).toArray();
+    if (ventureDocs.length !== input.ventureIds.length) throw new AppError(400, "BAD_REQUEST", "Every invited venture must exist in this workspace and not be archived");
     const groups = await db.collection("groups").find({ _id: { $in: input.groupIds }, workspaceId: actor.membership.workspaceId }).toArray();
     if (groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Every invited group must belong to an invited venture");
     const email = input.email.toLowerCase();
     const currentUser = await db.collection("users").findOne({ workspaceId: actor.membership.workspaceId, email, status: "active" });
     if (currentUser && await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: currentUser._id, status: "active" })) throw new AppError(409, "CONFLICT", "This person is already a workspace member; use membership management instead");
+    // Looked up before the invitation is saved, so a failure here leaves nothing half-sent.
+    const workspace = await db.collection("workspaces").findOne({ _id: actor.membership.workspaceId }, { projection: { name: 1 } });
     const token = randomBytes(32).toString("base64url");
     const manual = !config.RESEND_API_KEY;
     const invite = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...input, email, tokenHash: createHash("sha256").update(token).digest("hex"), status: "pending", delivery: { mode: manual ? "manual" : "email", status: manual ? "not_sent" : "sending" }, invitedBy: actor.id, expiresAt: new Date(Date.now() + 7 * 86_400_000), createdAt: new Date() };
@@ -47,7 +49,10 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     const link = new URL("/invite/live", config.APP_ORIGIN);
     link.searchParams.set("token", token);
     let providerId: string;
-    try { providerId = await sendInvitationEmail(config, email, link.toString(), invite._id); }
+    // The email names who invited them and exactly what they get, in the order the admin picked.
+    const ventureName = (id: unknown) => String(ventureDocs.find((venture) => venture._id === id)?.name ?? "Venture");
+    const details = { inviterName: actor.name || actor.email, workspaceName: String(workspace?.name ?? "Venture Studio"), role: input.role, ventures: input.ventureIds.map(ventureName), groups: groups.map((group) => `${ventureName(group.ventureId)} · ${String(group.name)}`), url: link.toString(), expiresAt: invite.expiresAt };
+    try { providerId = await sendInvitationEmail(config, email, invite._id, details); }
     catch {
       // A timeout is ambiguous: Resend may have delivered the message. Keep its link usable.
       await db.collection("invitations").updateOne({ _id: invite._id, status: "pending" }, { $set: { "delivery.status": "unconfirmed", updatedAt: new Date() } });
@@ -208,6 +213,15 @@ export function invitationAcceptanceRoutes(database: Database): Router {
       const accepted = await db.collection("invitations").updateOne({ _id: invite._id, status: "accepting" }, { $set: { status: "accepted", acceptedAt: now, acceptedBy: identity.id } }, { session });
       if (!accepted.matchedCount) throw new AppError(409, "CONFLICT", "Invitation was already claimed");
       await db.collection("invitations").updateMany({ workspaceId: invite.workspaceId, email: invite.email, status: "pending", _id: { $ne: invite._id } }, { $set: { status: "superseded", updatedAt: now } }, { session });
+      // Let whoever sent the invitation know it was accepted (in-app, plus push or email per their preferences).
+      if (invite.invitedBy && invite.invitedBy !== identity.id) {
+        const joined = await db.collection("ventures").find({ _id: { $in: invite.ventureIds }, workspaceId: invite.workspaceId }, { projection: { name: 1 }, session }).toArray();
+        const where = joined.map((venture) => String(venture.name)).join(", ");
+        const role = String(invite.role).replaceAll("_", " ");
+        // The name is chosen by the new member, so keep it short and free of control characters.
+        const who = (identity.name || identity.email).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 80);
+        await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: invite.workspaceId, userId: invite.invitedBy, type: "member_joined", title: `${who} accepted your invitation`, body: where ? `They joined as a ${role} on ${where}.` : `They joined as a ${role}.`, resourceType: "member", resourceId: identity.id, idempotencyKey: `invitation:${invite._id}:accepted`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
+      }
       await audit(db, { workspaceId: String(invite.workspaceId), actorId: identity.id, channel: "api", action: "invitation.accept", objectType: "invitation", objectId: String(invite._id), result: "success" }, session);
     });
     res.json({ ok: true, data: { accepted: true } });

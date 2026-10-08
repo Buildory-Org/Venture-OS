@@ -54,7 +54,7 @@ export const notificationSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
   userId: idSchema,
-  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message"]),
+  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "member_joined"]),
   title: z.string(),
   body: z.string(),
   resourceType: z.string(),

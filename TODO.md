@@ -251,6 +251,12 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Focus:** start uses a two-ring dial (minutes outer, hours inner, max 4 h). It snaps to detents, carries across 12 o'clock, vibrates where supported, and works from the keyboard.
   - **Connect Claude:** the token is readable in dark mode with a copy fallback, and the page is one flow (empty state, create dialog, key cards, setup guide drawer).
   - **Verified:** web typecheck and lint; screenshots of every screen in light and dark at desktop and phone with no overflow or console errors; an independent code review whose findings were fixed; the owner reviewed the screens.
+- [x] Designed invitation and sign-in emails (2026-10-08), the owner-chosen "dither hero" direction.
+  - **Templates:** email-safe HTML (tables and inline styles) plus a plain-text part, in `apps/api/src/email/templates.ts`. Cabinet Grotesk headings where clients load web fonts, otherwise Plus Jakarta Sans or Helvetica.
+  - **Artwork:** a dithered banner, a fully rounded and centred dither button, and the Venture Studio OS logo in the header and the brand footer. All embedded inline (`cid:`, about 14 KB) so emails render even when the site is down; regenerate with `apps/api/scripts/email-art.mjs`.
+  - **Invitation content:** the inviter, role, ventures, groups, a fallback link, the real expiry date, and "wrong address?" guidance. Subject: "<first name> invited you to <workspace>". The sign-in link email matches it, with an explicit 5-minute expiry.
+  - **Accepted invitations:** the inviter gets a `member_joined` notification (in-app, plus push or email per their preferences). It is created in the accept transaction and delivered only while they are still an admin.
+  - **Verified:** the API test asserts the subject, HTML, plain text, inline images, and the single notification. Backend smoke (core 4/4, API 12/12, worker 4/4); typechecks; web lint; an independent review whose findings were fixed; previews at desktop and phone width.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

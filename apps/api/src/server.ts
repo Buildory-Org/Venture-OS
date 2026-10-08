@@ -7,6 +7,8 @@ import { ensureIndexes } from "./indexes.js";
 import { createAuth } from "./auth.js";
 import { createObjectStore } from "./storage.js";
 import { createApp } from "./app.js";
+import { backfillFileTexts } from "./file-text.js";
+import { fileStoreFor } from "./routes/files.js";
 import { attachRealtime } from "./collaboration.js";
 
 const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
@@ -16,13 +18,15 @@ const database = await connectDatabase(config);
 await ensureIndexes(database.db);
 const auth = createAuth(database.native, config);
 const store = createObjectStore(config);
-const { app, resolveActor } = createApp(database, config, auth, store);
+const { app, resolveActor, localStore } = createApp(database, config, auth, store);
 const server = createServer(app);
 // The web proxy reuses idle keep-alive sockets; the default 5s server keep-alive can close one first, surfacing as ECONNRESET/HTTP 500.
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 66_000;
 attachRealtime(server, database, resolveActor, config.APP_ORIGIN, config.APP_MODE === "local" && config.ALLOW_DEV_AUTH);
 server.listen(config.PORT, () => console.info(JSON.stringify({ level: "info", event: "api.started", port: config.PORT, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind })));
+// Files uploaded before their text was read (or while reading was busy) are read once in the background after startup.
+setTimeout(() => void backfillFileTexts(database.db, (file) => fileStoreFor(file, store, localStore)).then((read) => { if (read) console.info(JSON.stringify({ level: "info", event: "file_text.backfill", read })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "file_text.backfill_failed", message: error instanceof Error ? error.message : String(error) }))), 5_000).unref();
 async function shutdown() { server.close(); await database.client.close(); }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

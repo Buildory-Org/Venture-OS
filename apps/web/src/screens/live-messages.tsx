@@ -10,7 +10,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { Message } from "@venture-studio/contracts";
 import { listLiveDirectMessages, listLiveMembers, loadLiveSession, sendLiveDirectMessage, updateLiveMessageReaction, updateLiveMessageSave } from "@/lib/studio-api";
 import { ChatMessageMenu } from "@/components/studio/chat-message-menu";
-import { autosize, continuesGroup, DaySeparator, isComposing, jumpToMessage, MessageText, NewMessagesPill, PendingStatus, QuickReactionBar, ReactionChips, startsNewDay, timeLabel, toggledReaction, useChatScroll, type PendingMessage } from "@/components/studio/chat-thread";
+import { autosize, continuesGroup, DaySeparator, ViaClaude, isComposing, jumpToMessage, MessageText, NewMessagesPill, PendingStatus, QuickReactionBar, ReactionChips, startsNewDay, timeLabel, toggledReaction, useChatScroll, type PendingMessage } from "@/components/studio/chat-thread";
 import { Notice } from "@/components/studio/primitives";
 import { toast } from "@/components/ui/toast";
 import { ChatAvatar, ChatCredit, ChatEmpty, ChatNav, ChatSearch, ChatShell } from "@/components/studio/chat-ui";
@@ -208,7 +208,7 @@ export function LiveMessagesScreen() {
         <span className={clsx("shrink-0", grouped ? "w-[25px]" : "mt-5")}>{!grouped && <ChatAvatar id={item.authorId} name={author} size={25} />}</span>
         <div className={clsx("relative max-w-[min(75%,560px)]", mine && "text-right")}>
           {canPost && <QuickReactionBar mine={mine} onReact={(emoji) => void react(item, emoji)} onReply={() => startReply(item)} />}
-          {!grouped && <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : other.name}</span><time dateTime={item.createdAt} className="text-[var(--color-neutral-400)]">{timeLabel(item.createdAt)}</time>{item.savedByMe && <span className="vso-fade-enter inline-flex items-center gap-0.5 text-[var(--color-neutral-500)]"><Bookmark size={11} aria-hidden="true" />Saved</span>}</div>}
+          {!grouped && <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : other.name}</span>{item.via === "claude" && <ViaClaude />}<time dateTime={item.createdAt} className="text-[var(--color-neutral-400)]">{timeLabel(item.createdAt)}</time>{item.savedByMe && <span className="vso-fade-enter inline-flex items-center gap-0.5 text-[var(--color-neutral-500)]"><Bookmark size={11} aria-hidden="true" />Saved</span>}</div>}
           {item.threadRootId && <button type="button" onClick={() => { if (!jumpToMessage(listRef.current, item.threadRootId!)) toast({ tone: "info", title: "That message is further back" }); }} title="Show the original message" className={clsx("mb-1 block max-w-full truncate border-l-2 border-[var(--color-primary-300)] px-2 text-left text-[10px] text-[var(--color-neutral-500)] transition-colors duration-150 hover:text-[var(--color-primary-700)]", mine && "ml-auto border-l-0 border-r-2 text-right")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : other.name}: ${threadRoot.body.slice(0, 80) || "an attachment"}` : "an earlier message"}</button>}
           <ChatMessageMenu actions={actions} label={`Actions for message from ${mine ? "you" : other.name}`}>
             {item.body && <MessageText body={item.body} mine={mine} className={bubbleClass(mine)} />}

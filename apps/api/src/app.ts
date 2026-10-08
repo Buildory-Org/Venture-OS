@@ -63,5 +63,5 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", searchRoutes(database.db));
   app.use((_req, res) => res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Route not found", requestId: res.getHeader("x-request-id") } }));
   app.use(createErrorHandler(database.db));
-  return { app, resolveActor };
+  return { app, resolveActor, localStore };
 }

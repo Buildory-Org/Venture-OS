@@ -12,7 +12,7 @@ import { useExitTransition } from "@/lib/motion";
 
 type UploadSession = { membership: { role: string; ventureIds: string[] }; hierarchy: { ventures: Array<{ id: string; name: string }> } };
 type UploadItem = { id: string; file: File; status: "queued" | "reading" | "uploading" | "finalizing" | "done" | "failed"; progress: number; error?: string };
-const supported = ".pdf,.md,.txt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm,.mp3,.m4a,.ogg,.wav";
+const supported = ".pdf,.docx,.md,.txt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm,.mp3,.m4a,.ogg,.wav";
 
 export function KnowledgeUploadDialog({ mode, session, activeVentureId, initialFiles, onClose, onComplete, onMarkdown, onFile, demo = false }: {
   mode: "markdown" | "file";

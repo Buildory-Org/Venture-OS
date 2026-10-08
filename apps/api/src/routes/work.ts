@@ -148,7 +148,7 @@ export function workRoutes(database: Database): Router {
     if (task.assigneeId !== actor.id && !lead) throw new AppError(403, "FORBIDDEN", "Only the assignee or a venture lead may submit evidence for this task");
     const input = createEvidenceSchema.parse(req.body);
     // Omit an absent URI: the driver would persist `undefined` as null, which the published contract rejects.
-    const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: input.type, title: input.title, ...(input.uri ? { uri: input.uri } : {}), description: input.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending" };
+    const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: input.type, title: input.title, ...(input.uri ? { uri: input.uri } : {}), description: input.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending", ...(req.interfaceChannel === "mcp" ? { via: "claude" } : {}) };
     await atomic(database, async (session) => {
       await db.collection("evidence_items").insertOne(evidence, { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.evidence.add", objectType: "task", objectId: id, ventureId: String(task.ventureId), result: "success" }, session);
@@ -161,7 +161,7 @@ export function workRoutes(database: Database): Router {
     const actor = req.actor!;
     await accessibleTask(db, actor, id);
     const { body } = z.object({ body: z.string().trim().min(1).max(5_000) }).parse(req.body);
-    const comment = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: "comment", body, createdAt: new Date() };
+    const comment = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: "comment", body, ...(req.interfaceChannel === "mcp" ? { via: "claude" } : {}), createdAt: new Date() };
     await db.collection("task_updates").insertOne(comment);
     res.status(201).json({ ok: true, data: jsonValue(comment) });
   });
@@ -177,6 +177,8 @@ export function workRoutes(database: Database): Router {
     if (!elevated) throw new AppError(403, "FORBIDDEN", "Only the assigned reviewer or venture lead may review evidence");
     if (evidence.submittedBy === actor.id && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "You cannot review evidence you submitted; ask the assigned reviewer or a venture lead");
     if (task.assigneeId === actor.id && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "You cannot review evidence for your own task; ask the assigned reviewer or another venture lead");
+    // A Claude connection never reviews its owner's own work, admins included: a person makes that call in the app.
+    if (req.interfaceChannel === "mcp" && (evidence.submittedBy === actor.id || task.assigneeId === actor.id)) throw new AppError(403, "FORBIDDEN", "Claude can't review evidence you submitted or that is on your own task; review it yourself in the app");
     await db.collection("evidence_items").updateOne({ _id: id }, { $set: { reviewStatus: status, reviewedBy: actor.id, reviewedAt: new Date() } });
     const reviewed = await db.collection("evidence_items").findOne({ _id: id });
     res.json({ ok: true, data: reviewed ? jsonValue(omitNullFields(reviewed, ["uri"])) : null });

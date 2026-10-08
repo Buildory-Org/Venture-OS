@@ -18,7 +18,10 @@ import { attachRealtime, isLocalDevOrigin } from "../src/collaboration.js";
 import { backfillMissingHandles } from "../src/handles.js";
 import { backfillStringDates } from "../src/date-backfill.js";
 import { internalHeaders } from "../src/internal-auth.js";
-import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema, taskUpdateSchema } from "@venture-studio/contracts";
+import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema, PAT_DIRECT_MESSAGE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES, taskUpdateSchema } from "@venture-studio/contracts";
+import { readFileSync } from "node:fs";
+import { makePdf, makeZip } from "./fixtures.js";
+import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
 import type { Request, Response } from "express";
 
 /** One JSON-RPC call to the hosted MCP endpoint, as Claude Code would send it. */
@@ -2063,7 +2066,10 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     assert.ok(listed.every((item: any) => item.tokenHash === undefined && item.prefix && item.expiresAt));
     const tools = (token: string) => mcpCall(origin, token, "tools/list").then((response) => response.body.result.tools.map((item: any) => item.name).sort());
     assert.deepEqual(await tools(readOnly.token), ["get_task", "list_tasks", "my_plate"]);
-    assert.equal((await tools(member.token)).length, 17);
+    // The 17 original tools, plus the batch-one tools these same scopes unlock (ventures, knowledge, and tasks).
+    const memberTools = await tools(member.token);
+    assert.equal(memberTools.length, 22);
+    for (const name of ["find_person", "list_documents", "create_task", "update_task", "review_evidence"]) assert.ok(memberTools.includes(name), name);
     const listedTool = (await mcpCall(origin, member.token, "tools/list")).body.result.tools.find((item: any) => item.name === "my_plate");
     assert.equal(listedTool.annotations.readOnlyHint, true);
     assert.ok((await mcpCall(origin, member.token, "prompts/list")).body.result.prompts.some((item: any) => item.name === "today"));
@@ -2075,7 +2081,8 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     const knowledgeOnly = await tokenFor("member", ["knowledge:read"]);
     assert.equal((await mcpTool(origin, knowledgeOnly.token, "search", { query: "task-today", types: ["task", "message"] })).isError, true);
     const venturesOnly = await tokenFor("member", ["ventures:read"]);
-    assert.deepEqual(await tools(venturesOnly.token), ["list_ventures"]);
+    // The member directory (names, @handles, roles) comes with ventures:read, as it does in the app.
+    assert.deepEqual(await tools(venturesOnly.token), ["find_person", "list_ventures"]);
     const noDecisions = await tokenFor("member", ["ventures:read", "tasks:read"]);
     const statusWithoutDecisions = await mcpTool(origin, noDecisions.token, "venture_status", { ventureId: "venture-a" });
     assert.equal(statusWithoutDecisions.data.decisions, undefined, statusWithoutDecisions.text);
@@ -2273,4 +2280,261 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
       await switchedDb.client.close();
     }
   }
+});
+
+test("hosted MCP batch 1: knowledge drafts, file reading and uploads, tasks, reviews, messages, decisions, requests, sales, and classes", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_mcp_batch1`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  const hours = (value: number) => new Date(Date.now() + value * 3_600_000);
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  const people = [["lead", "venture_head", ["venture-a"], ["group-a"]], ["member", "contributor", ["venture-a"], ["group-a"]], ["outsider", "contributor", ["venture-b"], ["group-b"]], ["boss", "admin", [], []]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], status: "active", createdAt: now, updatedAt: now })));
+  for (const key of ["a", "b"]) {
+    await db.collection("ventures").insertOne({ _id: `venture-${key}`, workspaceId: "workspace-a", name: key === "a" ? "Alpha" : "Beta", status: "active", goal30Day: "", createdAt: now });
+    await db.collection("groups").insertOne({ _id: `group-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, name: "Core", createdAt: now });
+    await db.collection("channels").insertOne({ _id: `channel-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, name: "general", createdAt: now });
+  }
+  await db.collection("tasks").insertOne({ _id: "task-boss", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: "Boss task", outcome: "o", assigneeId: "user-boss", reviewerId: "user-lead", priority: "medium", status: "in_progress", dueAt: hours(30), reviewAt: hours(31), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", tags: [], dependencies: [], evidenceLinks: [], createdBy: "user-lead", createdAt: now, updatedAt: now });
+  await db.collection("tasks").insertOne({ _id: "task-ev", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: "Write the pitch", outcome: "o", assigneeId: "user-member", reviewerId: "user-lead", priority: "medium", status: "in_progress", dueAt: hours(30), reviewAt: hours(31), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", tags: [], dependencies: [], evidenceLinks: [], createdBy: "user-lead", createdAt: now, updatedAt: now });
+  await db.collection("pipelines").insertOne({ _id: "pipeline-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Agencies", offerName: "Website build", status: "active", createdAt: now, updatedAt: now });
+  await db.collection("classes").insertOne({ _id: "class-a", workspaceId: "workspace-a", ventureId: "venture-a", title: "Discovery calls", objective: "Run better calls", scheduledAt: hours(24), durationMinutes: 60, facilitatorId: "user-lead", participantIds: ["user-member"], status: "scheduled", createdAt: now, updatedAt: now });
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const api = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const tokenFor = async (handle: string, scopes: readonly string[]) => {
+    const response = await api("POST", "/pats", handle, { name: `${handle} laptop`, scopes, expiresInDays: 30 });
+    assert.equal(response.status, 201, await response.clone().text());
+    return ((await response.json()) as any).data.token as string;
+  };
+  const FULL = [...PAT_READ_SCOPES, ...PAT_WRITE_SCOPES];
+  const ok = async (token: string, name: string, args: Record<string, unknown> = {}) => {
+    const result = await mcpTool(origin, token, name, args);
+    assert.equal(result.isError, false, `${name}: ${result.text}`);
+    return result.data;
+  };
+  const refused = async (token: string, name: string, args: Record<string, unknown>, pattern: RegExp) => {
+    const result = await mcpTool(origin, token, name, args);
+    assert.equal(result.isError, true, `${name} should be refused: ${result.text}`);
+    assert.match(String(result.text), pattern);
+  };
+  // The local store signs URLs for API_ORIGIN; send the bytes to this test server instead.
+  const putUpload = async (uploadUrl: string, contentType: string, bytes: Buffer) => {
+    const response = await fetch(`${origin}${new URL(uploadUrl).pathname}`, { method: "PUT", headers: { "content-type": contentType }, body: new Uint8Array(bytes) });
+    assert.equal(response.status, 204, await response.text());
+  };
+  try {
+    const member = await tokenFor("member", FULL);
+    const lead = await tokenFor("lead", FULL);
+    const boss = await tokenFor("boss", FULL);
+    const filesOnly = await tokenFor("member", ["ventures:read", "files:read", "files:write"]);
+    const memberDm = await tokenFor("member", [...FULL, ...PAT_DIRECT_MESSAGE_SCOPES]);
+    const outsider = await tokenFor("outsider", FULL);
+    const readOnly = await tokenFor("member", PAT_READ_SCOPES);
+    const names = async (token: string) => (await mcpCall(origin, token, "tools/list")).body.result.tools.map((item: any) => item.name);
+    const full = await names(member);
+    for (const name of ["list_documents", "create_document", "update_document", "import_file_as_document", "list_files", "read_file", "start_upload", "finish_upload", "find_person", "create_task", "update_task", "review_evidence", "post_message", "record_decision", "list_requests", "ask_for_information", "answer_request", "list_deals", "add_deal", "update_deal", "list_classes", "list_class_applications", "apply_to_class", "review_class_application"]) assert.ok(full.includes(name), name);
+    // Direct messages need their own permission; a read-only key gets no tool that changes anything.
+    assert.ok(!full.includes("read_direct_messages") && !full.includes("send_direct_message"));
+    assert.ok((await names(memberDm)).includes("send_direct_message"));
+    const readTools = await names(readOnly);
+    for (const name of ["create_document", "start_upload", "create_task", "post_message", "add_deal", "set_task_status"]) assert.ok(!readTools.includes(name), name);
+    assert.ok(readTools.includes("read_file") && readTools.includes("list_deals"));
+
+    // Knowledge: Claude writes drafts; only an approval in the app makes them approved, and a new version is a draft again.
+    const created = await ok(member, "create_document", { title: "Discovery call guide", markdown: "# Discovery\n\nAsk about the budget and the decision maker first.", ventureId: "venture-a", evidence: "planning_assumption", requestId: "doc-create-0001" });
+    assert.equal(created.status, "draft");
+    assert.deepEqual(await ok(member, "create_document", { title: "Discovery call guide", markdown: "# Discovery\n\nAsk about the budget and the decision maker first.", ventureId: "venture-a", evidence: "planning_assumption", requestId: "doc-create-0001" }), { ...created, replayed: true });
+    assert.equal((await ok(member, "list_documents", { ventureId: "venture-a" })).items[0].status, "draft");
+    assert.equal((await ok(member, "search", { query: "decision maker" })).items, undefined);
+    assert.equal((await ok(member, "search", { query: "decision maker", includeDrafts: true })).items[0].status, "draft");
+    const read = await ok(member, "get_document", { documentId: created.documentId });
+    assert.equal(read.versionId, created.versionId);
+    await refused(member, "update_document", { documentId: created.documentId, markdown: "# Discovery\n\nNew", changeSummary: "Edit", baseVersionId: "not-the-current-version", requestId: "doc-update-stale-1" }, /changed by someone else/);
+    assert.equal((await api("PATCH", `/documents/${created.documentId}/metadata`, "lead", { status: "approved" })).status, 200);
+    assert.equal((await ok(member, "search", { query: "decision maker" })).items[0].documentId, created.documentId);
+    const updated = await ok(member, "update_document", { documentId: created.documentId, markdown: "# Discovery\n\nAsk about timing too.", changeSummary: "Add timing", baseVersionId: read.versionId, requestId: "doc-update-0001" });
+    assert.equal(updated.version, 2);
+    assert.equal((await db.collection("documents").findOne({ _id: created.documentId }))?.status, "draft");
+    const savedVersion = await db.collection("document_versions").findOne({ documentId: created.documentId, version: 2 });
+    assert.equal(savedVersion?.via, "claude");
+    assert.equal(savedVersion?.changeSummary, "Add timing (via Claude)");
+    await refused(member, "update_document", { documentId: created.documentId, markdown: "# x", changeSummary: "No base", requestId: "doc-update-nobase" }, /baseVersionId/);
+    // Approval itself is never reachable through a Claude connection.
+    assert.equal((await fetch(`${origin}/v1/documents/${created.documentId}/metadata`, { method: "PATCH", headers: { "content-type": "application/json", ...internalHeaders("user-lead") }, body: JSON.stringify({ status: "approved" }) })).status, 403);
+    await refused(outsider, "get_document", { documentId: created.documentId }, /not found/i);
+
+    // Files: upload a PDF from "this computer", read its text, find it with the app's search, and import it as a draft.
+    const pdf = makePdf([["Buildory Sales Book", "Discovery call script for agencies"], ["Pricing: Growth tier first"]]);
+    const started = await ok(member, "start_upload", { ventureId: "venture-a", fileName: "sales-book.pdf", sizeBytes: pdf.length, requestId: "upload-pdf-0001" });
+    assert.equal(started.contentType, "application/pdf");
+    await putUpload(started.uploadUrl, started.contentType, pdf);
+    const finished = await ok(member, "finish_upload", { fileId: started.fileId });
+    assert.equal(finished.status, "ready");
+    const pdfText = await ok(member, "read_file", { fileId: started.fileId });
+    assert.equal(pdfText.pages, 2);
+    assert.match(pdfText.text, /Discovery call script for agencies/);
+    assert.match(pdfText.text, /Growth tier/);
+    const partial = await ok(member, "read_file", { fileId: started.fileId, maxChars: 500 });
+    assert.equal(partial.nextOffset, undefined);
+    assert.ok((await ok(member, "list_files", { ventureId: "venture-a" })).items.some((item: any) => item.id === started.fileId && item.readable === true && item.kind === "pdf"));
+    const found = ((await (await api("GET", "/search?q=agencies&types=file", "member")).json()) as any).data.items;
+    assert.equal(found[0]?.id, started.fileId);
+    assert.match(found[0]?.excerpt, /agencies/);
+    assert.deepEqual(((await (await api("GET", "/search?q=agencies&types=file", "outsider")).json()) as any).data.items, []);
+    await refused(outsider, "read_file", { fileId: started.fileId }, /not found/i);
+    const imported = await ok(member, "import_file_as_document", { fileId: started.fileId, evidence: "founder_reported", requestId: "import-pdf-0001" });
+    assert.equal(imported.status, "draft");
+    assert.match((await ok(member, "get_document", { documentId: imported.documentId })).markdown, /Imported from the file "sales-book\.pdf"[\s\S]*Growth tier/);
+    // Word files upload and read too; unreadable and unsupported files explain themselves.
+    const docx = readFileSync(new URL("./fixtures/sample.docx", import.meta.url));
+    const word = await ok(member, "start_upload", { ventureId: "venture-a", fileName: "playbook.docx", sizeBytes: docx.length, requestId: "upload-docx-0001" });
+    await putUpload(word.uploadUrl, word.contentType, docx);
+    await ok(member, "finish_upload", { fileId: word.fileId });
+    assert.match((await ok(member, "read_file", { fileId: word.fileId })).text, /kickoff call within two days/);
+    const broken = Buffer.from("%PDF-1.4 not really a pdf");
+    const brokenUpload = await ok(member, "start_upload", { ventureId: "venture-a", fileName: "broken.pdf", sizeBytes: broken.length, requestId: "upload-broken-0001" });
+    await putUpload(brokenUpload.uploadUrl, brokenUpload.contentType, broken);
+    await ok(member, "finish_upload", { fileId: brokenUpload.fileId });
+    await refused(member, "read_file", { fileId: brokenUpload.fileId }, /could not be read/);
+    const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: "#22aa66" } }).png().toBuffer();
+    const imageUpload = await ok(member, "start_upload", { ventureId: "venture-a", fileName: "logo.png", sizeBytes: image.length, requestId: "upload-image-0001" });
+    await putUpload(imageUpload.uploadUrl, imageUpload.contentType, image);
+    await ok(member, "finish_upload", { fileId: imageUpload.fileId });
+    await refused(member, "read_file", { fileId: imageUpload.fileId }, /Only PDF, Word, Markdown, and plain-text/);
+    await refused(member, "start_upload", { ventureId: "venture-a", fileName: "tool.exe", sizeBytes: 10, requestId: "upload-exe-00001" }, /can't be uploaded/);
+    await refused(outsider, "start_upload", { ventureId: "venture-a", fileName: "x.pdf", sizeBytes: 10, requestId: "upload-out-00001" }, /denied/i);
+    await refused(filesOnly, "start_upload", { ventureId: "venture-a", groupId: "group-a", fileName: "x.md", sizeBytes: 5, requestId: "upload-group-0001" }, /post messages/);
+    const groupFile = await ok(member, "start_upload", { ventureId: "venture-a", groupId: "group-a", fileName: "core-notes.md", sizeBytes: 9, requestId: "upload-group-0002" });
+    await putUpload(groupFile.uploadUrl, groupFile.contentType, Buffer.from("core only"));
+    await ok(member, "finish_upload", { fileId: groupFile.fileId });
+    assert.equal((await ok(member, "read_file", { fileId: groupFile.fileId })).text, "core only");
+    await refused(member, "import_file_as_document", { fileId: groupFile.fileId, evidence: "hypothesis", requestId: "import-group-0001" }, /shared in one group/);
+    // A file shared in a direct message stays behind the direct-message permission.
+    const dmIntent = ((await (await api("POST", "/uploads", "lead", { recipientId: "user-member", name: "private.md", contentType: "text/markdown", size: 12 })).json()) as any).data;
+    await putUpload(dmIntent.uploadUrl, "text/markdown", Buffer.from("private note"));
+    assert.equal((await api("POST", `/uploads/${dmIntent.file.id}/complete`, "lead", { etag: "local" })).status, 200);
+    await refused(member, "read_file", { fileId: dmIntent.file.id }, /not found/i);
+    assert.equal(await db.collection("file_texts").countDocuments({ _id: dmIntent.file.id }), 0);
+    assert.equal((await ok(memberDm, "read_file", { fileId: dmIntent.file.id })).text, "private note");
+
+    // People and tasks.
+    const people = (await ok(lead, "find_person", { query: "@member" })).people;
+    assert.deepEqual(people.map((item: any) => item.id), ["user-member"]);
+    assert.ok((await ok(lead, "find_person", { query: "Person", ventureId: "venture-a" })).people.every((item: any) => item.id !== "user-outsider"));
+    const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const newTask = await ok(lead, "create_task", { title: "Send the proposal", ventureId: "venture-a", assignee: "user-member", reviewer: "me", dueAt: due, timezone: "Asia/Kolkata", requestId: "task-create-0001" });
+    assert.equal(newTask.assignee, "Person member");
+    assert.equal(newTask.reviewer, "me");
+    assert.deepEqual(await ok(lead, "create_task", { title: "Send the proposal", ventureId: "venture-a", assignee: "user-member", reviewer: "me", dueAt: due, timezone: "Asia/Kolkata", requestId: "task-create-0001" }), { ...newTask, replayed: true });
+    assert.equal(await db.collection("tasks").countDocuments({ title: "Send the proposal" }), 1);
+    await refused(lead, "create_task", { title: "Nope", ventureId: "venture-a", assignee: "user-outsider", dueAt: due, requestId: "task-create-0002" }, /Assignee is not an active member/);
+    await refused(member, "update_task", { taskId: newTask.id, priority: "urgent" }, /venture lead/);
+    assert.equal((await ok(member, "update_task", { taskId: newTask.id, blocker: "Waiting on pricing" })).blocker, "Waiting on pricing");
+    assert.equal((await ok(lead, "update_task", { taskId: newTask.id, priority: "high", blocker: null })).blocker, undefined);
+    const evidence = await ok(member, "add_evidence", { taskId: "task-ev", title: "Draft pitch", url: "https://example.com/pitch", requestId: "evidence-add-0001" });
+    await refused(member, "review_evidence", { evidenceId: evidence.evidenceId, decision: "accept", requestId: "evidence-review-01" }, /reviewer or venture lead/);
+    const reviewed = await ok(lead, "review_evidence", { evidenceId: evidence.evidenceId, decision: "send_back", comment: "Add the pricing slide.", requestId: "evidence-review-02" });
+    assert.equal(reviewed.status, "rejected");
+    assert.equal((await db.collection("task_updates").findOne({ taskId: "task-ev", body: "Add the pricing slide." }))?.via, "claude");
+    const bossEvidence = await ok(boss, "add_evidence", { taskId: "task-boss", title: "My own proof", note: "done", requestId: "evidence-boss-0001" });
+    await refused(boss, "review_evidence", { evidenceId: bossEvidence.evidenceId, decision: "accept", requestId: "evidence-boss-0002" }, /Claude can't review evidence you submitted/);
+    assert.equal((await db.collection("evidence_items").findOne({ _id: bossEvidence.evidenceId }))?.reviewStatus, "pending");
+
+    // Messages show they came through Claude; retries post once; direct messages need their permission.
+    const posted = await ok(member, "post_message", { channelId: "channel-a", text: "Proposal draft is up for review.", mention: ["user-lead"], requestId: "message-post-0001" });
+    assert.equal((await db.collection("messages").findOne({ _id: posted.messageId }))?.via, "claude");
+    assert.equal((await ok(member, "post_message", { channelId: "channel-a", text: "Proposal draft is up for review.", mention: ["user-lead"], requestId: "message-post-0001" })).replayed, true);
+    assert.equal(await db.collection("messages").countDocuments({ channelId: "channel-a" }), 1);
+    // Ten messages a minute per key (a fresh key, so the general 30-changes limit is not what stops it).
+    const chatty = await tokenFor("member", FULL);
+    for (let index = 1; index <= 10; index++) await ok(chatty, "post_message", { channelId: "channel-a", text: `Update ${index}`, requestId: `message-burst-${index}0000` });
+    await refused(chatty, "post_message", { channelId: "channel-a", text: "One too many", requestId: "message-burst-1100000" }, /Too many post message calls/);
+    await refused(outsider, "post_message", { channelId: "channel-a", text: "hi", requestId: "message-post-0002" }, /not found/i);
+    const appMessage = ((await (await api("GET", "/channels/channel-a/messages", "lead")).json()) as any).data.items[0];
+    assert.equal(messageSchema.parse(appMessage).via, "claude");
+    const dm = await ok(memberDm, "send_direct_message", { personId: "user-lead", text: "Can you check the proposal?", requestId: "dm-send-00000001" });
+    assert.equal((await db.collection("messages").findOne({ _id: dm.messageId }))?.via, "claude");
+    assert.match(String((await db.collection("notification_outbox").findOne({ resourceId: dm.messageId }))?.title), /\(via Claude\)/);
+    assert.equal((await ok(memberDm, "read_direct_messages", { personId: "user-lead" })).messages[0].via, "claude");
+
+    // Decisions (leads, as drafts) and information requests (the person asked must belong to the venture).
+    await refused(member, "record_decision", { title: "Price", decision: "Growth tier first", reason: "Fits agencies", ventureId: "venture-a", requestId: "decision-0000001" }, /admins or venture heads/);
+    const decision = await ok(lead, "record_decision", { title: "Price", decision: "Growth tier first", reason: "Fits agencies", ventureId: "venture-a", evidence: ["https://example.com/notes"], requestId: "decision-0000002" });
+    assert.equal(decision.status, "draft");
+    const forged = await fetch(`${origin}/v1/decisions`, { method: "POST", headers: { "content-type": "application/json", ...internalHeaders("user-lead") }, body: JSON.stringify({ ventureId: "venture-a", title: "Forged", text: "x", reason: "x", ownerId: "user-member", decidedAt: now.toISOString(), evidence: [], affectedWork: [], reviewTrigger: "", status: "approved" }) });
+    assert.equal(forged.status, 201, await forged.clone().text());
+    const forgedItem = await db.collection("decisions").findOne({ title: "Forged" });
+    assert.deepEqual([forgedItem?.status, forgedItem?.ownerId], ["draft", "user-lead"]);
+    await refused(outsider, "ask_for_information", { personId: "user-member", ventureId: "venture-a", question: "Who?", purpose: "Probe", dueAt: due, requestId: "ask-probe-0000001" }, /Venture access denied/);
+    await refused(lead, "ask_for_information", { personId: "user-outsider", ventureId: "venture-a", question: "Budget?", purpose: "Proposal", dueAt: due, requestId: "ask-info-0000001" }, /must be an active member of this venture/);
+    const asked = await ok(lead, "ask_for_information", { personId: "user-member", ventureId: "venture-a", question: "What budget did Acme mention?", purpose: "Proposal pricing", dueAt: due, requestId: "ask-info-0000002" });
+    assert.equal((await ok(member, "list_requests", { mine: "asked_me" })).items[0].id, asked.informationRequestId);
+    assert.equal((await ok(member, "answer_request", { informationRequestId: asked.informationRequestId, answer: "About 2 lakh." })).status, "answered");
+    await refused(lead, "answer_request", { informationRequestId: asked.informationRequestId, answer: "Not mine" }, /Only the respondent/);
+
+    // A second key for the same person (one key would pass the 30-changes-a-minute limit in this test).
+    const memberLater = await tokenFor("member", FULL);
+    // Sales: deals in the venture's pipeline, owned by someone who can open it.
+    const deal = await ok(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Acme Agency", value: 200000, currency: "inr", requestId: "deal-add-0000001" });
+    assert.equal(deal.value, "2,00,000 INR");
+    await refused(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Other", owner: "user-outsider", requestId: "deal-add-0000002" }, /owner must be an active member/);
+    await refused(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Other", value: 5, requestId: "deal-add-0000003" }, /currency/);
+    assert.equal((await ok(memberLater, "update_deal", { dealId: deal.dealId, stage: "proposal" })).stage, "proposal");
+    const deals = await ok(memberLater, "list_deals", { ventureId: "venture-a" });
+    assert.equal(deals.deals[0].stage, "proposal");
+    assert.equal(deals.pipelines[0].id, "pipeline-a");
+    assert.deepEqual((await ok(outsider, "list_deals", {})).deals, undefined);
+
+    // Classes: a participant applies, the named reviewer assesses.
+    assert.equal((await ok(memberLater, "list_classes", {})).items[0].id, "class-a");
+    await refused(memberLater, "apply_to_class", { classId: "class-a", exercise: "Ran two calls", reviewerId: "user-member", requestId: "class-apply-0001" }, /cannot review their own/);
+    const application = await ok(memberLater, "apply_to_class", { classId: "class-a", exercise: "Ran two discovery calls with the new script", reviewerId: "user-lead", requestId: "class-apply-0002" });
+    assert.equal((await ok(lead, "list_class_applications", { classId: "class-a" })).items[0].id, application.applicationId);
+    assert.equal((await ok(lead, "review_class_application", { classId: "class-a", applicationId: application.applicationId, assessment: "Good questions; tighten the close.", nextGap: "Closing" })).reviewed, true);
+
+    // Every write was audited as a Claude action.
+    assert.ok(await db.collection("audit_events").countDocuments({ channel: "mcp", action: { $in: ["mcp.create_document", "mcp.start_upload", "mcp.create_task", "mcp.post_message", "mcp.add_deal"] } }) >= 5);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("file text: hostile files stay contained, storage trouble is not remembered", async () => {
+  // A long run of spaces is handled in linear time (a backtracking regex made this take minutes).
+  const started = Date.now();
+  assert.equal((await extractText(Buffer.alloc(5 * 1024 * 1024, " "), "text/plain")).text, "");
+  assert.ok(Date.now() - started < 2000, "spaces should be quick");
+  // A Word file whose contents would unpack far too large is refused before any parser sees it.
+  await assert.rejects(extractText(makeZip(Buffer.from("tiny"), 500 * 1024 * 1024), WORD_CONTENT_TYPE), /too large or complex/);
+  await assert.rejects(extractText(Buffer.from("not a zip at all"), WORD_CONTENT_TYPE), /could not be read/);
+  // Unreachable storage is a retryable 503 and is not stored as a failure.
+  const stored: Record<string, unknown>[] = [];
+  const db = { collection: () => ({ findOne: async () => null, replaceOne: async (_filter: unknown, value: Record<string, unknown>) => { stored.push(value); } }) } as unknown as AppDb;
+  const brokenStore = { kind: "local", read: async () => { throw new Error("ENOENT: no such file, open '/srv/secret/path'"); } } as unknown as ObjectStore;
+  const file = { _id: "file-x", workspaceId: "w", ventureId: "v", contentType: "application/pdf", objectKey: "k", etag: "e" };
+  await assert.rejects(storedFileText(db, file as never, brokenStore), (error: unknown) => error instanceof AppError && error.status === 503 && !error.message.includes("/srv"));
+  assert.equal(stored.length, 0);
+  // A damaged PDF is a lasting failure, stored with a safe message.
+  const damaged = { ...file, _id: "file-y" };
+  const damagedStore = { kind: "local", read: async () => Buffer.from("%PDF-1.4 nonsense") } as unknown as ObjectStore;
+  const value = await storedFileText(db, damaged as never, damagedStore);
+  assert.equal(value.status, "failed");
+  assert.match(String(value.error), /could not be read/);
+  assert.equal(stored.length, 1);
 });

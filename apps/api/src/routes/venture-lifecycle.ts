@@ -121,6 +121,8 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
   const classes = await remove("classes", { ventureId });
   const previews = await remove("command_previews", { ventureId });
   for (const collection of ["outcomes", "decisions", "information_requests", "files", "pipelines", "opportunities", "events", "document_chunks"]) await remove(collection, { ventureId });
+  // Text read out of the venture's files is derived from them, so it goes without a recovery copy.
+  await db.collection("file_texts").deleteMany({ workspaceId, ventureId }, { session });
 
   // Records that hang off those.
   const taskIds = ids(tasks); const messageIds = ids(messages); const channelIds = ids(channels); const groupIds = ids(groups);

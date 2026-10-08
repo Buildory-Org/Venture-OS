@@ -12,11 +12,11 @@ export type ChatAttachment = { id: string; name: string; contentType: string; si
 export type ChatUploadScope = { ventureId: string; groupId: string } | { recipientId: string };
 
 const allowedTypes = new Set([
-  "application/pdf", "text/markdown", "text/plain", "image/png", "image/jpeg", "image/webp", "image/gif",
+  "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/markdown", "text/plain", "image/png", "image/jpeg", "image/webp", "image/gif",
   "video/mp4", "video/webm", "video/quicktime", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/webm", "audio/wav",
 ]);
 const typeByExtension: Record<string, string> = {
-  pdf: "application/pdf", md: "text/markdown", txt: "text/plain", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+  pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", md: "text/markdown", txt: "text/plain", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
   webp: "image/webp", gif: "image/gif", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
   mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav",
 };
@@ -137,7 +137,7 @@ export function AttachmentMenu({ attachments, disabled }: { attachments: Attachm
     items[(index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
   }}>
     <input ref={images} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm" onChange={onFiles} />
-    <input ref={documents} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".pdf,.md,.txt" onChange={onFiles} />
+    <input ref={documents} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".pdf,.docx,.md,.txt" onChange={onFiles} />
     <input ref={audio} type="file" multiple className="sr-only" tabIndex={-1} aria-hidden="true" accept=".mp3,.m4a,.ogg,.wav,.webm" onChange={onFiles} />
     <button ref={trigger} type="button" aria-label="Attach files" title="Attach files" aria-haspopup="menu" aria-expanded={open} disabled={disabled || attachments.uploading || attachments.items.length >= 10} onClick={(event) => {
       if (open) { close(event.detail !== 0); return; }

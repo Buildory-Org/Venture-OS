@@ -5,7 +5,7 @@ export class ToolError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
 }
 
-export type Api = <T = any>(method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Promise<T>;
+export type Api = <T = any>(method: "GET" | "POST" | "PATCH" | "PUT", path: string, body?: unknown) => Promise<T>;
 
 /**
  * Calls the product API in-process as `userId`, so every permission, archive, and side-effect rule is the app's own.

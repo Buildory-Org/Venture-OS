@@ -4,7 +4,7 @@ import { describeError } from "@/lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
+import { PAT_DIRECT_MESSAGE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
 import { BookOpenText, Check, Clock3, Copy, KeyRound, LockKeyhole, Plus, ShieldCheck, Sparkles, X } from "@/components/ui/icons";
 import { Dither } from "@/components/ui/dither";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -17,6 +17,8 @@ import { useExitTransition } from "@/lib/motion";
 type Pat = Awaited<ReturnType<typeof listLivePats>>[number];
 type Access = "update" | "read";
 const READ = [...PAT_READ_SCOPES]; const UPDATE = [...PAT_READ_SCOPES, ...PAT_WRITE_SCOPES];
+// Direct messages are opt-in per key: reading only with Read only, reading and sending with Read and update.
+const directScopes = (access: Access) => access === "update" ? [...PAT_DIRECT_MESSAGE_SCOPES] : [PAT_DIRECT_MESSAGE_SCOPES[0]];
 const DAY = 86_400_000;
 const accessOf = (pat: Pat): Access => pat.scopes.some((scope) => scope.endsWith(":write")) ? "update" : "read";
 const accessLabel = { update: "Read and update", read: "Read only" } as const;
@@ -136,6 +138,7 @@ function KeyCard({ pat, now, onRevoked }: { pat: Pat; now: number; onRevoked: ()
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <code className="rounded-md bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600">{pat.prefix}…</code>
           <span className={clsx("vso-role inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold", access === "update" ? "vso-role-head" : "vso-role-review")}>{accessLabel[access]}</span>
+          {pat.scopes.includes("direct_messages:read") && <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">+ direct messages</span>}
         </div>
       </div>
       {!confirming && <button type="button" onClick={() => setConfirming(true)} className="min-h-8 shrink-0 rounded-lg px-2.5 text-xs font-semibold text-danger-text transition-[background-color,transform] duration-150 hover:bg-danger-surface active:scale-[0.97]">Revoke</button>}
@@ -160,7 +163,9 @@ function KeyCard({ pat, now, onRevoked }: { pat: Pat; now: number; onRevoked: ()
 /** New key: a short form, then the key (shown once) with the ready-made command. */
 function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("My laptop");
-  const [access, setAccess] = useState<Access>("update");
+  // Read only by default: text Claude reads (files, messages) is written by others, so changing data is opted into.
+  const [access, setAccess] = useState<Access>("read");
+  const [directMessages, setDirectMessages] = useState(false);
   const [days, setDays] = useState("90");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -181,7 +186,7 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
     if (busy) return;
     setBusy(true); setError("");
     try {
-      const result = await createLivePat({ name: name.trim() || "Claude", scopes: access === "update" ? UPDATE : READ, expiresInDays: Number(days) });
+      const result = await createLivePat({ name: name.trim() || "Claude", scopes: [...(access === "update" ? UPDATE : READ), ...(directMessages ? directScopes(access) : [])], expiresInDays: Number(days) });
       setCreated({ token: result.token, name: result.pat.name }); onCreated();
     } catch (cause) { setError(describeError(cause, "Could not create the key.")); }
     finally { setBusy(false); }
@@ -221,11 +226,15 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
         <div className="mt-5 space-y-4">
           <Field label="Name"><input ref={firstField} value={name} maxLength={100} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="Work laptop" /></Field>
           <fieldset><legend className="mb-1.5 text-xs font-semibold text-neutral-600">Access</legend><div className="grid gap-2 sm:grid-cols-2">
-            {([["update", "Change task status, comment, add evidence, and set reminders, plus everything in read only."], ["read", "Check tasks, reviews, knowledge, decisions, and channels. Changes nothing."]] as const).map(([value, body]) => <label key={value} className={clsx("cursor-pointer rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-150", access === value ? "border-primary-400 bg-primary-50 shadow-[0_0_0_3px_var(--color-primary-100)]" : "border-neutral-200 hover:bg-neutral-50")}>
+            {([["update", "Create and update tasks, review evidence, write draft documents, upload files, post in channels, record decisions, and manage deals, plus everything in read only."], ["read", "Check tasks, reviews, knowledge, files, decisions, requests, deals, classes, and channels. Changes nothing."]] as const).map(([value, body]) => <label key={value} className={clsx("cursor-pointer rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-150", access === value ? "border-primary-400 bg-primary-50 shadow-[0_0_0_3px_var(--color-primary-100)]" : "border-neutral-200 hover:bg-neutral-50")}>
               <span className="flex items-center gap-2 text-sm font-semibold text-neutral-800"><input type="radio" name="access" checked={access === value} onChange={() => setAccess(value)} className="accent-[var(--color-primary-600)]" />{accessLabel[value]}</span>
               <span className="mt-1 block text-xs leading-5 text-neutral-500">{body}</span>
             </label>)}
           </div></fieldset>
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-neutral-200 p-3 transition-colors duration-150 hover:bg-neutral-50 has-[:checked]:border-primary-300 has-[:checked]:bg-primary-50">
+            <input type="checkbox" checked={directMessages} onChange={(event) => setDirectMessages(event.target.checked)} className="mt-0.5 accent-[var(--color-primary-600)]" />
+            <span><span className="block text-sm font-semibold text-neutral-800">Include my direct messages</span><span className="mt-0.5 block text-xs leading-5 text-neutral-500">{access === "update" ? "Claude can read your private conversations and send messages as you, labelled “via Claude”." : "Claude can read your private conversations."} Off unless you tick it.</span></span>
+          </label>
           <Field label="Expires after"><Select aria-label="Expires after" className={inputClass} value={days} onChange={(event) => setDays(event.target.value)}><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="366">1 year</option></Select></Field>
           <Notice tone="error" message={error} onDismiss={() => setError("")} />
         </div>

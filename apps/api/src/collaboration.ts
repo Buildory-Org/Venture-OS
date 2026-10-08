@@ -82,7 +82,7 @@ async function event(db: AppDb, actor: Actor, type: string, payload: Record<stri
   return value;
 }
 
-async function createChannelMessage(database: Database, actor: Actor, channelId: string, input: unknown, interfaceChannel: "api" | "socket") {
+async function createChannelMessage(database: Database, actor: Actor, channelId: string, input: unknown, interfaceChannel: "api" | "socket" | "mcp") {
   const parsed = createChannelMessageSchema.parse(input);
   const channel = await channelScope(database.db, actor, channelId);
   if (!can(actor.membership, "message:write", { ventureId: String(channel.ventureId), groupId: String(channel.groupId) })) throw new AppError(403, "FORBIDDEN", "You cannot post in this channel");
@@ -107,7 +107,7 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
   // Channel messages notify only validated @mentions; ordinary messages surface in the channel itself.
   const recipients = mentioned.filter((userId) => userId !== actor.id);
   const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
-  const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, createdAt: new Date() };
+  const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, ...(interfaceChannel === "mcp" ? { via: "claude" } : {}), createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
   try {
     await atomic(database, async (session) => {
@@ -155,7 +155,7 @@ export function collaborationRoutes(database: Database): Router {
     res.json({ ok: true, data: { items: jsonValue(await decorateMessages(db, actor, latest ? page.reverse() : page)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
   });
   router.post("/channels/:channelId/messages", async (req, res) => {
-    const result = await createChannelMessage(database, req.actor!, idSchema.parse(req.params.channelId), req.body, "api");
+    const result = await createChannelMessage(database, req.actor!, idSchema.parse(req.params.channelId), req.body, req.interfaceChannel);
     if (!result.replayed) await publish(database, result.event);
     res.status(result.replayed ? 200 : 201).json({ ok: true, data: jsonValue({ ...result, message: (await decorateMessages(db, req.actor!, [result.message]))[0] }) });
   });
@@ -185,12 +185,13 @@ export function collaborationRoutes(database: Database): Router {
     }
     const attachments = await messageAttachments(db, actor, input.attachmentFileIds, { recipientId: input.recipientId });
     const { attachmentFileIds: _attachmentFileIds, ...content } = input;
-    const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, dmKey: key, authorId: actor.id, ...content, attachments, createdAt: new Date() };
+    const viaClaude = req.interfaceChannel === "mcp";
+    const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, dmKey: key, authorId: actor.id, ...content, attachments, ...(viaClaude ? { via: "claude" } : {}), createdAt: new Date() };
     let createdEvent: Record<string, unknown> | undefined;
     try { await atomic(database, async (session) => {
       await db.collection("messages").insertOne(message, { session });
       createdEvent = await event(db, actor, "direct_message.created", message, { audienceUserIds: [actor.id, input.recipientId] }, session);
-      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, chatKind: "direct", chatId: actor.id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
+      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}${viaClaude ? " (via Claude)" : ""}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, chatKind: "direct", chatId: actor.id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
     }); } catch (error) {
       if ((error as { code?: number }).code !== 11000) throw error;
       const duplicate = await db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: input.clientId, dmKey: key });

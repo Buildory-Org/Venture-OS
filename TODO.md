@@ -277,6 +277,32 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Verified:** a new API test (admin as assignee and reviewer, reassign, `/assign` and `/notify`, an admin running a class; outsiders, inactive admins and other workspaces' admins refused); backend smoke (core 4/4, API 14/14, worker 4/4); typecheck; an independent review with no blockers.
   - **Open policy points from the review:** demoting an admin to a scoped role can leave tasks they hold outside their new scope, and an admin can review their own task.
 - [x] Sidebar scrolls on shorter laptop screens (2026-10-08). On wide screens the sidebar was not held to the window height, so the menu never scrolled and the bottom (People & access, Connect Claude, account and sign out) was cut off on any window under about 1025px tall. It now fits the window and the menu scrolls. Verified in the browser at 1280×600 (expanded and collapsed), 1440×1000 and phone width, with a real wheel scroll, no console errors, and web lint and typecheck passing.
+- [x] Claude connection (MCP) batch 1, built and tested locally, not yet on the hosted MCP (2026-10-08). 26 new tools: knowledge, files, tasks, reviews, messages, decisions, requests, sales, and classes.
+  - **Knowledge:** list_documents, create_document, update_document (must name the base version), import_file_as_document, and drafts in search.
+    - Claude only ever writes drafts; approving stays in the app. The approve route is not reachable from Claude.
+    - Versions written through Claude are marked "(via Claude)".
+  - **Files:** list_files and read_file (PDF, Word .docx, Markdown, text), plus start_upload/finish_upload (a one-time upload link; Claude Code sends the file with curl).
+    - Group-only files can't become venture-wide documents.
+    - There is a 250 MB a day upload allowance through Claude.
+    - Word files can now be uploaded in the app too.
+  - **File reading on the server (`apps/api/src/file-text.ts`):**
+    - Runs in a separate short-lived process, with a memory cap, no secrets, and a 30 s kill.
+    - Word zip bombs are refused before parsing; text cleanup runs in linear time.
+    - Text is kept in `file_texts`, and the app's search now finds words inside uploaded files.
+    - Files uploaded earlier are read once after startup.
+  - **Team:** find_person, create_task, update_task, review_evidence, post_message, record_decision (always a draft), list_requests, ask_for_information, answer_request, list_deals, add_deal, update_deal, list_classes, list_class_applications, apply_to_class, review_class_application.
+    - Messages and task comments posted through Claude show "via Claude".
+    - Messages are limited to 10 a minute per key.
+    - Through Claude, nobody (admins included) reviews their own evidence.
+  - **Direct messages:** read_direct_messages and send_direct_message need a separate opt-in on the key ("Include my direct messages", off by default).
+  - **Keys:** new key permissions. The Connect page now defaults new keys to Read only.
+  - **App fixes found on the way:** an information request's respondent and a deal's owner must belong to the venture, and asking in a venture you can't open is refused.
+  - **Verified:**
+    - Tests: an end-to-end MCP test of every new tool and guard, hostile-file tests (zip bombs, million-space files, storage outages), and backend smoke (core 4/4, API 16/16, worker 4/4).
+    - Checks: typechecks, and web lint.
+    - Two independent reviews (security, and file reading); their blockers and should-fixes were fixed.
+    - A real MCP client session against an isolated local copy (curl upload of a PDF, read, import, task, message, decision, request).
+    - Screens checked: the "via Claude" label in the channel and the Connect page.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

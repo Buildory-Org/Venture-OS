@@ -33,12 +33,14 @@ export const updateDocumentSchema = z.object({
 
 export const knowledgeSearchSchema = cursorQuerySchema.extend({
   q: z.string().trim().min(2).max(200), ventureId: idSchema.optional(), evidenceClasses: z.array(evidenceClassSchema).optional(),
+  // Drafts are left out unless asked for; a query string carries "true" or "false".
+  includeDrafts: z.enum(["true", "false"]).optional().transform((value) => value === "true"),
 });
 
 export const knowledgeSearchHitSchema = z.object({
   documentId: idSchema, title: z.string(), versionId: idSchema, headingPath: z.string(), excerpt: z.string(),
   evidenceClass: evidenceClassSchema, ownerId: idSchema, lastReviewedAt: isoDateSchema.optional(),
-  sourceRef: z.string(), sensitivity: sensitivitySchema,
+  sourceRef: z.string(), sensitivity: sensitivitySchema, status: z.enum(["draft", "approved", "stale"]).optional(),
 });
 export const knowledgeSearchResponseSchema = successEnvelope(z.object({
   items: z.array(knowledgeSearchHitSchema), asOf: isoDateSchema, evidenceBoundary: z.string(), warnings: z.array(z.string()),

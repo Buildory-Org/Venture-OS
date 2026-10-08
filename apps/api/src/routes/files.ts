@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express, { Router } from "express";
 import sharp from "sharp";
+import { z } from "zod";
 import type { AppDb, AppDocument } from "../db.js";
 import { cursorQuerySchema, groupFileSchema, idSchema, uploadCompleteSchema, uploadIntentSchema } from "@venture-studio/contracts";
 import { can } from "@venture-studio/core";
@@ -10,6 +11,7 @@ import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue } from "../json.js";
+import { canExtractText, MAX_TEXT_CHARS, storedFileText } from "../file-text.js";
 
 export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjectStore): Router {
   const router = Router();
@@ -46,9 +48,9 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
   }
 
   const storedFileStore = (file: AppDocument): ObjectStore => {
-    if (file.storage === "local") return localStore;
-    if (file.storage === "r2" && store.kind === "r2") return store;
-    throw new AppError(503, "INTEGRATION_UNAVAILABLE", "The file's storage backend is not configured");
+    const found = fileStoreFor(file, store, localStore);
+    if (!found) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "The file's storage backend is not configured");
+    return found;
   };
   router.get("/files", async (req, res) => {
     const actor = req.actor!;
@@ -150,7 +152,10 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
     try { await fileStore.discard(String(file.uploadKey)); await db.collection("files").updateOne({ _id: id, status: "ready" }, { $unset: { uploadKey: "" } }); }
     catch (error) { console.warn(JSON.stringify({ level: "warn", event: "upload_staging_cleanup_failed", fileId: id, message: error instanceof Error ? error.message : "Unknown cleanup error" })); }
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "file.complete", objectType: "file", objectId: id, ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), result: "success" });
-    res.json({ ok: true, data: jsonValue(await db.collection("files").findOne({ _id: id })) });
+    const ready = await db.collection("files").findOne({ _id: id });
+    res.json({ ok: true, data: jsonValue(ready) });
+    // Venture files are read in the background so search can find their text; direct-message files only when opened.
+    if (ready && !ready.recipientId && canExtractText(ready.contentType)) void storedFileText(db, ready, fileStore).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "file_text_background_failed", fileId: id, message: error instanceof Error ? error.message : String(error) })));
   });
   router.get("/files/:id/download", async (req, res) => {
     const actor = req.actor!;
@@ -159,6 +164,18 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
     const downloadUrl = await fileStore.downloadUrl(String(file.objectKey));
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "file.download_url", objectType: "file", objectId: String(file._id), ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), result: "success" });
     res.json({ ok: true, data: { downloadUrl, expiresInSeconds: fileStore.kind === "r2" ? 300 : 900 } });
+  });
+  // The text inside a PDF, Word, Markdown, or plain-text file the person can open, read once and then served from file_texts.
+  // `offset` and `maxChars` page through long files.
+  router.get("/files/:id/text", async (req, res) => {
+    const actor = req.actor!;
+    const file = await accessibleFile(db, actor, idSchema.parse(req.params.id));
+    const query = z.object({ offset: z.coerce.number().int().min(0).max(MAX_TEXT_CHARS).default(0), maxChars: z.coerce.number().int().min(200).max(100_000).default(20_000), excludeDirect: z.enum(["true", "false"]).optional() }).parse(req.query);
+    if (query.excludeDirect === "true" && file.recipientId) throw new AppError(404, "NOT_FOUND", "File not found");
+    const value = await storedFileText(db, file, storedFileStore(file));
+    const text = value.text.slice(query.offset, query.offset + query.maxChars);
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "file.text.read", objectType: "file", objectId: String(file._id), ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), result: "success" });
+    res.json({ ok: true, data: { fileId: String(file._id), name: String(file.name), contentType: String(file.contentType), direct: Boolean(file.recipientId), ...(file.ventureId ? { ventureId: String(file.ventureId) } : {}), ...(file.groupId ? { groupId: String(file.groupId) } : {}), status: value.status, ...(value.error ? { error: value.error } : {}), ...(value.pages ? { pages: value.pages } : {}), chars: value.chars, offset: query.offset, text, nextOffset: query.offset + text.length < value.chars ? query.offset + text.length : undefined, truncatedAtSource: value.truncated || undefined } });
   });
   router.get("/files/:id/thumbnail", async (req, res) => {
     const actor = req.actor!;
@@ -208,6 +225,13 @@ export function localObjectRoutes(db: AppDb, store: LocalObjectStore): Router {
     catch { throw new AppError(403, "FORBIDDEN", "Download URL is invalid or expired"); }
   });
   return router;
+}
+
+/** The store a file's bytes live in, or undefined when that backend is not configured here. */
+export function fileStoreFor(file: AppDocument, store: ObjectStore, localStore: LocalObjectStore): ObjectStore | undefined {
+  if (file.storage === "local") return localStore;
+  if (file.storage === "r2" && store.kind === "r2") return store;
+  return undefined;
 }
 
 async function accessibleFile(db: AppDb, actor: NonNullable<Express.Request["actor"]>, id: string, allowPending = false) {

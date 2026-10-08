@@ -98,6 +98,8 @@ export const taskUpdateSchema = z.object({
   id: idSchema, workspaceId: idSchema, taskId: idSchema, authorId: idSchema,
   type: z.enum(["comment", "status", "blocker", "evidence", "acceptance"]), body: z.string().max(5_000),
   fromStatus: taskStatusSchema.optional(), toStatus: taskStatusSchema.optional(), createdAt: isoDateSchema,
+  /** Set when written through a Claude connection. */
+  via: z.literal("claude").optional(),
 });
 
 export const taskListQuerySchema = cursorQuerySchema.extend({

@@ -6,6 +6,7 @@ import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { jsonValue, omitNullFields } from "../json.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
+import { listedInOrAdmin } from "../assignable.js";
 
 
 export function salesRoutes(db: AppDb): Router {
@@ -38,6 +39,7 @@ export function salesRoutes(db: AppDb): Router {
   router.post("/opportunities", async (req, res) => {
     const actor = req.actor!; const input = opportunityInputSchema.parse(req.body); const pipeline = await db.collection("pipelines").findOne({ _id: input.pipelineId, workspaceId: actor.membership.workspaceId });
     if (!pipeline || inArchivedVenture(actor.membership, pipeline.ventureId) || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(pipeline.ventureId)))) throw new AppError(404, "NOT_FOUND", "Pipeline not found");
+    await assertDealOwner(db, actor.membership.workspaceId, input.ownerId, String(pipeline.ventureId));
     const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: pipeline.ventureId, ...input, ...(input.nextActionAt ? { nextActionAt: new Date(input.nextActionAt) } : {}), createdAt: new Date(), updatedAt: new Date() };
     await db.collection("opportunities").insertOne(item); res.status(201).json({ ok: true, data: jsonValue(item) });
   });
@@ -47,10 +49,15 @@ export function salesRoutes(db: AppDb): Router {
     if (!item || inArchivedVenture(actor.membership, item.ventureId) || (actor.membership.role !== "admin" && !actor.membership.ventureIds.includes(String(item.ventureId)))) throw new AppError(404, "NOT_FOUND", "Opportunity not found");
     if (actor.membership.role !== "admin" && actor.membership.role !== "venture_head" && item.ownerId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the owner or venture lead may edit this opportunity");
     const input = updateOpportunitySchema.parse(req.body);
+    if (input.ownerId) await assertDealOwner(db, actor.membership.workspaceId, input.ownerId, String(item.ventureId));
     await db.collection("opportunities").updateOne({ _id: id, workspaceId: actor.membership.workspaceId }, { $set: { ...input, ...(input.nextActionAt ? { nextActionAt: new Date(input.nextActionAt) } : {}), updatedAt: new Date() } });
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "opportunity.update", objectType: "opportunity", objectId: id, ventureId: String(item.ventureId), result: "success" });
     const updated = await db.collection("opportunities").findOne({ _id: id });
     res.json({ ok: true, data: updated ? jsonValue(omitNullFields(updated, ["nextActionAt"])) : null });
   });
   return router;
+}
+
+async function assertDealOwner(db: AppDb, workspaceId: string, ownerId: string, ventureId: string): Promise<void> {
+  if (!(await db.collection("memberships").findOne({ workspaceId, userId: ownerId, status: "active", ...listedInOrAdmin(ventureId) }))) throw new AppError(400, "BAD_REQUEST", "The deal owner must be an active member of this venture");
 }

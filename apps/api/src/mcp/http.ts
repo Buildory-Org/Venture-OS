@@ -14,12 +14,14 @@ const WRITES_PER_MINUTE = 30;
 const PERSON_REQUESTS_PER_MINUTE = 240;
 const UNAUTHENTICATED_PER_MINUTE = 30;
 const LAST_USED_EVERY_MS = 5 * 60_000;
+// Bytes a person may upload through Claude in a day (the app's own uploads are not counted).
+const UPLOAD_BYTES_PER_DAY = 250 * 1024 * 1024;
 
-/** Fixed-window counter in the shared rate-limit collection; returns seconds to wait when over the limit. */
-async function overLimit(db: AppDb, key: string, max: number, windowMs = 60_000): Promise<number> {
+/** Fixed-window counter in the shared rate-limit collection (adds `amount`); returns seconds to wait when over the limit. */
+async function overLimit(db: AppDb, key: string, max: number, windowMs = 60_000, amount = 1): Promise<number> {
   const now = Date.now(); const windowStart = Math.floor(now / windowMs) * windowMs;
-  const entry = await db.collection("api_rate_limits").findOneAndUpdate({ _id: `${key}:${windowStart}` as never }, { $inc: { count: 1 }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs), createdAt: new Date(now) } }, { upsert: true, returnDocument: "after" });
-  return Number(entry?.count ?? 1) > max ? Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)) : 0;
+  const entry = await db.collection("api_rate_limits").findOneAndUpdate({ _id: `${key}:${windowStart}` as never }, { $inc: { count: amount }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs), createdAt: new Date(now) } }, { upsert: true, returnDocument: "after" });
+  return Number(entry?.count ?? amount) > max ? Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)) : 0;
 }
 
 function jsonRpcError(res: Response, status: number, message: string, headers: Record<string, string> = {}) {
@@ -76,6 +78,8 @@ export function mcpRouter(db: AppDb, config: AppConfig): Router {
         api: apiClient(base, grant.userId), db, userId: grant.userId, workspaceId: grant.workspaceId, patId: grant.patId, scopes: grant.scopes,
         writesEnabled: config.MCP_WRITES_ENABLED, origin: appOrigin,
         writeBudget: async () => { const seconds = await overLimit(db, `mcp-write:${grant.patId}`, WRITES_PER_MINUTE); if (seconds) throw new ToolError(`Too many changes in a minute from this token; retry in ${seconds} s.`, 429); },
+        toolBudget: async (tool, perMinute) => { const seconds = await overLimit(db, `mcp-tool:${tool}:${grant.patId}`, perMinute); if (seconds) throw new ToolError(`Too many ${tool.replaceAll("_", " ")} calls in a minute; retry in ${seconds} s.`, 429); },
+        uploadBudget: async (bytes) => { const seconds = await overLimit(db, `mcp-upload-bytes:${grant.userId}`, UPLOAD_BYTES_PER_DAY, 86_400_000, bytes); if (seconds) throw new ToolError("You've reached today's 250 MB upload allowance through Claude; upload larger files in the app.", 429); },
       });
       registerPrompts(server, grant.scopes);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -109,5 +113,17 @@ const MCP_ROUTES: [string, RegExp][] = [
   ["GET", /^\/v1\/documents\/[A-Za-z0-9_-]+$/], ["GET", /^\/v1\/channels\/[A-Za-z0-9_-]+\/messages$/],
   ["GET", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders\/[A-Za-z0-9_-]+\/snooze$/],
   ["GET", /^\/v1\/notifications$/], ["POST", /^\/v1\/notifications\/read$/], ["POST", /^\/v1\/notifications\/[A-Za-z0-9_-]+\/read$/],
+  // Knowledge documents and files (approving a document stays in the app).
+  ["GET", /^\/v1\/documents$/], ["POST", /^\/v1\/documents$/], ["PUT", /^\/v1\/documents\/[A-Za-z0-9_-]+$/],
+  ["GET", /^\/v1\/files$/], ["GET", /^\/v1\/files\/[A-Za-z0-9_-]+\/text$/], ["POST", /^\/v1\/uploads$/], ["POST", /^\/v1\/uploads\/[A-Za-z0-9_-]+\/complete$/],
+  // Tasks, reviews, and messages.
+  ["POST", /^\/v1\/tasks$/], ["POST", /^\/v1\/evidence\/[A-Za-z0-9_-]+\/review$/], ["POST", /^\/v1\/channels\/[A-Za-z0-9_-]+\/messages$/],
+  ["GET", /^\/v1\/direct-messages\/[A-Za-z0-9_-]+$/], ["POST", /^\/v1\/direct-messages$/],
+  // Decisions, information requests, sales, and classes.
+  ["POST", /^\/v1\/decisions$/],
+  ["GET", /^\/v1\/information-requests$/], ["POST", /^\/v1\/information-requests$/], ["PATCH", /^\/v1\/information-requests\/[A-Za-z0-9_-]+$/],
+  ["GET", /^\/v1\/pipelines$/], ["GET", /^\/v1\/opportunities$/], ["POST", /^\/v1\/opportunities$/], ["PATCH", /^\/v1\/opportunities\/[A-Za-z0-9_-]+$/],
+  ["GET", /^\/v1\/classes$/], ["GET", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/], ["POST", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/],
+  ["PATCH", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications\/[A-Za-z0-9_-]+\/review$/],
 ];
 export const isMcpRoute = (method: string, path: string) => MCP_ROUTES.some(([allowed, pattern]) => allowed === method && pattern.test(path));

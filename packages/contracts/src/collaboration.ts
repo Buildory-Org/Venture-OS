@@ -20,6 +20,8 @@ export const messageSchema = z.object({
   attachments: z.array(messageAttachmentSchema).default([]),
   mentionUserIds: z.array(idSchema).default([]),
   threadRootId: idSchema.optional(),
+  /** Set when the author posted it through a Claude connection (hosted MCP), so readers can tell. */
+  via: z.literal("claude").optional(),
   createdAt: isoDateSchema,
   editedAt: isoDateSchema.optional(),
   pinnedAt: isoDateSchema.optional(),

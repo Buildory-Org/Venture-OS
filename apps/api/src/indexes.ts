@@ -81,6 +81,9 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("files").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
     db.collection("files").createIndex({ workspaceId: 1, groupId: 1, status: 1, createdAt: -1, _id: -1 }),
     db.collection("files").createIndex({ name: "text" }),
+    // Text read out of PDF, Word, Markdown, and plain-text files (see file-text.ts), searched alongside file names.
+    db.collection("file_texts").createIndex({ text: "text" }),
+    db.collection("file_texts").createIndex({ workspaceId: 1, ventureId: 1 }),
     db.collection("pats").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("pats").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("mcp_executions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),

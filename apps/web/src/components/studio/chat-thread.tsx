@@ -25,7 +25,12 @@ export function dayLabel(iso: string) {
 }
 export const startsNewDay = (previous: { createdAt: string } | undefined, item: { createdAt: string }) => !previous || dayKey(previous.createdAt) !== dayKey(item.createdAt);
 /** Consecutive messages from one author within five minutes share a header and avatar. */
-export const continuesGroup = (previous: Message | undefined, item: Message) => !!previous && previous.authorId === item.authorId && !startsNewDay(previous, item) && !item.threadRootId && Date.parse(item.createdAt) - Date.parse(previous.createdAt) < 5 * minute;
+export const continuesGroup = (previous: Message | undefined, item: Message) => !!previous && previous.authorId === item.authorId && previous.via === item.via && !startsNewDay(previous, item) && !item.threadRootId && Date.parse(item.createdAt) - Date.parse(previous.createdAt) < 5 * minute;
+
+/** Marks a message the author posted through a Claude connection. */
+export function ViaClaude() {
+  return <span title="Posted through Claude" className="rounded-full bg-[var(--color-neutral-100)] px-1.5 py-px text-[9px] font-semibold text-[var(--color-neutral-500)]">via Claude</span>;
+}
 
 export function DaySeparator({ iso }: { iso: string }) {
   return <div role="separator" aria-label={dayLabel(iso)} className="flex items-center gap-3 py-1 text-[10px] font-semibold uppercase tracking-[.12em] text-[var(--color-neutral-400)]"><span className="h-px flex-1 bg-[var(--color-neutral-100)]" />{dayLabel(iso)}<span className="h-px flex-1 bg-[var(--color-neutral-100)]" /></div>;

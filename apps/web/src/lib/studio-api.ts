@@ -207,7 +207,7 @@ export async function getLiveTask(id: string) {
 
 type UploadScope = { ventureId: string; groupId?: string; taskId?: string } | { recipientId: string };
 const fileTypes = new Map<string, string>([
-  ["pdf", "application/pdf"], ["md", "text/markdown"], ["txt", "text/plain"],
+  ["pdf", "application/pdf"], ["docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"], ["md", "text/markdown"], ["txt", "text/plain"],
   ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
   ["webp", "image/webp"], ["gif", "image/gif"], ["mp4", "video/mp4"], ["mov", "video/quicktime"], ["webm", "video/webm"],
   ["mp3", "audio/mpeg"], ["m4a", "audio/mp4"], ["ogg", "audio/ogg"], ["wav", "audio/wav"],

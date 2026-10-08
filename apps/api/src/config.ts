@@ -17,6 +17,9 @@ const schema = z.object({
     return (named !== null || !/[<>\r\n]/.test(value)) && z.email().safeParse(named?.[1] ?? value).success;
   }, "EMAIL_FROM must be an email address or Name <address@example.com>").default("Venture Studio <noreply@example.invalid>"),
   ALLOW_DEV_AUTH: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  // Hosted MCP (`/mcp`) and its write tools can be switched off without a code change.
+  MCP_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  MCP_WRITES_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),
   R2_ENDPOINT: z.url().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),

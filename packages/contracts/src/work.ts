@@ -101,7 +101,7 @@ export const taskUpdateSchema = z.object({
 });
 
 export const taskListQuerySchema = cursorQuerySchema.extend({
-  ventureId: idSchema.optional(), groupId: idSchema.optional(), assigneeId: idSchema.optional(),
+  ventureId: idSchema.optional(), groupId: idSchema.optional(), assigneeId: idSchema.optional(), reviewerId: idSchema.optional(),
   status: taskStatusSchema.optional(), priority: taskPrioritySchema.optional(), tag: z.string().optional(),
 });
 
@@ -147,6 +147,8 @@ export const reminderSchema = z.object({
   updatedAt: isoDateSchema,
 });
 
+// A member's own reminder at a time, optionally about a task they can open.
+export const createReminderSchema = z.object({ at: isoDateSchema, message: z.string().trim().min(1).max(500), taskId: idSchema.optional() }).strict();
 export const snoozeSchema = z.object({ minutes: z.union([z.literal(10), z.literal(20), z.literal(30), z.literal("never")]) });
 
 export const focusSessionSchema = z.object({

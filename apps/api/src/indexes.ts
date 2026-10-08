@@ -83,6 +83,7 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("files").createIndex({ name: "text" }),
     db.collection("pats").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("pats").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    db.collection("mcp_executions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("events").createIndex({ workspaceId: 1, occurredAt: 1, _id: 1 }),
     db.collection("audit_events").createIndex({ workspaceId: 1, occurredAt: -1 }),
     db.collection("api_rate_limits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),

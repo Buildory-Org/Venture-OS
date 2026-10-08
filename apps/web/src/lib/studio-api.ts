@@ -55,6 +55,8 @@ import {
   updateDocumentSchema,
   sessionBootstrapResponseSchema,
   successEnvelope,
+  patListItemSchema,
+  patCreatedSchema,
   taskListQuerySchema,
   taskSchema,
   taskUpdateSchema,
@@ -659,6 +661,20 @@ export async function createLiveChannel(input: unknown) {
 
 export async function createLiveVenture(input: { name: string; ownerId: string; goal30Day: string }) {
   return successEnvelope(ventureSchema).parse(await request("/v1/admin/ventures", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+/** This person's Claude (MCP) tokens, newest first; secrets are never returned after creation. */
+export async function listLivePats() {
+  return successEnvelope(patListItemSchema.array()).parse(await request("/v1/pats")).data;
+}
+
+/** Creates a token; the secret in `token` is shown once. */
+export async function createLivePat(input: { name: string; scopes: string[]; expiresInDays: number }) {
+  return successEnvelope(patCreatedSchema).parse(await request("/v1/pats", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+export async function revokeLivePat(id: string) {
+  await request(`/v1/pats/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
 
 /** Archived ventures this person may restore (admins: all; venture heads: their own). */

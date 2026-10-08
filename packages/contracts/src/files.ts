@@ -24,14 +24,27 @@ export const searchQuerySchema = cursorQuerySchema.extend({
   types: z.array(z.enum(["message", "task", "file"])).default(["message", "task", "file"]),
 });
 
+// Read scopes, then the narrow write scopes used by hosted MCP tools. Older read scopes stay valid for existing tokens.
+export const patScopeSchema = z.enum([
+  "today:read", "ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read",
+  "reminders:read", "notifications:read", "tasks:write", "reminders:write", "notifications:write",
+]);
+export const PAT_READ_SCOPES = ["ventures:read", "tasks:read", "messages:read", "knowledge:read", "decisions:read", "reminders:read", "notifications:read"] as const;
+export const PAT_WRITE_SCOPES = ["tasks:write", "reminders:write", "notifications:write"] as const;
+// Tokens must expire: a lost laptop or pasted token stops working on its own. 1 to 366 days.
 export const patCreateSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  scopes: z.array(z.enum(["today:read", "ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read"])).min(1),
-  expiresAt: isoDateSchema.optional(),
+  // A write scope only makes sense with its read scope (a tool must see what it changes).
+  scopes: z.array(patScopeSchema).min(1).max(20).refine((scopes) => scopes.every((scope) => !scope.endsWith(":write") || scopes.includes(scope.replace(/:write$/, ":read") as never)), "Each write scope needs its matching read scope"),
+  expiresInDays: z.number().int().min(1).max(366),
 });
+
+// What the app lists and returns at creation (the secret `token` only once).
+export const patListItemSchema = z.object({ id: idSchema, name: z.string(), prefix: z.string(), scopes: z.array(patScopeSchema), createdAt: isoDateSchema, expiresAt: isoDateSchema.optional(), lastUsedAt: isoDateSchema.optional(), revokedAt: isoDateSchema.optional() });
+export const patCreatedSchema = z.object({ pat: patListItemSchema, token: z.string() });
 
 export const patSchema = z.object({
   id: idSchema, workspaceId: idSchema, userId: idSchema, name: z.string(),
-  prefix: z.string(), scopes: patCreateSchema.shape.scopes, createdAt: isoDateSchema,
+  prefix: z.string(), scopes: z.array(patScopeSchema), createdAt: isoDateSchema,
   expiresAt: isoDateSchema.optional(), revokedAt: isoDateSchema.optional(), lastUsedAt: isoDateSchema.optional(),
 });

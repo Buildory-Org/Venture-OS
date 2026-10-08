@@ -16,5 +16,5 @@ npm run dev --workspace @venture-studio/api
 
 The sanitized seed supports `x-dev-user-id: user-divyansh` only when `APP_MODE=local` and `ALLOW_DEV_AUTH=true`. Never enable it in production.
 
-Primary route groups are documented in [`docs/backend-api.md`](../../docs/backend-api.md). Local PAT MCP runs with `VSO_MCP_PAT` via `npm run mcp --workspace @venture-studio/api`; hosted MCP requires OAuth and is intentionally not claimed here.
+Primary route groups are documented in [`docs/backend-api.md`](../../docs/backend-api.md). Hosted MCP for Claude Code is served at `/mcp` with personal access tokens (see [`docs/mcp.md`](../../docs/mcp.md)); OAuth for claude.ai and Claude Desktop is phase 2.
 

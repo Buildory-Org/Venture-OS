@@ -25,6 +25,7 @@ it and Docker never copies it into an image.
 | `TUNNEL_TOKEN` | Cloudflare Zero Trust, see below. The site goes public once this is set. |
 | `BACKUP_R2_*` | Optional separate backup bucket. Empty means backups stay on this PC only. |
 | `VAPID_SUBJECT` | `mailto:` plus an address you read. |
+| `MCP_ENABLED` | `true` turns on Claude connections (`/mcp` and the Connect Claude page); off when unset. `MCP_WRITES_ENABLED=false` keeps them read-only. See `docs/mcp.md`. |
 
 The two MongoDB passwords take effect when the database is first created. Do not change them afterwards.
 

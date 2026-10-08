@@ -11,6 +11,7 @@ import type { Auth } from "./auth.js";
 import { AppError } from "./errors.js";
 import { audit } from "./audit.js";
 import { withArchiveScope } from "./archive-scope.js";
+import { internalUserId } from "./internal-auth.js";
 
 type Actor = { id: string; email: string; name: string; membership: Membership };
 
@@ -31,6 +32,12 @@ export function createActorResolver(auth: Auth, db: AppDb, config: AppConfig) {
 
 export function createIdentityResolver(auth: Auth, db: AppDb, config: AppConfig) {
   return async (headers: IncomingHttpHeaders): Promise<{ id: string; email: string; name: string } | undefined> => {
+    // A hosted MCP tool calling the API as the token's owner (see internal-auth.ts); the MCP layer already checked the token.
+    const internalId = internalUserId(headers);
+    if (internalId) {
+      const owner = await db.collection("users").findOne({ _id: internalId, status: "active" });
+      return owner ? { id: internalId, email: String(owner.email), name: String(owner.name) } : undefined;
+    }
     const session = await auth.api.getSession({ headers: fromNodeHeaders(headers) });
     let user = session?.user;
     if (!user && config.ALLOW_DEV_AUTH && config.APP_MODE === "local") {
@@ -58,7 +65,7 @@ export function requireIdentity(resolveIdentity: ReturnType<typeof createIdentit
 
 export function requestContext(req: Request, res: Response, next: NextFunction): void {
   req.id = typeof req.headers["x-request-id"] === "string" ? req.headers["x-request-id"].slice(0, 100) : randomUUID();
-  req.interfaceChannel = "api";
+  req.interfaceChannel = internalUserId(req.headers) ? "mcp" : "api";
   res.setHeader("x-request-id", req.id);
   const startedAt = Date.now();
   res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path.replace(/\/local-objects\/[^/]+/i, "/local-objects/[redacted]"), status: res.statusCode, durationMs: Date.now() - startedAt })));
@@ -118,7 +125,9 @@ export function rateLimitAddress(address: string): string {
 export function rateLimit(db: AppDb, max: number, windowMs: number, bucket = "default") {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const now = Date.now();
-    const key = `${bucket}:${req.actor?.id ?? req.identity?.id ?? (req.ip ? rateLimitAddress(req.ip) : "unknown")}`;
+    // Claude connections get their own per-person bucket so heavy MCP use never throttles the person's browser session.
+    const mcp = req.interfaceChannel === "mcp";
+    const key = `${bucket}${mcp ? "-mcp" : ""}:${req.actor?.id ?? req.identity?.id ?? (mcp ? internalUserId(req.headers) : undefined) ?? (req.ip ? rateLimitAddress(req.ip) : "unknown")}`;
     const windowStart = Math.floor(now / windowMs) * windowMs;
     try {
       const entry = await db.collection("api_rate_limits").findOneAndUpdate(

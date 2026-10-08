@@ -1,0 +1,113 @@
+import { Router, type NextFunction, type Request, type Response } from "express";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { hashPat } from "@venture-studio/core";
+import type { AppConfig } from "../config.js";
+import type { AppDb } from "../db.js";
+import { rateLimitAddress } from "../middleware.js";
+import { apiClient, ToolError } from "./format.js";
+import { registerPrompts, registerTools, SERVER_INSTRUCTIONS } from "./tools.js";
+
+// Per-token budgets on top of the API's own per-person limits. Hourly polling uses a tiny fraction of these.
+const REQUESTS_PER_MINUTE = 120;
+const WRITES_PER_MINUTE = 30;
+const PERSON_REQUESTS_PER_MINUTE = 240;
+const UNAUTHENTICATED_PER_MINUTE = 30;
+const LAST_USED_EVERY_MS = 5 * 60_000;
+
+/** Fixed-window counter in the shared rate-limit collection; returns seconds to wait when over the limit. */
+async function overLimit(db: AppDb, key: string, max: number, windowMs = 60_000): Promise<number> {
+  const now = Date.now(); const windowStart = Math.floor(now / windowMs) * windowMs;
+  const entry = await db.collection("api_rate_limits").findOneAndUpdate({ _id: `${key}:${windowStart}` as never }, { $inc: { count: 1 }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs), createdAt: new Date(now) } }, { upsert: true, returnDocument: "after" });
+  return Number(entry?.count ?? 1) > max ? Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)) : 0;
+}
+
+function jsonRpcError(res: Response, status: number, message: string, headers: Record<string, string> = {}) {
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  res.status(status).json({ jsonrpc: "2.0", error: { code: status === 401 ? -32001 : status === 429 ? -32029 : -32000, message }, id: null });
+}
+
+type Grant = { patId: string; userId: string; workspaceId: string; scopes: Set<string> };
+
+/** The token's grant, or undefined when it is unknown, revoked, expired, or its membership or person is no longer active. */
+async function authenticate(db: AppDb, header: string | undefined): Promise<Grant | undefined> {
+  // The scheme is case-insensitive (RFC 9110); the token itself must match exactly.
+  const match = /^bearer\s+(vso_[A-Za-z0-9_-]{20,200})$/i.exec(header ?? "");
+  if (!match) return undefined;
+  const now = new Date();
+  // Older local-only tokens have no membership binding; hosted MCP refuses them.
+  const pat = await db.collection("pats").findOne({ tokenHash: hashPat(match[1]!), revokedAt: { $exists: false }, expiresAt: { $gt: now }, membershipId: { $exists: true } });
+  if (!pat) return undefined;
+  const membership = await db.collection("memberships").findOne({ _id: pat.membershipId, workspaceId: pat.workspaceId, userId: pat.userId, status: "active" }, { projection: { _id: 1 } });
+  const user = membership ? await db.collection("users").findOne({ _id: pat.userId, status: "active" }, { projection: { _id: 1 } }) : null;
+  if (!membership || !user) return undefined;
+  if (!pat.lastUsedAt || now.getTime() - new Date(pat.lastUsedAt).getTime() > LAST_USED_EVERY_MS) await db.collection("pats").updateOne({ _id: pat._id }, { $set: { lastUsedAt: now } });
+  return { patId: String(pat._id), userId: String(pat.userId), workspaceId: String(pat.workspaceId), scopes: new Set(pat.scopes as string[]) };
+}
+
+/** Hosted MCP over Streamable HTTP: stateless (a fresh server per request), JSON responses, no sessions or SSE. */
+export function mcpRouter(db: AppDb, config: AppConfig): Router {
+  const router = Router();
+  const appOrigin = new URL(config.APP_ORIGIN).origin;
+  router.all("/mcp", async (req: Request, res: Response) => {
+    try {
+      if (!config.MCP_ENABLED) return jsonRpcError(res, 503, "Claude connections are turned off for this workspace");
+      if (req.method !== "POST") return jsonRpcError(res, 405, "Use POST: this server is stateless and does not stream", { allow: "POST" });
+      // A browser page on another site must not drive the endpoint (DNS rebinding); command-line clients send no Origin.
+      const origin = req.headers.origin;
+      if (origin && origin !== appOrigin) return jsonRpcError(res, 403, "This origin may not call the MCP endpoint");
+      // One HTTP request is one JSON-RPC message, so the per-token budget counts real work (no batches).
+      if (Array.isArray(req.body)) return jsonRpcError(res, 400, "Send one JSON-RPC message per request; batches are not supported");
+      const address = req.ip ? rateLimitAddress(req.ip) : "unknown";
+      const grant = await authenticate(db, req.headers.authorization);
+      if (!grant) {
+        const wait = await overLimit(db, `mcp-anon:${address}`, UNAUTHENTICATED_PER_MINUTE);
+        if (wait) return jsonRpcError(res, 429, "Too many requests", { "retry-after": String(wait) });
+        return jsonRpcError(res, 401, "Missing, revoked, or expired token. Create one on the Connect Claude page.", { "www-authenticate": 'Bearer realm="venture-studio", error="invalid_token"' });
+      }
+      // Per token, and per person across all their tokens (someone may hold several).
+      const wait = await overLimit(db, `mcp:${grant.patId}`, REQUESTS_PER_MINUTE) || await overLimit(db, `mcp-user:${grant.userId}`, PERSON_REQUESTS_PER_MINUTE);
+      if (wait) return jsonRpcError(res, 429, "Too many requests; slow down", { "retry-after": String(wait) });
+
+      const server = new McpServer({ name: "venture-studio", version: "1.0.0" }, { instructions: SERVER_INSTRUCTIONS });
+      // Loopback to this same process: the tools use the product API as the token's owner.
+      const base = `http://127.0.0.1:${req.socket.localPort}`;
+      registerTools(server, {
+        api: apiClient(base, grant.userId), db, userId: grant.userId, workspaceId: grant.workspaceId, patId: grant.patId, scopes: grant.scopes,
+        writesEnabled: config.MCP_WRITES_ENABLED, origin: appOrigin,
+        writeBudget: async () => { const seconds = await overLimit(db, `mcp-write:${grant.patId}`, WRITES_PER_MINUTE); if (seconds) throw new ToolError(`Too many changes in a minute from this token; retry in ${seconds} s.`, 429); },
+      });
+      registerPrompts(server, grant.scopes);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      res.on("close", () => { void transport.close(); void server.close(); });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", source: "mcp", message: error instanceof Error ? error.message : String(error) }));
+      if (!res.headersSent) jsonRpcError(res, 500, "Internal error");
+    }
+  });
+  return router;
+}
+
+/** Mounted right after the /mcp body parser: unparseable or oversized bodies get a JSON-RPC error, not the REST envelope. */
+export function mcpBodyErrors(error: { type?: string; status?: number }, _req: Request, res: Response, next: NextFunction): void {
+  // Only reading the body can fail here (bad JSON, size, charset, or a corrupt compressed stream), so every error is the client's.
+  if (res.headersSent) return next(error);
+  const parse = error.type === "entity.parse.failed" || !error.type;
+  const status = error.status && error.status >= 400 && error.status < 500 ? error.status : 400;
+  const message = parse ? "Parse error: the body must be one JSON-RPC object" : error.type === "entity.too.large" ? "Request too large" : "Unreadable request body; send UTF-8 JSON";
+  res.status(status).json({ jsonrpc: "2.0", error: { code: parse ? -32700 : -32600, message }, id: null });
+}
+
+// The only product API calls the tools make (method, path under /v1). Loopback calls outside this list are refused.
+const MCP_ROUTES: [string, RegExp][] = [
+  ["GET", /^\/v1\/session\/bootstrap$/], ["GET", /^\/v1\/members$/],
+  ["GET", /^\/v1\/tasks$/], ["GET", /^\/v1\/tasks\/[A-Za-z0-9_-]+$/], ["PATCH", /^\/v1\/tasks\/[A-Za-z0-9_-]+$/],
+  ["POST", /^\/v1\/tasks\/[A-Za-z0-9_-]+\/(comments|evidence)$/],
+  ["GET", /^\/v1\/outcomes$/], ["GET", /^\/v1\/decisions$/], ["GET", /^\/v1\/knowledge\/search$/], ["GET", /^\/v1\/search$/],
+  ["GET", /^\/v1\/documents\/[A-Za-z0-9_-]+$/], ["GET", /^\/v1\/channels\/[A-Za-z0-9_-]+\/messages$/],
+  ["GET", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders\/[A-Za-z0-9_-]+\/snooze$/],
+  ["GET", /^\/v1\/notifications$/], ["POST", /^\/v1\/notifications\/read$/], ["POST", /^\/v1\/notifications\/[A-Za-z0-9_-]+\/read$/],
+];
+export const isMcpRoute = (method: string, path: string) => MCP_ROUTES.some(([allowed, pattern]) => allowed === method && pattern.test(path));

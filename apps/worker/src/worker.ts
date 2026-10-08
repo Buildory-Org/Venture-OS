@@ -33,12 +33,13 @@ export class Worker {
         await this.db.collection("reminders").updateOne({ _id: reminder._id, state: "claimed", claimedBy: this.config.WORKER_ID }, { $set: { state: "scheduled", scheduledAt: new Date(now.getTime() + HOLD_MS), heldForArchive: true, updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
         return;
       }
-      const taskState = task ? { startedAt: task.startedAt as Date | undefined, completedAt: task.completedAt as Date | undefined, status: task.status as string | undefined } : null;
+      // A personal reminder is the person's own note: deliver it whatever state the task is in.
+      const taskState = task && reminder.kind !== "personal" ? { startedAt: task.startedAt as Date | undefined, completedAt: task.completedAt as Date | undefined, status: task.status as string | undefined } : null;
       const transition = reminderTransition({ repeatMinutes: reminder.repeatMinutes as number | null, sequence: Number(reminder.sequence) }, taskState, now);
       const updated = await this.db.collection("reminders").updateOne({ _id: reminder._id, state: "claimed", claimedBy: this.config.WORKER_ID }, { $set: { state: transition.state, completionReason: transition.state === "completed" ? transition.reason : undefined, sequence: transition.nextSequence, ...(transition.nextAt ? { scheduledAt: transition.nextAt } : {}), updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
       if (!updated.matchedCount || !transition.shouldDeliver) return;
       const key = `reminder:${reminder._id}:${reminder.sequence}`;
-      await this.db.collection("notification_outbox").updateOne({ idempotencyKey: key }, { $setOnInsert: { _id: randomUUID(), workspaceId: reminder.workspaceId, userId: reminder.userId, type: "reminder", title: "Reminder", body: reminder.message, resourceType: reminder.taskId ? "task" : "reminder", resourceId: reminder.taskId ?? reminder._id, reminderId: reminder._id, idempotencyKey: key, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, { upsert: true, session });
+      await this.db.collection("notification_outbox").updateOne({ idempotencyKey: key }, { $setOnInsert: { _id: randomUUID(), workspaceId: reminder.workspaceId, userId: reminder.userId, type: "reminder", title: "Reminder", body: reminder.message, ...(reminder.kind === "personal" ? { kind: "personal" } : {}), resourceType: reminder.taskId ? "task" : "reminder", resourceId: reminder.taskId ?? reminder._id, reminderId: reminder._id, idempotencyKey: key, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, { upsert: true, session });
     });
   }
   private async processOutbox(item: Record<string, any>, now: Date): Promise<void> {
@@ -77,7 +78,7 @@ export class Worker {
   }
 
   private async isStaleTaskNotice(item: Record<string, any>): Promise<boolean> {
-    if (item.resourceType !== "task" || !["assignment", "deadline_warning", "reminder"].includes(item.type)) return false;
+    if (item.resourceType !== "task" || !["assignment", "deadline_warning", "reminder"].includes(item.type) || item.kind === "personal") return false;
     const task = await this.db.collection("tasks").findOne({ _id: item.resourceId, workspaceId: item.workspaceId });
     if (!task || task.assigneeId !== item.userId) return true;
     if (item.type === "assignment") return false;

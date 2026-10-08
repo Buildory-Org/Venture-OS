@@ -202,6 +202,28 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [x] Omit absent document version source URLs on write and normalize legacy null URLs on read; verify POST/GET/PUT contracts with real Mongo
 - [x] Read-only MCP server with scoped local PATs, revocation, and audit logs
 - [x] Threat-model and reviewer-agent pass for file and MCP data boundaries
+- [x] Hosted MCP for Claude Code, phase 1 (2026-10-08, local only, not deployed). Plan and reference are in `docs/mcp.md`; the decision log in `docs/architecture.md` is amended.
+  - **Endpoint:** stateless Streamable HTTP at `/mcp`, proxied by the web app.
+  - **Tokens:** personal access tokens that are hashed, scoped, expire within 366 days, are bound to the owner's membership, revoke immediately, and are revoked when the membership is renewed.
+  - **Tools:** 17 tools and 3 prompts that reach data only through the product API as the token's owner, on an allowlist of routes.
+  - **Scopes:** enforced per tool and inside tool output. A write scope needs its read scope. Direct messages are never exposed.
+  - **Retries:** atomic retry de-duplication by `requestId`, refused when the arguments differ.
+  - **Limits:** per token, per person, and per IP before sign-in; a separate API bucket so Claude never throttles the browser; no batches; 64 KB bodies; Origin check.
+  - **Output:** hidden characters stripped from people-written text, an untrusted-text note, and UTC labels.
+  - **Switches:** `MCP_ENABLED` and `MCP_WRITES_ENABLED`. Production keeps MCP off until `deploy\.env` sets `MCP_ENABLED=true`.
+  - **Connect Claude page:** create a token (read and update, or read only), copy the `claude mcp add` command and an hourly `/loop` prompt, and revoke tokens.
+  - **Reminders:** personal reminders via `POST /v1/reminders`, delivered by the worker.
+  - **Removed:** the old stdio server, which leaked other ventures' outcomes and decisions.
+  - **Verified:**
+    - Backend smoke suite (core 4/4, API 12/12, worker 4/4, typechecks) and web typecheck and lint.
+    - Two Sonnet QA agents against a throwaway seeded stack, one functional (every tool and prompt, the SDK client, sizes and latency) and one adversarial (auth, scopes, cross-venture and archived data, foreign writes, injection, batches, idempotency races, rate limits). Their findings were fixed and re-verified.
+    - Two rounds of independent backend review, with all Medium and Low findings fixed.
+    - A 12-check live smoke through the official MCP client.
+    - A final pass on the final code with the worker running: worker-created notifications in `whats_new`, reminders firing on time, direct-message text hidden from every tool, the review flow, the per-person cap, and the route allowlist with all 17 tools.
+    - The Connect Claude page in a browser: create, copy, the `/mcp` proxy through the web app, and revoke.
+  - **Not verified:** a real Claude Code session, because the CLI's weekly limit was reached.
+  - **Follow-ups:** phase 2 OAuth plus an in-chat view for claude.ai and Desktop; phase 3 `post_message` and `create_task`.
+- [ ] Turn hosted MCP on in production: set `MCP_ENABLED=true` in `deploy\.env`, rebuild, create a token on os.buildory.dev, and connect one real Claude Code session end to end (owner approval required).
 - [x] Integration smoke tests
 
 ## Phase 6 — Production hardening

@@ -203,6 +203,8 @@ export function invitationAcceptanceRoutes(database: Database): Router {
       const currentUser = await db.collection("users").findOne({ _id: identity.id }, { session });
       await db.collection("users").updateOne({ _id: identity.id }, { $set: { email: identity.email, name: identity.name, workspaceId: invite.workspaceId, status: "active", updatedAt: now, ...(!currentUser?.handle ? { handle } : {}) }, $setOnInsert: { createdAt: now } }, { upsert: true, session });
       await db.collection("memberships").updateOne({ workspaceId: invite.workspaceId, userId: identity.id }, { $set: { role: invite.role, ventureIds: invite.ventureIds, groupIds: invite.groupIds, inheritedVentureIds: [], status: "active", updatedAt: now }, $setOnInsert: { _id: randomUUID(), createdAt: now } }, { upsert: true, session });
+      // Joining (or re-joining) starts with no Claude tokens: any left from an earlier membership stop working.
+      await db.collection("pats").updateMany({ workspaceId: invite.workspaceId, userId: identity.id, revokedAt: { $exists: false } }, { $set: { revokedAt: now, revokedReason: "membership_renewed" } }, { session });
       const accepted = await db.collection("invitations").updateOne({ _id: invite._id, status: "accepting" }, { $set: { status: "accepted", acceptedAt: now, acceptedBy: identity.id } }, { session });
       if (!accepted.matchedCount) throw new AppError(409, "CONFLICT", "Invitation was already claimed");
       await db.collection("invitations").updateMany({ workspaceId: invite.workspaceId, email: invite.email, status: "pending", _id: { $ne: invite._id } }, { $set: { status: "superseded", updatedAt: now } }, { session });

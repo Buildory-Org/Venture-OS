@@ -6,7 +6,7 @@ import type { Auth } from "./auth.js";
 import type { ObjectStore } from "./storage.js";
 import { LocalObjectStore } from "./storage.js";
 import { clientAddressFromHeader, createActorResolver, createIdentityResolver, rateLimit, requestContext, requireActor, requireIdentity } from "./middleware.js";
-import { createErrorHandler } from "./errors.js";
+import { AppError, createErrorHandler } from "./errors.js";
 import { hierarchyRoutes } from "./routes/hierarchy.js";
 import { workRoutes } from "./routes/work.js";
 import { collaborationRoutes } from "./collaboration.js";
@@ -20,6 +20,7 @@ import { salesRoutes } from "./routes/sales.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
 import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
+import { isMcpRoute, mcpBodyErrors, mcpRouter } from "./mcp/http.js";
 
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
   const app = express();
@@ -31,7 +32,14 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.all("/api/auth/*splat", toNodeHandler(auth));
   const localStore = store instanceof LocalObjectStore ? store : new LocalObjectStore(config);
   app.use("/v1", localObjectRoutes(database.db, localStore));
+  // MCP messages are small; parsed first so the 2 MB limit below never applies to /mcp.
+  app.use("/mcp", express.json({ limit: "64kb" }), mcpBodyErrors);
   app.use(express.json({ limit: "2mb" }));
+  // Hosted MCP authenticates with personal access tokens, so it sits before the /v1 session gate.
+  app.use(mcpRouter(database.db, config));
+  // MCP tools act as the token owner, but only on the routes the tools use; everything else (tokens, admin, invitations,
+  // deletes, push subscriptions, uploads...) is refused even if a future tool tried to reach it.
+  app.use((req, _res, next) => next(req.interfaceChannel === "mcp" && !isMcpRoute(req.method, req.path) ? new AppError(403, "FORBIDDEN", "Not available to Claude connections") : undefined));
   app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
   app.use("/v1/setup/first-admin", rateLimit(database.db, 60, 60_000, "setup-ip"));
   app.use("/v1", firstAdminRoutes(database, config, auth));

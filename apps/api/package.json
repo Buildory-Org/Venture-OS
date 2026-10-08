@@ -11,8 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/api.test.ts",
     "seed": "tsx src/seed.ts",
-    "migrate": "tsx src/migrate.ts",
-    "mcp": "tsx src/mcp.ts"
+    "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1138.0",

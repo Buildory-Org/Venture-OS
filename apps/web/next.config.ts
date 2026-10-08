@@ -37,6 +37,8 @@ const nextConfig: NextConfig = {
       ] : []),
       { source: "/v1/:path*", destination: `${apiOrigin}/v1/:path*` },
       { source: "/api/auth/:path*", destination: `${apiOrigin}/api/auth/:path*` },
+      // Hosted MCP for Claude Code and other MCP clients (personal access tokens).
+      { source: "/mcp", destination: `${apiOrigin}/mcp` },
       { source: "/socket.io", destination: `${apiOrigin}/socket.io/` },
       { source: "/socket.io/:path*", destination: `${apiOrigin}/socket.io/:path*` },
     ];

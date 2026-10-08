@@ -21,6 +21,7 @@
 - Resend and Web Push deliver outbound notifications
 - MCP begins read-only, authenticated with revocable scoped local PATs
 - Hosted MCP authentication must use OAuth; local PATs are restricted to local development
+  - Amended 2026-10-08 (owner-approved plan in `docs/mcp.md`): hosted MCP at `/mcp` phase 1 accepts personal access tokens for Claude Code. Tokens are hashed, scoped, expire within 366 days, bind to the owner's membership, are revocable immediately, and are revoked when the membership is renewed. Tools reach data only through the product API as the token's owner, and narrow, audited writes are allowed. OAuth 2.1 remains required for claude.ai and Claude Desktop connectors in phase 2.
 - JEV may be used for research, but is not a V1 runtime dependency
 
 ## Recorded implementation decisions

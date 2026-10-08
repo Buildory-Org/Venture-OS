@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createEvidenceSchema, createOutcomeSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createEvidenceSchema, createOutcomeSchema, createReminderSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
@@ -23,6 +23,7 @@ export function workRoutes(database: Database): Router {
     if (query.ventureId) filter.ventureId = query.ventureId;
     if (query.groupId) filter.groupId = query.groupId;
     if (query.assigneeId) filter.assigneeId = query.assigneeId;
+    if (query.reviewerId) filter.reviewerId = query.reviewerId;
     if (query.status) filter.status = query.status;
     if (query.priority) filter.priority = query.priority;
     if (query.tag) filter.tags = query.tag;
@@ -279,9 +280,30 @@ export function workRoutes(database: Database): Router {
     res.json({ ok: true, data: jsonValue(await db.collection("task_filters").findOne({ _id: id })) });
   });
 
+  // A member's own reminder at a time, optionally about a task they can open (used by the app and by Claude via MCP).
+  router.post("/reminders", async (req, res) => {
+    const actor = req.actor!; const input = createReminderSchema.parse(req.body); const now = new Date();
+    const at = new Date(input.at);
+    if (at.getTime() < now.getTime() + 60_000 || at.getTime() > now.getTime() + 366 * 86_400_000) throw new AppError(400, "BAD_REQUEST", "Pick a time between one minute and one year from now");
+    const task = input.taskId ? await accessibleTask(db, actor, input.taskId) : null;
+    const pending = await db.collection("reminders").countDocuments({ workspaceId: actor.membership.workspaceId, userId: actor.id, kind: "personal", state: "scheduled" });
+    if (pending >= 200) throw new AppError(409, "CONFLICT", "You have 200 upcoming personal reminders; let some fire or snooze them first");
+    const reminder = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: actor.id, kind: "personal", message: input.message, scheduledAt: at, repeatMinutes: null, state: "scheduled", sequence: 0, ...(task ? { taskId: task._id, ventureId: task.ventureId } : {}), createdAt: now, updatedAt: now };
+    await atomic(database, async (session) => {
+      await db.collection("reminders").insertOne(reminder, { session });
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "reminder.create", objectType: "reminder", objectId: reminder._id, ...(task ? { ventureId: String(task.ventureId) } : {}), result: "success" }, session);
+    });
+    res.status(201).json({ ok: true, data: jsonValue(reminder) });
+  });
   router.get("/reminders", async (req, res) => {
     const actor = req.actor!; const query = cursorQuerySchema.parse(req.query);
     const scope = { workspaceId: actor.membership.workspaceId, userId: actor.id };
+    // ?upcoming=true: the soonest scheduled reminders first (one page, no cursor).
+    if (req.query.upcoming === "true") {
+      const rows = await db.collection("reminders").find({ ...scope, state: "scheduled", ...await notArchivedReminders(db, actor) }).sort({ scheduledAt: 1, _id: 1 }).limit(query.limit).toArray();
+      res.json({ ok: true, data: { items: jsonValue(rows) } });
+      return;
+    }
     const cursor = query.cursor ? await db.collection("reminders").findOne({ _id: idSchema.parse(query.cursor), ...scope }) : null;
     if (query.cursor && !cursor) throw new AppError(404, "NOT_FOUND", "Reminder cursor not found");
     const after = cursor ? { $or: [{ scheduledAt: { $lt: cursor.scheduledAt } }, { scheduledAt: cursor.scheduledAt, _id: { $lt: cursor._id } }] } : {};
@@ -302,7 +324,8 @@ export function workRoutes(database: Database): Router {
     if (!reminder) throw new AppError(404, "NOT_FOUND", "Reminder not found");
     if (reminder.state === "claimed") throw new AppError(409, "CONFLICT", "Reminder is currently being delivered; retry snooze shortly");
     if (reminder.state === "cancelled" || (reminder.state === "completed" && reminder.completionReason !== "delivered")) throw new AppError(409, "CONFLICT", "A terminal reminder cannot be snoozed");
-    if (reminder.taskId) {
+    // Start-of-task nudges stop once work starts; a personal reminder is the person's own note and can always be snoozed.
+    if (reminder.taskId && reminder.kind !== "personal") {
       const task = await db.collection("tasks").findOne({ _id: reminder.taskId, workspaceId: actor.membership.workspaceId });
       if (task?.startedAt || task?.completedAt || ["done", "cancelled"].includes(String(task?.status))) throw new AppError(409, "CONFLICT", "A reminder for started or terminal work cannot be snoozed");
     }

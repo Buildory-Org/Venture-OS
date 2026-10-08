@@ -1925,6 +1925,89 @@ test("group access per venture: all groups follows new groups, picked groups and
   }
 });
 
+test("workspace admins can be assigned or review tasks in any group; outsiders are refused by role", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_admin_assignable`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now });
+  await db.collection("groups").insertMany([{ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now }, { _id: "group-other", workspaceId: "workspace-a", ventureId: "venture-a", name: "Other", createdAt: now }]);
+  await db.collection("channels").insertOne({ _id: "channel-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", name: "general", createdAt: now });
+  // Admins reach every group through their role, so their memberships list none.
+  const people = [["admin", "admin", [], []], ["lead", "venture_head", ["venture-a"], ["group-a"]], ["member", "contributor", ["venture-a"], ["group-a"]], ["outsider", "contributor", ["venture-a"], ["group-other"]]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: handle, handle, status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("users").insertMany([{ _id: "user-former", workspaceId: "workspace-a", email: "former@example.invalid", name: "former", handle: "former", status: "active", createdAt: now, updatedAt: now }, { _id: "user-elsewhere", workspaceId: "workspace-b", email: "elsewhere@example.invalid", name: "elsewhere", handle: "elsewhere", status: "active", createdAt: now, updatedAt: now }]);
+  await db.collection("memberships").insertMany([{ _id: "membership-former", workspaceId: "workspace-a", userId: "user-former", role: "admin", ventureIds: [], groupIds: [], status: "inactive", createdAt: now, updatedAt: now }, { _id: "membership-elsewhere", workspaceId: "workspace-b", userId: "user-elsewhere", role: "admin", ventureIds: [], groupIds: [], status: "active", createdAt: now, updatedAt: now }]);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  const task = (assigneeId: string, reviewerId?: string) => ({ ventureId: "venture-a", groupId: "group-a", title: "Ship it", outcome: "Shipped", assigneeId, ...(reviewerId ? { reviewerId } : {}), dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Live", evidenceRequirement: "Link" });
+  try {
+    // The person picker lists admins for a group, and the server now accepts them.
+    const offered = (await json(await call("GET", "/members?ventureId=venture-a&groupId=group-a", "admin"))).items.map((item: any) => item.id).sort();
+    assert.deepEqual(offered, ["user-admin", "user-lead", "user-member"]);
+    const reviewedByAdmin = await call("POST", "/tasks", "admin", task("user-member", "user-admin"));
+    assert.equal(reviewedByAdmin.status, 201, await reviewedByAdmin.clone().text());
+    const forAdmin = await call("POST", "/tasks", "lead", task("user-admin", "user-admin"));
+    assert.equal(forAdmin.status, 201, await forAdmin.clone().text());
+    const assigned = await json(forAdmin);
+    assert.equal(assigned.assigneeId, "user-admin");
+    assert.equal(await db.collection("reminders").countDocuments({ taskId: assigned.id, userId: "user-admin" }), 1);
+    // Reassigning to an admin works too.
+    const memberTask = await json(await call("POST", "/tasks", "lead", task("user-member")));
+    const reassigned = await call("PATCH", `/tasks/${memberTask.id}`, "lead", { assigneeId: "user-admin", reviewerId: "user-admin" });
+    assert.equal(reassigned.status, 200, await reassigned.clone().text());
+    // Someone outside the group is still refused, and the message says which role failed.
+    const badReviewer = await call("POST", "/tasks", "admin", task("user-member", "user-outsider"));
+    assert.equal(badReviewer.status, 400);
+    assert.equal(((await badReviewer.json()) as any).error.message, "Reviewer is not an active member of this venture and group");
+    const badAssignee = await call("POST", "/tasks", "admin", task("user-outsider"));
+    assert.equal(badAssignee.status, 400);
+    assert.equal(((await badAssignee.json()) as any).error.message, "Assignee is not an active member of this venture and group");
+    // Being an admin only counts while the membership is active, and only in that workspace.
+    assert.equal((await call("POST", "/tasks", "admin", task("user-former"))).status, 400);
+    assert.equal((await call("POST", "/tasks", "admin", task("user-member", "user-elsewhere"))).status, 400);
+    // /assign in chat reaches admins as well, and still refuses people outside the group.
+    const preview = await call("POST", "/commands/preview", "lead", { channelId: "channel-a", input: `/assign @admin "Check the numbers" due=${due} estimate=30 timezone=UTC` });
+    assert.equal(preview.status, 201, await preview.clone().text());
+    const executed = await call("POST", "/commands/execute", "lead", { previewId: (await json(preview)).previewId, idempotencyKey: "assign-admin-0001" });
+    assert.equal(executed.status, 201, await executed.clone().text());
+    assert.equal((await json(executed)).task.assigneeId, "user-admin");
+    const outsiderPreview = await call("POST", "/commands/preview", "lead", { channelId: "channel-a", input: `/assign @outsider "Nope" due=${due} estimate=30 timezone=UTC` });
+    assert.equal(outsiderPreview.status, 201, await outsiderPreview.clone().text());
+    assert.equal((await call("POST", "/commands/execute", "lead", { previewId: (await json(outsiderPreview)).previewId, idempotencyKey: "assign-outsider-0001" })).status, 404);
+    const notifyPreview = await call("POST", "/commands/preview", "lead", { channelId: "channel-a", input: `/notify @admin "Numbers are in" at=${due} timezone=UTC` });
+    assert.equal(notifyPreview.status, 201, await notifyPreview.clone().text());
+    const notified = await call("POST", "/commands/execute", "lead", { previewId: (await json(notifyPreview)).previewId, idempotencyKey: "notify-admin-0001" });
+    assert.equal(notified.status, 201, await notified.clone().text());
+    assert.equal((await json(notified)).reminder.userId, "user-admin");
+    // Classes in a venture can be run by an admin too; people outside the venture are still refused.
+    const lesson = { ventureId: "venture-a", title: "Pricing basics", objective: "Learn", scheduledAt: due, durationMinutes: 30, status: "scheduled" };
+    const adminClass = await call("POST", "/classes", "lead", { ...lesson, facilitatorId: "user-admin", participantIds: ["user-member", "user-admin"] });
+    assert.equal(adminClass.status, 201, await adminClass.clone().text());
+    assert.equal((await call("POST", "/classes", "lead", { ...lesson, facilitatorId: "user-admin", participantIds: ["user-elsewhere"] })).status, 400);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
 test("hosted MCP: tokens, sign-in, every tool through the product API, permission boundaries, writes, limits, and switches", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   const dbName = `venture_studio_test_${process.pid}_${Date.now()}_mcp`;
   assert.match(dbName, /^venture_studio_test_/);

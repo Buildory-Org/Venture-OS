@@ -271,6 +271,12 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - An independent review found no blockers, and its should-fix points were fixed.
     - Tried end to end on an isolated local copy, at desktop and phone width, in light and dark.
     - Two flaky MCP test checks (time of day, minute rollover) were hardened.
+- [x] Admins can be assignees and reviewers (2026-10-08). The person picker already listed workspace admins, but the server refused them: admin memberships list no ventures or groups, because admins reach everything through their role.
+  - **Where admins are now accepted:** one shared rule in `apps/api/src/assignable.ts` ("listed in the venture and group, or an active admin of this workspace") covers task create and reassign, chat `/assign` and `/notify`, and class reviewers, facilitators and participants.
+  - **Error message:** it now names who failed ("Reviewer is not an active member…").
+  - **Verified:** a new API test (admin as assignee and reviewer, reassign, `/assign` and `/notify`, an admin running a class; outsiders, inactive admins and other workspaces' admins refused); backend smoke (core 4/4, API 14/14, worker 4/4); typecheck; an independent review with no blockers.
+  - **Open policy points from the review:** demoting an admin to a scoped role can leave tasks they hold outside their new scope, and an admin can review their own task.
+- [x] Sidebar scrolls on shorter laptop screens (2026-10-08). On wide screens the sidebar was not held to the window height, so the menu never scrolled and the bottom (People & access, Connect Claude, account and sign out) was cut off on any window under about 1025px tall. It now fits the window and the menu scrolls. Verified in the browser at 1280×600 (expanded and collapsed), 1440×1000 and phone width, with a real wheel scroll, no console errors, and web lint and typecheck passing.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

@@ -8,6 +8,7 @@ import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { inArchivedVenture } from "../archive-scope.js";
+import { assignableMembership, listedInOrAdmin } from "../assignable.js";
 import { jsonValue } from "../json.js";
 
 export function commandRoutes(database: Database): Router {
@@ -45,7 +46,7 @@ export function commandRoutes(database: Database): Router {
       const currentActor = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentActor) throw new AppError(403, "FORBIDDEN", "Command access denied");
       assertCommandManager(currentActor as unknown as NonNullable<Express.Request["actor"]>["membership"], String(stored.ventureId), String(stored.groupId));
-      const currentTarget = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: target._id, status: "active", ventureIds: stored.ventureId, groupIds: stored.groupId }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
+      const currentTarget = await db.collection("memberships").findOneAndUpdate(assignableMembership(actor.membership.workspaceId, String(target._id), String(stored.ventureId), String(stored.groupId)), { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentTarget) throw new AppError(404, "NOT_FOUND", "Command recipient is no longer in this group");
     };
     const now = new Date();
@@ -103,7 +104,8 @@ async function accessibleChannel(db: AppDb, actor: NonNullable<Express.Request["
 }
 
 async function resolveUser(db: AppDb, workspaceId: string, ventureId: string, groupId: string, handle: string) {
-  const members = await db.collection("memberships").find({ workspaceId, status: "active", ventureIds: ventureId, groupIds: groupId }).project({ userId: 1 }).toArray();
+  // Group members and workspace admins, the same people a task here can be assigned to.
+  const members = await db.collection("memberships").find({ workspaceId, status: "active", ...listedInOrAdmin(ventureId, groupId) }).project({ userId: 1 }).toArray();
   const ids = members.map((member) => member.userId);
   const exact = { $regex: `^${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" };
   for (const field of ["handle", "email", "name"] as const) {

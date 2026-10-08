@@ -7,6 +7,7 @@ import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
+import { assignableMembership } from "../assignable.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue, omitNullFields, withDates } from "../json.js";
 import { assertNotBlank, assertOrderedDates } from "../validation.js";
@@ -55,8 +56,8 @@ export function workRoutes(database: Database): Router {
     const actor = req.actor!;
     if (!can(actor.membership, "task:create", { ventureId: input.ventureId, groupId: input.groupId })) throw new AppError(403, "FORBIDDEN", "You cannot create tasks in this scope");
     await assertTaskScope(db, actor.membership.workspaceId, input);
-    await assertAssignableMember(db, actor.membership.workspaceId, input.assigneeId, input.ventureId, input.groupId);
-    if (input.reviewerId) await assertAssignableMember(db, actor.membership.workspaceId, input.reviewerId, input.ventureId, input.groupId);
+    await assertAssignableMember(db, actor.membership.workspaceId, input.assigneeId, input.ventureId, input.groupId, "Assignee");
+    if (input.reviewerId) await assertAssignableMember(db, actor.membership.workspaceId, input.reviewerId, input.ventureId, input.groupId, "Reviewer");
     const now = new Date();
     const id = randomUUID();
     const deadlineRisk = hasDeadlineRisk(input.dueAt, input.estimatedMinutes, now);
@@ -64,8 +65,8 @@ export function workRoutes(database: Database): Router {
     await atomic(database, async (session) => {
       const currentActor = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentActor || !can(currentActor as unknown as Parameters<typeof can>[0], "task:create", { ventureId: input.ventureId, groupId: input.groupId })) throw new AppError(403, "FORBIDDEN", "You cannot create tasks in this scope");
-      await fenceAssignableMember(db, actor.membership.workspaceId, input.assigneeId, input.ventureId, input.groupId, session);
-      if (input.reviewerId && input.reviewerId !== input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.reviewerId, input.ventureId, input.groupId, session);
+      await fenceAssignableMember(db, actor.membership.workspaceId, input.assigneeId, input.ventureId, input.groupId, "Assignee", session);
+      if (input.reviewerId && input.reviewerId !== input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.reviewerId, input.ventureId, input.groupId, "Reviewer", session);
       await db.collection("tasks").insertOne(task, { session });
       const latestStartAt = new Date(new Date(input.dueAt).getTime() - input.estimatedMinutes * 60_000);
       await db.collection("reminders").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.assigneeId, taskId: id, kind: "task_start", message: `Start: ${input.title}`, scheduledAt: latestStartAt > now ? latestStartAt : now, timezone: input.timezone, repeatMinutes: 10, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now }, { session });
@@ -93,8 +94,8 @@ export function workRoutes(database: Database): Router {
       if (!elevated && current.assigneeId !== actor.id && current.reviewerId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the assignee, assigned reviewer, or venture lead may update this task");
       if (!elevated && (["assigneeId", "reviewerId", "priority", "dueAt", "estimatedMinutes"] as const).some((field) => input[field] !== undefined)) throw new AppError(403, "FORBIDDEN", "Only a venture lead or workspace admin may change task planning or assignment");
       if (input.status && !elevated && current.assigneeId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the assignee or venture lead may change task progress");
-      if (input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.assigneeId, String(current.ventureId), String(current.groupId), session);
-      if (input.reviewerId && input.reviewerId !== input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.reviewerId, String(current.ventureId), String(current.groupId), session);
+      if (input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.assigneeId, String(current.ventureId), String(current.groupId), "Assignee", session);
+      if (input.reviewerId && input.reviewerId !== input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.reviewerId, String(current.ventureId), String(current.groupId), "Reviewer", session);
       if (input.status === "done") {
         const evidence = await db.collection("evidence_items").countDocuments({ taskId: id, reviewStatus: { $in: ["accepted", "exception"] } }, { session });
         if (!evidence) throw new AppError(409, "CONFLICT", "Completion requires accepted evidence or a reviewed exception");
@@ -363,14 +364,14 @@ async function accessibleTask(db: AppDb, actor: NonNullable<Express.Request["act
   return task;
 }
 
-async function assertAssignableMember(db: AppDb, workspaceId: string, userId: string, ventureId: string, groupId: string, session?: import("mongodb").ClientSession): Promise<void> {
-  const membership = await db.collection("memberships").findOne({ workspaceId, userId, status: "active", ventureIds: ventureId, groupIds: groupId }, { session });
-  if (!membership) throw new AppError(400, "BAD_REQUEST", "Assignee or reviewer is not an active member of this venture and group");
+async function assertAssignableMember(db: AppDb, workspaceId: string, userId: string, ventureId: string, groupId: string, who: "Assignee" | "Reviewer", session?: import("mongodb").ClientSession): Promise<void> {
+  const membership = await db.collection("memberships").findOne(assignableMembership(workspaceId, userId, ventureId, groupId), { session });
+  if (!membership) throw new AppError(400, "BAD_REQUEST", `${who} is not an active member of this venture and group`);
 }
 
-async function fenceAssignableMember(db: AppDb, workspaceId: string, userId: string, ventureId: string, groupId: string, session?: import("mongodb").ClientSession): Promise<void> {
-  const membership = await db.collection("memberships").findOneAndUpdate({ workspaceId, userId, status: "active", ventureIds: ventureId, groupIds: groupId }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
-  if (!membership) throw new AppError(400, "BAD_REQUEST", "Assignee or reviewer is not an active member of this venture and group");
+async function fenceAssignableMember(db: AppDb, workspaceId: string, userId: string, ventureId: string, groupId: string, who: "Assignee" | "Reviewer", session?: import("mongodb").ClientSession): Promise<void> {
+  const membership = await db.collection("memberships").findOneAndUpdate(assignableMembership(workspaceId, userId, ventureId, groupId), { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
+  if (!membership) throw new AppError(400, "BAD_REQUEST", `${who} is not an active member of this venture and group`);
 }
 
 async function assertTaskScope(db: AppDb, workspaceId: string, input: { ventureId: string; groupId: string; channelId?: string; outcomeId?: string; parentTaskId?: string; dependencies: string[] }): Promise<void> {

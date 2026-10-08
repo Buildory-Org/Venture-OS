@@ -10,6 +10,7 @@ import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
+import { listedInOrAdmin } from "../assignable.js";
 import { jsonValue, slug, withDates } from "../json.js";
 import { assertNotBlank } from "../validation.js";
 
@@ -203,7 +204,7 @@ export function knowledgeRoutes(database: Database): Router {
     if (!item) throw new AppError(404, "NOT_FOUND", "Class not found");
     const input = z.object({ taskId: idSchema.optional(), exercise: z.string().trim().min(1).max(5_000), evidenceItemId: idSchema.optional(), reviewerId: idSchema }).parse(req.body);
     if (input.reviewerId === actor.id) throw new AppError(400, "BAD_REQUEST", "An applicant cannot review their own application");
-    if (!(await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: input.reviewerId, status: "active", ...(item.ventureId ? { ventureIds: item.ventureId } : {}) }))) throw new AppError(400, "BAD_REQUEST", "Reviewer must be an active member of the class venture");
+    if (!(await db.collection("memberships").findOne({ workspaceId: actor.membership.workspaceId, userId: input.reviewerId, status: "active", ...(item.ventureId ? listedInOrAdmin(String(item.ventureId)) : {}) }))) throw new AppError(400, "BAD_REQUEST", "Reviewer must be an active member of the class venture");
     if (input.evidenceItemId && !input.taskId) throw new AppError(400, "BAD_REQUEST", "Evidence requires a task");
     if (input.taskId) {
       const task = await db.collection("tasks").findOne({ _id: input.taskId, workspaceId: actor.membership.workspaceId, ...(item.ventureId ? { ventureId: item.ventureId } : {}), ...(actor.membership.role === "admin" ? {} : { groupId: { $in: actor.membership.groupIds } }) });
@@ -264,7 +265,7 @@ function canReadAllApplications(actor: Actor, item: AppDocument): boolean {
 async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unknown, facilitatorId: string, participantIds: string[]): Promise<void> {
   const people = [...new Set([facilitatorId, ...participantIds])];
   if (new Set(participantIds).size !== participantIds.length) throw new AppError(400, "BAD_REQUEST", "Class participants must be unique");
-  const count = await db.collection("memberships").countDocuments({ workspaceId, userId: { $in: people }, status: "active", ...(typeof ventureId === "string" ? { ventureIds: ventureId } : {}) });
+  const count = await db.collection("memberships").countDocuments({ workspaceId, userId: { $in: people }, status: "active", ...(typeof ventureId === "string" ? listedInOrAdmin(ventureId) : {}) });
   if (count !== people.length) throw new AppError(400, "BAD_REQUEST", "Class people must be active members of the class venture");
 }
 

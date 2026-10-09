@@ -375,6 +375,20 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - A very busy "All messages" channel can push older unread items out of the newest-100 inbox.
     - Tabs left open from before the update must reload once.
     - Push behaviour on Safari and iPhone is untested.
+- [x] Message notch, like a MacBook notch or the iPhone Dynamic Island; built and tested locally, not yet live (2026-10-09). Skiper UI's version is a paid Pro component, so it was built in-house with no new library.
+  - **When it shows:** a new message (direct, a channel followed for every message, or an @mention) arrives while you're on another page of the app. It replaces the regular pop-up for messages; reminders and other notices keep that pop-up.
+  - **What it does:**
+    - A black pill drops in at the top centre and springs open into a card: initials, name, where it came from, time, and the message.
+    - Up to three messages stack inside it, newest first, with "and N more" below.
+    - It stays until closed (× or Escape) or clicked. Clicking opens the chat, marks it read, and drops that chat's messages from the notch.
+    - Closing reverses into the pill and fades. With reduce-motion on, it simply fades.
+  - **Verified:**
+    - In the browser: phone and laptop widths, dark mode, stacking, click-through, closing, and no notch while viewing that chat.
+    - Checks: typecheck, web lint, and the production build.
+- [x] Chat polish (2026-10-09), not yet live.
+  - **Avatar:** it now sits beside the last message of a run, in direct messages and channels, as in iMessage; the name and time stay on the first message.
+  - **Sideways scrollbar removed:** the hover reaction bar on your own short messages reached past the chat's right edge. It now opens towards the middle, and message lists never scroll sideways.
+  - **Verified:** in the browser with the details panel open.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

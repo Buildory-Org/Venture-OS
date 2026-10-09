@@ -14,6 +14,7 @@ import { isActiveChat } from "@/lib/chat-presence";
 import { raiseAlert } from "@/lib/device-alerts";
 import { useNotificationNudges } from "@/lib/use-live-realtime";
 import { prepareChatAudio } from "@/components/studio/chat-message-effects";
+import { MessageIsland, type IslandMessage } from "./message-island";
 import { replayAnimation } from "@/lib/motion";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
@@ -22,6 +23,8 @@ const pollMs = 15_000;
 // A tab in the background still checks now and then, in case the live connection dropped.
 const hiddenPollMs = 60_000;
 const alertWindowMs = 10 * 60_000;
+// Messages (direct, channels followed, @mentions) go to the notch; everything else to the regular pop-up.
+const isMessage = (item: Notification) => Boolean(item.chatKind) && ["message", "channel_message", "mention"].includes(item.type);
 const TOAST_ID = "live-notification";
 const errorText = (cause: unknown) => describeError(cause, "The action failed. Please try again.");
 const reminderId = (item: Notification) => item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
@@ -63,6 +66,7 @@ export function LiveTitleBadge() {
  */
 export function LiveNotificationPulse({ userId }: { userId: string }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [island, setIsland] = useState<IslandMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [snoozed, setSnoozed] = useState("");
@@ -123,17 +127,25 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
         }
         if (seenIdsRef.current) {
           const unseen = next.filter((item) => !item.readAt && !seenIdsRef.current!.has(item.id) && !isActiveChat(item.chatKind, item.chatId));
+          const messages = unseen.filter(isMessage);
+          if (messages.length) setIsland((current) => [...messages.map((item) => ({ id: item.id, title: item.title, body: item.body, href: notificationHref(item).href, at: item.createdAt })), ...current.filter((shown) => !messages.some((item) => item.id === shown.id))].slice(0, 8));
           if (unseen.length) {
             // A sound and, with the tab behind, a system banner: the newest few, oldest first.
             // Only recent ones: waking a computer from sleep shouldn't replay old news.
             const recent = unseen.filter((notice) => Date.now() - new Date(notice.createdAt).getTime() < alertWindowMs);
             for (const notice of recent.slice(0, 3).reverse()) void raiseAlert({ id: notice.id, title: notice.title, body: notice.body, href: notificationHref(notice).href }, (href) => openRef.current(href));
-            const item = unseen.find(sticky) ?? unseen[0];
-            setToasts((current) => [{ item, count: unseen.length }, ...current].slice(0, 3));
-            setActionError(""); setSnoozed("");
+            const others = unseen.filter((item) => !isMessage(item));
+            const item = others.find(sticky) ?? others[0];
+            if (item) {
+              setToasts((current) => [{ item, count: others.length }, ...current].slice(0, 3));
+              setActionError(""); setSnoozed("");
+            }
           }
           next.forEach((item) => seenIdsRef.current!.add(item.id));
         } else seenIdsRef.current = new Set(next.map((item) => item.id));
+        // Messages read elsewhere (or by opening their chat) leave the notch.
+        const read = new Set(next.filter((item) => item.readAt).map((item) => item.id));
+        setIsland((current) => current.some((shown) => read.has(shown.id)) ? current.filter((shown) => !read.has(shown.id)) : current);
         publishNotificationSnapshot(next);
       } catch { /* The inbox keeps its last good count; it shows request errors on open. */ }
       finally {
@@ -204,5 +216,13 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
   });
 
   useEffect(() => () => dismissToast(TOAST_ID), []);
-  return null;
+
+  function openMessage(item: IslandMessage) {
+    // Opening a chat shows everything in it, so its other messages leave the notch too.
+    const chat = item.href;
+    setIsland((current) => current.filter((shown) => shown.href !== chat));
+    openRef.current(item.href);
+    void readLiveNotification(item.id).then(() => pollRef.current()).catch(() => undefined);
+  }
+  return <MessageIsland items={island} onOpen={openMessage} onClose={() => setIsland([])} />;
 }

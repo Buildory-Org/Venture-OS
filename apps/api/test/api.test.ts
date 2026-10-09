@@ -20,6 +20,7 @@ import { backfillStringDates } from "../src/date-backfill.js";
 import { internalHeaders } from "../src/internal-auth.js";
 import { dashboardResponseSchema, documentSchema, documentVersionSchema, eventEnvelopeSchema, evidenceItemSchema, messageSchema, opportunitySchema, PAT_DIRECT_MESSAGE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES, taskUpdateSchema } from "@venture-studio/contracts";
 import { readFileSync } from "node:fs";
+import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
 import type { Request, Response } from "express";
@@ -301,8 +302,8 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.deepEqual(((await (await fetch(`${origin}/v1/members?groupId=group-a&handle=peer`, { headers })).json()) as any).data.items.map((item: any) => item.name), ["Peer User"]);
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-hidden`, { headers })).status, 404);
     assert.equal(((await (await fetch(`${origin}/v1/members?handle=b`, { headers })).json()) as any).data.items[0].name, "Venture B User");
-    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true });
-    const changedPreferences = { email: false, webPush: false, mentions: true, messages: true, assignments: true, reminders: true };
+    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true });
+    const changedPreferences = { email: false, webPush: false, mentions: true, messages: true, assignments: true, reminders: true, calendar: false };
     assert.equal((await fetch(`${origin}/v1/notification-preferences`, { method: "PUT", headers, body: JSON.stringify(changedPreferences) })).status, 200);
     assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, changedPreferences);
     const hidden = await fetch(`${origin}/v1/tasks/task-hidden`, { headers });
@@ -2537,4 +2538,203 @@ test("file text: hostile files stay contained, storage trouble is not remembered
   assert.equal(value.status, "failed");
   assert.match(String(value.error), /could not be read/);
   assert.equal(stored.length, 1);
+});
+
+test("calendar: private, venture, and group events; invitations and answers; repeats; reminders; the private feed; Claude tools", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_calendar`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now });
+  const people = [["lead", "venture_head", ["venture-a"], ["group-core"]], ["member", "contributor", ["venture-a"], ["group-core"]], ["designer", "contributor", ["venture-a"], ["group-design"]], ["learner", "learner", ["venture-a"], ["group-core"]], ["outsider", "contributor", ["venture-b"], ["group-b"]]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], status: "active", createdAt: now, updatedAt: now })));
+  await db.collection("ventures").insertMany([{ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now }, { _id: "venture-b", workspaceId: "workspace-a", name: "Beta", status: "active", goal30Day: "", createdAt: now }]);
+  await db.collection("groups").insertMany([{ _id: "group-core", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now }, { _id: "group-design", workspaceId: "workspace-a", ventureId: "venture-a", name: "Design", createdAt: now }, { _id: "group-b", workspaceId: "workspace-a", ventureId: "venture-b", name: "Core", createdAt: now }]);
+  const day = (offset: number, hour = 10) => { const date = new Date(Date.now() + offset * 86_400_000); date.setUTCHours(hour, 0, 0, 0); return date; };
+  await db.collection("tasks").insertOne({ _id: "task-due", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-core", title: "Ship the deck", outcome: "o", assigneeId: "user-member", reviewerId: "user-lead", priority: "medium", status: "todo", dueAt: day(2, 12), reviewAt: day(2, 13), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", tags: [], dependencies: [], evidenceLinks: [], createdBy: "user-lead", createdAt: now, updatedAt: now });
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const timed = (title: string, offset: number, extra: Record<string, unknown> = {}) => ({ title, startAt: day(offset).toISOString(), endAt: new Date(day(offset).getTime() + 3_600_000).toISOString(), timezone: "UTC", ...extra });
+  const created = async (handle: string, body: unknown) => { const response = await call("POST", "/calendar/events", handle, body); assert.equal(response.status, 201, await response.clone().text()); return json(response); };
+  const range = (scope: string, layers = "events") => `/calendar?from=${encodeURIComponent(day(-1, 0).toISOString())}&to=${encodeURIComponent(day(20, 0).toISOString())}&scope=${scope}&layers=${layers}`;
+  const titles = async (handle: string, scope: string) => (await json(await call("GET", range(scope), handle))).events.map((item: any) => item.title).sort();
+  try {
+    // Private: the organiser and invitees only; invitations are notified and get the organiser's reminders.
+    const lunch = await created("member", timed("Lunch with lead", 1, { attendeeIds: ["user-lead"], reminders: [10, 60] }));
+    assert.equal(lunch.myResponse, "organizer");
+    assert.equal((await json(await call("GET", `/calendar/events/${lunch.id}`, "lead"))).myResponse, "pending");
+    assert.equal((await call("GET", `/calendar/events/${lunch.id}`, "designer")).status, 404);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ type: "event_invite", userId: "user-lead", resourceId: lunch.id }), 1);
+    assert.deepEqual((await db.collection("reminders").find({ eventId: lunch.id }).toArray()).map((item) => `${item.userId}:${item.minutes}`).sort(), ["user-lead:10", "user-lead:60", "user-member:10", "user-member:60"]);
+    // Venture and group events: who sees them, who may add them, who may be invited.
+    const allHands = await created("member", timed("All hands", 2, { visibility: "venture", ventureId: "venture-a" }));
+    const coreSync = await created("member", timed("Core sync", 3, { visibility: "group", ventureId: "venture-a", groupId: "group-core" }));
+    assert.deepEqual(await titles("designer", "venture-a"), ["All hands"]);
+    assert.deepEqual(await titles("lead", "venture-a"), ["All hands", "Core sync"]);
+    assert.equal((await call("GET", range("venture-a"), "outsider")).status, 404);
+    assert.equal((await call("GET", `/calendar/events/${allHands.id}`, "outsider")).status, 404);
+    assert.equal((await call("POST", "/calendar/events", "learner", timed("Learner meetup", 1, { visibility: "venture", ventureId: "venture-a" }))).status, 403);
+    await created("learner", timed("Learner study block", 1));
+    assert.equal((await call("POST", "/calendar/events", "member", timed("Bad invite", 1, { visibility: "venture", ventureId: "venture-a", attendeeIds: ["user-outsider"] }))).status, 400);
+    await created("member", timed("Coffee across ventures", 4, { attendeeIds: ["user-outsider"] }));
+    assert.equal((await call("POST", "/calendar/events", "member", { ...timed("Backwards", 1), endAt: day(1, 9).toISOString() })).status, 400);
+    // My calendar shows what I organise or was invited to; "all" adds the shared calendars.
+    assert.deepEqual(await titles("lead", "mine"), ["Lunch with lead"]);
+    assert.deepEqual(await titles("lead", "all"), ["All hands", "Core sync", "Lunch with lead"]);
+    // Work layers: a task due shows for its assignee.
+    const layered = await json(await call("GET", range("mine", "events,tasks,reviews"), "member"));
+    assert.ok(layered.items.some((item: any) => item.kind === "task_due" && item.title === "Ship the deck"));
+    // ...but not once they've left its group, as on the task list.
+    await db.collection("memberships").updateOne({ _id: "membership-member" }, { $set: { groupIds: [] } });
+    assert.ok(!(await json(await call("GET", range("mine", "events,tasks,reviews"), "member"))).items.some((item: any) => item.kind === "task_due"));
+    await db.collection("memberships").updateOne({ _id: "membership-member" }, { $set: { groupIds: ["group-core"] } });
+    // Answers: shared events can be joined; declining stops reminders and tells the organiser; private ones can't be gate-crashed.
+    const joined = await json(await call("POST", `/calendar/events/${allHands.id}/respond`, "designer", { response: "going" }));
+    assert.equal(joined.myResponse, "going");
+    assert.equal((await call("POST", `/calendar/events/${lunch.id}/respond`, "designer", { response: "going" })).status, 404);
+    assert.equal((await json(await call("POST", `/calendar/events/${lunch.id}/respond`, "lead", { response: "declined" }))).myResponse, "declined");
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: lunch.id, userId: "user-lead", state: "scheduled" }), 0);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ type: "event_response", userId: "user-member", resourceId: lunch.id }), 1);
+    assert.equal((await call("POST", `/calendar/events/${lunch.id}/respond`, "member", { response: "going" })).status, 400);
+    // Personal reminders: only listed times; replaced for that person alone.
+    assert.equal((await call("PUT", `/calendar/events/${allHands.id}/reminders`, "designer", { minutes: [7] })).status, 400);
+    assert.deepEqual((await json(await call("PUT", `/calendar/events/${allHands.id}/reminders`, "designer", { minutes: [30] }))).myReminders, [30]);
+    assert.deepEqual((await db.collection("reminders").find({ eventId: allHands.id, userId: "user-designer" }).toArray()).map((item) => item.minutes), [30]);
+    // A reminder already delivered is not sent again when the event is edited; the others stay planned.
+    const sent = await db.collection("reminders").findOne({ eventId: lunch.id, userId: "user-member", minutes: 10 });
+    await db.collection("reminders").updateOne({ _id: sent!._id }, { $set: { state: "completed", completionReason: "delivered" } });
+    const lunchNow = await json(await call("GET", `/calendar/events/${lunch.id}`, "member"));
+    const retitled = await call("PATCH", `/calendar/events/${lunch.id}`, "member", { ...timed("Lunch with lead", 1, { attendeeIds: ["user-lead"], reminders: [10, 60], description: "Bring the numbers" }), baseVersion: lunchNow.version });
+    assert.equal(retitled.status, 200, await retitled.clone().text());
+    assert.equal((await db.collection("reminders").findOne({ _id: sent!._id }))?.state, "completed");
+    assert.deepEqual((await db.collection("reminders").find({ eventId: lunch.id, state: "scheduled" }).toArray()).map((item) => `${item.userId}:${item.minutes}`), ["user-member:60"]);
+    // A snoozed reminder survives an edit, even long after its first time (it is no longer in the plan).
+    const soon = await created("member", { title: "Quick call", startAt: new Date(Date.now() + 30 * 60_000).toISOString(), endAt: new Date(Date.now() + 60 * 60_000).toISOString(), timezone: "UTC", reminders: [60] });
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: soon.id }), 0, "a reminder 30 minutes late isn't planned");
+    const snoozedId = eventReminderIdFor({ _id: soon.id }, { occurrenceKey: soon.startAt, userId: "user-member", minutes: 60 }, (text) => createHash("sha256").update(text).digest("hex"));
+    await db.collection("reminders").insertOne({ _id: snoozedId, workspaceId: "workspace-a", userId: "user-member", kind: "event", eventId: soon.id, eventTitle: "Quick call", allDay: false, occurrenceKey: soon.startAt, occurrenceStart: new Date(soon.startAt), minutes: 60, message: "Quick call", scheduledAt: new Date(Date.now() + 10 * 60_000), timezone: "UTC", repeatMinutes: null, state: "scheduled", sequence: 1, createdAt: new Date(), updatedAt: new Date() } as never);
+    const renamedSoon = await call("PATCH", `/calendar/events/${soon.id}`, "member", { title: "Quick call (Zoom)", startAt: soon.startAt, endAt: soon.endAt, timezone: "UTC", reminders: [60], baseVersion: soon.version });
+    assert.equal(renamedSoon.status, 200, await renamedSoon.clone().text());
+    assert.equal((await db.collection("reminders").findOne({ _id: snoozedId as never }))?.state, "scheduled");
+    // Someone who leaves the venture stops getting its reminders and notices, and the event can still be edited.
+    const review = await created("lead", timed("Design review", 1, { visibility: "venture", ventureId: "venture-a", attendeeIds: ["user-designer"] }));
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: review.id, userId: "user-designer", state: "scheduled" }), 1);
+    await db.collection("memberships").updateOne({ _id: "membership-designer" }, { $set: { ventureIds: [], groupIds: [] } });
+    const reviewEdit = await call("PATCH", `/calendar/events/${review.id}`, "lead", { ...timed("Design review (agenda)", 1, { visibility: "venture", ventureId: "venture-a", attendeeIds: ["user-designer"] }), baseVersion: review.version });
+    assert.equal(reviewEdit.status, 200, await reviewEdit.clone().text());
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: review.id, userId: "user-designer", state: "scheduled" }), 0);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ type: "event_update", userId: "user-designer", resourceId: review.id }), 0);
+    await db.collection("memberships").updateOne({ _id: "membership-designer" }, { $set: { ventureIds: ["venture-a"], groupIds: ["group-design"] } });
+    // A long series bounded by a date stays on the calendar to its end (no cut-off at 500 dates).
+    const until = new Date(Date.now() + 800 * 86_400_000).toISOString().slice(0, 10);
+    const checkIn = await created("member", timed("Daily check-in", 1, { recurrence: { freq: "daily", interval: 1, until } }));
+    assert.ok(new Date((await db.collection("calendar_events").findOne({ _id: checkIn.id }))!.seriesEndAt) >= new Date(`${until}T00:00:00Z`));
+    assert.equal((await call("DELETE", `/calendar/events/${checkIn.id}`, "member")).status, 200);
+    // Editing: the organiser or a venture lead; stale versions are refused; changes notify people who are coming.
+    assert.equal((await call("PATCH", `/calendar/events/${allHands.id}`, "designer", { ...timed("All hands", 2, { visibility: "venture", ventureId: "venture-a" }), baseVersion: allHands.version })).status, 403);
+    const moved = await call("PATCH", `/calendar/events/${allHands.id}`, "lead", { ...timed("All hands (moved)", 5, { visibility: "venture", ventureId: "venture-a" }), baseVersion: allHands.version });
+    assert.equal(moved.status, 200, await moved.clone().text());
+    assert.equal((await call("PATCH", `/calendar/events/${allHands.id}`, "lead", { ...timed("Again", 6, { visibility: "venture", ventureId: "venture-a" }), baseVersion: allHands.version })).status, 409);
+    assert.ok(await db.collection("notification_outbox").countDocuments({ type: "event_update", userId: { $in: ["user-designer", "user-member"] }, resourceId: allHands.id }) >= 1);
+    // Repeats: weekly three times; one date moved on its own, one cancelled; the series stays consistent.
+    const standup = await created("member", timed("Standup", 1, { recurrence: { freq: "daily", interval: 1, count: 3 } }));
+    const occurrences = (await json(await call("GET", range("mine"), "member"))).events.filter((item: any) => item.eventId === standup.id);
+    assert.equal(occurrences.length, 3);
+    const second = occurrences[1];
+    const single = await call("PATCH", `/calendar/events/${standup.id}`, "member", { ...timed("Standup (late)", 2, { startAt: new Date(new Date(second.startAt).getTime() + 2 * 3_600_000).toISOString(), endAt: new Date(new Date(second.startAt).getTime() + 3 * 3_600_000).toISOString() }), scope: "occurrence", occurrenceKey: second.occurrenceKey, baseVersion: standup.version });
+    assert.equal(single.status, 200, await single.clone().text());
+    assert.equal((await json(single)).seriesId, standup.id);
+    assert.equal((await call("DELETE", `/calendar/events/${standup.id}?occurrence=${encodeURIComponent(occurrences[2].occurrenceKey)}`, "member")).status, 200);
+    // Renaming one date at its usual time doesn't resend the reminder the series already sent for it.
+    const retro = await created("member", timed("Retro", 1, { recurrence: { freq: "daily", interval: 1, count: 2 } }));
+    const retroKey = new Date(retro.startAt).toISOString();
+    const retroSent = await db.collection("reminders").findOne({ eventId: retro.id, userId: "user-member", occurrenceKey: retroKey });
+    assert.ok(retroSent, "the first date's reminder is planned");
+    await db.collection("reminders").updateOne({ _id: retroSent!._id }, { $set: { state: "completed", completionReason: "delivered" } });
+    const retroOne = await call("PATCH", `/calendar/events/${retro.id}`, "member", { ...timed("Retro (agenda)", 1), scope: "occurrence", occurrenceKey: retroKey, baseVersion: retro.version });
+    assert.equal(retroOne.status, 200, await retroOne.clone().text());
+    const retroSingle = await json(retroOne);
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: { $in: [retro.id, retroSingle.id] }, occurrenceKey: retroKey, userId: "user-member", state: "scheduled" }), 0);
+    assert.equal((await db.collection("reminders").findOne({ _id: retroSent!._id }))?.state, "completed");
+    const after = (await json(await call("GET", range("mine"), "member"))).events.filter((item: any) => item.title.startsWith("Standup")).map((item: any) => item.title);
+    assert.deepEqual(after, ["Standup", "Standup (late)"]);
+    assert.equal((await call("DELETE", `/calendar/events/${standup.id}?occurrence=not-a-date`, "member")).status, 404);
+    // Cancelling the whole event tells the people coming and drops their reminders.
+    assert.equal((await call("DELETE", `/calendar/events/${coreSync.id}`, "member")).status, 200);
+    assert.equal((await call("GET", `/calendar/events/${coreSync.id}`, "lead")).status, 404);
+    assert.equal(await db.collection("reminders").countDocuments({ eventId: coreSync.id, state: "scheduled" }), 0);
+
+    // The private feed: read without signing in, reset (the old link stops), off, and gone with the membership.
+    // A title can't smuggle extra calendar lines in with a bare carriage return.
+    await created("member", timed("Evil\rEND:VEVENT\rBEGIN:VEVENT\rSUMMARY:Forged", 2));
+    const feed = await json(await call("POST", "/calendar/feed", "member"));
+    const path = new URL(feed.url).pathname;
+    const logged: string[] = [];
+    const info = console.info;
+    console.info = (line: unknown) => { logged.push(String(line)); };
+    let ics!: globalThis.Response; let text!: string;
+    try {
+      ics = await fetch(`${origin}${path}`);
+      text = await ics.text();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally { console.info = info; }
+    assert.equal(ics.status, 200);
+    assert.match(String(ics.headers.get("content-type")), /text\/calendar/);
+    assert.equal(ics.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(ics.headers.get("x-robots-tag"), "noindex");
+    assert.ok(!/\r(?!\n)/.test(text), "no bare carriage returns");
+    assert.ok(text.includes("SUMMARY:Evil\\nEND:VEVENT\\nBEGIN:VEVENT\\nSUMMARY:Forged"));
+    assert.ok(!text.split("\r\n").includes("SUMMARY:Forged"));
+    // The link's secret never reaches the request log.
+    assert.ok(logged.some((line) => line.includes("/calendar/feed/[redacted]")) && !logged.some((line) => line.includes("vsocal_")));
+    assert.match(text, /BEGIN:VCALENDAR[\s\S]*SUMMARY:Lunch with lead[\s\S]*SUMMARY:Due: Ship the deck[\s\S]*END:VCALENDAR/);
+    assert.ok(!text.includes("Core sync"), "cancelled events stay out");
+    assert.equal((await fetch(`${origin}/v1/calendar/feed/vsocal_not-a-real-token-at-all-000000000.ics`)).status, 404);
+    assert.equal((await json(await call("GET", "/calendar/feed", "member"))).enabled, true);
+    const reset = await json(await call("POST", "/calendar/feed", "member"));
+    assert.equal((await fetch(`${origin}${path}`)).status, 404);
+    const resetPath = new URL(reset.url).pathname;
+    assert.equal((await fetch(`${origin}${resetPath}`)).status, 200);
+    await db.collection("memberships").updateOne({ _id: "membership-member" }, { $set: { status: "inactive" } });
+    assert.equal((await fetch(`${origin}${resetPath}`)).status, 404);
+    await db.collection("memberships").updateOne({ _id: "membership-member" }, { $set: { status: "active" } });
+    assert.equal((await call("DELETE", "/calendar/feed", "member")).status, 200);
+    assert.equal((await fetch(`${origin}${resetPath}`)).status, 404);
+
+    // Claude: list, schedule, and answer; editing and cancelling stay in the app.
+    const tokenResponse = await call("POST", "/pats", "lead", { name: "lead laptop", scopes: ["ventures:read", "calendar:read", "calendar:write"], expiresInDays: 30 });
+    const token = ((await tokenResponse.json()) as any).data.token as string;
+    const scheduled = await mcpTool(origin, token, "create_event", { title: "Pitch practice", start: day(6, 11).toISOString(), durationMinutes: 45, ventureId: "venture-a", invite: ["user-member"], timezone: "UTC", requestId: "event-create-0001" });
+    assert.equal(scheduled.isError, false, scheduled.text);
+    assert.equal(scheduled.data.visibility, "venture");
+    assert.equal((await db.collection("calendar_events").findOne({ _id: scheduled.data.eventId }))?.via, "claude");
+    const listed = await mcpTool(origin, token, "list_events", { from: day(-1, 0).toISOString(), to: day(10, 0).toISOString(), scope: "all", timezone: "UTC" });
+    assert.ok(listed.data.events.some((item: any) => item.title === "Pitch practice"));
+    const memberToken = ((await (await call("POST", "/pats", "member", { name: "member laptop", scopes: ["calendar:read", "calendar:write"], expiresInDays: 30 })).json()) as any).data.token as string;
+    assert.equal((await mcpTool(origin, memberToken, "respond_to_event", { eventId: scheduled.data.eventId, response: "maybe" })).data.response, "maybe");
+    assert.equal((await fetch(`${origin}/v1/calendar/events/${scheduled.data.eventId}`, { method: "DELETE", headers: internalHeaders("user-lead") })).status, 403);
+
+    // Archiving a venture hides its events; deleting it removes them.
+    assert.equal((await call("POST", "/ventures/venture-a/archive", "lead")).status, 200);
+    assert.equal((await call("GET", `/calendar/events/${allHands.id}`, "lead")).status, 404);
+    assert.ok(!(await titles("member", "all")).includes("All hands (moved)"));
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
 });

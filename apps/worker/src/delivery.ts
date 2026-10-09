@@ -2,6 +2,7 @@ import webpush from "web-push";
 import { createHash } from "node:crypto";
 import type { Db } from "mongodb";
 import type { WorkerConfig } from "./config.js";
+import { eventAudience } from "./event-audience.js";
 import { isTrustedPushEndpoint } from "@venture-studio/core";
 
 export class Delivery {
@@ -32,10 +33,19 @@ export class Delivery {
         return;
       }
     }
+    // Calendar notices (cancellations too) reach only people who can still open the event.
+    if (item.resourceType === "event") {
+      const event = await this.db.collection("calendar_events").findOne({ _id: item.resourceId, workspaceId: item.workspaceId });
+      if (!event || !(await eventAudience(this.db, event, [String(item.userId)])).has(String(item.userId))) {
+        await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.scopeSkippedAt": new Date() } });
+        return;
+      }
+    }
     const storedPreferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId });
-    const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, ...storedPreferences };
+    const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true, ...storedPreferences };
     // "Someone accepted your invitation" has no preference switch of its own, so it always arrives in the inbox.
-    const category = item.type === "member_joined" ? null : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
+    // Calendar invitations, changes, and replies have their own switch; calendar reminders follow the reminders switch.
+    const category = item.type === "member_joined" ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
     if (category && preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
       return;

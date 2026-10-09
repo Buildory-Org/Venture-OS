@@ -85,6 +85,12 @@ import {
   KanbanIcon,
   Upload01Icon,
   UserLock01Icon,
+  Calendar03Icon,
+  CalendarAdd01Icon,
+  Location01Icon,
+  Video01Icon,
+  RepeatIcon,
+  Link01Icon,
 } from "@hugeicons/core-free-icons";
 
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -185,3 +191,9 @@ export const LayoutGrid = icon(GridViewIcon);
 export const Kanban = icon(KanbanIcon);
 export const Upload = icon(Upload01Icon);
 export const UserLock = icon(UserLock01Icon);
+export const Calendar = icon(Calendar03Icon);
+export const CalendarPlus = icon(CalendarAdd01Icon);
+export const MapPin = icon(Location01Icon);
+export const Video = icon(Video01Icon);
+export const Repeat = icon(RepeatIcon);
+export const LinkIcon = icon(Link01Icon);

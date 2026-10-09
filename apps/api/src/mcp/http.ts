@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { hashPat } from "@venture-studio/core";
 import type { AppConfig } from "../config.js";
 import type { AppDb } from "../db.js";
-import { rateLimitAddress } from "../middleware.js";
+import { overLimit, rateLimitAddress } from "../middleware.js";
 import { apiClient, ToolError } from "./format.js";
 import { registerPrompts, registerTools, SERVER_INSTRUCTIONS } from "./tools.js";
 
@@ -16,13 +16,6 @@ const UNAUTHENTICATED_PER_MINUTE = 30;
 const LAST_USED_EVERY_MS = 5 * 60_000;
 // Bytes a person may upload through Claude in a day (the app's own uploads are not counted).
 const UPLOAD_BYTES_PER_DAY = 250 * 1024 * 1024;
-
-/** Fixed-window counter in the shared rate-limit collection (adds `amount`); returns seconds to wait when over the limit. */
-async function overLimit(db: AppDb, key: string, max: number, windowMs = 60_000, amount = 1): Promise<number> {
-  const now = Date.now(); const windowStart = Math.floor(now / windowMs) * windowMs;
-  const entry = await db.collection("api_rate_limits").findOneAndUpdate({ _id: `${key}:${windowStart}` as never }, { $inc: { count: amount }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs), createdAt: new Date(now) } }, { upsert: true, returnDocument: "after" });
-  return Number(entry?.count ?? amount) > max ? Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)) : 0;
-}
 
 function jsonRpcError(res: Response, status: number, message: string, headers: Record<string, string> = {}) {
   for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
@@ -125,5 +118,7 @@ const MCP_ROUTES: [string, RegExp][] = [
   ["GET", /^\/v1\/pipelines$/], ["GET", /^\/v1\/opportunities$/], ["POST", /^\/v1\/opportunities$/], ["PATCH", /^\/v1\/opportunities\/[A-Za-z0-9_-]+$/],
   ["GET", /^\/v1\/classes$/], ["GET", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/], ["POST", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/],
   ["PATCH", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications\/[A-Za-z0-9_-]+\/review$/],
+  // Calendar: reading, scheduling, and answering invitations (editing and cancelling stay in the app).
+  ["GET", /^\/v1\/calendar$/], ["POST", /^\/v1\/calendar\/events$/], ["POST", /^\/v1\/calendar\/events\/[A-Za-z0-9_-]+\/respond$/],
 ];
 export const isMcpRoute = (method: string, path: string) => MCP_ROUTES.some(([allowed, pattern]) => allowed === method && pattern.test(path));

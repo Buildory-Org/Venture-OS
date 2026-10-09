@@ -27,12 +27,12 @@ export const searchQuerySchema = cursorQuerySchema.extend({
 // Read scopes, then the narrow write scopes used by hosted MCP tools. Older read scopes stay valid for existing tokens.
 export const patScopeSchema = z.enum([
   "today:read", "ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read",
-  "reminders:read", "notifications:read", "requests:read", "sales:read", "direct_messages:read",
+  "reminders:read", "notifications:read", "requests:read", "sales:read", "calendar:read", "direct_messages:read",
   "tasks:write", "reminders:write", "notifications:write", "knowledge:write", "files:write", "messages:write", "decisions:write",
-  "requests:write", "sales:write", "classes:write", "direct_messages:write",
+  "requests:write", "sales:write", "classes:write", "calendar:write", "direct_messages:write",
 ]);
-export const PAT_READ_SCOPES = ["ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read", "requests:read", "sales:read", "reminders:read", "notifications:read"] as const;
-export const PAT_WRITE_SCOPES = ["tasks:write", "reminders:write", "notifications:write", "knowledge:write", "files:write", "messages:write", "decisions:write", "requests:write", "sales:write", "classes:write"] as const;
+export const PAT_READ_SCOPES = ["ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read", "requests:read", "sales:read", "calendar:read", "reminders:read", "notifications:read"] as const;
+export const PAT_WRITE_SCOPES = ["tasks:write", "reminders:write", "notifications:write", "knowledge:write", "files:write", "messages:write", "decisions:write", "requests:write", "sales:write", "classes:write", "calendar:write"] as const;
 /** Private conversations stay out of both presets: a key reaches them only when its owner ticks this separately. */
 export const PAT_DIRECT_MESSAGE_SCOPES = ["direct_messages:read", "direct_messages:write"] as const;
 // Tokens must expire: a lost laptop or pasted token stops working on its own. 1 to 366 days.

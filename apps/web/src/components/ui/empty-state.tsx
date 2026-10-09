@@ -33,7 +33,7 @@ export const ditherTone = (tone: EmptyTone) => DITHER[tone];
 
 const buttonBase = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition-[background-color,transform,opacity] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
 const primaryButton = `${buttonBase} bg-primary-700 text-white hover:bg-primary-800`;
-const secondaryButton = `${buttonBase} border border-neutral-200 bg-white text-neutral-700 shadow-sm hover:bg-neutral-50`;
+const secondaryButton = `${buttonBase} border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50`;
 // Card-sized states sit inside compact panels, so their buttons are a step smaller.
 const small = "!min-h-9 !px-3 !text-xs !rounded-lg";
 

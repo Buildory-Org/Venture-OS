@@ -5,7 +5,7 @@ import type { ComponentProps } from "react";
 import { useStudio } from "@/lib/studio-store";
 
 const connectedRoutes: Record<string, string> = {
-  dashboard: "/dashboard/live", today: "/today/live", ventures: "/ventures/live",
+  dashboard: "/dashboard/live", today: "/today/live", calendar: "/calendar/live", ventures: "/ventures/live",
   tasks: "/tasks/live", board: "/board/live", channels: "/channels/live",
   messages: "/messages/live", notifications: "/notifications/live",
   knowledge: "/knowledge/live", decisions: "/decisions/live", classes: "/classes/live",

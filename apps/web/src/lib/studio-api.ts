@@ -1,6 +1,11 @@
 import { localDevUserId } from "@/lib/dev-identity";
 import { validationSummary } from "@/lib/errors";
 import {
+  calendarEventSchema,
+  calendarFeedSchema,
+  calendarRangeSchema,
+  createEventSchema,
+  updateEventSchema,
   createTaskSchema,
   createOutcomeSchema,
   createDocumentSchema,
@@ -709,4 +714,50 @@ export async function updateLiveVentureGoal(id: string, goal30Day: string) {
 
 export async function createLiveGroup(input: { ventureId: string; name: string }) {
   return successEnvelope(groupSchema.extend({ channels: channelSchema.array() })).parse(await request("/v1/admin/groups", { method: "POST", body: JSON.stringify(input) })).data;
+}
+
+// Calendar: a date range (events and work layers), one event, and the changes people make to events.
+export async function loadLiveCalendar(input: { from: string; to: string; scope: string; layers: string[] }) {
+  const params = new URLSearchParams({ from: input.from, to: input.to, scope: input.scope, layers: input.layers.join(",") });
+  return successEnvelope(calendarRangeSchema).parse(await request(`/v1/calendar?${params}`)).data;
+}
+
+export async function getLiveEvent(id: string) {
+  return successEnvelope(calendarEventSchema).parse(await request(`/v1/calendar/events/${encodeURIComponent(id)}`)).data;
+}
+
+export async function createLiveEvent(input: unknown) {
+  const valid = createEventSchema.parse(input);
+  return successEnvelope(calendarEventSchema).parse(await request("/v1/calendar/events", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+export async function updateLiveEvent(id: string, input: unknown) {
+  const valid = updateEventSchema.parse(input);
+  return successEnvelope(calendarEventSchema).parse(await request(`/v1/calendar/events/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(valid) })).data;
+}
+
+/** Cancels the whole event, or one date of a repeating event (`occurrence` is that date's key). */
+export async function cancelLiveEvent(id: string, occurrence?: string) {
+  await request(`/v1/calendar/events/${encodeURIComponent(id)}${occurrence ? `?occurrence=${encodeURIComponent(occurrence)}` : ""}`, { method: "DELETE" });
+}
+
+export async function respondToLiveEvent(id: string, response: "going" | "maybe" | "declined") {
+  return successEnvelope(calendarEventSchema).parse(await request(`/v1/calendar/events/${encodeURIComponent(id)}/respond`, { method: "POST", body: JSON.stringify({ response }) })).data;
+}
+
+export async function setLiveEventReminders(id: string, minutes: number[]) {
+  return successEnvelope(calendarEventSchema).parse(await request(`/v1/calendar/events/${encodeURIComponent(id)}/reminders`, { method: "PUT", body: JSON.stringify({ minutes }) })).data;
+}
+
+export async function getLiveCalendarFeed() {
+  return successEnvelope(calendarFeedSchema).parse(await request("/v1/calendar/feed")).data;
+}
+
+/** Makes a new private calendar link (any earlier link stops working); the address is shown only now. */
+export async function createLiveCalendarFeed() {
+  return successEnvelope(calendarFeedSchema).parse(await request("/v1/calendar/feed", { method: "POST", body: "{}" })).data;
+}
+
+export async function deleteLiveCalendarFeed() {
+  await request("/v1/calendar/feed", { method: "DELETE" });
 }

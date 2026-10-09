@@ -23,11 +23,15 @@ export function createActorResolver(auth: Auth, db: AppDb, config: AppConfig) {
   const resolveIdentity = createIdentityResolver(auth, db, config);
   return async (headers: IncomingHttpHeaders): Promise<Actor | undefined> => {
     const user = await resolveIdentity(headers);
-    if (!user) return undefined;
-    const memberships = await db.collection("memberships").find({ userId: user.id, status: "active" }).limit(2).toArray();
-    if (memberships.length !== 1) return undefined;
-    return { ...user, membership: await withArchiveScope(db, membershipValue(memberships[0]!)) };
+    return user ? actorFor(db, user) : undefined;
   };
+}
+
+/** A person's actor (their one active membership, with archived ventures marked), or undefined without exactly one. */
+export async function actorFor(db: AppDb, user: { id: string; email: string; name: string }): Promise<Actor | undefined> {
+  const memberships = await db.collection("memberships").find({ userId: user.id, status: "active" }).limit(2).toArray();
+  if (memberships.length !== 1) return undefined;
+  return { ...user, membership: await withArchiveScope(db, membershipValue(memberships[0]!)) };
 }
 
 export function createIdentityResolver(auth: Auth, db: AppDb, config: AppConfig) {
@@ -68,7 +72,7 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
   req.interfaceChannel = internalUserId(req.headers) ? "mcp" : "api";
   res.setHeader("x-request-id", req.id);
   const startedAt = Date.now();
-  res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path.replace(/\/local-objects\/[^/]+/i, "/local-objects/[redacted]"), status: res.statusCode, durationMs: Date.now() - startedAt })));
+  res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path.replace(/\/local-objects\/[^/]+/i, "/local-objects/[redacted]").replace(/\/calendar\/feed\/[^/]+/i, "/calendar/feed/[redacted]"), status: res.statusCode, durationMs: Date.now() - startedAt })));
   next();
 }
 
@@ -120,6 +124,13 @@ export function rateLimitAddress(address: string): string {
   const right = tail ? tail.split(":") : [];
   const groups = address.includes("::") ? [...left, ...Array<string>(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
   return `${groups.slice(0, 4).map((group) => group.padStart(4, "0")).join(":")}::/64`;
+}
+
+/** Fixed-window counter in the shared rate-limit collection (adds `amount`); returns seconds to wait when over the limit. */
+export async function overLimit(db: AppDb, key: string, max: number, windowMs = 60_000, amount = 1): Promise<number> {
+  const now = Date.now(); const windowStart = Math.floor(now / windowMs) * windowMs;
+  const entry = await db.collection("api_rate_limits").findOneAndUpdate({ _id: `${key}:${windowStart}` as never }, { $inc: { count: amount }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs), createdAt: new Date(now) } }, { upsert: true, returnDocument: "after" });
+  return Number(entry?.count ?? amount) > max ? Math.max(1, Math.ceil((windowStart + windowMs - now) / 1000)) : 0;
 }
 
 export function rateLimit(db: AppDb, max: number, windowMs: number, bucket = "default") {

@@ -136,7 +136,7 @@ export function useChatScroll(listRef: RefObject<HTMLElement | null>, conversati
 
 export function NewMessagesPill({ count, onClick, className }: { count: number; onClick: () => void; className?: string }) {
   if (!count) return null;
-  return <button type="button" onClick={onClick} className={clsx("vso-pill-in absolute left-1/2 z-20 inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--color-primary-700)] px-4 text-[11px] font-semibold text-white shadow-[0_10px_28px_rgba(16,24,40,.25)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-800)] active:scale-[0.97]", className)}><ChevronDown size={14} />{count === 1 ? "New message" : "New messages"}</button>;
+  return <button type="button" onClick={onClick} className={clsx("vso-pill-in absolute left-1/2 z-20 inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--color-primary-700)] px-4 text-[11px] font-semibold text-white transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-800)] active:scale-[0.97]", className)}><ChevronDown size={14} />{count === 1 ? "New message" : "New messages"}</button>;
 }
 
 /** Status line under a message that has not reached the server yet, or failed to. */

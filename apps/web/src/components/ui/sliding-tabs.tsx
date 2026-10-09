@@ -91,7 +91,7 @@ export function SlidingTabs({
 
   return (
     <div ref={listRef} role="tablist" aria-label={label} onKeyDown={moveByKey}
-      className={clsx("vso-tabs relative min-w-0 gap-1 overflow-x-auto rounded-xl p-1", tone === "dark" ? "border border-white/15 bg-white/10" : "bg-white shadow-sm", fitContent ? "inline-flex w-fit max-w-full" : "flex", className)}>
+      className={clsx("vso-tabs relative min-w-0 gap-1 overflow-x-auto rounded-xl p-1", tone === "dark" ? "border border-white/15 bg-white/10" : "bg-white", fitContent ? "inline-flex w-fit max-w-full" : "flex", className)}>
       <span ref={indicatorRef} aria-hidden="true" className={clsx("vso-tab-indicator pointer-events-none absolute left-0 top-0 z-0 rounded-lg", tone === "dark" ? "bg-white" : "bg-primary-100")} />
       {tabs.map((tab) => (
         <button key={tab.key} type="button" role="tab" aria-selected={active === tab.key}

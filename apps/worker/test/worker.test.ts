@@ -120,3 +120,73 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     await client.close();
   }
 });
+
+test("calendar reminders: planned ahead, kept through small edits, never repeated, dropped when the date moves or access ends", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const client = new MongoClient(process.env.TEST_MONGODB_URI!);
+  await client.connect();
+  const dbName = `venture_studio_worker_test_${process.pid}_${Date.now()}_calendar`;
+  assert.match(dbName, /^venture_studio_worker_test_/);
+  const db = client.db(dbName);
+  const collection = (name: string) => db.collection<Record<string, any> & { _id: string }>(name);
+  const config = { APP_MODE: "local" as const, MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, WORKER_ID: "worker-calendar", POLL_MS: 100, EMAIL_FROM: "Venture Studio <noreply@example.invalid>", VAPID_SUBJECT: "mailto:admin@example.invalid" };
+  try {
+    await collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true });
+    await collection("notifications").createIndex({ outboxId: 1 }, { unique: true });
+    for (const id of ["user-o", "user-a", "user-d"]) {
+      await collection("users").insertOne({ _id: id, workspaceId: "workspace-a", status: "active", email: `${id}@example.invalid` });
+      await collection("memberships").insertOne({ _id: `membership-${id}`, workspaceId: "workspace-a", userId: id, role: "member", status: "active", ventureIds: ["venture-a"], groupIds: ["group-a"] });
+    }
+    // Weekly on Mondays at 10:00 in Kolkata (04:30 UTC) on venture A's calendar; one person going, one declined.
+    await collection("calendar_events").insertOne({ _id: "event-sync", workspaceId: "workspace-a", title: "Weekly sync", visibility: "venture", ventureId: "venture-a", organizerId: "user-o", allDay: false, startAt: new Date("2026-10-12T04:30:00Z"), endAt: new Date("2026-10-12T05:00:00Z"), timezone: "Asia/Kolkata", recurrence: { freq: "weekly", interval: 1 }, exdates: [], seriesEndAt: null, attendees: [{ userId: "user-a", response: "going" }, { userId: "user-d", response: "declined" }], defaultReminders: [10], reminderPrefs: [], color: "green", version: 1, createdAt: new Date(), updatedAt: new Date() });
+    const worker = new Worker(client, db, config, true);
+    const now = new Date("2026-10-12T04:00:00Z");
+    assert.equal(await worker.planEventReminders(now), 2);
+    assert.equal(await worker.planEventReminders(now), 0, "planning again adds nothing");
+    assert.deepEqual((await collection("reminders").find({ eventId: "event-sync" }).toArray()).map((item) => item.userId).sort(), ["user-a", "user-o"]);
+    // A title fix before they fire changes nothing about them: both go out, worded with the new title.
+    await collection("calendar_events").updateOne({ _id: "event-sync" }, { $set: { title: "Weekly team sync", version: 2 } });
+    const dueAt = new Date("2026-10-12T04:20:00Z");
+    assert.equal(await worker.tick(dueAt), true);
+    assert.equal(await worker.tick(dueAt), true);
+    const delivered = await collection("notification_outbox").find({ resourceType: "event" }).toArray();
+    assert.deepEqual(delivered.map((item) => item.body), ["Weekly team sync starts in 10 minutes", "Weekly team sync starts in 10 minutes"]);
+    assert.equal(delivered[0]?.resourceId, "event-sync");
+    // Planning after the edit never sends a delivered reminder again.
+    assert.equal(await worker.planEventReminders(new Date("2026-10-12T04:22:00Z")), 0);
+    // Next week: user-a has left the venture, so only the organiser is planned for, and a reminder already planned for
+    // user-a is dropped at delivery.
+    assert.equal(await worker.planEventReminders(new Date("2026-10-17T04:00:00Z")), 2);
+    await collection("memberships").updateOne({ _id: "membership-user-a" }, { $set: { ventureIds: [] } });
+    const nextDue = new Date("2026-10-19T04:20:00Z");
+    assert.equal(await worker.tick(nextDue), true);
+    assert.equal(await worker.tick(nextDue), true);
+    assert.equal(await collection("reminders").countDocuments({ eventId: "event-sync", userId: "user-a", state: "cancelled", cancelReason: "no_access" }), 1);
+    assert.equal(await collection("notification_outbox").countDocuments({ resourceType: "event" }), 3);
+    assert.equal(await worker.planEventReminders(new Date("2026-10-24T04:00:00Z")), 1);
+    // The series moves to 11:00: the reminder planned for 10:00 is dropped instead of sent.
+    await collection("calendar_events").updateOne({ _id: "event-sync" }, { $set: { startAt: new Date("2026-10-12T05:30:00Z"), endAt: new Date("2026-10-12T06:00:00Z"), version: 3 } });
+    assert.equal(await worker.tick(new Date("2026-10-26T04:20:00Z")), true);
+    assert.equal(await collection("reminders").countDocuments({ eventId: "event-sync", state: "cancelled", cancelReason: "event_changed" }), 1);
+    assert.equal(await collection("notification_outbox").countDocuments({ resourceType: "event" }), 3);
+    // A notice about an event goes only to someone who can still open it.
+    await collection("notification_outbox").insertOne({ _id: "outbox-update-a", workspaceId: "workspace-a", userId: "user-a", type: "event_update", title: "Updated: Weekly team sync", body: "changed", resourceType: "event", resourceId: "event-sync", idempotencyKey: "event:event-sync:v3:update:user-a", state: "pending", attempts: 0, nextAttemptAt: new Date("2026-10-26T04:20:00Z"), createdAt: new Date(), updatedAt: new Date() });
+    // Earlier notices are still queued ahead of it; deliver everything due.
+    for (let round = 0; round < 10 && await worker.tick(new Date("2026-10-26T04:21:00Z")); round++);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-update-a" }), 0);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-update-a" }))?.delivery?.scopeSkippedAt);
+    // A private event's queued invitation isn't delivered to someone taken off its list before it went out.
+    await collection("calendar_events").insertOne({ _id: "event-private", workspaceId: "workspace-a", title: "1:1", visibility: "private", organizerId: "user-o", allDay: false, startAt: new Date("2026-11-02T04:30:00Z"), endAt: new Date("2026-11-02T05:00:00Z"), timezone: "UTC", recurrence: null, exdates: [], seriesEndAt: new Date("2026-11-02T05:00:00Z"), attendees: [], defaultReminders: [10], reminderPrefs: [], color: "green", version: 2, createdAt: new Date(), updatedAt: new Date() });
+    await collection("notification_outbox").insertOne({ _id: "outbox-invite-d", workspaceId: "workspace-a", userId: "user-d", type: "event_invite", title: "Invitation: 1:1", body: "invited", resourceType: "event", resourceId: "event-private", idempotencyKey: "event:event-private:invite:user-d", state: "pending", attempts: 0, nextAttemptAt: new Date("2026-10-26T04:20:00Z"), createdAt: new Date(), updatedAt: new Date() });
+    for (let round = 0; round < 10 && await worker.tick(new Date("2026-10-26T04:22:00Z")); round++);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-invite-d" }), 0);
+    // A reminder left from an earlier id scheme for the same moment is superseded instead of sent a second time.
+    await collection("reminders").insertOne({ _id: "evrem_legacy", workspaceId: "workspace-a", userId: "user-o", kind: "event", eventId: "event-sync", eventVersion: 1, occurrenceKey: "2026-11-02T05:30:00.000Z", occurrenceStart: new Date("2026-11-02T05:30:00Z"), minutes: 10, scheduledAt: new Date("2026-11-02T05:20:00Z"), state: "scheduled", sequence: 0, createdAt: new Date(), updatedAt: new Date() });
+    for (let round = 0; round < 10 && await worker.tick(new Date("2026-11-02T05:20:00Z")); round++);
+    assert.equal((await collection("reminders").findOne({ _id: "evrem_legacy" }))?.cancelReason, "superseded");
+    assert.equal(await collection("notification_outbox").countDocuments({ reminderId: "evrem_legacy" }), 0);
+    assert.equal(await collection("notification_outbox").countDocuments({ resourceId: "event-sync", type: "reminder", userId: "user-o", body: /starts in 10 minutes/, createdAt: new Date("2026-11-02T05:20:00Z") }), 1);
+  } finally {
+    await db.dropDatabase();
+    await client.close();
+  }
+});

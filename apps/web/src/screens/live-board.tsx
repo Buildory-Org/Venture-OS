@@ -36,7 +36,7 @@ const rowColumn = "w-[18.5rem] shrink-0";
 
 
 function LayoutSwitch({ layout, onChange }: { layout: Layout; onChange: (layout: Layout) => void }) {
-  return <div role="group" aria-label="Board layout" className="inline-flex rounded-lg bg-neutral-100 p-0.5">{layoutOptions.map(({ key, text, icon: OptionIcon }) => <button key={key} type="button" aria-pressed={layout === key} onClick={() => onChange(key)} className={clsx("inline-flex min-h-8 min-w-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition-[background-color,color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97] sm:px-2.5", layout === key ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-800")}><OptionIcon size={15} aria-hidden="true" /><HeaderLabel>{text}</HeaderLabel></button>)}</div>;
+  return <div role="group" aria-label="Board layout" className="inline-flex rounded-lg bg-neutral-100 p-0.5">{layoutOptions.map(({ key, text, icon: OptionIcon }) => <button key={key} type="button" aria-pressed={layout === key} onClick={() => onChange(key)} className={clsx("inline-flex min-h-8 min-w-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition-[background-color,color,box-shadow,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97] sm:px-2.5", layout === key ? "bg-white text-neutral-900" : "text-neutral-500 hover:text-neutral-800")}><OptionIcon size={15} aria-hidden="true" /><HeaderLabel>{text}</HeaderLabel></button>)}</div>;
 }
 
 export function LiveBoardScreen() {

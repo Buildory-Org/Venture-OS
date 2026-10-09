@@ -303,6 +303,51 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - Two independent reviews (security, and file reading); their blockers and should-fixes were fixed.
     - A real MCP client session against an isolated local copy (curl upload of a PDF, read, import, task, message, decision, request).
     - Screens checked: the "via Claude" label in the channel and the Connect page.
+- [x] Calendar, built and tested locally, not yet live (2026-10-09). Everyone gets a personal calendar, and each venture gets a shared one, with reminders.
+  - **Events:**
+    - Three kinds: private (only the organiser and invitees see it), whole venture, or one group.
+    - Anyone who can post in a venture or group can add events there. Only the organiser, an admin, or that venture's head can edit or cancel.
+    - An event created from a venture's calendar goes on that venture's calendar; the dialog shows it rather than asking.
+  - **Invitations:**
+    - Invitees answer Going, Maybe, or No.
+    - Anyone who can open a shared event can join it.
+    - The organiser is told about each answer.
+  - **Repeats:**
+    - Daily, weekly (on chosen weekdays), or monthly, until a date or for a number of times.
+    - One date can be moved or cancelled on its own.
+  - **Reminders:**
+    - Each person picks their own: from "at start" to 1 day before. All-day events offer 9:00 the day before or 9:00 on the day.
+    - They are planned 3 days ahead by the API and the worker, and they can be snoozed.
+    - They are never sent twice after an edit.
+    - People who lose access to the event get nothing.
+  - **Screens:**
+    - Month, Week (drag to create, move, or resize), Day, and Agenda views.
+    - Work shown as switchable layers: task deadlines, reviews, classes, information requests, deal follow-ups, and outcome reviews on a venture's calendar.
+    - A "Coming up" card on Today.
+    - Works at phone width and in dark mode. Notifications open the event.
+  - **Phone calendar link:**
+    - A private, read-only link for Google, Apple, or Outlook calendars.
+    - It is shown once and can be reset or turned off.
+    - The link's secret is never logged.
+  - **Claude (MCP):**
+    - New tools: list_events, create_event, and respond_to_event.
+    - New key permissions: calendar:read and calendar:write.
+    - Editing and cancelling stay in the app.
+  - **Verified:**
+    - Tests: backend smoke (core 7/7, API 17/17, worker 5/5).
+    - Checks: typechecks, web lint, and the production web build.
+    - Reviews: two independent reviews; all their should-fixes were fixed.
+    - Browser test on an isolated local copy:
+      - creating events, and inviting and answering as two people;
+      - a lead editing someone else's event;
+      - reminders delivered by the worker, and snooze;
+      - the phone link, and the Today card;
+      - phone width and dark mode.
+  - **Known limits:**
+    - There is no free/busy view (by design).
+    - Private events can invite any workspace member, with no daily cap.
+    - A phone link survives a member's removal and works again if they are reactivated.
+    - After an all-day event's time zone changes, a reminder that was already sent or in flight at that moment isn't re-planned for the new zone.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

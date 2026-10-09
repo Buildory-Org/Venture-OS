@@ -84,6 +84,15 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // Text read out of PDF, Word, Markdown, and plain-text files (see file-text.ts), searched alongside file names.
     db.collection("file_texts").createIndex({ text: "text" }),
     db.collection("file_texts").createIndex({ workspaceId: 1, ventureId: 1 }),
+    // Calendar: my events and invitations, shared calendars by venture, and the date window every range query uses.
+    db.collection("calendar_events").createIndex({ workspaceId: 1, organizerId: 1, startAt: 1 }),
+    db.collection("calendar_events").createIndex({ workspaceId: 1, "attendees.userId": 1, startAt: 1 }),
+    db.collection("calendar_events").createIndex({ workspaceId: 1, ventureId: 1, visibility: 1, startAt: 1 }),
+    db.collection("calendar_events").createIndex({ workspaceId: 1, groupId: 1, visibility: 1, startAt: 1 }, { partialFilterExpression: { visibility: "group" } }),
+    db.collection("calendar_events").createIndex({ seriesEndAt: 1, startAt: 1 }),
+    db.collection("calendar_feeds").createIndex({ workspaceId: 1, userId: 1 }, { unique: true }),
+    db.collection("calendar_feeds").createIndex({ tokenHash: 1 }, { unique: true }),
+    db.collection("reminders").createIndex({ eventId: 1, state: 1 }, { partialFilterExpression: { eventId: { $exists: true } } }),
     db.collection("pats").createIndex({ tokenHash: 1 }, { unique: true }),
     db.collection("pats").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("mcp_executions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),

@@ -40,6 +40,12 @@
 - In V1, `/assign` and `/notify` are manager shortcuts limited to workspace admins and scoped venture heads. Contributors may still create tasks through the ordinary task form/API; a distinct per-group manager role and whether it should own all delegation require a later product decision.
 - Channel notifications are mentions-only (decided 2026-10-04): a channel message notifies only validated `@mentions`, never every group member, so inboxes and browser push stay quiet. DMs always notify. Admins are in scope for every channel for mentions, delivery, and visibility.
 - The sample-data prototype under `/demo` is a development aid (decided 2026-10-04): production builds redirect `/demo` to the connected dashboard and hide demo links unless `NEXT_PUBLIC_ENABLE_DEMO=true` is set at build time.
+- Calendar (decided 2026-10-08):
+  - **Storage:** a repeating event is stored once, with its rule, its skipped dates, and a wall-clock time in its own time zone. It is expanded into dates when read. Changing one date splits that date off as a separate event.
+  - **Who sees it:** private events reach only the organiser and invitees (no free/busy). Venture and group events reach everyone who can open that venture or group.
+  - **Who changes it:** anyone who can post in a venture or group may add events there. Only the organiser, an admin, or that venture's head may edit or cancel.
+  - **Reminders:** planned three days ahead, with ids stable per date, person, and offset. Edits never resend a reminder that already went out. Before sending, the worker rechecks the date, the person's answer, and their access.
+  - **Phone-calendar link:** a read-only ICS feed opened by a 256-bit secret that is stored only as a hash. Resetting the link replaces the secret.
 
 ## Reliability and security invariants
 

@@ -23,12 +23,16 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
     // Task notices for tasks in archived ventures stay hidden until the venture is restored.
     const taskIds = archived.length ? [...new Set(page.filter((item) => item.resourceType === "task").map((item) => String(item.resourceId)))] : [];
     const archivedTaskIds = new Set(taskIds.length ? (await db.collection("tasks").find({ _id: { $in: taskIds }, workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }).project({ _id: 1 }).toArray()).map((task) => String(task._id)) : []);
+    // So are calendar notices for events on archived ventures' calendars.
+    const eventIds = archived.length ? [...new Set(page.filter((item) => item.resourceType === "event").map((item) => String(item.resourceId)))] : [];
+    const archivedEventIds = new Set(eventIds.length ? (await db.collection("calendar_events").find({ _id: { $in: eventIds }, workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }).project({ _id: 1 }).toArray()).map((event) => String(event._id)) : []);
     for (const item of page) {
       const legacy = !item.chatKind && item.resourceType === "message" ? messageById.get(String(item.resourceId)) : undefined;
       if (!item.chatKind && item.resourceType === "message" && !legacy) continue;
       const channelId = item.chatKind === "channel" ? String(item.chatId) : legacy?.channelId;
       if (channelId && !accessible.has(String(channelId))) continue;
       if (item.resourceType === "task" && archivedTaskIds.has(String(item.resourceId))) continue;
+      if (item.resourceType === "event" && archivedEventIds.has(String(item.resourceId))) continue;
       visible.push(item);
       if (visible.length === limit) break;
     }

@@ -56,7 +56,7 @@ export const notificationSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
   userId: idSchema,
-  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "member_joined"]),
+  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "member_joined", "event_invite", "event_update", "event_response"]),
   title: z.string(),
   body: z.string(),
   resourceType: z.string(),
@@ -67,6 +67,7 @@ export const notificationSchema = z.object({
   readAt: isoDateSchema.optional(),
   createdAt: isoDateSchema,
 });
-export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean() });
+// `calendar` (invitations, changes, and replies) arrived later: older saved preferences read as on.
+export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean(), calendar: z.boolean().default(true) });
 
 export type Message = z.infer<typeof messageSchema>;

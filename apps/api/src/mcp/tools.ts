@@ -6,6 +6,7 @@ import { clean, clip, compact, errorResult, localTime, result, ToolError, UNTRUS
 import { id, lookups, once, OPEN, type Register, requestIdField, taskLink, taskRow, timezoneField, type ToolContext } from "./kit.js";
 import { registerKnowledgeTools } from "./tools-knowledge.js";
 import { registerTeamTools } from "./tools-team.js";
+import { registerCalendarTools } from "./tools-calendar.js";
 
 export type { ToolContext } from "./kit.js";
 
@@ -313,6 +314,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   registerKnowledgeTools(tool, ctx, look);
   registerTeamTools(tool, ctx, look);
+  registerCalendarTools(tool, ctx, look);
 }
 
 /** Slash commands in Claude Code (`/mcp__venture-studio__today` and so on). */

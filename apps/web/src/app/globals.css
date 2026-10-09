@@ -352,7 +352,7 @@
 .vso-avatar-img[data-loaded="false"] { opacity: 0; }
 
 /* Sidebar: the active pill glides between items (decision 1B); until it is placed the active item paints its own fill. */
-.vso-nav-list:not([data-ready="true"]) [data-nav-active] { background: var(--color-primary-700); box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / .05)); }
+.vso-nav-list:not([data-ready="true"]) [data-nav-active] { background: var(--color-primary-700); }
 @media (min-width: 1024px) {
   /* Labels fade back in as the rail widens instead of popping in clipped. */
   .vso-shell-sidebar:not([data-instant="true"]) .vso-nav-label { animation: vso-fade-in 160ms ease-out 70ms backwards; }
@@ -695,3 +695,37 @@ button {
 /* New task popup header: a drifting dither that fades out toward the title on the left. */
 .vso-dialog-glow { background: radial-gradient(80% 160% at 100% 0%, var(--vso-dither-green-1), transparent 70%); }
 .vso-dialog-dither { -webkit-mask-image: linear-gradient(to left, #000 35%, transparent 92%); mask-image: linear-gradient(to left, #000 35%, transparent 92%); }
+
+/* Calendar: one tint per event colour. Blocks and chips read --cal-bg / --cal-fg / --cal-bar. */
+.vso-cal-green { --cal-bg: #e6f5ec; --cal-fg: #0d4a2c; --cal-bar: #16a34a; }
+.vso-cal-blue { --cal-bg: #e8eefc; --cal-fg: #1e3a8a; --cal-bar: #3b5bdb; }
+.vso-cal-amber { --cal-bg: #fcf1df; --cal-fg: #78350f; --cal-bar: #d97706; }
+.vso-cal-violet { --cal-bg: #efe9fc; --cal-fg: #4c1d95; --cal-bar: #7c3aed; }
+.vso-cal-teal { --cal-bg: #e2f4f3; --cal-fg: #134e4a; --cal-bar: #0d9488; }
+.vso-cal-red { --cal-bg: #fce9ec; --cal-fg: #881337; --cal-bar: #e11d48; }
+.vso-cal-neutral { --cal-bg: #eff1ef; --cal-fg: #2f3732; --cal-bar: #77807a; }
+:root[data-theme="dark"] .vso-cal-green { --cal-bg: #133524; --cal-fg: #bdf2d3; --cal-bar: #34d399; }
+:root[data-theme="dark"] .vso-cal-blue { --cal-bg: #1a2648; --cal-fg: #c7d6ff; --cal-bar: #7b9cff; }
+:root[data-theme="dark"] .vso-cal-amber { --cal-bg: #3a2810; --cal-fg: #fde3b3; --cal-bar: #f5a524; }
+:root[data-theme="dark"] .vso-cal-violet { --cal-bg: #2b1f4a; --cal-fg: #ddd0ff; --cal-bar: #a78bfa; }
+:root[data-theme="dark"] .vso-cal-teal { --cal-bg: #10332f; --cal-fg: #bff0e9; --cal-bar: #2dd4bf; }
+:root[data-theme="dark"] .vso-cal-red { --cal-bg: #3f1520; --cal-fg: #ffc9d2; --cal-bar: #fb7185; }
+:root[data-theme="dark"] .vso-cal-neutral { --cal-bg: #232a25; --cal-fg: #d7dcd8; --cal-bar: #8a948d; }
+.vso-cal-block { background-color: var(--cal-bg); color: var(--cal-fg); box-shadow: inset 3px 0 0 var(--cal-bar); }
+.vso-cal-dot { background-color: var(--cal-bar); }
+/* Maybe or not yet answered: hatched. Declined: faded and struck through. */
+.vso-cal-tentative { background-image: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--cal-bar) 16%, transparent) 5px 10px); }
+.vso-cal-declined { opacity: .55; }
+.vso-cal-declined .vso-cal-title { text-decoration: line-through; }
+/* Week and day grid: hour lines, the "now" line, and the drag selection. */
+.vso-cal-hours { background-image: linear-gradient(to bottom, var(--color-neutral-100) 1px, transparent 1px); background-size: 100% var(--cal-hour, 48px); }
+.vso-cal-now { position: absolute; left: 0; right: 0; height: 2px; background: #e11d48; pointer-events: none; z-index: 5; }
+.vso-cal-now::before { content: ""; position: absolute; left: -5px; top: -4px; width: 10px; height: 10px; border-radius: 9999px; background: #e11d48; }
+.vso-cal-selection { background: color-mix(in srgb, var(--color-primary-500) 16%, transparent); border: 1.5px dashed var(--color-primary-500); border-radius: 10px; pointer-events: none; z-index: 6; }
+.vso-cal-dragging { opacity: .85; box-shadow: 0 10px 24px -8px rgb(0 0 0 / .35), inset 3px 0 0 var(--cal-bar); z-index: 7; cursor: grabbing; }
+.vso-cal-today { background: var(--color-primary-700); color: #fff; }
+.vso-cal-layer { border: 1px dashed var(--color-neutral-300); background: var(--color-neutral-50); color: var(--color-neutral-600); }
+@media (prefers-reduced-motion: reduce) { .vso-cal-block { transition: none !important; } }
+.vso-cal-loading { animation: vso-cal-loading 1.1s var(--ease-snappy, ease-in-out) infinite; }
+@keyframes vso-cal-loading { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { .vso-cal-loading { animation: none; width: 100%; opacity: .5; } }

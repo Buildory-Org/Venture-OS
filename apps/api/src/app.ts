@@ -20,6 +20,8 @@ import { salesRoutes } from "./routes/sales.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
 import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
+import { calendarRoutes } from "./routes/calendar.js";
+import { calendarFeedRoutes, publicCalendarFeedRoutes } from "./routes/calendar-feed.js";
 import { isMcpRoute, mcpBodyErrors, mcpRouter } from "./mcp/http.js";
 
 export function createApp(database: Database, config: AppConfig, auth: Auth, store: ObjectStore) {
@@ -45,6 +47,9 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", firstAdminRoutes(database, config, auth));
   app.use("/v1/invitations/accept", rateLimit(database.db, 60, 60_000, "invite-ip"), requireIdentity(resolveIdentity), rateLimit(database.db, 30, 60_000, "invite-user"));
   app.use("/v1", invitationAcceptanceRoutes(database));
+  // Calendar apps read the private calendar link without signing in: the secret in its address is the key.
+  app.use("/v1/calendar/feed", rateLimit(database.db, 600, 60_000, "calendar-feed-ip"));
+  app.use("/v1", publicCalendarFeedRoutes(database, config));
   const readLimit = rateLimit(database.db, 300, 60_000, "actor-read");
   const writeLimit = rateLimit(database.db, 120, 60_000, "actor-write");
   app.use("/v1", requireActor(resolveActor, rateLimit(database.db, 60, 60_000, "anonymous-ip")));
@@ -61,6 +66,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", notificationRoutes(database.db, config.VAPID_PUBLIC_KEY));
   app.use("/v1", salesRoutes(database.db));
   app.use("/v1", searchRoutes(database.db));
+  app.use("/v1", calendarRoutes(database));
+  app.use("/v1", calendarFeedRoutes(database, config));
   app.use((_req, res) => res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Route not found", requestId: res.getHeader("x-request-id") } }));
   app.use(createErrorHandler(database.db));
   return { app, resolveActor, localStore };

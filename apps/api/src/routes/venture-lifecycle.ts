@@ -121,6 +121,7 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
   const classes = await remove("classes", { ventureId });
   const previews = await remove("command_previews", { ventureId });
   for (const collection of ["outcomes", "decisions", "information_requests", "files", "pipelines", "opportunities", "events", "document_chunks"]) await remove(collection, { ventureId });
+  const calendarEvents = await remove("calendar_events", { ventureId });
   // Text read out of the venture's files is derived from them, so it goes without a recovery copy.
   await db.collection("file_texts").deleteMany({ workspaceId, ventureId }, { session });
 
@@ -134,7 +135,7 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
   await remove("document_versions", { documentId: { $in: ids(documents) } }, true);
   await remove("class_applications", { classId: { $in: ids(classes) } }, true);
   await remove("command_executions", { $or: [{ "preview.previewId": { $in: ids(previews) } }, { "result.task.ventureId": ventureId }] }, true);
-  const pointsAtVenture = { $or: [{ resourceId: { $in: [...taskIds, ...messageIds] } }, { chatKind: "channel", chatId: { $in: channelIds } }, { reminderId: { $in: ids(reminders) } }] };
+  const pointsAtVenture = { $or: [{ resourceId: { $in: [...taskIds, ...messageIds, ...ids(calendarEvents)] } }, { chatKind: "channel", chatId: { $in: channelIds } }, { reminderId: { $in: ids(reminders) } }] };
   await remove("notification_outbox", pointsAtVenture);
   await remove("notifications", pointsAtVenture);
 

@@ -6,3 +6,4 @@ export * from "./files.js";
 export * from "./knowledge.js";
 export * from "./dashboard.js";
 export * from "./sales.js";
+export * from "./calendar.js";

@@ -77,6 +77,12 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("notifications").createIndex({ workspaceId: 1, userId: 1, chatKind: 1, chatId: 1, createdAt: -1, _id: -1 }),
     db.collection("documents").createIndex({ workspaceId: 1, ventureId: 1, sensitivity: 1 }),
     db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
+    db.collection("document_suggestions").createIndex({ documentId: 1, state: 1, createdAt: -1 }),
+    db.collection("document_suggestions").createIndex({ workspaceId: 1, state: 1, createdAt: 1 }),
+    // One waiting suggestion per person per document: suggesting again replaces it.
+    db.collection("document_suggestions").createIndex({ documentId: 1, proposedBy: 1 }, { unique: true, partialFilterExpression: { state: "pending" } }),
+    // Approvers' queue of requests to share with all ventures.
+    db.collection("documents").createIndex({ workspaceId: 1, "review.state": 1, "review.requestedAt": 1 }, { partialFilterExpression: { "review.state": { $exists: true } } }),
     db.collection("document_chunks").createIndex({ plainText: "text", headingPath: "text" }),
     db.collection("files").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
     db.collection("files").createIndex({ workspaceId: 1, groupId: 1, status: 1, createdAt: -1, _id: -1 }),

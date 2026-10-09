@@ -673,10 +673,18 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
 
     const privateDocument = await fetch(`${origin}/v1/documents`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", title: "Private", markdown: "# Secret", evidenceClass: "verified_fact", sensitivity: "founder_private", authoritativeRank: 90, changeSummary: "Test" }) });
     assert.equal(privateDocument.status, 403);
-    assert.equal((await fetch(`${origin}/v1/documents/document-global`, { method: "PUT", headers, body: JSON.stringify({ markdown: "# Poison", changeSummary: "Unauthorized" }) })).status, 403);
+    // Without the permission to share with all ventures, an edit to a workspace-wide document is only a suggestion:
+    // the live document is untouched until an approver accepts it.
+    const globalBefore = await database.db.collection("documents").findOne({ _id: "document-global" });
+    assert.equal((await fetch(`${origin}/v1/documents/document-global`, { method: "PUT", headers, body: JSON.stringify({ markdown: "# Poison", changeSummary: "Unauthorized" }) })).status, 202);
+    assert.equal((await database.db.collection("documents").findOne({ _id: "document-global" }))?.currentVersionId, globalBefore?.currentVersionId);
     assert.equal((await fetch(`${origin}/v1/documents/document-global/metadata`, { method: "PATCH", headers, body: JSON.stringify({ status: "archived" }) })).status, 403);
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "contributor", updatedAt: new Date() } });
-    assert.equal((await fetch(`${origin}/v1/documents/document-global`, { method: "PUT", headers, body: JSON.stringify({ markdown: "# Poison", changeSummary: "Unauthorized contributor" }) })).status, 403);
+    assert.equal((await fetch(`${origin}/v1/documents/document-global`, { method: "PUT", headers, body: JSON.stringify({ markdown: "# Poison", changeSummary: "Unauthorized contributor" }) })).status, 202);
+    assert.equal((await database.db.collection("documents").findOne({ _id: "document-global" }))?.currentVersionId, globalBefore?.currentVersionId);
+    // Suggesting again replaces your earlier suggestion rather than adding another.
+    const waitingSuggestions = await database.db.collection("document_suggestions").find({ documentId: "document-global", state: "pending" }).toArray();
+    assert.deepEqual(waitingSuggestions.map((item) => item.changeSummary), ["Unauthorized contributor"]);
     await database.db.collection("memberships").updateOne({ _id: "membership-test" }, { $set: { role: "venture_head", updatedAt: new Date() } });
     const documentResponse = await fetch(`${origin}/v1/documents`, { method: "POST", headers, body: JSON.stringify({ ventureId: "venture-a", title: "Evidence note", markdown: "# Proof\n\nVerified launch evidence.", evidenceClass: "verified_fact", sensitivity: "venture_restricted", authoritativeRank: 90, changeSummary: "Test" }) });
     assert.equal(documentResponse.status, 201, await documentResponse.clone().text());
@@ -2790,6 +2798,149 @@ test("calendar: private, venture, and group events; invitations and answers; rep
     assert.equal((await call("POST", "/ventures/venture-a/archive", "lead")).status, 200);
     assert.equal((await call("GET", `/calendar/events/${allHands.id}`, "lead")).status, 404);
     assert.ok(!(await titles("member", "all")).includes("All hands (moved)"));
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("workspace-wide knowledge: a sharing permission, requests approvers review, and suggested changes", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_share`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  const people = [["admin", "admin", false], ["sharer", "contributor", true], ["writer", "contributor", false], ["lead", "venture_head", false], ["learner", "learner", false]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role, shares]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], ...(shares ? { canShareKnowledge: true } : {}), status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const doc = (title: string, markdown: string) => ({ title, markdown, evidenceClass: "founder_reported", sensitivity: "team" });
+  const notices = (type: string, documentId: string) => db.collection("notification_outbox").find({ type, resourceId: documentId }).toArray();
+  try {
+    // Without the permission, a workspace-wide document is a request: hidden from everyone but its author and approvers.
+    const created = await call("POST", "/documents", "writer", doc("Brand voice", "# Brand voice\n\nWe write plainly about pricing."));
+    assert.equal(created.status, 201, await created.clone().text());
+    const request = await json(created);
+    assert.equal(request.review.state, "pending");
+    assert.equal((await call("GET", `/documents/${request.id}`, "writer")).status, 200);
+    assert.equal((await call("GET", `/documents/${request.id}`, "lead")).status, 404);
+    assert.ok(!(await json(await call("GET", "/documents", "lead"))).items.some((item: any) => item.id === request.id));
+    assert.equal((await call("GET", `/documents/${request.id}`, "sharer")).status, 200);
+    assert.deepEqual((await notices("knowledge_request", request.id)).map((row) => row.userId).sort(), ["user-admin", "user-sharer"]);
+    assert.deepEqual((await json(await call("GET", "/knowledge/reviews", "sharer"))).requests.map((item: any) => item.id), [request.id]);
+    assert.deepEqual((await json(await call("GET", "/knowledge/reviews", "lead"))).requests, []);
+    // Requests are decided in their review, not through ordinary approval, and only by approvers.
+    assert.equal((await call("PATCH", `/documents/${request.id}/metadata`, "sharer", { status: "approved" })).status, 409);
+    assert.equal((await call("POST", `/documents/${request.id}/review`, "writer", { decision: "approve" })).status, 403);
+    // Declined with a note; editing it sends it again.
+    const declined = await json(await call("POST", `/documents/${request.id}/review`, "sharer", { decision: "decline", note: "Add the pricing table" }));
+    assert.equal(declined.review.state, "declined");
+    assert.match(String((await notices("knowledge_result", request.id))[0]?.body), /Add the pricing table/);
+    const detail = await json(await call("GET", `/documents/${request.id}`, "writer"));
+    const resent = await call("PUT", `/documents/${request.id}`, "writer", { markdown: "# Brand voice\n\nWe write plainly about pricing.\n\n| Plan | Price |", changeSummary: "Added the pricing table", baseVersionId: detail.currentVersion.id });
+    assert.equal(resent.status, 200, await resent.clone().text());
+    assert.equal((await json(await call("GET", `/documents/${request.id}`, "writer"))).review.state, "pending");
+    assert.equal((await notices("knowledge_request", request.id)).length, 4);
+    // Approval names the version the approver read: a version the author has since replaced can't be approved.
+    const reviewed = await json(await call("GET", `/documents/${request.id}`, "admin"));
+    assert.equal((await call("POST", `/documents/${request.id}/review`, "admin", { decision: "approve" })).status, 400);
+    assert.equal((await call("POST", `/documents/${request.id}/review`, "admin", { decision: "approve", versionId: detail.currentVersion.id })).status, 409);
+    // Approved: every venture sees it, in lists and search.
+    const approved = await json(await call("POST", `/documents/${request.id}/review`, "admin", { decision: "approve", versionId: reviewed.currentVersion.id }));
+    assert.equal(approved.status, "approved");
+    assert.equal(approved.review, undefined);
+    assert.equal((await call("GET", `/documents/${request.id}`, "lead")).status, 200);
+    assert.ok((await json(await call("GET", "/knowledge/search?q=pricing", "learner"))).items.some((item: any) => item.documentId === request.id));
+    assert.equal((await call("POST", `/documents/${request.id}/review`, "admin", { decision: "approve", versionId: reviewed.currentVersion.id })).status, 409);
+    // Someone without the permission edits it: a suggestion that replaces nothing until accepted.
+    const live = await json(await call("GET", `/documents/${request.id}`, "lead"));
+    const suggested = await call("PUT", `/documents/${request.id}`, "lead", { markdown: "# Brand voice\n\nWe write plainly and warmly.", changeSummary: "Warmer tone", baseVersionId: live.currentVersion.id });
+    assert.equal(suggested.status, 202, await suggested.clone().text());
+    const suggestion = (await json(suggested)).suggestion;
+    const afterSuggest = await json(await call("GET", `/documents/${request.id}`, "lead"));
+    assert.equal(afterSuggest.currentVersion.id, live.currentVersion.id, "the live version is untouched");
+    assert.equal(afterSuggest.suggestions[0].id, suggestion.id);
+    assert.equal(afterSuggest.pendingSuggestions, 1);
+    assert.deepEqual((await json(await call("GET", `/documents/${request.id}`, "writer"))).suggestions, [], "others don't see someone else's suggestion");
+    assert.equal((await call("PUT", `/documents/${request.id}`, "writer", { markdown: "# Old base", changeSummary: "Stale", baseVersionId: detail.currentVersion.id })).status, 409);
+    assert.equal((await call("POST", `/documents/${request.id}/suggestions/${suggestion.id}/review`, "lead", { decision: "approve" })).status, 403);
+    const accepted = await json(await call("POST", `/documents/${request.id}/suggestions/${suggestion.id}/review`, "sharer", { decision: "approve" }));
+    assert.equal(accepted.pendingSuggestions, 0);
+    const afterAccept = await json(await call("GET", `/documents/${request.id}`, "learner"));
+    assert.match(afterAccept.currentVersion.markdown, /warmly/);
+    assert.match(afterAccept.currentVersion.changeSummary, /suggested by Person lead/);
+    assert.equal(afterAccept.status, "approved");
+    assert.ok((await notices("knowledge_result", request.id)).some((row) => row.userId === "user-lead" && /accepted/.test(String(row.title))));
+    const second = await json(await call("PUT", `/documents/${request.id}`, "writer", { markdown: "# Brand voice\n\nShouty.", changeSummary: "Louder", baseVersionId: afterAccept.currentVersion.id }));
+    assert.equal((await call("POST", `/documents/${request.id}/suggestions/${second.suggestion.id}/review`, "admin", { decision: "decline", note: "Keep it calm" })).status, 200);
+    assert.doesNotMatch((await json(await call("GET", `/documents/${request.id}`, "learner"))).currentVersion.markdown, /Shouty/);
+    assert.equal((await json(await call("GET", `/documents/${request.id}`, "writer"))).suggestions[0].state, "declined");
+    // Suggesting again replaces your waiting suggestion; one written on a version that has since changed can't be accepted,
+    // because its text would undo the change.
+    const base = await json(await call("GET", `/documents/${request.id}`, "learner"));
+    const firstTry = (await json(await call("PUT", `/documents/${request.id}`, "writer", { markdown: "# Brand voice\n\nDraft one.", changeSummary: "One", baseVersionId: base.currentVersion.id }))).suggestion;
+    const secondTry = (await json(await call("PUT", `/documents/${request.id}`, "writer", { markdown: "# Brand voice\n\nDraft two.", changeSummary: "Two", baseVersionId: base.currentVersion.id }))).suggestion;
+    assert.equal(secondTry.id, firstTry.id);
+    assert.ok((await notices("knowledge_request", request.id)).some((row) => /updated their suggested change/.test(String(row.title))));
+    const fromLead = (await json(await call("PUT", `/documents/${request.id}`, "lead", { markdown: "# Brand voice\n\nThe lead's take.", changeSummary: "Lead's take", baseVersionId: base.currentVersion.id }))).suggestion;
+    const waiting = await json(await call("GET", `/documents/${request.id}`, "admin"));
+    assert.equal(waiting.pendingSuggestions, 2);
+    assert.match(waiting.suggestions.find((item: any) => item.id === firstTry.id).markdown, /Draft two/);
+    assert.equal((await call("POST", `/documents/${request.id}/suggestions/${firstTry.id}/review`, "admin", { decision: "approve" })).status, 200);
+    assert.equal((await call("POST", `/documents/${request.id}/suggestions/${fromLead.id}/review`, "admin", { decision: "approve" })).status, 409, "accepting it would undo the change just accepted");
+    assert.equal((await call("POST", `/documents/${request.id}/suggestions/${fromLead.id}/review`, "admin", { decision: "decline" })).status, 200);
+    const settled = await json(await call("GET", `/documents/${request.id}`, "admin"));
+    assert.equal(settled.pendingSuggestions, 0);
+    assert.match(settled.currentVersion.markdown, /Draft two/);
+    // Approvers who couldn't read a document aren't told about it: a contributor approver can't read manager-level knowledge.
+    const payBands = await json(await call("POST", "/documents", "lead", { ...doc("Pay bands", "# Pay bands"), sensitivity: "manager" }));
+    assert.equal(payBands.review.state, "pending");
+    assert.deepEqual((await notices("knowledge_request", payBands.id)).map((row) => row.userId), ["user-admin"]);
+    // People with the permission publish directly, as admins do; learners can't write knowledge at all.
+    const direct = await json(await call("POST", "/documents", "sharer", doc("Holidays", "# Holidays")));
+    assert.equal(direct.review, undefined);
+    assert.equal((await call("PATCH", `/documents/${direct.id}/metadata`, "sharer", { status: "approved" })).status, 200);
+    assert.equal((await call("POST", "/documents", "learner", doc("Nope", "# Nope"))).status, 403);
+    // An admin gives the permission in People & access; the lead can then see and approve requests.
+    const granted = await call("PUT", "/admin/memberships/membership-lead", "admin", { role: "venture_head", ventureIds: ["venture-a"], groupIds: ["group-a"], canShareKnowledge: true });
+    assert.equal(granted.status, 200, await granted.clone().text());
+    assert.equal((await json(granted)).canShareKnowledge, true);
+    const another = await json(await call("POST", "/documents", "writer", doc("Hiring", "# Hiring")));
+    assert.equal((await call("GET", `/documents/${another.id}`, "lead")).status, 200, "the new approver can see requests");
+    // Editing a waiting request tells the approvers it changed.
+    const hiring = await call("PUT", `/documents/${another.id}`, "writer", { markdown: "# Hiring\n\nTwo rounds.", changeSummary: "Rounds", baseVersionId: another.currentVersionId });
+    assert.equal(hiring.status, 200, await hiring.clone().text());
+    assert.ok((await notices("knowledge_request", another.id)).some((row) => row.userId === "user-lead" && /updated their request/.test(String(row.title))));
+    // The author can withdraw a request; it's gone.
+    assert.equal((await call("POST", `/documents/${another.id}/review`, "writer", { decision: "withdraw" })).status, 200);
+    assert.equal((await call("GET", `/documents/${another.id}`, "writer")).status, 404);
+    // Someone given the permission after asking may approve their own request, without being notified of their own decision.
+    const onboarding = await json(await call("POST", "/documents", "writer", doc("Onboarding", "# Onboarding")));
+    assert.equal((await call("PUT", "/admin/memberships/membership-writer", "admin", { role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"], canShareKnowledge: true })).status, 200);
+    assert.equal((await call("POST", `/documents/${onboarding.id}/review`, "writer", { decision: "approve", versionId: onboarding.currentVersionId })).status, 200);
+    assert.equal((await notices("knowledge_result", onboarding.id)).length, 0);
+    // The permission belongs to venture heads and contributors: another role clears it, so promotion doesn't bring it back.
+    const demoted = await call("PUT", "/admin/memberships/membership-sharer", "admin", { role: "learner", ventureIds: ["venture-a"], groupIds: ["group-a"], canShareKnowledge: true });
+    assert.equal(demoted.status, 200, await demoted.clone().text());
+    assert.equal((await json(demoted)).canShareKnowledge, false);
+    assert.equal((await json(await call("PUT", "/admin/memberships/membership-sharer", "admin", { role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] }))).canShareKnowledge, false);
   } finally {
     server.close();
     await once(server, "close");

@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import type { Document, Filter } from "mongodb";
+import type { ClientSession, Document } from "mongodb";
 import type { AppDb, AppDocument } from "../db.js";
-import { classSchema, createDocumentSchema, cursorQuerySchema, decisionSchema, documentListQuerySchema, idSchema, informationRequestSchema, knowledgeSearchSchema, reviewClassApplicationSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
-import { can } from "@venture-studio/core";
+import { classSchema, createDocumentSchema, cursorQuerySchema, decisionSchema, documentListQuerySchema, idSchema, informationRequestSchema, knowledgeReviewSchema, knowledgeSearchSchema, reviewClassApplicationSchema, updateClassSchema, updateDecisionSchema, updateDocumentSchema } from "@venture-studio/contracts";
+import { can, readableSensitivities, sharesKnowledge } from "@venture-studio/core";
 import { z } from "zod";
 import type { Database } from "../db.js";
 import { atomic } from "../db.js";
 import { audit } from "../audit.js";
 import { AppError } from "../errors.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
+import { authorizedDocumentFilter } from "../document-access.js";
 import { listedInOrAdmin } from "../assignable.js";
 import { jsonValue, slug, withDates } from "../json.js";
 import { assertNotBlank } from "../validation.js";
@@ -24,20 +25,22 @@ export function knowledgeRoutes(database: Database): Router {
     const input = createDocumentSchema.parse(req.body);
     const actor = req.actor!;
     if (!can(actor.membership, "knowledge:write", { ventureId: input.ventureId })) throw new AppError(403, "FORBIDDEN", "You cannot add knowledge in this scope");
-    if (!input.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create workspace-wide knowledge");
+    // Workspace-wide knowledge from someone not allowed to share with all ventures waits, hidden, for an approver.
+    const request = !input.ventureId && !sharesKnowledge(actor.membership);
     if (input.sensitivity === "founder_private" && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may create founder-private documents");
     if (!readableSensitivities(actor.membership.role).includes(input.sensitivity)) throw new AppError(403, "FORBIDDEN", "Choose a sensitivity level you can read; this one would hide the record from you");
     const now = new Date();
     const documentId = randomUUID();
     const versionId = randomUUID();
-    const document = { _id: documentId, workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), title: input.title, slug: slug(input.title), ownerId: actor.id, status: "draft", evidenceClass: input.evidenceClass, sensitivity: input.sensitivity, authoritativeRank: input.authoritativeRank, currentVersionId: versionId, createdAt: now, updatedAt: now };
+    const document = { _id: documentId, workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), title: input.title, slug: slug(input.title), ownerId: actor.id, status: "draft", evidenceClass: input.evidenceClass, sensitivity: input.sensitivity, authoritativeRank: input.authoritativeRank, currentVersionId: versionId, ...(request ? { review: { state: "pending", requestedBy: actor.id, requestedAt: now } } : {}), createdAt: now, updatedAt: now };
     const viaClaude = req.interfaceChannel === "mcp";
     const version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId, version: 1, markdown: input.markdown, changeSummary: claudeSummary(input.changeSummary, viaClaude), createdBy: actor.id, createdAt: now, ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), ...(viaClaude ? { via: "claude" } : {}) };
     await atomic(database, async (session) => {
       await db.collection("documents").insertOne(document, { session });
       await db.collection("document_versions").insertOne(version, { session });
       await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(input.ventureId ? { ventureId: input.ventureId } : {}), documentId, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
-      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.create", objectType: "document", objectId: documentId, ventureId: input.ventureId, result: "success" }, session);
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: request ? "document.share_request" : "document.create", objectType: "document", objectId: documentId, ventureId: input.ventureId, result: "success" }, session);
+      if (request) await notifyApprovers(db, actor, { title: `${actor.name} asked to share "${input.title.slice(0, 120)}" with all ventures`, body: "Review it before it reaches every venture.", documentId, key: `knowledge:request:${documentId}:1` }, input.sensitivity, session);
     });
     res.status(201).json({ ok: true, data: documentJson({ ...document, currentVersion: documentVersionJson(version) }) });
   });
@@ -60,30 +63,141 @@ export function knowledgeRoutes(database: Database): Router {
       db.collection("document_versions").find({ documentId: document._id }).sort({ version: -1 }).project({ markdown: 0 }).toArray(),
     ]);
     await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.read", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" });
-    res.json({ ok: true, data: documentJson({ ...document, currentVersion: documentVersionJson(version), versions: versions.map(documentVersionJson) }) });
+    // Approvers see every waiting suggestion; anyone else sees only their own.
+    const approver = sharesKnowledge(actor.membership);
+    const suggestions = document.ventureId ? [] : await db.collection("document_suggestions").find({ documentId: document._id, ...(approver ? { state: "pending" } : { proposedBy: actor.id, state: { $in: ["pending", "declined"] } }) }).sort({ createdAt: -1 }).limit(20).toArray();
+    res.json({ ok: true, data: documentJson({ ...document, currentVersion: documentVersionJson(version), versions: versions.map(documentVersionJson), suggestions: suggestions.map((item) => suggestionJson(item, true)) }) });
+  });
+
+  // An approver's queue: new documents waiting to be shared with all ventures, and suggested changes to shared ones.
+  router.get("/knowledge/reviews", async (req, res) => {
+    const actor = req.actor!;
+    if (!sharesKnowledge(actor.membership)) { res.json({ ok: true, data: { requests: [], suggestions: [] } }); return; }
+    const visible = authorizedDocumentFilter(actor);
+    const requests = await db.collection("documents").find({ $and: [visible, { "review.state": "pending" }] }).sort({ "review.requestedAt": 1 }).limit(50).toArray();
+    // Suggestions only on documents this approver can read, so ones they can't see never crowd out the rest.
+    const suggested = await db.collection("document_suggestions").distinct("documentId", { workspaceId: actor.membership.workspaceId, state: "pending" });
+    const titles = new Map((await db.collection("documents").find({ $and: [visible, { _id: { $in: suggested } }] }).project({ title: 1 }).toArray()).map((item) => [String(item._id), String(item.title)]));
+    const suggestions = titles.size ? await db.collection("document_suggestions").find({ workspaceId: actor.membership.workspaceId, state: "pending", documentId: { $in: [...titles.keys()] } }).sort({ createdAt: 1 }).limit(50).toArray() : [];
+    res.json({ ok: true, data: { requests: requests.map(documentJson), suggestions: suggestions.map((item) => ({ ...(suggestionJson(item, false) as object), documentTitle: titles.get(String(item.documentId)) })) } });
+  });
+
+  // Approve or decline a request to share a new document with all ventures; its author may withdraw it.
+  router.post("/documents/:id/review", async (req, res) => {
+    const actor = req.actor!;
+    const { decision, note, versionId } = knowledgeReviewSchema.extend({ decision: z.enum(["approve", "decline", "withdraw"]) }).parse(req.body);
+    const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
+    if (!document.review) throw new AppError(409, "CONFLICT", "This document isn't waiting for approval");
+    if (decision === "withdraw" ? document.ownerId !== actor.id : !sharesKnowledge(actor.membership)) throw new AppError(403, "FORBIDDEN", decision === "withdraw" ? "Only its author can withdraw a request" : "Only admins and people allowed to share with all ventures may review requests");
+    if (decision === "approve" && !versionId) throw new AppError(400, "BAD_REQUEST", "Say which version you reviewed");
+    const now = new Date();
+    const title = String(document.title).slice(0, 120);
+    const author = String(document.ownerId);
+    await atomic(database, async (session) => {
+      // Approval publishes only the version the approver read, and never a request withdrawn meanwhile.
+      const filter = { _id: document._id, status: { $ne: "archived" }, "review.state": decision === "withdraw" ? { $in: ["pending", "declined"] } : "pending", ...(decision === "approve" ? { currentVersionId: versionId } : {}) };
+      const update = decision === "approve" ? { $unset: { review: "" }, $set: { status: "approved", lastReviewedAt: now, updatedAt: now } }
+        : decision === "decline" ? { $set: { "review.state": "declined", ...(note ? { "review.note": note } : {}), "review.decidedBy": actor.id, "review.decidedAt": now, updatedAt: now } }
+        : { $set: { status: "archived", updatedAt: now } };
+      const changed = await db.collection("documents").updateOne(filter, update, { session });
+      if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This request was changed or already decided; reload it to see the latest version");
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: `document.share_request.${decision}`, objectType: "document", objectId: String(document._id), result: "success" }, session);
+      if (decision !== "withdraw" && author !== actor.id) await notifyPeople(db, actor.membership.workspaceId, [author], {
+        title: decision === "approve" ? `"${title}" is now shared with all ventures` : `Not shared with all ventures: "${title}"`,
+        body: decision === "approve" ? `${actor.name} approved it.` : note ? `${actor.name}: ${note}` : `${actor.name} declined it. You can edit it and send it again.`,
+        documentId: String(document._id), key: `knowledge:result:${document._id}:${now.getTime()}`,
+      }, session);
+    });
+    res.json({ ok: true, data: documentJson(await db.collection("documents").findOne({ _id: document._id })) });
+  });
+
+  // Approve (it becomes the live version) or decline a suggested change to a workspace-wide document.
+  router.post("/documents/:id/suggestions/:suggestionId/review", async (req, res) => {
+    const actor = req.actor!;
+    const { decision, note } = knowledgeReviewSchema.parse(req.body);
+    const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
+    if (!sharesKnowledge(actor.membership)) throw new AppError(403, "FORBIDDEN", "Only admins and people allowed to share with all ventures may review suggestions");
+    const suggestion = await db.collection("document_suggestions").findOne({ _id: idSchema.parse(req.params.suggestionId), documentId: document._id, state: "pending" });
+    if (!suggestion) throw new AppError(409, "CONFLICT", "This suggestion was already decided; reload the document");
+    const now = new Date();
+    const proposer = String(suggestion.proposedBy);
+    const proposerName = String((await db.collection("users").findOne({ _id: proposer }, { projection: { name: 1 } }))?.name ?? "Someone");
+    await atomic(database, async (session) => {
+      const current = await db.collection("documents").findOne({ _id: document._id, status: { $ne: "archived" } }, { session });
+      if (!current) throw new AppError(409, "CONFLICT", "This document was archived; reload it");
+      // A suggestion replaces the whole text, so accepting one written on an older version would undo the changes made since.
+      if (decision === "approve" && current.currentVersionId !== suggestion.baseVersionId) throw new AppError(409, "CONFLICT", "The document has changed since this was suggested, so accepting it would undo those changes. Decline it and ask for the change again on the latest version.");
+      const decided = await db.collection("document_suggestions").updateOne({ _id: suggestion._id, state: "pending" }, { $set: { state: decision === "approve" ? "approved" : "declined", ...(note ? { note } : {}), decidedBy: actor.id, decidedAt: now, updatedAt: now } }, { session });
+      if (!decided.modifiedCount) throw new AppError(409, "CONFLICT", "This suggestion was already decided; reload the document");
+      if (decision === "approve") {
+        const last = await db.collection("document_versions").find({ documentId: document._id }, { session }).sort({ version: -1 }).limit(1).next();
+        const versionId = randomUUID();
+        await db.collection("document_versions").insertOne({ _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: suggestion.markdown, changeSummary: `${String(suggestion.changeSummary).slice(0, 440)} (suggested by ${proposerName.slice(0, 40)})`, createdBy: proposer, approvedBy: actor.id, ...(suggestion.sourceUri ? { sourceUri: suggestion.sourceUri } : {}), createdAt: now }, { session });
+        await db.collection("document_chunks").insertMany(chunks(String(suggestion.markdown)).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
+        const moved = await db.collection("documents").updateOne({ _id: document._id, currentVersionId: current.currentVersionId }, { $set: { currentVersionId: versionId, status: "approved", lastReviewedAt: now, updatedAt: now } }, { session });
+        if (!moved.modifiedCount) throw new AppError(409, "CONFLICT", "The document changed while you were accepting this; reload it");
+      }
+      await countPendingSuggestions(db, String(document._id), session);
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: `document.suggestion.${decision}`, objectType: "document", objectId: String(document._id), result: "success" }, session);
+      if (proposer !== actor.id) await notifyPeople(db, actor.membership.workspaceId, [proposer], {
+        title: decision === "approve" ? `Your change to "${String(document.title).slice(0, 120)}" was accepted` : `Your change to "${String(document.title).slice(0, 120)}" wasn't accepted`,
+        body: decision === "approve" ? `${actor.name} approved it; it's the live version now.` : note ? `${actor.name}: ${note}` : `${actor.name} declined it.`,
+        documentId: String(document._id), key: `knowledge:suggestion-result:${suggestion._id}`,
+      }, session);
+    });
+    res.json({ ok: true, data: documentJson(await db.collection("documents").findOne({ _id: document._id })) });
   });
 
   router.put("/documents/:id", async (req, res) => {
     const actor = req.actor!;
     const input = updateDocumentSchema.parse(req.body);
     const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
-    if (!document.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may edit workspace-wide knowledge");
     if (!can(actor.membership, "knowledge:write", { ventureId: document.ventureId ? String(document.ventureId) : undefined })) throw new AppError(403, "FORBIDDEN", "You cannot edit this document");
     const now = new Date();
+    const sharer = sharesKnowledge(actor.membership);
+    const ownRequest = Boolean(document.review) && document.ownerId === actor.id;
+    if (!document.ventureId && document.review && !ownRequest && !sharer) throw new AppError(403, "FORBIDDEN", "Only its author or an approver can change a request");
+    const stale = () => new AppError(409, "CONFLICT", "This document was changed by someone else since you opened it. Reload to see the latest version before saving.");
+    if (!document.ventureId && !document.review && !sharer) {
+      // A suggested change: kept aside, replacing nothing, until an approver accepts it. Each person has at most one
+      // waiting per document; suggesting again replaces it.
+      let suggestion = {} as AppDocument;
+      await atomic(database, async (session) => {
+        const current = await db.collection("documents").findOne({ _id: document._id, status: { $ne: "archived" } }, { session });
+        if (!current || current.review || (input.baseVersionId && input.baseVersionId !== current.currentVersionId)) throw new AppError(409, "CONFLICT", "This document was changed by someone else since you opened it. Reload to see the latest version before suggesting a change.");
+        const previous = await db.collection("document_suggestions").findOne({ documentId: document._id, proposedBy: actor.id, state: "pending" }, { session });
+        suggestion = { _id: previous?._id ?? randomUUID(), workspaceId: actor.membership.workspaceId, documentId: document._id, baseVersionId: current.currentVersionId, markdown: input.markdown, changeSummary: claudeSummary(input.changeSummary, req.interfaceChannel === "mcp"), ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), proposedBy: actor.id, state: "pending", createdAt: previous?.createdAt ?? now, updatedAt: now };
+        if (previous) {
+          const replaced = await db.collection("document_suggestions").replaceOne({ _id: previous._id, state: "pending" }, suggestion, { session });
+          if (!replaced.matchedCount) throw new AppError(409, "CONFLICT", "Your earlier suggestion was just decided; reload the document");
+        } else await db.collection("document_suggestions").insertOne(suggestion, { session });
+        await countPendingSuggestions(db, String(document._id), session);
+        await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: previous ? "document.suggestion.update" : "document.suggestion.create", objectType: "document", objectId: String(document._id), result: "success" }, session);
+        await notifyApprovers(db, actor, { title: `${actor.name} ${previous ? "updated their suggested change" : "suggested a change"} to "${String(current.title).slice(0, 120)}"`, body: input.changeSummary.slice(0, 300), documentId: String(document._id), key: `knowledge:suggestion:${suggestion._id}:${now.getTime()}` }, String(current.sensitivity), session);
+      });
+      res.status(202).json({ ok: true, data: { suggestion: suggestionJson(suggestion, true) } });
+      return;
+    }
     const versionId = randomUUID();
     let version = {} as AppDocument;
-    const stale = () => new AppError(409, "CONFLICT", "This document was changed by someone else since you opened it. Reload to see the latest version before saving.");
     await atomic(database, async (session) => {
       // Read and number inside the transaction so concurrent saves cannot share a version number or silently overwrite each other.
-      const current = await db.collection("documents").findOne({ _id: document._id }, { session });
+      const current = await db.collection("documents").findOne({ _id: document._id, status: { $ne: "archived" } }, { session });
       if (!current || (input.baseVersionId && current.currentVersionId !== input.baseVersionId)) throw stale();
+      // Without the permission, only the author's own request is edited directly (if it was approved meanwhile, edits become suggestions).
+      const ownsRequest = Boolean(current.review) && current.ownerId === actor.id;
+      if (!current.ventureId && !sharer && !ownsRequest) throw stale();
       const last = await db.collection("document_versions").find({ documentId: document._id }, { session }).sort({ version: -1 }).limit(1).next();
       const viaClaude = req.interfaceChannel === "mcp";
       version = { _id: versionId, workspaceId: actor.membership.workspaceId, documentId: document._id, version: Number(last?.version ?? 0) + 1, markdown: input.markdown, changeSummary: claudeSummary(input.changeSummary, viaClaude), ...(input.sourceUri ? { sourceUri: input.sourceUri } : {}), ...(viaClaude ? { via: "claude" } : {}), createdBy: actor.id, createdAt: now };
       await db.collection("document_versions").insertOne(version, { session });
       await db.collection("document_chunks").insertMany(chunks(input.markdown).map((chunk, index) => ({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(document.ventureId ? { ventureId: document.ventureId } : {}), documentId: document._id, documentVersionId: versionId, headingPath: chunk.heading, ordinal: index, plainText: chunk.text, createdAt: now })), { session });
-      const moved = await db.collection("documents").updateOne({ _id: document._id, currentVersionId: current.currentVersionId }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now } }, { session });
+      // The author editing their request: a declined one is sent again; a waiting one tells the approvers it changed.
+      const resend = ownsRequest && current.review?.state === "declined";
+      const revised = ownsRequest && current.review?.state === "pending";
+      const moved = await db.collection("documents").updateOne({ _id: document._id, currentVersionId: current.currentVersionId }, { $set: { currentVersionId: versionId, status: "draft", updatedAt: now, ...(resend ? { "review.state": "pending", "review.requestedAt": now } : {}) }, ...(resend ? { $unset: { "review.note": "", "review.decidedBy": "", "review.decidedAt": "" } } : {}) }, { session });
       if (!moved.modifiedCount) throw stale();
+      if (resend || revised) await notifyApprovers(db, actor, { title: `${actor.name} ${resend ? "asked again to share" : "updated their request to share"} "${String(current.title).slice(0, 120)}" with all ventures`, body: input.changeSummary.slice(0, 300), documentId: String(document._id), key: `knowledge:request:${document._id}:${versionId}` }, String(current.sensitivity), session);
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "document.version.create", objectType: "document", objectId: String(document._id), ventureId: document.ventureId ? String(document.ventureId) : undefined, result: "success" }, session);
     });
     res.json({ ok: true, data: documentVersionJson(version) });
@@ -92,8 +206,8 @@ export function knowledgeRoutes(database: Database): Router {
   router.patch("/documents/:id/metadata", async (req, res) => {
     const actor = req.actor!;
     const document = await accessibleDocument(db, actor, idSchema.parse(req.params.id));
-    if (!document.ventureId && actor.membership.role !== "admin") throw new AppError(403, "FORBIDDEN", "Only admins may approve workspace-wide knowledge");
-    if (actor.membership.role !== "admin" && actor.membership.role !== "venture_head") throw new AppError(403, "FORBIDDEN", "Only an admin or venture head may approve knowledge metadata");
+    if (document.review) throw new AppError(409, "CONFLICT", "This is a request to share with all ventures: approve or decline it in its review");
+    if (!document.ventureId ? !sharesKnowledge(actor.membership) : actor.membership.role !== "admin" && actor.membership.role !== "venture_head") throw new AppError(403, "FORBIDDEN", !document.ventureId ? "Only admins and people allowed to share with all ventures may approve workspace-wide knowledge" : "Only an admin or venture head may approve knowledge metadata");
     if (req.body?.status === "stale" && !["approved", "stale"].includes(String(document.status))) throw new AppError(409, "CONFLICT", "Only an approved record can be marked stale; approve it first");
     const input = z.object({ status: z.enum(["draft", "approved", "stale", "archived"]).optional(), lastReviewedAt: z.iso.datetime({ offset: true }).optional(), authoritativeRank: z.number().int().min(0).max(100).optional() }).refine((value) => Object.keys(value).length > 0).parse(req.body);
     // Re-check approval in the write itself so a concurrent edit back to draft cannot be published as stale.
@@ -277,14 +391,29 @@ async function assertClassPeople(db: AppDb, workspaceId: string, ventureId: unkn
   if (count !== people.length) throw new AppError(400, "BAD_REQUEST", "Class people must be active members of the class venture");
 }
 
-function readableSensitivities(role: string): string[] {
-  return role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
+/** A suggestion as JSON; the proposed text only where the reader may see it. */
+function suggestionJson(item: Document, withMarkdown: boolean): unknown {
+  const { markdown, workspaceId: _workspace, ...rest } = item;
+  return jsonValue({ ...rest, id: item._id, ...(withMarkdown ? { markdown } : {}) });
 }
 
-function authorizedDocumentFilter(actor: Actor, ventureId?: string): Filter<AppDocument> {
-  const sensitivities = readableSensitivities(actor.membership.role);
-  const ventures = actor.membership.role === "admin" ? (ventureId ? (inArchivedVenture(actor.membership, ventureId) ? [] : [ventureId]) : undefined) : ventureId ? (actor.membership.ventureIds.includes(ventureId) ? [ventureId] : []) : actor.membership.ventureIds;
-  return { workspaceId: actor.membership.workspaceId, sensitivity: { $in: sensitivities }, status: { $ne: "archived" }, ...(ventures ? { $or: [{ ventureId: null }, { ventureId: { $in: ventures } }] } : notArchived(actor.membership)) };
+/** Tells approvers (admins, and people allowed to share with all ventures) who can read the document; never its author. */
+async function notifyApprovers(db: AppDb, actor: Actor, notice: { title: string; body: string; documentId: string; key: string }, sensitivity: string, session?: ClientSession) {
+  const writers = ["venture_head", "contributor"].filter((role) => readableSensitivities(role).includes(sensitivity));
+  const approvers = await db.collection("memberships").find({ workspaceId: actor.membership.workspaceId, status: "active", userId: { $ne: actor.id }, $or: [{ role: "admin" }, { canShareKnowledge: true, role: { $in: writers } }] }, { projection: { userId: 1 }, ...(session ? { session } : {}) }).limit(500).toArray();
+  await notifyPeople(db, actor.membership.workspaceId, approvers.map((row) => String(row.userId)), notice, session, "knowledge_request");
+}
+
+/** Stores how many suggestions wait on a document, recounted on every change so it can't drift. */
+async function countPendingSuggestions(db: AppDb, documentId: string, session?: ClientSession) {
+  const pending = await db.collection("document_suggestions").countDocuments({ documentId, state: "pending" }, session ? { session } : {});
+  await db.collection("documents").updateOne({ _id: documentId }, { $set: { pendingSuggestions: pending } }, session ? { session } : {});
+}
+
+async function notifyPeople(db: AppDb, workspaceId: string, userIds: string[], notice: { title: string; body: string; documentId: string; key: string }, session?: ClientSession, type: "knowledge_request" | "knowledge_result" = "knowledge_result") {
+  if (!userIds.length) return;
+  const now = new Date();
+  await db.collection("notification_outbox").bulkWrite(userIds.map((userId) => ({ updateOne: { filter: { idempotencyKey: `${notice.key}:${userId}` }, update: { $setOnInsert: { _id: randomUUID(), workspaceId, userId, type, title: notice.title.slice(0, 200), body: notice.body.slice(0, 500), resourceType: "document", resourceId: notice.documentId, idempotencyKey: `${notice.key}:${userId}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, upsert: true } })), { ...(session ? { session } : {}) });
 }
 
 function documentJson(document: AppDocument | null): unknown {

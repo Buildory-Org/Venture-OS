@@ -64,7 +64,12 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
     return () => { active = false; };
   }, [documentId]);
 
-  const canEdit = !!detail && !!session && (session.membership.role === "admin" || (!!detail.document.ventureId && ["venture_head", "contributor"].includes(session.membership.role) && session.membership.ventureIds.includes(detail.document.ventureId)));
+  const writer = !!session && ["venture_head", "contributor"].includes(session.membership.role);
+  // Admins, and writers allowed to share with all ventures, change workspace-wide documents directly.
+  const sharer = !!session && (session.membership.role === "admin" || (writer && session.membership.canShareKnowledge === true));
+  const canEdit = !!detail && !!session && (session.membership.role === "admin" || (writer && (detail.document.ventureId ? session.membership.ventureIds.includes(detail.document.ventureId) : !detail.document.review || detail.document.ownerId === session.user.id || sharer)));
+  // Anyone else's edit to a shared document is a suggestion: the live version stays until an approver accepts it.
+  const suggesting = !!detail && !detail.document.ventureId && !detail.document.review && !sharer;
   const contentChanged = !!detail && (markdown !== detail.version.markdown || sourceUri !== (detail.version.sourceUri ?? ""));
   const dirty = contentChanged || !!summary.trim();
   const venture = session?.hierarchy.ventures.find((item) => item.id === detail?.document.ventureId)?.name ?? "Workspace";
@@ -151,9 +156,9 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
     try {
       const latest = await getLiveDocument(documentId);
       if (latest.version.id !== detail.version.id) throw new Error("A newer version was saved while you were editing. Copy your changes before reloading this editor.");
-      await updateLiveDocument(documentId, { markdown, changeSummary: summary.trim(), baseVersionId: detail.version.id, ...(sourceUri ? { sourceUri } : {}) });
+      const saved = await updateLiveDocument(documentId, { markdown, changeSummary: summary.trim(), baseVersionId: detail.version.id, ...(sourceUri ? { sourceUri } : {}) });
       clearDraft(storageKey);
-      toast({ title: "New draft saved", body: detail.document.title });
+      toast("suggestion" in saved ? { title: "Suggestion sent for approval", body: `${detail.document.title} stays as it is until an approver accepts your change.` } : { title: "New draft saved", body: detail.document.title });
       router.push(`/knowledge/live?doc=${encodeURIComponent(documentId)}`);
     } catch (cause) {
       setError(describeError(cause, "Could not save this document."));
@@ -174,7 +179,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
     <header className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 sm:px-6">
       <button type="button" onClick={returnToDocument} aria-label="Back to document" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-100 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"><ArrowLeft size={18} /></button>
       <div className="min-w-0 flex-1"><h1 className="truncate text-base font-bold text-neutral-900" title={detail.document.title}>{detail.document.title}</h1><p className="truncate text-xs text-neutral-500">{venture} · Editing version {detail.version.version} · {dirty ? <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="vso-fade-enter h-1.5 w-1.5 rounded-full bg-warning" />Unsaved changes{draftSavedAt ? ` · draft kept in this browser ${clockTime(draftSavedAt)}` : ""}</span> : "No changes"}</p></div>
-      <button type="button" onClick={() => void save()} disabled={saving || !contentChanged} aria-keyshortcuts="Control+S Meta+S" className="min-h-10 rounded-xl bg-primary-700 px-4 text-sm font-bold text-white transition-[background-color,transform,opacity] duration-150 hover:bg-primary-800 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"><ActionLabel busy={saving} idle="Save new draft" /></button>
+      <button type="button" onClick={() => void save()} disabled={saving || !contentChanged} aria-keyshortcuts="Control+S Meta+S" className="min-h-10 rounded-xl bg-primary-700 px-4 text-sm font-bold text-white transition-[background-color,transform,opacity] duration-150 hover:bg-primary-800 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"><ActionLabel busy={saving} idle={suggesting ? "Suggest change" : "Save new draft"} /></button>
     </header>
 
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 pt-4 sm:px-6">
@@ -197,7 +202,7 @@ export function LiveKnowledgeEditorScreen({ documentId }: { documentId: string }
         <label className="min-w-0 text-xs font-semibold text-neutral-600">Change summary <span className="font-normal text-neutral-500">(required to save)</span><input ref={summaryInput} value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={500} placeholder="What changed in this version?" className="mt-1 block min-h-10 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 text-sm text-neutral-900 outline-none focus-visible:ring-2 focus-visible:ring-primary-500" /></label>
         <label className="min-w-0 text-xs font-semibold text-neutral-600">Source URL <span className="font-normal text-neutral-500">(optional)</span><input ref={sourceInput} type="url" value={sourceUri} onChange={(event) => setSourceUri(event.target.value)} placeholder="https://…" className="mt-1 block min-h-10 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 text-sm text-neutral-900 outline-none focus-visible:ring-2 focus-visible:ring-primary-500" /></label>
       </div>
-      <p className="mt-2 text-xs text-neutral-500">Saving creates a new draft version. It does not approve or publish the record to evidence search.</p>
+      <p className="mt-2 text-xs text-neutral-500">{suggesting ? "This document is shared with all ventures. Your change goes to an approver; the live version stays until they accept it." : "Saving creates a new draft version. It does not approve or publish the record to evidence search."}</p>
       <Notice tone="error" message={error} onDismiss={() => setError("")} className="pt-2" />
     </div>
     {createPortal(<dialog ref={discardDialog} aria-labelledby="knowledge-discard-title" onCancel={(event) => { event.preventDefault(); setConfirmDiscard(false); setPendingHref(null); }} className="vso-dialog m-auto w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-neutral-200 bg-white p-0 text-neutral-900 shadow-2xl backdrop:bg-black/60">

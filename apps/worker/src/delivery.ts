@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { Db } from "mongodb";
 import type { WorkerConfig } from "./config.js";
 import { eventAudience } from "./event-audience.js";
-import { isTrustedPushEndpoint } from "@venture-studio/core";
+import { isTrustedPushEndpoint, readableSensitivities, sharesKnowledge } from "@venture-studio/core";
 
 export class Delivery {
   readonly mode: "local" | "live";
@@ -49,12 +49,29 @@ export class Delivery {
         return;
       }
     }
+    // Knowledge notices reach only people who can still read the document, and review requests only people who can still approve them.
+    if (item.resourceType === "document") {
+      const [document, membership] = await Promise.all([
+        this.db.collection("documents").findOne({ _id: item.resourceId, workspaceId: item.workspaceId, status: { $ne: "archived" } }),
+        this.db.collection("memberships").findOne({ workspaceId: item.workspaceId, userId: item.userId, status: "active" }),
+      ]);
+      const approver = membership ? sharesKnowledge({ role: String(membership.role), canShareKnowledge: membership.canShareKnowledge === true }) : false;
+      const readable = Boolean(document && membership) && readableSensitivities(String(membership!.role)).includes(String(document!.sensitivity))
+        && (!document!.ventureId || membership!.role === "admin" || (membership!.ventureIds ?? []).includes(String(document!.ventureId)))
+        && (!document!.review || approver || document!.ownerId === item.userId)
+        && (item.type !== "knowledge_request" || approver);
+      if (!readable) {
+        await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.scopeSkippedAt": new Date() } });
+        return;
+      }
+    }
     const storedPreferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId });
     const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true, ...storedPreferences };
-    // "Someone accepted your invitation" has no preference switch of its own, so it always arrives in the inbox.
+    // "Someone accepted your invitation" has no preference switch of its own, so it always arrives in the inbox; nor do
+    // knowledge requests and their results, since muting them would leave a request waiting unseen.
     // Calendar invitations, changes, and replies have their own switch; calendar reminders follow the reminders switch.
     // A channel followed for every message has no account-wide switch: the per-channel choice is the switch.
-    const category = item.type === "member_joined" || item.type === "channel_message" ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
+    const category = item.type === "member_joined" || item.type === "channel_message" || String(item.type).startsWith("knowledge_") ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
     if (category && preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
       return;

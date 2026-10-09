@@ -34,20 +34,22 @@ export function registerKnowledgeTools(tool: Register, ctx: ToolContext, look: L
 
   tool("create_document", "knowledge:write", {
     title: "Create document", annotations: writes(false),
-    description: `Write a new knowledge document in Markdown. ${DRAFT_NOTE} Leave out ventureId only for workspace-wide knowledge (admins only).`,
+    description: `Write a new knowledge document in Markdown. ${DRAFT_NOTE} Leave out ventureId only for workspace-wide knowledge (every venture sees it): admins and people allowed to share with all ventures publish it as a draft; for anyone else it becomes a request that an approver reviews in the app, hidden from others until approved.`,
     inputSchema: z.object({ title: z.string().trim().min(1).max(200), markdown: markdownField, ventureId: id.optional(), evidence: evidenceField, sensitivity: sensitivityField, changeSummary: z.string().trim().min(1).max(500).optional(), requestId: requestIdField }),
   }, async ({ title, markdown, ventureId, evidence, sensitivity, changeSummary, requestId }) => once(ctx, "create_document", requestId, { title, markdown, ventureId, evidence, sensitivity, changeSummary }, async () => {
     if (!markdown.trim()) throw new ToolError("The document has no text.");
     const document = await ctx.api<any>("POST", "/documents", { title, markdown, ...(ventureId ? { ventureId } : {}), evidenceClass: evidence, sensitivity, changeSummary: changeSummary ?? "Written with Claude" });
+    if (document.review) return { documentId: document.id, status: "waiting_for_approval", version: document.currentVersion?.version, versionId: document.currentVersion?.id, url: docLink(ctx, document.id), note: "Sent for approval: an admin or someone allowed to share with all ventures reviews it in the app. Only you and they can see it until then." };
     return { documentId: document.id, status: document.status, version: document.currentVersion?.version, versionId: document.currentVersion?.id, url: docLink(ctx, document.id), note: DRAFT_NOTE };
   }));
 
   tool("update_document", "knowledge:write", {
     title: "Update document", annotations: writes(false),
-    description: "Save a new version of a document (the whole Markdown, not a diff). baseVersionId is the versionId from get_document: if someone saved a newer version meanwhile, nothing is overwritten and you are told to read it again. The document goes back to draft until a person approves the new version.",
+    description: "Save a new version of a document (the whole Markdown, not a diff). baseVersionId is the versionId from get_document: if someone saved a newer version meanwhile, nothing is overwritten and you are told to read it again. The document goes back to draft until a person approves the new version. For a workspace-wide document, if I'm not allowed to share with all ventures, this becomes a suggested change that an approver accepts or declines in the app; the live version stays until then.",
     inputSchema: z.object({ documentId: id, markdown: markdownField, changeSummary: z.string().trim().min(1).max(400), baseVersionId: id, requestId: requestIdField }),
   }, async ({ documentId, markdown, changeSummary, baseVersionId, requestId }) => once(ctx, "update_document", requestId, { documentId, markdown, changeSummary, baseVersionId }, async () => {
     const version = await ctx.api<any>("PUT", `/documents/${encodeURIComponent(documentId)}`, { markdown, changeSummary, baseVersionId });
+    if (version.suggestion) return { documentId, suggestionId: version.suggestion.id, status: "suggested", url: docLink(ctx, documentId), note: "Sent as a suggested change: the live version stays until an approver accepts it in the app." };
     return { documentId, version: version.version, versionId: version.id, status: "draft", url: docLink(ctx, documentId), note: "The new version is a draft until someone approves it in the app." };
   }));
 

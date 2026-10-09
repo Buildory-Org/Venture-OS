@@ -23,5 +23,6 @@ export function notificationHref(item: Linkable): { href: string; label: string 
   if (item.chatKind === "direct" && item.chatId) return { href: `/messages/live?with=${encodeURIComponent(item.chatId)}`, label: "Open conversation" };
   if (item.resourceType === "member") return { href: "/admin/live", label: "Open People & access" };
   if (item.resourceType === "event") return { href: `/calendar/live?event=${encodeURIComponent(item.resourceId)}`, label: "Open event" };
+  if (item.resourceType === "document") return { href: `/knowledge/live?doc=${encodeURIComponent(item.resourceId)}`, label: "Open document" };
   return { href: "/notifications/live", label: "Open inbox" };
 }

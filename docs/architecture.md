@@ -54,6 +54,21 @@
   - **Who changes it:** anyone who can post in a venture or group may add events there. Only the organiser, an admin, or that venture's head may edit or cancel.
   - **Reminders:** planned three days ahead, with ids stable per date, person, and offset. Edits never resend a reminder that already went out. Before sending, the worker rechecks the date, the person's answer, and their access.
   - **Phone-calendar link:** a read-only ICS feed opened by a 256-bit secret that is stored only as a hash. Resetting the link replaces the secret.
+- Workspace-wide knowledge (decided 2026-10-09):
+  - **Who publishes:** a document with no venture reaches every venture. Admins publish there directly, and so do venture heads and contributors given `canShareKnowledge` in People & access. Changing someone to any other role clears the flag. Learners never write knowledge.
+  - **Requests:**
+    - Anyone else who writes knowledge may create one, but it carries a pending `review`.
+    - It is visible only to its author and the approvers (admins and permission holders) until approved, so its chunks don't reach other people's search.
+    - Approving names the version the approver read and fails if the author has saved another since.
+  - **Suggested changes:**
+    - An edit by someone without the permission is stored as a suggestion (`document_suggestions`) against the version it was written from, one waiting suggestion per person per document.
+    - Accepting it creates a new version only if that base is still current; the live version never changes before then.
+  - **Notices:**
+    - Each request, suggestion, and decision goes through the notification outbox with a per-event idempotency key.
+    - Only approvers who can read the document's sensitivity are told.
+    - The worker and the inbox re-check that the document is still readable, and for requests that the person can still approve.
+    - These notices have no preference switch, so a request can't sit unseen.
+  - **Files:** PDF and Word files stay per venture for now.
 
 ## Reliability and security invariants
 

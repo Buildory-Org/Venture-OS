@@ -9,7 +9,20 @@ export const documentSchema = z.object({
   slug: z.string().min(1).max(160), ownerId: idSchema, status: z.enum(["draft", "approved", "stale", "archived"]),
   evidenceClass: evidenceClassSchema, sensitivity: sensitivitySchema, authoritativeRank: z.number().int().min(0).max(100),
   currentVersionId: idSchema, lastReviewedAt: isoDateSchema.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
+  /** A request to share a new document with all ventures: hidden from everyone but its author and approvers until approved. */
+  review: z.object({ state: z.enum(["pending", "declined"]), requestedBy: idSchema, requestedAt: isoDateSchema, note: z.string().max(1000).optional(), decidedBy: idSchema.optional(), decidedAt: isoDateSchema.optional() }).optional(),
+  /** Changes suggested to a workspace-wide document that wait for approval. */
+  pendingSuggestions: z.number().int().min(0).optional(),
 });
+
+/** A change someone without the sharing permission suggested to a workspace-wide document; it replaces nothing until approved. */
+export const documentSuggestionSchema = z.object({
+  id: idSchema, documentId: idSchema, baseVersionId: idSchema, markdown: z.string().max(2_000_000).optional(), changeSummary: z.string(),
+  proposedBy: idSchema, createdAt: isoDateSchema, state: z.enum(["pending", "approved", "declined"]),
+  note: z.string().max(1000).optional(), decidedBy: idSchema.optional(), decidedAt: isoDateSchema.optional(),
+});
+/** `versionId` is the version the reviewer read; approving a request needs it, so a later edit can't be published unread. */
+export const knowledgeReviewSchema = z.object({ decision: z.enum(["approve", "decline"]), note: z.string().trim().max(1000).optional(), versionId: idSchema.optional() });
 export const documentListQuerySchema = cursorQuerySchema.extend({ ventureId: idSchema.optional(), status: z.enum(["draft", "approved", "stale"]).optional() });
 
 export const documentVersionSchema = z.object({
@@ -17,6 +30,10 @@ export const documentVersionSchema = z.object({
   markdown: z.string().min(1).max(2_000_000), changeSummary: z.string().min(1).max(500),
   createdBy: idSchema, createdAt: isoDateSchema, sourceUri: z.url().optional(),
 });
+/** Saving an edit gives a new version, or, for a workspace-wide document the editor may not publish to, a suggestion. */
+export const documentUpdateResultSchema = z.union([z.object({ suggestion: documentSuggestionSchema }), documentVersionSchema]);
+/** An approver's queue: new documents waiting to be shared with all ventures, and suggested changes to shared ones. */
+export const knowledgeReviewQueueSchema = z.object({ requests: z.array(documentSchema), suggestions: z.array(documentSuggestionSchema.extend({ documentTitle: z.string() })) });
 
 const markdownSchema = z.string().max(2_000_000).refine((value) => value.trim().length > 0, "Document content cannot be blank");
 export const createDocumentSchema = z.object({

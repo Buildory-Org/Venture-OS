@@ -24,6 +24,16 @@ export function can(membership: Membership, action: Action, scope: { ventureId?:
   return true;
 }
 
+/** The knowledge sensitivities a role may read. */
+export function readableSensitivities(role: string): string[] {
+  return role === "admin" ? ["team", "venture_restricted", "manager", "founder_private"] : role === "venture_head" ? ["team", "venture_restricted", "manager"] : ["team", "venture_restricted"];
+}
+
+/** May publish knowledge to every venture and approve others' requests to: admins, and writers given the permission. */
+export function sharesKnowledge(membership: { role: string; canShareKnowledge?: boolean }): boolean {
+  return membership.role === "admin" || (membership.canShareKnowledge === true && (membership.role === "venture_head" || membership.role === "contributor"));
+}
+
 export function validateMembershipSubset(membership: Membership, groups: ReadonlyArray<{ id: string; ventureId: string }>): boolean {
   const allowedVentures = new Set(membership.ventureIds);
   const groupVentures = new Map(groups.map((group) => [group.id, group.ventureId]));

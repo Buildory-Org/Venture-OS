@@ -1,4 +1,5 @@
 import type { AppDb } from "./db.js";
+import { authorizedDocumentFilter } from "./document-access.js";
 
 type Actor = NonNullable<Express.Request["actor"]>;
 
@@ -26,6 +27,9 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
     // So are calendar notices for events on archived ventures' calendars.
     const eventIds = archived.length ? [...new Set(page.filter((item) => item.resourceType === "event").map((item) => String(item.resourceId)))] : [];
     const archivedEventIds = new Set(eventIds.length ? (await db.collection("calendar_events").find({ _id: { $in: eventIds }, workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }).project({ _id: 1 }).toArray()).map((event) => String(event._id)) : []);
+    // Knowledge notices only while the document is still readable: a withdrawn request, or one no longer theirs to approve, drops out.
+    const documentIds = [...new Set(page.filter((item) => item.resourceType === "document").map((item) => String(item.resourceId)))];
+    const readableDocumentIds = new Set(documentIds.length ? (await db.collection("documents").find({ $and: [authorizedDocumentFilter(actor), { _id: { $in: documentIds } }] }).project({ _id: 1 }).toArray()).map((document) => String(document._id)) : []);
     for (const item of page) {
       const legacy = !item.chatKind && item.resourceType === "message" ? messageById.get(String(item.resourceId)) : undefined;
       if (!item.chatKind && item.resourceType === "message" && !legacy) continue;
@@ -33,6 +37,7 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
       if (channelId && !accessible.has(String(channelId))) continue;
       if (item.resourceType === "task" && archivedTaskIds.has(String(item.resourceId))) continue;
       if (item.resourceType === "event" && archivedEventIds.has(String(item.resourceId))) continue;
+      if (item.resourceType === "document" && !readableDocumentIds.has(String(item.resourceId))) continue;
       visible.push(item);
       if (visible.length === limit) break;
     }

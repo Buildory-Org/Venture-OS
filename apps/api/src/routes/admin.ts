@@ -167,6 +167,8 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
     if (ventures !== input.ventureIds.length || groups.length !== input.groupIds.length || groups.some((group) => !input.ventureIds.includes(String(group.ventureId)))) throw new AppError(400, "BAD_REQUEST", "Membership scopes must be valid groups within assigned ventures");
     if (!allGroupsScopeValid(input.ventureIds, input.allGroupVentureIds)) throw new AppError(400, "BAD_REQUEST", "All-groups access must name each assigned venture at most once");
     const updatedAt = new Date();
+    // Only venture heads and contributors hold the knowledge-sharing permission; any other role clears it, so a later promotion doesn't quietly revive it.
+    const shareKnowledge = (input.role === "venture_head" || input.role === "contributor") && (input.canShareKnowledge ?? current.canShareKnowledge === true);
     await atomic(database, async (session) => {
       // Picked groups plus every group in the all-groups ventures, read in this transaction so none created meanwhile is missed.
       const everyGroup = await allGroupsIn(db, actor.membership.workspaceId, input.allGroupVentureIds, session);
@@ -175,9 +177,9 @@ export function adminRoutes(database: Database, config: AppConfig): Router {
       // so removing the last group later still revokes that access instead of leaving an accidental explicit grant.
       const groupVentures = new Set([...groups, ...everyGroup].map((group) => String(group.ventureId)));
       const inheritedVentureIds = ((current.inheritedVentureIds ?? []) as string[]).filter((ventureId) => input.ventureIds.includes(ventureId) && groupVentures.has(ventureId));
-      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active", updatedAt: current.updatedAt }, { $set: { role: input.role, ventureIds: input.ventureIds, groupIds, allGroupVentureIds: input.allGroupVentureIds, inheritedVentureIds, updatedAt } }, { session });
+      const result = await db.collection("memberships").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, status: "active", updatedAt: current.updatedAt }, { $set: { role: input.role, ventureIds: input.ventureIds, groupIds, allGroupVentureIds: input.allGroupVentureIds, canShareKnowledge: shareKnowledge, inheritedVentureIds, updatedAt } }, { session });
       if (!result.matchedCount) throw new AppError(409, "CONFLICT", "Membership changed during update");
-      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success" }, session);
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "membership.update", objectType: "membership", objectId: id, result: "success", ...(shareKnowledge !== (current.canShareKnowledge === true) ? { metadata: { canShareKnowledge: shareKnowledge } } : {}) }, session);
     });
     res.json({ ok: true, data: jsonValue(await db.collection("memberships").findOne({ _id: id, workspaceId: actor.membership.workspaceId })) });
   });

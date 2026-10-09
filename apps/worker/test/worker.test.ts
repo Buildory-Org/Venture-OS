@@ -112,6 +112,27 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-revoked-channel" }))?.delivery?.scopeSkippedAt);
     assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-revoked-legacy" }))?.delivery?.scopeSkippedAt);
 
+    // Knowledge notices reach only people who can still read the document, requests only people who can still approve
+    // them, and no preference switch mutes them.
+    await collection("notification_preferences").updateOne({ _id: "preferences-a" }, { $set: { assignments: false } });
+    await collection("documents").insertMany([
+      { _id: "document-request", workspaceId: "workspace-a", ownerId: "user-z", status: "draft", sensitivity: "team", review: { state: "pending", requestedBy: "user-z" } },
+      { _id: "document-manager", workspaceId: "workspace-a", ownerId: "user-z", status: "draft", sensitivity: "manager", review: { state: "pending", requestedBy: "user-z" } },
+    ]);
+    const knowledgeNotice = (id: string, documentId: string) => ({ _id: id, workspaceId: "workspace-a", userId: "user-a", type: "knowledge_request", title: "Share with all ventures?", body: "Review it", resourceType: "document", resourceId: documentId, idempotencyKey: `${id}-test`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    await collection("notification_outbox").insertOne(knowledgeNotice("outbox-not-approver", "document-request"));
+    assert.equal(await worker.tick(now), true);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-not-approver" }))?.delivery?.scopeSkippedAt);
+    await collection("memberships").updateOne({ _id: "membership-a" }, { $set: { canShareKnowledge: true } });
+    await collection("notification_outbox").insertMany([knowledgeNotice("outbox-approver", "document-request"), knowledgeNotice("outbox-unreadable", "document-manager")]);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-approver" }), 1, "muting assignments doesn't hide a request");
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-unreadable" }), 0, "a contributor can't read a manager document");
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-unreadable" }))?.delivery?.scopeSkippedAt);
+    await collection("memberships").updateOne({ _id: "membership-a" }, { $unset: { canShareKnowledge: "" } });
+    await collection("notification_preferences").updateOne({ _id: "preferences-a" }, { $set: { assignments: true } });
+
     await collection("notification_outbox").insertOne({ _id: "outbox-dead", workspaceId: "workspace-a", userId: "missing-user", type: "message", title: "Dead", body: "Dead", resourceType: "message", resourceId: "message-a", idempotencyKey: "dead-test", state: "pending", attempts: 7, nextAttemptAt: now, createdAt: now, updatedAt: now });
     assert.equal(await worker.tick(now), true);
     assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-dead" }))?.state, "dead");

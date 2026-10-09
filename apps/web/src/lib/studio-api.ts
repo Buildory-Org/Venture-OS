@@ -58,6 +58,9 @@ import {
   classSchema,
   decisionSchema,
   documentSchema,
+  documentSuggestionSchema,
+  documentUpdateResultSchema,
+  knowledgeReviewQueueSchema,
   documentVersionSchema,
   updateDocumentSchema,
   sessionBootstrapResponseSchema,
@@ -544,7 +547,7 @@ export async function searchLiveKnowledge(q: string, ventureId?: string) {
 export async function getLiveDocument(id: string) {
   const data = successEnvelope(documentSchema.passthrough()).parse(await request(`/v1/documents/${encodeURIComponent(id)}`)).data;
   const normalizeVersion = (value: unknown) => value && typeof value === "object" && "sourceUri" in value && value.sourceUri === null ? { ...value, sourceUri: undefined } : value;
-  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(normalizeVersion(data.currentVersion)), versions: documentVersionSchema.omit({ markdown: true }).array().parse(Array.isArray(data.versions) ? data.versions.map(normalizeVersion) : data.versions) };
+  return { document: documentSchema.parse(data), version: documentVersionSchema.parse(normalizeVersion(data.currentVersion)), versions: documentVersionSchema.omit({ markdown: true }).array().parse(Array.isArray(data.versions) ? data.versions.map(normalizeVersion) : data.versions) , suggestions: documentSuggestionSchema.array().parse(Array.isArray(data.suggestions) ? data.suggestions : []) };
 }
 
 export async function listLiveDocuments(cursor?: string, filters: { ventureId?: string; status?: "draft" | "approved" | "stale" } = {}) {
@@ -559,9 +562,25 @@ export async function createLiveDocument(input: unknown) {
   return successEnvelope(documentSchema).parse(await request("/v1/documents", { method: "POST", body: JSON.stringify(valid) })).data;
 }
 
+/** Saves a new version, or, for a workspace-wide document I may not publish to, sends it as a suggested change. */
 export async function updateLiveDocument(id: string, input: unknown) {
   const valid = updateDocumentSchema.parse(input);
-  return successEnvelope(documentVersionSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+  return successEnvelope(documentUpdateResultSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+/** An approver's queue: new documents waiting to be shared with all ventures, and suggested changes to shared ones. */
+export async function listLiveKnowledgeReviews() {
+  return successEnvelope(knowledgeReviewQueueSchema).parse(await request("/v1/knowledge/reviews")).data;
+}
+
+/** Approve or decline a request to share a document with all ventures, or (its author) withdraw it. */
+/** `versionId` is the version the reviewer read: approval fails if the author changed it since. */
+export async function reviewLiveDocumentRequest(id: string, decision: "approve" | "decline" | "withdraw", note?: string, versionId?: string) {
+  return successEnvelope(documentSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}/review`, { method: "POST", body: JSON.stringify({ decision, ...(note ? { note } : {}), ...(versionId ? { versionId } : {}) }) })).data;
+}
+
+export async function reviewLiveSuggestion(id: string, suggestionId: string, decision: "approve" | "decline", note?: string) {
+  return successEnvelope(documentSchema).parse(await request(`/v1/documents/${encodeURIComponent(id)}/suggestions/${encodeURIComponent(suggestionId)}/review`, { method: "POST", body: JSON.stringify({ decision, ...(note ? { note } : {}) }) })).data;
 }
 
 export async function updateLiveDocumentMetadata(id: string, input: { status: "draft" | "approved" | "stale" | "archived"; lastReviewedAt?: string }) {

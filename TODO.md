@@ -389,6 +389,23 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Avatar:** it now sits beside the last message of a run, in direct messages and channels, as in iMessage; the name and time stay on the first message.
   - **Sideways scrollbar removed:** the hover reaction bar on your own short messages reached past the chat's right edge. It now opens towards the middle, and message lists never scroll sideways.
   - **Verified:** in the browser with the details panel open.
+- [x] Knowledge for every venture, with a sharing permission and approvals (2026-10-09), built and tested locally, not yet live.
+  - **Permission:** in People & access, an admin can tick "Can share knowledge with all ventures" for a venture head or contributor. Admins always have it; any other role clears it.
+  - **With the permission:** you publish workspace-wide documents directly and approve other people's requests and suggested changes.
+  - **Without it:**
+    - Choosing "Workspace (needs approval)" and "Send for approval" sends a request. It stays hidden from everyone but you and the approvers until it's approved; then every venture sees it and it joins search.
+    - Approval publishes only the version the approver read. Approvers can decline with a note. Editing a declined request sends it again, and you can withdraw a request.
+    - Editing a workspace-wide document becomes a suggested change, one per person per document (suggesting again replaces it). The live version stays as it is until an approver accepts the change. A suggestion written on an older version can't be accepted, since it would undo the newer change.
+  - **Notices:**
+    - Approvers are told of each request and suggestion, but only if they can read the document; the author or proposer is told the result.
+    - No preference switch mutes these notices, and they drop out once the document is no longer readable.
+    - A "Waiting for your approval" list sits at the top of Knowledge.
+  - **Scope:** files (PDF, Word) stay per venture for now; Markdown documents and uploads can be workspace-wide.
+  - **Verified:**
+    - API and worker tests cover requests, declines, resends, version-pinned approval, suggestions (replacement, stale ones refused), sensitivity-aware notices, the permission and role changes, and withdrawals. The backend smoke passes.
+    - Independent review: its four medium and seven low findings are fixed.
+    - In the browser: both people's views of a request and a suggestion, granting and removing the permission, the button and destination labels, and notices arriving through the worker.
+    - Checks: web typecheck, lint, and the production build.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

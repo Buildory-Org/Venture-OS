@@ -19,7 +19,7 @@ const taskStatus: Record<TaskPage["items"][number]["status"], TaskStatus> = {
 };
 
 export function connectedNotices(notifications: Notifications): StudioData["notices"] {
-  return notifications.map((notice) => ({ id: notice.id, title: notice.title, body: notice.body, kind: notice.type === "mention" ? "mention" : notice.type === "reminder" || notice.type === "deadline_warning" ? "reminder" : "task", at: notice.createdAt, read: !!notice.readAt }));
+  return notifications.map((notice) => ({ id: notice.id, title: notice.title, body: notice.body, kind: notice.type === "mention" || notice.type === "message" || notice.type === "channel_message" ? "mention" : notice.type === "reminder" || notice.type === "deadline_warning" ? "reminder" : "task", at: notice.createdAt, read: !!notice.readAt }));
 }
 
 export function connectedShellData(session: Session, tasks: TaskPage["items"] = [], notifications: Notifications = [], members: Members["items"] = []): StudioData {

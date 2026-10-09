@@ -38,7 +38,15 @@
 - Invitation email and in-app reminder delivery are distinct: an invitation targets an email address before membership, while the reminder worker writes the signed-in member's in-app notification through the outbox.
 - A Web Push endpoint belongs to one browser subscription, not one account. Re-registration transfers its owner; historically duplicated endpoints are retired without guessing an owner. API and worker accept only HTTPS endpoints from supported browser push providers, and the worker rechecks ownership before delivery. A push already in flight cannot be recalled, so shared-device sign-out should also unsubscribe where possible.
 - In V1, `/assign` and `/notify` are manager shortcuts limited to workspace admins and scoped venture heads. Contributors may still create tasks through the ordinary task form/API; a distinct per-group manager role and whether it should own all delegation require a later product decision.
-- Channel notifications are mentions-only (decided 2026-10-04): a channel message notifies only validated `@mentions`, never every group member, so inboxes and browser push stay quiet. DMs always notify. Admins are in scope for every channel for mentions, delivery, and visibility.
+- Channel notifications are each person's choice per channel (decided 2026-10-09, replacing the 2026-10-04 mentions-only rule).
+  - The choices are all messages, @mentions only (the default), or off. Off silences @mentions too.
+  - Followers are notified only while they can still open the channel. Direct messages always notify, subject to the account-wide "Direct messages" switch.
+  - Admins are in scope for every channel for mentions, delivery, and visibility.
+- Message alerts (decided 2026-10-09):
+  - **While the site is open**, the page itself plays a sound and, when the tab isn't in front, shows a system banner. One tab alerts per notice.
+  - **When the site is closed**, Web Push shows the banner. The push carries only the notice id; the notification worker reads the text with the browser's own sign-in, so another account on a shared browser sees only a generic notice.
+  - **Settings:** sound, banners, and push are per-device choices.
+  - **Instant delivery:** the API nudges a person's open tabs the moment the worker adds to their inbox (a change stream on `notifications`), so alerts don't wait for the poll.
 - The sample-data prototype under `/demo` is a development aid (decided 2026-10-04): production builds redirect `/demo` to the connected dashboard and hide demo links unless `NEXT_PUBLIC_ENABLE_DEMO=true` is set at build time.
 - Calendar (decided 2026-10-08):
   - **Storage:** a repeating event is stored once, with its rule, its skipped dates, and a wall-clock time in its own time zone. It is expanded into dates when read. Changing one date splits that date off as a separate event.

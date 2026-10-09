@@ -4,17 +4,24 @@ import { describeError } from "@/lib/errors";
 import { Select } from "@/components/ui/select";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { Bell, X } from "@/components/ui/icons";
 import { dismissToast, toast as showToast } from "@/components/ui/toast";
 import { listLiveNotifications, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder } from "@/lib/studio-api";
 import { getNotificationUnread, notificationHref, notificationRefreshEvent, publishNotificationSnapshot, subscribeNotificationSnapshot } from "@/lib/notification-events";
 import { isActiveChat } from "@/lib/chat-presence";
+import { raiseAlert } from "@/lib/device-alerts";
+import { useNotificationNudges } from "@/lib/use-live-realtime";
+import { prepareChatAudio } from "@/components/studio/chat-message-effects";
 import { replayAnimation } from "@/lib/motion";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 type Toast = { item: Notification; count: number };
 const pollMs = 15_000;
+// A tab in the background still checks now and then, in case the live connection dropped.
+const hiddenPollMs = 60_000;
+const alertWindowMs = 10 * 60_000;
 const TOAST_ID = "live-notification";
 const errorText = (cause: unknown) => describeError(cause, "The action failed. Please try again.");
 const reminderId = (item: Notification) => item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
@@ -64,13 +71,45 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
   const inFlightRef = useRef(false);
   const rerunRef = useRef(false);
   const toastRef = useRef<HTMLElement>(null);
+  const router = useRouter();
+  const openRef = useRef((href: string) => router.push(href));
+  useEffect(() => { openRef.current = (href: string) => router.push(href); }, [router]);
+  // The server says something new is in my inbox: look now rather than at the next poll (a burst becomes one look).
+  const nudgeTimer = useRef(0);
+  useNotificationNudges(() => {
+    window.clearTimeout(nudgeTimer.current);
+    nudgeTimer.current = window.setTimeout(() => window.dispatchEvent(new Event(notificationRefreshEvent)), 600);
+  });
+  useEffect(() => () => window.clearTimeout(nudgeTimer.current), []);
+  useEffect(() => {
+    // A banner clicked while this tab was behind: the notification worker asks the tab to open it, keeping any draft.
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const url = event.data?.type === "venture:open" ? event.data.url : undefined;
+      if (typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) return;
+      openRef.current(url);
+      event.ports[0]?.postMessage({ opened: true });
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+  useEffect(() => {
+    // Browsers only allow sound after a click or key press in the page.
+    window.addEventListener("pointerdown", prepareChatAudio, { passive: true });
+    window.addEventListener("keydown", prepareChatAudio);
+    return () => { window.removeEventListener("pointerdown", prepareChatAudio); window.removeEventListener("keydown", prepareChatAudio); };
+  }, []);
 
   useEffect(() => {
     let active = true;
+    let lastPoll = 0;
+    // A different account starts fresh: its existing unread notices are not new.
+    seenIdsRef.current = null;
     async function poll(force = false) {
       if (inFlightRef.current) { if (force) rerunRef.current = true; return; }
-      if (!force && document.visibilityState === "hidden") return;
+      if (!force && document.visibilityState === "hidden" && Date.now() - lastPoll < hiddenPollMs) return;
       inFlightRef.current = true;
+      lastPoll = Date.now();
       try {
         let next = await listLiveNotifications();
         if (!active || next.some((item) => item.userId !== userId)) return;
@@ -85,6 +124,10 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
         if (seenIdsRef.current) {
           const unseen = next.filter((item) => !item.readAt && !seenIdsRef.current!.has(item.id) && !isActiveChat(item.chatKind, item.chatId));
           if (unseen.length) {
+            // A sound and, with the tab behind, a system banner: the newest few, oldest first.
+            // Only recent ones: waking a computer from sleep shouldn't replay old news.
+            const recent = unseen.filter((notice) => Date.now() - new Date(notice.createdAt).getTime() < alertWindowMs);
+            for (const notice of recent.slice(0, 3).reverse()) void raiseAlert({ id: notice.id, title: notice.title, body: notice.body, href: notificationHref(notice).href }, (href) => openRef.current(href));
             const item = unseen.find(sticky) ?? unseen[0];
             setToasts((current) => [{ item, count: unseen.length }, ...current].slice(0, 3));
             setActionError(""); setSnoozed("");

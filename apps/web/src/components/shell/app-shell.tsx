@@ -10,6 +10,7 @@ import { Topbar } from "./topbar";
 import { workspaceHref } from "./workspace-link";
 import { ChatSidebarContext } from "./chat-sidebar-context";
 import { LiveNotificationPulse, LiveTitleBadge } from "./live-notification-pulse";
+import { AlertsPrompt } from "./alerts-prompt";
 import { ToastRegion } from "@/components/ui/toast";
 import { useStudio } from "@/lib/studio-store";
 
@@ -229,6 +230,7 @@ export function AppShell({ children, connected = false }: { children: React.Reac
       {!connected && <FocusDock open={focusOpen} instant={focusInstant} onClose={() => setFocusOpen(false)} />}
       {connected && <LiveNotificationPulse userId={currentUserId} />}
       {connected && <LiveTitleBadge />}
+      {connected && <AlertsPrompt />}
       <ToastRegion />
     </div>
     </ChatSidebarContext.Provider>

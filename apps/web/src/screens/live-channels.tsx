@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { BookOpenText, Bookmark, Columns3, FolderOpen, Hash, Info, Layers3, Menu, Pin, Plus, RefreshCw, Search, UserLock, Users, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { ChannelNotifyMenu } from "@/components/studio/channel-notify-menu";
 import type { CommandPreview, Message } from "@venture-studio/contracts";
 import { createLiveChannel, createLiveGroup, createLiveVenture, executeLiveCommand, listLiveChannelMessages, listLiveMembers, loadLiveSession, previewLiveCommand, sendLiveChannelMessage, updateLiveMessagePin, updateLiveMessageReaction, updateLiveMessageSave } from "@/lib/studio-api";
 import { ChatAvatar, ChatEmpty, ChatShell } from "@/components/studio/chat-ui";
@@ -637,6 +638,7 @@ export function LiveChannelsScreen() {
         <div className="min-w-0 flex-1"><h2 className="truncate text-[12px] font-semibold">{selected ? `# ${selected.name}` : "Choose a channel"}</h2><p className="truncate text-[10px] text-[var(--color-neutral-400)]">{venture?.name}{group ? ` · ${group.name}` : ""}</p></div>
         <div className="flex shrink-0 items-center gap-0.5">
           <button ref={searchButtonRef} type="button" aria-label="Search group messages and files" title="Search messages and files" disabled={!group} onClick={() => setSearchOpen(true)} className="chat-icon disabled:opacity-40"><Search size={17} /></button>
+          {selected && <ChannelNotifyMenu channelId={selected.id} channelName={selected.name} />}
           <ThemeToggle />
           <button ref={detailsButtonRef} type="button" aria-label={detailsOpen ? "Hide group details" : "Show group details"} aria-expanded={detailsOpen} onClick={() => setDetailsOpen((value) => !value)} className={clsx("chat-icon", detailsOpen && "chat-icon-active")}><Info size={17} /></button>
           <button type="button" aria-label="Refresh messages" title="Refresh messages" aria-busy={reloading || undefined} onClick={() => setRevision((value) => value + 1)} className="chat-icon"><RefreshCw size={16} className={clsx(reloading && "vso-spin")} /></button>

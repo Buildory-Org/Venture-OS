@@ -50,7 +50,7 @@ export function ChannelNavigator(props: Props) {
           ? <EmptyState variant="card" tone="teal" icon={Layers3} title="No groups in this venture yet" body={`Create a group to start conversations in ${venture.name}.`} action={{ label: "Create group", icon: Plus, onClick: () => onCreate("group", venture.id) }} />
           : <EmptyState variant="card" tone="blue" icon={UserLock} title="No groups in this venture yet" body={`Ask a workspace admin to add you to a group in ${venture.name}.`} />
         : <EmptyState variant="compact" icon={Layers3} title="Choose a group" body="Pick one from the rail." className="m-2" />;
-  // Channel alerts are mentions-only; a dot marks channels with an unread mention for you.
+  // A dot marks channels with an unread @mention for you (each channel's bell decides what else notifies).
   const snapshot = useSyncExternalStore(subscribeNotificationSnapshot, getNotificationSnapshot, () => null);
   const mentioned = new Set((snapshot ?? []).filter((item) => !item.readAt && item.chatKind === "channel" && item.chatId).map((item) => item.chatId!));
 

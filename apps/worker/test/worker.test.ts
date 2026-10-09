@@ -83,6 +83,22 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-message-muted" }), 0);
     // A current DM notice bypasses the legacy-message lookup, so this proves the muted preference rather than a scope skip.
     assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-message-muted" }))?.delivery?.categorySkippedAt);
+    // A channel followed for every message has no account-wide switch: the channel's own choice already said yes.
+    await collection("channel_notification_settings").insertOne({ _id: "level-a", workspaceId: "workspace-a", userId: "user-a", channelId: "channel-a", level: "all" });
+    await collection("notification_outbox").insertOne({ _id: "outbox-followed-channel", workspaceId: "workspace-a", userId: "user-a", type: "channel_message", title: "Ann in #general", body: "Standup at 11", resourceType: "message", resourceId: "followed-message", chatKind: "channel", chatId: "channel-a", idempotencyKey: "followed-channel-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-followed-channel" }), 1);
+    // Turned off while notices waited: neither the queued channel message nor a queued @mention is delivered.
+    await collection("channel_notification_settings").updateOne({ _id: "level-a" }, { $set: { level: "off" } });
+    await collection("notification_outbox").insertMany([
+      { _id: "outbox-after-off", workspaceId: "workspace-a", userId: "user-a", type: "channel_message", title: "Ann in #general", body: "Later", resourceType: "message", resourceId: "later-message", chatKind: "channel", chatId: "channel-a", idempotencyKey: "after-off-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now },
+      { _id: "outbox-mention-after-off", workspaceId: "workspace-a", userId: "user-a", type: "mention", title: "Ann mentioned you in #general", body: "Later", resourceType: "message", resourceId: "later-mention", chatKind: "channel", chatId: "channel-a", idempotencyKey: "mention-after-off-test", state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now },
+    ]);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await worker.tick(now), true);
+    assert.equal(await collection("notifications").countDocuments({ outboxId: { $in: ["outbox-after-off", "outbox-mention-after-off"] } }), 0);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "outbox-after-off" }))?.delivery?.levelSkippedAt);
+    await collection("channel_notification_settings").deleteOne({ _id: "level-a" });
 
     await collection("notification_preferences").updateOne({ _id: "preferences-a" }, { $set: { messages: true, mentions: true } });
     await collection("memberships").updateOne({ _id: "membership-a" }, { $set: { groupIds: [] } });

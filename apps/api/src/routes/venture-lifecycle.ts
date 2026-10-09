@@ -132,6 +132,7 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
   await remove("evidence_items", { taskId: { $in: taskIds } }, true);
   await remove("message_reactions", { messageId: { $in: messageIds } }, true);
   await remove("message_saves", { messageId: { $in: messageIds } }, true);
+  await remove("channel_notification_settings", { channelId: { $in: channelIds } });
   await remove("document_versions", { documentId: { $in: ids(documents) } }, true);
   await remove("class_applications", { classId: { $in: ids(classes) } }, true);
   await remove("command_executions", { $or: [{ "preview.previewId": { $in: ids(previews) } }, { "result.task.ventureId": ventureId }] }, true);

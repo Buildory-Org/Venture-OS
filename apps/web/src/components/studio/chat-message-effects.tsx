@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Message } from "@venture-studio/contracts";
 import { Volume2, VolumeX } from "@/components/ui/icons";
 
-type Sound = "sent" | "received";
+type Sound = "sent" | "received" | "alert";
 let audio: AudioContext | null = null;
 
 /* Message sounds can be muted per browser; the choice is a convenience, so storage failures fall back to sound on. */
@@ -36,15 +36,40 @@ export function ChatSoundToggle() {
   }}><span key={String(isMuted)} className="vso-label-swap grid place-items-center">{isMuted ? <VolumeX size={17} /> : <Volume2 size={17} />}</span></button>;
 }
 
-export function prepareChatAudio() {
+export function prepareChatAudio(): Promise<void> {
   try {
     audio ??= new AudioContext();
-    if (audio.state === "suspended") void audio.resume();
+    if (audio.state === "suspended") return audio.resume().catch(() => undefined);
   } catch { /* Audio is optional when the browser or device disallows it. */ }
+  return Promise.resolve();
+}
+
+/** Browsers only let a page play sound after someone has clicked or typed in it. */
+export function isChatAudioReady() {
+  return !muted && audio?.state === "running";
+}
+
+/** A new message while the site is open but not in front: two soft notes, fuller than the in-chat cue. */
+function playAlert(context: AudioContext) {
+  const now = context.currentTime;
+  for (const [index, frequency] of [659.25, 987.77].entries()) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = now + index * 0.11;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.11, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.32);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(start);
+    oscillator.stop(start + 0.34);
+  }
 }
 
 export function playChatSound(kind: Sound) {
   if (muted || !audio || audio.state !== "running") return;
+  if (kind === "alert") { try { playAlert(audio); } catch { /* Sound is optional. */ } return; }
   try {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();

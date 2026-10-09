@@ -42,7 +42,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   tool("whats_new", "notifications:read", {
     title: "What's new", annotations: read,
-    description: "New notifications (assignments, mentions, reminders, deadline warnings) and reviews waiting on me since `cursor`. Store the returned cursor and pass it next time; `changed:false` means nothing happened. Without a cursor it returns unread items. Does not mark anything read.",
+    description: "New notifications (assignments, @mentions, messages in channels I follow, direct messages without their text, reminders, deadline warnings, calendar changes) and reviews waiting on me since `cursor`. Store the returned cursor and pass it next time; `changed:false` means nothing happened. Without a cursor it returns unread items. Does not mark anything read.",
     inputSchema: z.object({ cursor: z.string().max(200).optional(), timezone: timezoneField }),
   }, async ({ cursor, timezone }) => {
     const timeZone = validTimeZone(timezone);
@@ -63,9 +63,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     for (const item of notifications) {
       if (!fresh(item.createdAt) || (since === undefined && item.readAt)) continue;
       const url = item.resourceType === "task" ? taskLink(ctx, String(item.resourceId)) : item.chatKind === "channel" ? `${ctx.origin}/channels/live?channel=${encodeURIComponent(item.chatId)}` : `${ctx.origin}/notifications/live`;
-      // Direct messages stay out of MCP: say one arrived, without its text.
+      // Direct messages stay out of MCP: say one arrived, without its text. Channel notices carry message text (and the
+      // sender), so without messages:read they only say that something arrived.
       const direct = item.chatKind === "direct";
-      items.push(compact({ kind: item.type, title: direct ? "New direct message" : clip(item.title, 120), body: direct ? undefined : clip(item.body, 200), at: localTime(item.createdAt, timeZone), notificationId: item.id, url }));
+      const hiddenChannel = item.chatKind === "channel" && !allowed("messages:read");
+      const title = direct ? "New direct message" : hiddenChannel ? (item.type === "mention" ? "You were mentioned in a channel" : "New channel message") : clip(item.title, 120);
+      items.push(compact({ kind: item.type, title, body: direct || hiddenChannel ? undefined : clip(item.body, 200), at: localTime(item.createdAt, timeZone), notificationId: item.id, url }));
     }
     for (const task of reviews.items) if (fresh(task.updatedAt)) items.push(compact({ kind: "review_requested", ...await taskRow(ctx, look, task, timeZone) }));
     const next = Buffer.from(JSON.stringify({ t: new Date(now).toISOString() })).toString("base64url");

@@ -20,6 +20,14 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
     const actor = req.actor!;
     res.json({ ok: true, data: jsonValue(await listVisibleNotifications(db, actor)) });
   });
+  // One notice, under the inbox's visibility rules: the browser's notification worker reads it to show who wrote what,
+  // so a push never carries message text and a browser signed in as someone else only gets a generic alert.
+  router.get("/notifications/:id", async (req, res) => {
+    const actor = req.actor!;
+    const [item] = await listVisibleNotifications(db, actor, { _id: idSchema.parse(req.params.id) }, 1);
+    if (!item) throw new AppError(404, "NOT_FOUND", "Notification not found");
+    res.json({ ok: true, data: jsonValue(item) });
+  });
   router.post("/notifications/read", async (req, res) => {
     const actor = req.actor!;
     const { chatKind, chatId } = markNotificationsReadSchema.parse(req.body ?? {});

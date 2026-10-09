@@ -539,6 +539,50 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-test" }), 0);
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-hidden" }), 0);
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: mentionedId, userId: "user-b" }), 0);
+    // Per-channel choices: the peer follows every message, ashutosh turns the channel off, and the sender never hears.
+    const as = (userId: string) => ({ ...headers, "x-dev-user-id": userId });
+    const levelUrl = `${origin}/v1/channels/channel-a/notification-level`;
+    assert.equal(((await (await fetch(levelUrl, { headers: as("user-peer") })).json()) as any).data.level, "mentions");
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-peer"), body: JSON.stringify({ level: "all" }) })).status, 200);
+    assert.equal(((await (await fetch(levelUrl, { headers: as("user-peer") })).json()) as any).data.level, "all");
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-ashutosh"), body: JSON.stringify({ level: "off" }) })).status, 200);
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-peer"), body: JSON.stringify({ level: "loud" }) })).status, 400);
+    assert.ok([403, 404].includes((await fetch(`${origin}/v1/channels/channel-hidden/notification-level`, { headers })).status));
+    assert.ok([403, 404].includes((await fetch(`${origin}/v1/channels/channel-hidden/notification-level`, { method: "PUT", headers, body: JSON.stringify({ level: "all" }) })).status));
+    const followed = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Standup moved to 11 @ashutosh", mentionUserIds: ["user-ashutosh"], clientId: "follow-check-0001" }) });
+    assert.equal(followed.status, 201, await followed.clone().text());
+    const followedId = ((await followed.json()) as any).data.message.id;
+    const peerNotice = await database.db.collection("notification_outbox").findOne({ resourceId: followedId, userId: "user-peer" });
+    assert.equal(peerNotice?.type, "channel_message");
+    assert.match(String(peerNotice?.title), / in #general$/);
+    assert.equal(peerNotice?.body, "Standup moved to 11 @ashutosh");
+    assert.equal(peerNotice?.chatKind, "channel");
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: followedId, userId: "user-ashutosh" }), 0, "a channel turned off silences @mentions too");
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: followedId, userId: "user-test" }), 0, "never the sender");
+    // Following every message and @mentioned: the mention title, under the channel's choice (not the account's mention switch).
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-ashutosh"), body: JSON.stringify({ level: "all" }) })).status, 200);
+    const mentionedFollower = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Over to you @ashutosh", mentionUserIds: ["user-ashutosh"], clientId: "follow-check-0004" }) });
+    const followerMention = await database.db.collection("notification_outbox").findOne({ resourceId: ((await mentionedFollower.json()) as any).data.message.id, userId: "user-ashutosh" });
+    assert.equal(followerMention?.type, "channel_message");
+    assert.match(String(followerMention?.title), / mentioned you in #general$/);
+    // Back to the default, the stored choice goes; an @mention notifies again, with who and where.
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-ashutosh"), body: JSON.stringify({ level: "mentions" }) })).status, 200);
+    assert.equal(await database.db.collection("channel_notification_settings").countDocuments({ userId: "user-ashutosh" }), 0);
+    const mentionedAgain = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Thanks @ashutosh", mentionUserIds: ["user-ashutosh"], clientId: "follow-check-0002" }) });
+    const mentionNotice = await database.db.collection("notification_outbox").findOne({ resourceId: ((await mentionedAgain.json()) as any).data.message.id, userId: "user-ashutosh" });
+    assert.equal(mentionNotice?.type, "mention");
+    assert.match(String(mentionNotice?.title), / mentioned you in #general$/);
+    // A follower who loses the group hears nothing more from its channel.
+    await database.db.collection("memberships").updateOne({ _id: "membership-peer" }, { $set: { groupIds: [] } });
+    const afterLeaving = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Quiet now", mentionUserIds: [], clientId: "follow-check-0003" }) });
+    assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: ((await afterLeaving.json()) as any).data.message.id, userId: "user-peer" }), 0);
+    await database.db.collection("memberships").updateOne({ _id: "membership-peer" }, { $set: { groupIds: ["group-a"] } });
+    assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-peer"), body: JSON.stringify({ level: "mentions" }) })).status, 200);
+    // Leave #general as the later paging checks expect it.
+    const followMessages = (await database.db.collection("messages").find({ clientId: /^follow-check-/ }).project({ _id: 1 }).toArray()).map((row) => row._id);
+    await database.db.collection("messages").deleteMany({ _id: { $in: followMessages } });
+    await database.db.collection("events").deleteMany({ _id: { $in: followMessages } });
+    await database.db.collection("notification_outbox").deleteMany({ resourceId: { $in: followMessages } });
     await database.db.collection("notifications").insertMany([
       { _id: "visible-channel-note", outboxId: "visible-channel-note", workspaceId: "workspace-a", userId: "user-peer", type: "message", title: "Visible", body: "Generic", resourceType: "message", resourceId: mentionedId, chatKind: "channel", chatId: "channel-a", createdAt: new Date(now.getTime() - 1000) },
       { _id: "legacy-channel-note", outboxId: "legacy-channel-note", workspaceId: "workspace-a", userId: "user-peer", type: "mention", title: "Legacy", body: "Private", resourceType: "message", resourceId: mentionedId, createdAt: new Date(now.getTime() - 2000) },
@@ -1004,6 +1048,14 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const socket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-test" }, transports: ["websocket"] });
     activeSocket = socket;
     await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("connect_error", reject); });
+    // A new inbox item nudges only its owner's open tabs, at once, with nothing but its id.
+    const nudge = new Promise<any>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("no notification nudge")), 5000); socket.once("notification", (value: unknown) => { clearTimeout(timer); resolve(value); }); });
+    await database.db.collection("notifications").insertOne({ _id: "nudge-note", outboxId: "nudge-note", workspaceId: "workspace-a", userId: "user-test", type: "message", title: "Nudge", body: "Nudge", resourceType: "message", resourceId: "nudge-message", chatKind: "direct", chatId: "user-peer", createdAt: new Date() } as never);
+    assert.deepEqual(await nudge, { id: "nudge-note" });
+    // One notice by id, for its owner only (the notification worker reads it to show who wrote what).
+    assert.equal(((await (await fetch(`${origin}/v1/notifications/nudge-note`, { headers })).json()) as any).data.title, "Nudge");
+    assert.equal((await fetch(`${origin}/v1/notifications/nudge-note`, { headers: { ...headers, "x-dev-user-id": "user-peer" } })).status, 404);
+    await database.db.collection("notifications").deleteOne({ _id: "nudge-note" as never });
     const hiddenJoin = await new Promise<any>((resolve) => socket.emit("channel:join", "channel-hidden", resolve));
     assert.equal(hiddenJoin.ok, false);
     const presence = new Promise<any>((resolve) => socket.once("presence:update", resolve));
@@ -2184,6 +2236,13 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     const direct = await mcpTool(origin, member.token, "whats_new", { cursor: fresh.data.cursor });
     assert.equal(direct.data.items[0].title, "New direct message", direct.text);
     assert.ok(!direct.text!.includes("PRIVATE-DM-TEXT"));
+    // Channel notices carry message text, so a key without messages:read only learns that something arrived.
+    await db.collection("notifications").insertOne({ _id: "notification-channel", outboxId: "outbox-channel", workspaceId: "workspace-a", userId: "user-member", type: "channel_message", title: "Person lead in #general", body: "CHANNEL-SECRET-TEXT", resourceType: "message", resourceId: "message-x", chatKind: "channel", chatId: "channel-a", createdAt: new Date() } as never);
+    const noticesOnly = await tokenFor("member", ["notifications:read"]);
+    const hidden = await mcpTool(origin, noticesOnly.token, "whats_new", {});
+    const hiddenItem = hidden.data.items.find((item: any) => item.notificationId === "notification-channel");
+    assert.equal(hiddenItem?.title, "New channel message", hidden.text);
+    assert.ok(!hidden.text!.includes("CHANNEL-SECRET-TEXT") && !hidden.text!.includes("Person lead in #general"));
     assert.equal((await mcpTool(origin, member.token, "whats_new", { cursor: "garbage" })).isError, true);
 
     // Writes go through the app's own rules.

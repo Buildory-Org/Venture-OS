@@ -348,6 +348,33 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - Private events can invite any workspace member, with no daily cap.
     - A phone link survives a member's removal and works again if they are reactivated.
     - After an all-day event's time zone changes, a reminder that was already sent or in flight at that moment isn't re-planned for the new zone.
+- [x] Message alerts like WhatsApp Web, per-channel notification choices, and an installable app; built and tested locally, not yet live (2026-10-09).
+  - **The problem:** nobody had push turned on (0 browsers subscribed), because the only switch was buried in Notifications. The site also had no sound or banner while open, and it only checked the inbox every 15 s.
+  - **While the site is open:**
+    - In another tab or minimised: a two-note chime and a Windows/macOS banner ("Divyansh in #general: …"). Clicking it opens the chat inside the app, so drafts are kept.
+    - Open on another page: the in-page pop-up plus the chime.
+    - Viewing that chat: nothing extra.
+    - Only one tab alerts per message.
+    - The API nudges open tabs the moment a notice is created (a change stream on `notifications`), so alerts arrive in about 0.7 s.
+  - **When it's closed:** push now shows who wrote what and opens the conversation. The text is read with the browser's own sign-in, so a shared browser signed in as someone else gets a generic notice.
+  - **Channels:** a bell in each channel header offers All messages / @mentions only (the default) / Off.
+    - Off silences @mentions too.
+    - Followers are notified only while they can still open the channel.
+    - "All messages" notices go to the inbox and push, not email.
+  - **Settings:**
+    - Notifications → This device: banner, sound, push when closed, and Send a test.
+    - A one-time "Get notified about new messages" card (Turn on / Not now).
+    - Clearer labels in the account-wide preferences.
+  - **Installable app:** a manifest, home-screen icons and iPhone web-app settings. iPhone push needs Add to Home Screen, and the settings explain how.
+  - **Verified:**
+    - Tests: backend smoke (core 7/7, API 17/17, worker 5/5) with new tests for levels, fan-out, the nudge, read-one, the Claude text guard, and level changes after queueing.
+    - Checks: typechecks, web lint, and the production build.
+    - Browser test with two people on an isolated copy: channel and direct message banners, the in-page pop-up, one alert across two tabs, banner click opening the chat, and the prompt card.
+    - Review: an independent review found 1 blocker (Claude keys without message access could read channel text through `whats_new`) and 10 should-fixes; all were fixed.
+  - **Known limits:**
+    - A very busy "All messages" channel can push older unread items out of the newest-100 inbox.
+    - Tabs left open from before the update must reload once.
+    - Push behaviour on Safari and iPhone is untested.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

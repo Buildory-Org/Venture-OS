@@ -10,7 +10,6 @@ import { StudioProvider } from "@/lib/studio-store";
 import { connectedNotices, connectedShellData } from "@/lib/live-shell-data";
 import { notificationSnapshotEvent } from "@/lib/notification-events";
 import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
-import { useChatPushResponder } from "@/lib/chat-presence";
 import { demoEnabled } from "@/lib/demo";
 import { NewTaskHost } from "@/components/studio/new-task-dialog";
 
@@ -18,7 +17,6 @@ type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Snapshot = { session: Session; data: ReturnType<typeof connectedShellData> };
 
 export function LiveShell({ children }: { children: React.ReactNode }) {
-  useChatPushResponder();
   const router = useRouter();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");

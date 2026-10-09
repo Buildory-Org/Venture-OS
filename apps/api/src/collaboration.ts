@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import { Router } from "express";
 import { Server } from "socket.io";
-import type { ClientSession } from "mongodb";
-import { createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, messageAttachmentSchema, messageSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
+import type { ChangeStream, ClientSession } from "mongodb";
+import { channelNotificationLevelSchema, createChannelMessageSchema, createDirectMessageSchema, cursorQuerySchema, idSchema, messageAttachmentSchema, messageSchema, pinUpdateSchema, reactionUpdateSchema, saveUpdateSchema } from "@venture-studio/contracts";
 import { can, dmKey } from "@venture-studio/core";
 import type { AppDb, Database } from "./db.js";
 import { atomic } from "./db.js";
@@ -104,8 +104,14 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     if (valid !== mentioned.length) throw new AppError(400, "BAD_REQUEST", "Every mention must be an active member of this venture and group");
   }
   const attachments = await messageAttachments(database.db, actor, parsed.attachmentFileIds, { ventureId: String(channel.ventureId), groupId: String(channel.groupId) });
-  // Channel messages notify only validated @mentions; ordinary messages surface in the channel itself.
-  const recipients = mentioned.filter((userId) => userId !== actor.id);
+  // Who hears about it: people @mentioned, unless they turned this channel off, and people following every message in it
+  // who can still open it (each person's choice per channel; @mentions only by default). Never the sender.
+  const levels = new Map((await database.db.collection("channel_notification_settings").find({ workspaceId: actor.membership.workspaceId, channelId }, { projection: { userId: 1, level: 1 } }).toArray()).map((row) => [String(row.userId), String(row.level)]));
+  const mentionRecipients = mentioned.filter((userId) => userId !== actor.id && levels.get(userId) !== "off");
+  const followers = [...levels].filter(([userId, level]) => level === "all" && userId !== actor.id && !mentioned.includes(userId)).map(([userId]) => userId);
+  const followerRecipients = followers.length ? (await database.db.collection("memberships").find({ workspaceId: actor.membership.workspaceId, userId: { $in: followers }, status: "active", $or: [{ role: "admin" }, { ventureIds: channel.ventureId, groupIds: channel.groupId }] }, { projection: { userId: 1 } }).toArray()).map((row) => String(row.userId)) : [];
+  const author = `${actor.name}${interfaceChannel === "mcp" ? " (via Claude)" : ""}`;
+  const preview = parsed.body.slice(0, 500) || (parsed.attachmentFileIds.length ? "Shared a file" : "New message");
   const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
   const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, ...(interfaceChannel === "mcp" ? { via: "claude" } : {}), createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
@@ -113,12 +119,14 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
     await atomic(database, async (session) => {
       await database.db.collection("messages").insertOne(message, { session });
       createdEvent = await event(database.db, actor, "message.created", message, { ventureId: channel.ventureId, groupId: channel.groupId, channelId }, session, message._id);
-      if (recipients.length) {
+      const notices = [
+        // Someone following every message is told about @mentions too, under the channel's choice rather than the account's.
+        ...mentionRecipients.map((userId) => ({ userId, type: levels.get(userId) === "all" ? "channel_message" : "mention", title: `${author} mentioned you in #${channel.name}`, idempotencyKey: `mention:${message._id}:${userId}` })),
+        ...followerRecipients.map((userId) => ({ userId, type: "channel_message", title: `${author} in #${channel.name}`, idempotencyKey: `channel:${message._id}:${userId}` })),
+      ];
+      if (notices.length) {
         const notifiedAt = new Date();
-        await database.db.collection("notification_outbox").bulkWrite(recipients.map((userId) => {
-          const idempotencyKey = `mention:${message._id}:${userId}`;
-          return { updateOne: { filter: { idempotencyKey }, update: { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId, type: "mention", title: "Channel mention", body: "Open the channel to view the new message.", resourceType: "message", resourceId: message._id, chatKind: "channel", chatId: channelId, idempotencyKey, state: "pending", attempts: 0, nextAttemptAt: notifiedAt, createdAt: notifiedAt, updatedAt: notifiedAt } }, upsert: true } };
-        }), { session });
+        await database.db.collection("notification_outbox").bulkWrite(notices.map((notice) => ({ updateOne: { filter: { idempotencyKey: notice.idempotencyKey }, update: { $setOnInsert: { _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: notice.userId, type: notice.type, title: notice.title.slice(0, 200), body: preview, resourceType: "message", resourceId: message._id, chatKind: "channel", chatId: channelId, idempotencyKey: notice.idempotencyKey, state: "pending", attempts: 0, nextAttemptAt: notifiedAt, createdAt: notifiedAt, updatedAt: notifiedAt } }, upsert: true } })), { session });
       }
       await audit(database.db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: interfaceChannel, action: "message.create", objectType: "message", objectId: message._id, ventureId: String(channel.ventureId), result: "success" }, session);
     });
@@ -153,6 +161,24 @@ export function collaborationRoutes(database: Database): Router {
     const items = await db.collection("messages").find({ workspaceId: actor.membership.workspaceId, channelId, ...(pinned ? { pinnedAt: { $exists: true } } : {}), ...(threadRootId ? { threadRootId } : {}), ...after }).sort({ createdAt: direction, _id: direction }).limit(query.limit + 1).toArray();
     const page = items.slice(0, query.limit);
     res.json({ ok: true, data: { items: jsonValue(await decorateMessages(db, actor, latest ? page.reverse() : page)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
+  });
+  // How this channel notifies me: every message, @mentions only (the default, stored as no row), or nothing.
+  router.get("/channels/:channelId/notification-level", async (req, res) => {
+    const channelId = idSchema.parse(req.params.channelId);
+    const actor = req.actor!;
+    await channelScope(db, actor, channelId);
+    const row = await db.collection("channel_notification_settings").findOne({ workspaceId: actor.membership.workspaceId, userId: actor.id, channelId });
+    res.json({ ok: true, data: { level: row?.level ?? "mentions" } });
+  });
+  router.put("/channels/:channelId/notification-level", async (req, res) => {
+    const channelId = idSchema.parse(req.params.channelId);
+    const actor = req.actor!;
+    const { level } = channelNotificationLevelSchema.parse(req.body);
+    await channelScope(db, actor, channelId);
+    const key = { workspaceId: actor.membership.workspaceId, userId: actor.id, channelId };
+    if (level === "mentions") await db.collection("channel_notification_settings").deleteOne(key);
+    else await db.collection("channel_notification_settings").updateOne(key, { $set: { level, updatedAt: new Date() }, $setOnInsert: { _id: randomUUID(), createdAt: new Date() } }, { upsert: true });
+    res.json({ ok: true, data: { level } });
   });
   router.post("/channels/:channelId/messages", async (req, res) => {
     const result = await createChannelMessage(database, req.actor!, idSchema.parse(req.params.channelId), req.body, req.interfaceChannel);
@@ -356,15 +382,77 @@ export function attachRealtime(server: HttpServer, database: Database, resolveAc
       }
     });
   });
+  const stopWatching = watchNotifications(io, database, resolveActor);
+  watchers.set(database, stopWatching);
+  server.on("close", stopWatching);
   return io;
 }
 
-async function emitAuthorizedToUsers(io: Server, resolveActor: ReturnType<typeof createActorResolver>, value: Record<string, unknown>, payload: unknown): Promise<void> {
+const watchers = new WeakMap<Database, () => void>();
+/** Stops realtime work that reads the database; call it before closing the database client. */
+export function stopRealtime(database: Database): void { watchers.get(database)?.(); }
+
+/**
+ * Nudges a person's open tabs the moment the worker adds something to their inbox, so alerts (sound, banner, pop-up)
+ * arrive within a second instead of at the next poll. Only the id is sent; the tab reads its inbox, with its access rules.
+ * Notices are handled one at a time so a message to many followers doesn't re-check every socket at once. Returns a stop
+ * function. Tabs keep polling, so a gap while the watch restarts only delays alerts.
+ */
+function watchNotifications(io: Server, database: Database, resolveActor: ReturnType<typeof createActorResolver>): () => void {
+  let stream: ChangeStream | undefined;
+  let retry: NodeJS.Timeout | undefined;
+  let stopped = false;
+  let failures = 0;
+  let queue: Promise<void> = Promise.resolve();
+  const later = () => {
+    if (stopped) return;
+    retry = setTimeout(start, Math.min(60_000, 2_000 * 2 ** Math.min(failures, 5)));
+    retry.unref();
+    failures += 1;
+  };
+  const start = () => {
+    if (stopped) return;
+    const current = database.db.collection("notifications").watch([{ $match: { operationType: "insert" } }]);
+    stream = current;
+    current.on("change", (change) => {
+      failures = 0;
+      const notice = (change as { fullDocument?: Record<string, unknown> }).fullDocument;
+      if (!notice || typeof notice.userId !== "string" || typeof notice.workspaceId !== "string") return;
+      const target = { workspaceId: notice.workspaceId, audienceUserIds: [notice.userId] };
+      queue = queue.then(() => emitAuthorizedToUsers(io, resolveActor, target, { id: String(notice._id) }, "notification"))
+        .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "realtime.notification_failed", error: error instanceof Error ? error.message : "unknown" })));
+    });
+    current.on("error", (error: Error & { code?: number }) => {
+      // A late error from a stream already replaced must not touch the new one.
+      if (stream !== current) return;
+      stream = undefined;
+      void current.close().catch(() => undefined);
+      if (stopped) return;
+      if (error.code === 40573) { console.info(JSON.stringify({ level: "info", event: "realtime.notification_watch_unavailable", reason: "MongoDB is not a replica set; tabs poll for new notifications" })); return; }
+      console.error(JSON.stringify({ level: "error", event: "realtime.notification_watch_failed", error: error.message }));
+      later();
+    });
+    // Dropping or renaming the collection ends the stream without an error.
+    current.on("close", () => { if (stream !== current) return; stream = undefined; later(); });
+  };
+  start();
+  return () => {
+    stopped = true;
+    clearTimeout(retry);
+    const current = stream;
+    stream = undefined;
+    void current?.close().catch(() => undefined);
+  };
+}
+
+async function emitAuthorizedToUsers(io: Server, resolveActor: ReturnType<typeof createActorResolver>, value: Record<string, unknown>, payload: unknown, eventName = "event"): Promise<void> {
   for (const userId of value.audienceUserIds as string[]) {
     for (const socket of await io.in(`user:${value.workspaceId}:${userId}`).fetchSockets()) {
-      const actor = await resolveActor(socket.data.authHeaders);
-      if (actor && actor.id === userId && actor.membership.workspaceId === value.workspaceId) socket.emit("event", payload);
-      else await socket.leave(`user:${value.workspaceId}:${userId}`);
+      try {
+        const actor = await resolveActor(socket.data.authHeaders);
+        if (actor && actor.id === userId && actor.membership.workspaceId === value.workspaceId) socket.emit(eventName, payload);
+        else await socket.leave(`user:${value.workspaceId}:${userId}`);
+      } catch { await socket.leave(`user:${value.workspaceId}:${userId}`); }
     }
   }
 }

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -18,6 +18,15 @@ export const metadata: Metadata = {
   title: "Venture Studio OS",
   description:
     "A shared operating system for ventures, groups, channels, and focused execution.",
+  // Installed on an iPhone home screen it opens as its own app, which is what lets iOS show its notifications.
+  appleWebApp: { capable: true, title: "Venture Studio", statusBarStyle: "default" },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f7faf8" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b120e" },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

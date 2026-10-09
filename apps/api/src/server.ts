@@ -9,7 +9,7 @@ import { createObjectStore } from "./storage.js";
 import { createApp } from "./app.js";
 import { backfillFileTexts } from "./file-text.js";
 import { fileStoreFor } from "./routes/files.js";
-import { attachRealtime } from "./collaboration.js";
+import { attachRealtime, stopRealtime } from "./collaboration.js";
 
 const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
 if (envFile) process.loadEnvFile(envFile);
@@ -27,6 +27,6 @@ attachRealtime(server, database, resolveActor, config.APP_ORIGIN, config.APP_MOD
 server.listen(config.PORT, () => console.info(JSON.stringify({ level: "info", event: "api.started", port: config.PORT, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind })));
 // Files uploaded before their text was read (or while reading was busy) are read once in the background after startup.
 setTimeout(() => void backfillFileTexts(database.db, (file) => fileStoreFor(file, store, localStore)).then((read) => { if (read) console.info(JSON.stringify({ level: "info", event: "file_text.backfill", read })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "file_text.backfill_failed", message: error instanceof Error ? error.message : String(error) }))), 5_000).unref();
-async function shutdown() { server.close(); await database.client.close(); }
+async function shutdown() { stopRealtime(database); server.close(); await database.client.close(); }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

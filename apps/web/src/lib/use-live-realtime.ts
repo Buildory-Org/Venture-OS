@@ -8,6 +8,39 @@ import { localDevUserId } from "@/lib/dev-identity";
 
 export type RealtimeState = "connecting" | "live" | "unavailable";
 
+/** A realtime connection as the signed-in person (or the local development identity when nobody is signed in). */
+export function openLiveSocket() {
+  const devUserId = localDevUserId();
+  return io({
+    path: "/socket.io",
+    addTrailingSlash: false,
+    transports: ["polling"],
+    withCredentials: true,
+    auth: async (done) => {
+      if (!devUserId) { done({}); return; }
+      try {
+        const response = await fetch("/api/auth/get-session", { credentials: "same-origin" });
+        const session = await response.json() as { user?: { id?: string } } | null;
+        done(session?.user?.id ? {} : { devUserId });
+      } catch {
+        done({ devUserId });
+      }
+    },
+  });
+}
+
+/** Calls `onNudge` the moment the server adds something to my inbox, and after every reconnect (to catch up). */
+export function useNotificationNudges(onNudge: () => void) {
+  const callback = useRef(onNudge);
+  useEffect(() => { callback.current = onNudge; }, [onNudge]);
+  useEffect(() => {
+    const socket = openLiveSocket();
+    socket.on("notification", () => callback.current());
+    socket.on("connect", () => callback.current());
+    return () => { socket.disconnect(); };
+  }, []);
+}
+
 export function useLiveRealtime(onEvent: () => void, channelId?: string) {
   const callback = useRef(onEvent);
   const [state, setState] = useState<RealtimeState>("connecting");
@@ -15,23 +48,7 @@ export function useLiveRealtime(onEvent: () => void, channelId?: string) {
   useEffect(() => { callback.current = onEvent; }, [onEvent]);
 
   useEffect(() => {
-    const devUserId = localDevUserId();
-    const socket = io({
-      path: "/socket.io",
-      addTrailingSlash: false,
-      transports: ["polling"],
-      withCredentials: true,
-      auth: async (done) => {
-        if (!devUserId) { done({}); return; }
-        try {
-          const response = await fetch("/api/auth/get-session", { credentials: "same-origin" });
-          const session = await response.json() as { user?: { id?: string } } | null;
-          done(session?.user?.id ? {} : { devUserId });
-        } catch {
-          done({ devUserId });
-        }
-      },
-    });
+    const socket = openLiveSocket();
     let active = true;
     let lastEventId: string | undefined;
     let lastOrder = "";

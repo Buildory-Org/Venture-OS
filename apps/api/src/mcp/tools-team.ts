@@ -87,7 +87,7 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
 
   tool("post_message", "messages:write", {
     title: "Post message", annotations: writes(false),
-    description: "Post a message in a channel I belong to (channel ids from list_ventures). It appears under my name with a 'via Claude' label. Mention people by passing their ids in mention; only they are notified.",
+    description: "Post a message in a channel I belong to (channel ids from list_ventures). It appears under my name with a 'via Claude' label. Mention people by passing their ids in mention. The people mentioned are notified, and so is everyone who follows every message in that channel; notices show the text.",
     inputSchema: z.object({ channelId: id, text: z.string().trim().min(1).max(10_000), mention: z.array(id).max(20).optional(), requestId: requestIdField }),
   }, async ({ channelId, text, mention, requestId }) => {
     await ctx.toolBudget("post_message", 10);

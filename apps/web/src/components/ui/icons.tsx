@@ -9,6 +9,7 @@ import {
   AtSign as AtSignSvg,
   Bell as BellSvg,
   BellRing as BellRingSvg,
+  BellOff as BellOffSvg,
   BookOpenText as BookOpenTextSvg,
   Bookmark as BookmarkSvg,
   CalendarDays as CalendarDaysSvg,
@@ -114,6 +115,7 @@ export const ArrowUpRight = icon(ArrowUpRightSvg);
 export const AtSign = icon(AtSignSvg);
 export const Bell = icon(BellSvg);
 export const BellRing = icon(BellRingSvg);
+export const BellOff = icon(BellOffSvg);
 export const BookOpenText = icon(BookOpenTextSvg);
 export const Bookmark = icon(BookmarkSvg);
 export const CalendarDays = icon(CalendarDaysSvg);

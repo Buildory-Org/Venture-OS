@@ -56,7 +56,7 @@ export const notificationSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
   userId: idSchema,
-  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "member_joined", "event_invite", "event_update", "event_response"]),
+  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "channel_message", "member_joined", "event_invite", "event_update", "event_response"]),
   title: z.string(),
   body: z.string(),
   resourceType: z.string(),
@@ -67,6 +67,13 @@ export const notificationSchema = z.object({
   readAt: isoDateSchema.optional(),
   createdAt: isoDateSchema,
 });
+/**
+ * How one channel notifies one person: every message, only messages that @mention them (the default), or nothing.
+ * Direct messages always notify, subject to the account-wide "Direct messages" preference.
+ */
+export const CHANNEL_NOTIFICATION_LEVELS = ["all", "mentions", "off"] as const;
+export const channelNotificationLevelSchema = z.object({ level: z.enum(CHANNEL_NOTIFICATION_LEVELS) });
+export type ChannelNotificationLevel = (typeof CHANNEL_NOTIFICATION_LEVELS)[number];
 // `calendar` (invitations, changes, and replies) arrived later: older saved preferences read as on.
 export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean(), calendar: z.boolean().default(true) });
 

@@ -85,6 +85,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("file_texts").createIndex({ text: "text" }),
     db.collection("file_texts").createIndex({ workspaceId: 1, ventureId: 1 }),
     // Calendar: my events and invitations, shared calendars by venture, and the date window every range query uses.
+    db.collection("channel_notification_settings").createIndex({ workspaceId: 1, userId: 1, channelId: 1 }, { unique: true }),
+    db.collection("channel_notification_settings").createIndex({ workspaceId: 1, channelId: 1, level: 1 }),
     db.collection("calendar_events").createIndex({ workspaceId: 1, organizerId: 1, startAt: 1 }),
     db.collection("calendar_events").createIndex({ workspaceId: 1, "attendees.userId": 1, startAt: 1 }),
     db.collection("calendar_events").createIndex({ workspaceId: 1, ventureId: 1, visibility: 1, startAt: 1 }),

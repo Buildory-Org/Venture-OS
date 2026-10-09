@@ -47,6 +47,8 @@ import {
   saveUpdateSchema,
   notificationSchema,
   notificationPreferencesSchema,
+  channelNotificationLevelSchema,
+  type ChannelNotificationLevel,
   outcomeSchema,
   pagedSuccessEnvelope,
   reminderSchema,
@@ -438,6 +440,16 @@ export async function getLiveNotificationPreferences() {
 export async function updateLiveNotificationPreferences(input: unknown) {
   const valid = notificationPreferencesSchema.parse(input);
   return successEnvelope(notificationPreferencesSchema).parse(await request("/v1/notification-preferences", { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+
+/** How one channel notifies me: every message, @mentions only (the default), or nothing. */
+export async function getLiveChannelNotificationLevel(channelId: string) {
+  return successEnvelope(channelNotificationLevelSchema).parse(await request(`/v1/channels/${encodeURIComponent(channelId)}/notification-level`)).data.level;
+}
+
+export async function setLiveChannelNotificationLevel(channelId: string, level: ChannelNotificationLevel) {
+  const valid = channelNotificationLevelSchema.parse({ level });
+  return successEnvelope(channelNotificationLevelSchema).parse(await request(`/v1/channels/${encodeURIComponent(channelId)}/notification-level`, { method: "PUT", body: JSON.stringify(valid) })).data.level;
 }
 
 export async function getLivePushConfig(): Promise<{ available: boolean; publicKey?: string }> {

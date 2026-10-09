@@ -120,6 +120,12 @@
 .knowledge-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 1.7em 0 .55em; color: var(--color-neutral-900); font-weight: 750; line-height: 1.3; }
 .knowledge-markdown h1 { font-size: 2rem; letter-spacing: -.035em; }
 .knowledge-markdown h2 { padding-bottom: .35em; border-bottom: 1px solid var(--color-neutral-200); font-size: 1.5rem; letter-spacing: -.025em; }
+/* In a drawer (task details), headings stay close to the body size. */
+.knowledge-markdown-compact { font-size: .875rem; line-height: 1.7; }
+.knowledge-markdown-compact :is(h1, h2, h3, h4, h5, h6) { margin: 1.2em 0 .4em; letter-spacing: -.01em; }
+.knowledge-markdown-compact h1 { font-size: 1.15rem; }
+.knowledge-markdown-compact h2 { font-size: 1.05rem; padding-bottom: .25em; }
+.knowledge-markdown-compact :is(h3, h4, h5, h6) { font-size: .95rem; }
 .knowledge-markdown h3 { font-size: 1.2rem; }
 .knowledge-markdown :is(h4, h5, h6) { font-size: 1rem; }
 .knowledge-markdown :is(p, ul, ol, blockquote, pre, table, hr) { margin: 0 0 1.2em; }

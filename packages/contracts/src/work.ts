@@ -25,6 +25,8 @@ export const taskSchema = z.object({
   estimatedMinutes: z.number().int().min(1).max(100_800),
   definitionOfDone: z.string().min(1).max(5_000),
   evidenceRequirement: z.string().min(1).max(2_000),
+  /** Background, current state, specs, links, and plans, in Markdown: what doesn't belong in a short definition of done. */
+  details: z.string().max(20_000).optional(),
   dependencies: z.array(idSchema).max(100),
   evidenceLinks: z.array(z.url()).max(100),
   blocker: z.string().max(2_000).optional(),
@@ -54,6 +56,7 @@ export const createTaskSchema = z.object({
   estimatedMinutes: z.number().int().min(1).max(100_800),
   definitionOfDone: z.string().trim().min(1).max(5_000),
   evidenceRequirement: z.string().trim().min(1).max(2_000),
+  details: z.string().trim().max(20_000).optional(),
   dependencies: z.array(idSchema).max(100).default([]),
   evidenceLinks: z.array(z.url()).max(100).default([]),
   tags: z.array(z.string().trim().min(1).max(50)).max(30).default([]),
@@ -73,11 +76,13 @@ export const updateTaskSchema = z.object({
   outcome: createTaskSchema.shape.outcome.optional(),
   definitionOfDone: createTaskSchema.shape.definitionOfDone.optional(),
   evidenceRequirement: createTaskSchema.shape.evidenceRequirement.optional(),
+  /** Empty or null clears it. */
+  details: z.string().trim().max(20_000).nullable().optional(),
   tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
 }).refine((value) => Object.keys(value).length > 0, "At least one update is required");
 
 /** The fields of a task only its creator or a workspace admin may edit. */
-export const taskDetailFields = ["title", "outcome", "definitionOfDone", "evidenceRequirement", "tags"] as const;
+export const taskDetailFields = ["title", "outcome", "definitionOfDone", "evidenceRequirement", "details", "tags"] as const;
 
 export const outcomeSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema,

@@ -24,6 +24,7 @@ import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
 import { contextParts } from "../src/mcp/tools-context.js";
+import { markupField } from "../src/mcp/format.js";
 import type { Request, Response } from "express";
 
 /** One JSON-RPC call to the hosted MCP endpoint, as Claude Code would send it. */
@@ -3011,6 +3012,16 @@ test("task details: only the creator or an admin edits them, the assignee hears,
     const own = await json(await call("POST", "/tasks", "member", { ventureId: "venture-a", groupId: "group-a", title: "Mine", outcome: "Done", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Done", evidenceRequirement: "Note" }));
     assert.equal((await call("PATCH", `/tasks/${own.id}`, "member", { outcome: "Done well" })).status, 200);
     assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: own.id, idempotencyKey: /:details:/ }), 0);
+    // Details hold the long background; emptying them removes them; only the creator or an admin changes them.
+    const withDetails = await json(await call("PATCH", path, "creator", { details: "## Current state\n\n- One number per venue" }));
+    assert.equal(withDetails.details, "## Current state\n\n- One number per venue");
+    assert.equal((await call("PATCH", path, "member", { details: "Mine" })).status, 403);
+    assert.equal((await json(await call("PATCH", path, "creator", { details: null }))).details, undefined);
+    assert.equal((await db.collection("tasks").findOne({ _id: created.id }))?.details, undefined, "removed, not stored empty");
+    const blank = await json(await call("POST", "/tasks", "creator", { ventureId: "venture-a", groupId: "group-a", title: "Blank details", outcome: "o", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", details: "  " }));
+    assert.equal((await db.collection("tasks").findOne({ _id: blank.id }))?.details, undefined, "blank details aren't stored on create either");
+    assert.equal((await json(await call("PATCH", path, "admin", { details: "Admin notes" }))).details, "Admin notes");
+    assert.ok((await json(await call("GET", "/tasks?limit=50", "creator"))).items.every((item: any) => item.details === undefined), "lists leave details out");
     // Details and work in one request: the creator (not the assignee here) can't slip a status change in.
     assert.equal((await call("PATCH", path, "creator", { title: "Sneaky", status: "in_progress" })).status, 403);
     // Reassigned and retitled at once: the new assignee's notice and start reminder use the new title.
@@ -3050,9 +3061,7 @@ test("venture context, skills, and shared files: who writes, who reads, and Clau
   const titles = (parts: ReturnType<typeof contextParts>) => parts.map((part) => part.map((piece) => piece.title));
   assert.deepEqual(titles(contextParts([{ title: "Short", markdown: "a".repeat(10) }, { title: "Big", markdown: "b".repeat(90_000) }], 10_000)), [["Short"], ["Big (1 of 3)"], ["Big (2 of 3)"], ["Big (3 of 3)"]]);
   assert.deepEqual(titles(contextParts([{ title: "Empty", markdown: "" }, { title: "Hindi", markdown: "क".repeat(15_000) }], 10_000)), [["Hindi (1 of 2)"], ["Hindi (2 of 2)"]]);
-  const paragraphs = contextParts([{ title: "Notes", markdown: `${"a".repeat(30_000)}
-
-${"b".repeat(30_000)}` }], 10_000);
+  const paragraphs = contextParts([{ title: "Notes", markdown: `${"a".repeat(30_000)}\r\n\r\n${"b".repeat(30_000)}` }], 10_000);
   assert.deepEqual(paragraphs.flat().map((piece) => piece.text.length), [30_000, 30_000], "cut at the paragraph break, Windows line endings too");
 
   const dbName = `venture_studio_test_${process.pid}_${Date.now()}_agent_context`;
@@ -3174,6 +3183,10 @@ ${"b".repeat(30_000)}` }], 10_000);
     assert.equal(tokenResponse.status, 201, await tokenResponse.clone().text());
     const token = (await json(tokenResponse)).token as string;
     const tool = async (name: string, args: Record<string, unknown> = {}) => { const result = await mcpTool(origin, token, name, args); assert.equal(result.isError, false, `${name}: ${result.text}`); return result.data; };
+    // On connecting, Claude is told to ask which venture (or take the only one), read its context first, and read again on switching.
+    const hello = await mcpCall(origin, token, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
+    const instructions = String(hello.body?.result?.instructions);
+    for (const phrase of [/ask the user which venture/, /only one venture, use it without asking/, /read_venture_context for it and read every part/, /moves to a different venture, read that venture's context/]) assert.match(instructions, phrase);
     assert.match(String((await tool("my_plate", { timezone: "UTC" })).contextReminder), /read_venture_context/);
     assert.equal((await tool("list_ventures")).contextReminder, undefined, "getting started isn't nagged");
     const context = await tool("read_venture_context", { ventureId: "venture-a" });
@@ -3184,6 +3197,29 @@ ${"b".repeat(30_000)}` }], 10_000);
     assert.equal((await mcpTool(origin, token, "read_venture_context", { ventureId: "venture-b" })).isError, true, "not their venture");
     const skills = await tool("list_skills", { ventureId: "venture-a" });
     assert.deepEqual(skills.skills.map((item: any) => [item.title, item.scope]), [["Pitch review (all)", "every venture"], ["Sales email", "every venture"]]);
+    // A call cut wrong (one field swallowing the next) is refused before anything is saved; the same text in code goes through.
+    assert.equal(markupField({ a: ["fine", { b: 'x </definitionOfDone> <parameter name="tags">["a"]' }] }), "a[1].b");
+    assert.equal(markupField({ details: 'Claude writes `<parameter name="tags">` and\n```\n</invoke>\n```' }), null);
+    // Other shapes of a cut call: a lone closing tag, other casing and quoting, or a close named after one of the call's own fields.
+    for (const garble of ["- Done</parameter>", '<Parameter  name=\'tags\'>["a"]', "- Done</definitionOfDone>\n<tags>[\"a\"]</tags>"]) assert.equal(markupField({ title: "T", definitionOfDone: garble }), "definitionOfDone", garble);
+    assert.equal(markupField({ details: "~~~\n</invoke>\n~~~ and ``<parameter name=\"x\">``" }), null, "code in ~~~ fences and double backticks is fine");
+    assert.equal(markupField({ details: "A <details> block and </title> in prose" }), null, "ordinary HTML-looking text is fine");
+    const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const garbled = await mcpTool(origin, token, "create_task", { title: "WhatsApp accounts", ventureId: "venture-a", assignee: "me", dueAt: due, definitionOfDone: '- One number per venue</definitionOfDone> <parameter name="tags">["whatsapp"]', requestId: "garbled-task-0001" });
+    assert.equal(garbled.isError, true);
+    assert.match(String(garbled.text), /definitionOfDone field contains leftover tool-call markup/);
+    assert.equal(await db.collection("tasks").countDocuments({ title: "WhatsApp accounts" }), 0, "nothing saved");
+    const checklist = "- Owners connect a number\n- Venues pick it";
+    const background = "## Current state\n\nRoutes look like `<parameter name=\"x\">` in the old docs.";
+    const made = await tool("create_task", { title: "WhatsApp accounts", ventureId: "venture-a", assignee: "me", dueAt: due, outcome: "Owners share one number across venues.", definitionOfDone: checklist, details: background, tags: ["whatsapp"], requestId: "clean-task-0001" });
+    assert.deepEqual(made.saved, { title: "WhatsApp accounts", outcome: "Owners share one number across venues.", definitionOfDone: checklist, evidenceRequirement: "Evidence link or reviewed exception", details: background, tags: ["whatsapp"], priority: "medium", estimatedMinutes: 60 });
+    assert.match(made.check, /fix it with update_task/);
+    const fixed = await tool("update_task", { taskId: made.id, definitionOfDone: `${checklist}\n- Webhooks fan out` });
+    assert.match(fixed.saved.definitionOfDone, /Webhooks fan out/);
+    const read = await tool("get_task", { taskId: made.id });
+    assert.equal(read.details, background);
+    assert.equal(read.definitionOfDone, `${checklist}\n- Webhooks fan out`, "line breaks reach Claude as written");
+    assert.equal((await tool("update_task", { taskId: made.id, details: null })).saved.details, undefined, "null clears the details");
     const skill = await tool("get_skill", { skillId: emailId });
     assert.equal(skill.instructions, "Be brief and specific.");
     assert.equal(skill.useWhen, "Writing to a new lead");

@@ -51,7 +51,7 @@ export async function readContextRecently(ctx: ToolContext): Promise<boolean> {
   return Boolean(await ctx.db.collection("mcp_context_reads").findOne({ patId: ctx.patId, readAt: { $gt: new Date(Date.now() - READ_FRESH_MS) } }, { projection: { _id: 1 } }));
 }
 
-export const CONTEXT_REMINDER = "You haven't read a venture's context yet. Unless this is an unattended check, ask the user which venture they're working on (list_ventures lists them), then read all of it with read_venture_context before going further.";
+export const CONTEXT_REMINDER = "You haven't read a venture's context yet. Unless this is an unattended check, ask the user which venture they're working on (list_ventures lists them; if they belong to only one, use it), then read all of it with read_venture_context before going further.";
 
 /** Venture context (what a venture is and how to work on it) and skills (how to do particular kinds of work). */
 export function registerContextTools(tool: Register, ctx: ToolContext, look: Look): void {

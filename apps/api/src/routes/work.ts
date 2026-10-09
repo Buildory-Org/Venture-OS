@@ -36,7 +36,8 @@ export function workRoutes(database: Database): Router {
       filter.ventureId = query.ventureId && actor.membership.ventureIds.includes(query.ventureId) ? query.ventureId : query.ventureId ? { $in: [] } : { $in: actor.membership.ventureIds };
       filter.groupId = query.groupId && actor.membership.groupIds.includes(query.groupId) ? query.groupId : query.groupId ? { $in: [] } : { $in: actor.membership.groupIds };
     }
-    const items = await db.collection("tasks").find(filter).sort({ _id: 1 }).limit(query.limit + 1).toArray();
+    // Lists leave the long details out; they come with the task itself.
+    const items = await db.collection("tasks").find(filter, { projection: { details: 0 } }).sort({ _id: 1 }).limit(query.limit + 1).toArray();
     res.json({ ok: true, data: { items: jsonValue(items.slice(0, query.limit)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
   });
 
@@ -61,7 +62,9 @@ export function workRoutes(database: Database): Router {
     const now = new Date();
     const id = randomUUID();
     const deadlineRisk = hasDeadlineRisk(input.dueAt, input.estimatedMinutes, now);
-    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...withDates(input, ["dueAt", "reviewAt"]), creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
+    // Empty details are left out rather than stored empty.
+    const { details, ...fields } = input;
+    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...withDates(fields, ["dueAt", "reviewAt"]), ...(details ? { details } : {}), creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       const currentActor = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentActor || !can(currentActor as unknown as Parameters<typeof can>[0], "task:create", { ventureId: input.ventureId, groupId: input.groupId })) throw new AppError(403, "FORBIDDEN", "You cannot create tasks in this scope");
@@ -114,15 +117,19 @@ export function workRoutes(database: Database): Router {
       const planningChanged = assigneeChanged || nextDueAt.getTime() !== new Date(current.dueAt).getTime() || nextEstimate !== current.estimatedMinutes;
       const deadlineRisk = hasDeadlineRisk(nextDueAt, nextEstimate, now);
       const $set: Record<string, unknown> = { ...input, ...(input.dueAt ? { dueAt: nextDueAt } : {}), deadlineRisk, updatedAt: now };
-      if (input.blocker === null) delete $set.blocker;
+      // A cleared blocker or emptied details are removed, not stored empty.
+      const $unset: Record<string, ""> = { ...(input.blocker === null ? { blocker: "" } : {}), ...(input.details === null || input.details === "" ? { details: "" } : {}) };
+      for (const field of Object.keys($unset)) delete $set[field];
       if (input.status === "accepted") $set.acceptedAt = now;
       if (input.status === "in_progress" && !current.startedAt) $set.startedAt = now;
       if (input.status === "done") $set.completedAt = now;
-      await db.collection("tasks").updateOne({ _id: id }, input.blocker === null ? { $set, $unset: { blocker: "" } } : { $set }, { session });
-      const changedDetails = taskDetailFields.filter((field) => input[field] !== undefined && JSON.stringify(input[field]) !== JSON.stringify(current[field] ?? (field === "tags" ? [] : undefined)));
-      const detailNames = { title: "title", outcome: "outcome", definitionOfDone: "definition of done", evidenceRequirement: "evidence requirement", tags: "tags" } as const;
+      await db.collection("tasks").updateOne({ _id: id }, Object.keys($unset).length ? { $set, $unset } : { $set }, { session });
+      // Empty details and missing details are the same thing.
+      const comparable = (field: (typeof taskDetailFields)[number], value: unknown) => value === null || value === "" ? (field === "tags" ? [] : undefined) : value ?? (field === "tags" ? [] : undefined);
+      const changedDetails = taskDetailFields.filter((field) => input[field] !== undefined && JSON.stringify(comparable(field, input[field])) !== JSON.stringify(comparable(field, current[field])));
+      const detailNames = { title: "title", outcome: "outcome", definitionOfDone: "definition of done", evidenceRequirement: "evidence requirement", details: "details", tags: "tags" } as const;
       const detailSummary = changedDetails.length ? `Edited the ${changedDetails.map((field) => detailNames[field]).join(", ").replace(/, ([^,]*)$/, " and $1")}` : "";
-      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? (detailSummary || "Task updated"), ...(changedDetails.length ? { previous: Object.fromEntries(changedDetails.map((field) => [field, current[field] ?? null])) } : {}), fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
+      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? (detailSummary || "Task updated"), ...(changedDetails.length ? { previous: Object.fromEntries(changedDetails.map((field) => [field, typeof current[field] === "string" && current[field].length > 2000 ? `${current[field].slice(0, 2000)}…` : current[field] ?? null])) } : {}), fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
       if (assigneeChanged) {
         await db.collection("notification_outbox").updateMany({ resourceType: "task", resourceId: id, userId: current.assigneeId, type: { $in: ["assignment", "deadline_warning", "reminder"] }, state: "pending" }, { $set: { state: "cancelled", updatedAt: now } }, { session });
         await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: nextTitle, body: nextOutcome, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:reassigned:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });

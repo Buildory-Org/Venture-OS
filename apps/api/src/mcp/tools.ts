@@ -8,6 +8,7 @@ import { registerKnowledgeTools } from "./tools-knowledge.js";
 import { registerTeamTools } from "./tools-team.js";
 import { registerCalendarTools } from "./tools-calendar.js";
 import { CONTEXT_REMINDER, readContextRecently, registerContextTools } from "./tools-context.js";
+import { lines, markupField } from "./format.js";
 
 export type { ToolContext } from "./kit.js";
 
@@ -27,6 +28,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     if (isWrite && !ctx.writesEnabled) return;
     server.registerTool(name, config as never, (async (input: any) => {
       try {
+        // A field holding leftover tool-call markup means this call was cut wrong; nothing is saved and Claude resends it.
+        const garbled = markupField(input);
+        if (garbled) throw new ToolError(`The ${garbled} field contains leftover tool-call markup (like <parameter name="…">), so this call was probably cut wrong and nothing was done. Send it again with every field as its own argument. If you meant to include that text, put it in a code block or inline code.`);
         if (isWrite) await ctx.writeBudget();
         let value = await handler(input);
         // Until Claude has read a venture's context, other tools remind it to ask which venture and read it first.
@@ -127,14 +131,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   tool("get_task", "tasks:read", {
     title: "Get task", annotations: read,
-    description: "One task with its outcome, definition of done, people, evidence, and the latest comments and status changes.",
+    description: "One task with its outcome, definition of done, details (background and plans), tags, people, evidence, and the latest comments and status changes.",
     inputSchema: z.object({ taskId: id, timezone: timezoneField }),
   }, async ({ taskId, timezone }) => {
     const timeZone = validTimeZone(timezone);
     const task = await ctx.api<any>("GET", `/tasks/${encodeURIComponent(taskId)}`);
     const updates = (task.updates as any[]).slice(-8);
     return compact({
-      ...await taskRow(ctx, look, task, timeZone), outcome: clip(task.outcome, 400), definitionOfDone: clip(task.definitionOfDone, 400), evidenceRequired: clip(task.evidenceRequirement, 300),
+      ...await taskRow(ctx, look, task, timeZone), outcome: lines(task.outcome, 2000), definitionOfDone: lines(task.definitionOfDone, 5000), evidenceRequired: lines(task.evidenceRequirement, 2000), tags: task.tags,
+      details: typeof task.details === "string" && task.details.length > 8000 ? `${task.details.slice(0, 8000)}… (${task.details.length.toLocaleString("en")} characters in all; open the task for the rest)` : task.details,
       assignee: await look.person(task.assigneeId), reviewer: await look.person(task.reviewerId), estimatedMinutes: task.estimatedMinutes,
       evidence: (task.evidence as any[]).slice(-10).map((item) => compact({ id: item.id, title: clip(item.title, 120), link: item.uri, note: clip(item.description, 300), status: item.reviewStatus })),
       activity: await Promise.all(updates.map(async (item) => compact({ by: await look.person(item.authorId), type: item.type, change: item.toStatus && item.fromStatus !== item.toStatus ? `${item.fromStatus ?? "new"} -> ${item.toStatus}` : undefined, text: item.type === "status" && item.body === "Task updated" ? undefined : clip(item.body, 300), at: localTime(item.createdAt, timeZone) }))),
@@ -341,7 +346,8 @@ const CONTEXT_EXEMPT = new Set(["read_venture_context", "list_ventures", "list_s
 
 export const SERVER_INSTRUCTIONS = [
   "Venture Studio OS: the team's ventures, tasks, reviews, knowledge, decisions, channels, and reminders, as the signed-in person sees them in the app.",
-  "First, at the start of every new conversation and before anything else: ask the user which venture they want to work on (list_ventures shows the choices; don't ask again if they already said), then call read_venture_context for it and read every part completely, so you understand the venture before acting. In an unattended or recurring check, with nobody to ask, skip this.",
+  "First, at the start of every new conversation and before anything else: ask the user which venture they want to work on (list_ventures shows the choices; don't ask again if they already said, and if they belong to only one venture, use it without asking), then call read_venture_context for it and read every part completely, so you understand the venture before acting. In an unattended or recurring check, with nobody to ask, skip this.",
+  "If the conversation moves to a different venture, read that venture's context with read_venture_context before working on it, and keep each venture's details to that venture.",
   "When a task matches one of the skills (list_skills, with that venture's id), read it with get_skill and follow it.",
   "Start with my_plate for 'what should I do', whats_new for anything new (keep its cursor between calls; changed:false means nothing happened), and search for knowledge.",
   "For a recurring check, call whats_new with the last cursor and stay silent when changed is false.",

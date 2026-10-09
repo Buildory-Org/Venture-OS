@@ -1,10 +1,26 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { clip, compact, localTime, ToolError, UNTRUSTED_NOTE, validTimeZone } from "./format.js";
+import { clip, compact, lines, localTime, ToolError, UNTRUSTED_NOTE, validTimeZone } from "./format.js";
 import { id, isoField, type Look, once, READ_ONLY, type Register, requestIdField, taskLink, taskRow, timezoneField, type ToolContext, writes } from "./kit.js";
 
 const person = z.union([z.literal("me"), id]).describe('"me" or a person id from find_person');
-const priority = z.enum(["low", "medium", "high", "urgent"]);
+const priority = z.enum(["low", "medium", "high", "urgent"]).describe("low, medium, high, or urgent (only for work that must happen right away)");
+// What each part of a task is for, so long background never ends up in the definition of done.
+const taskText = {
+  title: z.string().trim().min(1).max(200).describe("Short and action-first, e.g. 'Ship the pricing page'"),
+  outcome: (max = 1000) => z.string().trim().min(1).max(max).describe("1–3 sentences: the result this task produces and why it matters"),
+  definitionOfDone: (max = 1500) => z.string().trim().min(1).max(max).describe("A short checklist of what must be true when it's finished: 3–7 lines, one per line, each starting with '- '. No background, current state, or plans here; those go in details"),
+  evidenceRequirement: (max = 1000) => z.string().trim().min(1).max(max).describe("What proof the reviewer should see, e.g. 'Link to the live page and a screenshot of the passing test'"),
+  details: z.string().trim().min(1).max(20_000).describe("Background, current state, specs, file paths, links, and plans, in Markdown. Anything long goes here, not in the definition of done"),
+  tags: z.array(z.string().trim().min(1).max(50)).max(30).describe("A few lowercase labels, e.g. [\"whatsapp\", \"backend\"]"),
+  estimatedMinutes: z.number().int().min(1).max(100_800).describe("Honest hands-on effort in minutes. If it is more than the time left before the due time, the task is flagged as a deadline risk"),
+};
+/** The task's own words as saved (line breaks kept), so Claude can check nothing landed in the wrong field. */
+const savedTask = (task: any) => compact({
+  title: lines(task.title, 200), outcome: lines(task.outcome, 2000), definitionOfDone: lines(task.definitionOfDone, 5000), evidenceRequirement: lines(task.evidenceRequirement, 2000),
+  details: lines(task.details, 800), tags: task.tags, priority: task.priority, estimatedMinutes: task.estimatedMinutes,
+});
+const CHECK_SAVED = `This is the task as saved. Compare each field with what you meant; if anything is wrong or in the wrong field, fix it with update_task. ${UNTRUSTED_NOTE}`;
 const stage = z.enum(["identified", "qualified", "contacted", "conversation", "proposal", "won", "lost"]);
 const confidence = z.enum(["low", "medium", "high"]);
 const channelLink = (ctx: ToolContext, channelId: string) => `${ctx.origin}/channels/live?channel=${encodeURIComponent(channelId)}`;
@@ -31,13 +47,13 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
 
   tool("create_task", "tasks:write", {
     title: "Create task", annotations: writes(false),
-    description: "Create a task in a venture's group and assign it. The assignee and reviewer must belong to that group (or be workspace admins). Outcome, definition of done, and evidence default to sensible text when left out. The assignee is notified and reminded before the due time.",
+    description: "Create a task in a venture's group and assign it, written so the assignee knows exactly what to do: a clear title, the outcome, a short definition of done (a checklist), what evidence to show, and any background or plans in details (Markdown; line breaks are kept). Follow a matching skill for writing tasks if the venture has one (list_skills). The assignee and reviewer must belong to that group (or be workspace admins); the assignee is notified and reminded before the due time. Left out: outcome and definition of done become the title, evidence becomes 'Evidence link or reviewed exception', the estimate 60 minutes, priority medium. The reply shows the task as saved: check it.",
     inputSchema: z.object({
-      title: z.string().trim().min(1).max(200), ventureId: id, groupId: id.optional().describe("Needed when the venture has more than one group (see list_ventures)"),
+      title: taskText.title, ventureId: id, groupId: id.optional().describe("Needed when the venture has more than one group (see list_ventures)"),
       assignee: person, reviewer: person.optional(), dueAt: isoField("When it is due, ISO 8601 with offset, e.g. 2026-10-12T17:00:00+05:30"),
-      estimatedMinutes: z.number().int().min(1).max(100_800).default(60), priority: priority.default("medium"),
-      outcome: z.string().trim().min(1).max(2000).optional(), definitionOfDone: z.string().trim().min(1).max(5000).optional(), evidenceRequirement: z.string().trim().min(1).max(2000).optional(),
-      tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(), timezone: timezoneField, requestId: requestIdField,
+      outcome: taskText.outcome().optional(), definitionOfDone: taskText.definitionOfDone().optional(), evidenceRequirement: taskText.evidenceRequirement().optional(), details: taskText.details.optional(),
+      estimatedMinutes: taskText.estimatedMinutes.default(60), priority: priority.default("medium"),
+      tags: taskText.tags.optional(), timezone: timezoneField, requestId: requestIdField,
     }),
   }, async (input) => {
     const timeZone = validTimeZone(input.timezone);
@@ -53,32 +69,33 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
       ventureId: input.ventureId, groupId, title: input.title, outcome: input.outcome ?? input.title, assigneeId: who(input.assignee), ...(input.reviewer ? { reviewerId: who(input.reviewer) } : {}),
       priority: input.priority, dueAt: input.dueAt, timezone: timeZone, estimatedMinutes: input.estimatedMinutes,
       definitionOfDone: input.definitionOfDone ?? input.title, evidenceRequirement: input.evidenceRequirement ?? "Evidence link or reviewed exception",
-      tags: input.tags ?? [], dependencies: [], evidenceLinks: [],
+      ...(input.details ? { details: input.details } : {}), tags: input.tags ?? [], dependencies: [], evidenceLinks: [],
     };
     return once(ctx, "create_task", input.requestId, body, async () => {
       const task = await ctx.api<any>("POST", "/tasks", body);
-      return compact({ ...await taskRow(ctx, look, task, timeZone), assignee: await name(task.assigneeId), reviewer: await name(task.reviewerId) });
+      return compact({ ...await taskRow(ctx, look, task, timeZone), assignee: await name(task.assigneeId), reviewer: await name(task.reviewerId), saved: savedTask(task), check: CHECK_SAVED });
     });
   });
 
   tool("update_task", "tasks:write", {
     title: "Update task", annotations: writes(true),
-    description: "Change a task: its details (title, outcome, definition of done, evidence requirement, tags), its assignee or reviewer, priority, due time, estimate, or blocker note (null clears it). Only the task's creator or an admin may change the details, and not once the task is done or cancelled; only venture leads and admins may change assignment and planning; the assignee or reviewer may set the blocker. Tags replace the existing list. Use set_task_status for status.",
+    description: "Change a task: what it says (title, outcome, definition of done, evidence requirement, details, tags), its assignee or reviewer, priority, due time, estimate, or blocker note (null clears it). Only the task's creator or an admin may change what it says, and not once the task is done or cancelled; only venture leads and admins may change assignment and planning; the assignee or reviewer may set the blocker. Tags replace the existing list. Use set_task_status for status. The reply shows the task as saved: check it.",
     inputSchema: z.object({
-      taskId: id, title: z.string().trim().min(1).max(200).optional(), outcome: z.string().trim().min(1).max(2000).optional().describe("What the task should achieve"),
-      definitionOfDone: z.string().trim().min(1).max(5000).optional(), evidenceRequirement: z.string().trim().min(1).max(2000).optional().describe("What evidence proves it is done"),
-      tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
-      assignee: person.optional(), reviewer: person.optional(), priority: priority.optional(), dueAt: isoField("New due time, ISO 8601 with offset").optional(), estimatedMinutes: z.number().int().min(1).max(100_800).optional(), blocker: z.string().trim().max(2000).nullable().optional(), timezone: timezoneField,
+      taskId: id, title: taskText.title.optional(), outcome: taskText.outcome(2000).optional(), definitionOfDone: taskText.definitionOfDone(5000).optional(), evidenceRequirement: taskText.evidenceRequirement(2000).optional(),
+      details: taskText.details.nullable().optional().describe("Background, current state, specs, links, and plans, in Markdown (null clears it). Anything long goes here, not in the definition of done"),
+      tags: taskText.tags.optional(),
+      assignee: person.optional(), reviewer: person.optional(), priority: priority.optional(), dueAt: isoField("New due time, ISO 8601 with offset").optional(), estimatedMinutes: taskText.estimatedMinutes.optional(), blocker: z.string().trim().max(2000).nullable().optional(), timezone: timezoneField,
     }),
-  }, async ({ taskId, title, outcome, definitionOfDone, evidenceRequirement, tags, assignee, reviewer, priority: newPriority, dueAt, estimatedMinutes, blocker, timezone }) => {
+  }, async ({ taskId, title, outcome, definitionOfDone, evidenceRequirement, details, tags, assignee, reviewer, priority: newPriority, dueAt, estimatedMinutes, blocker, timezone }) => {
     const timeZone = validTimeZone(timezone);
-    const change = compact({ title, outcome, definitionOfDone, evidenceRequirement, assigneeId: who(assignee), reviewerId: who(reviewer), priority: newPriority, dueAt, estimatedMinutes });
+    const change = compact({ title, outcome, definitionOfDone, evidenceRequirement, details, assigneeId: who(assignee), reviewerId: who(reviewer), priority: newPriority, dueAt, estimatedMinutes });
+    if (details === null) Object.assign(change, { details: null });
     if (blocker !== undefined) Object.assign(change, { blocker: blocker || null });
     // An empty list clears the tags, so it is sent as it is.
     if (tags !== undefined) Object.assign(change, { tags });
     if (!Object.keys(change).length) throw new ToolError("Say what to change.");
     const task = await ctx.api<any>("PATCH", `/tasks/${encodeURIComponent(taskId)}`, change);
-    return compact({ ...await taskRow(ctx, look, task, timeZone), assignee: await name(task.assigneeId), reviewer: await name(task.reviewerId) });
+    return compact({ ...await taskRow(ctx, look, task, timeZone), assignee: await name(task.assigneeId), reviewer: await name(task.reviewerId), saved: savedTask(task), check: CHECK_SAVED });
   });
 
   tool("review_evidence", "tasks:write", {
@@ -94,7 +111,7 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
 
   tool("post_message", "messages:write", {
     title: "Post message", annotations: writes(false),
-    description: "Post a message in a channel I belong to (channel ids from list_ventures). It appears under my name with a 'via Claude' label. Mention people by passing their ids in mention. The people mentioned are notified, and so is everyone who follows every message in that channel; notices show the text.",
+    description: "Post a message in a channel I belong to (channel ids from list_ventures). It appears under my name with a 'via Claude' label. Mention people by passing their ids in mention and writing their @handle (from find_person) in the text, so the message shows their name. The people mentioned are notified, and so is everyone who follows every message in that channel; notices show the text.",
     inputSchema: z.object({ channelId: id, text: z.string().trim().min(1).max(10_000), mention: z.array(id).max(20).optional(), requestId: requestIdField }),
   }, async ({ channelId, text, mention, requestId }) => {
     await ctx.toolBudget("post_message", 10);

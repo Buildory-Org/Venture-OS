@@ -450,6 +450,26 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - API tests cover permissions, scope moves, limits, filters, cursors, Claude's tools and the reminder, and the splitting into parts. The backend smoke passes.
     - In the browser: uploading, editing, moving a skill, and the Tasks and Group chats tabs with filters. Web typecheck, lint, and the production build pass.
     - An independent review's findings are fixed. A permanently deleted venture takes its context and skills with it, with a recovery copy.
+- [x] Tasks written by Claude come out right (2026-10-10), built and tested locally, not yet live.
+  - **Why:**
+    - A task Claude made had its whole spec in the definition of done, ending in garbled tool-call text (`</definitionOfDone> <parameter name="tags">…`).
+    - Claude's call had been cut wrong, and the tool gave no guidance on what each field is for.
+  - **Details field:** tasks have Details (Markdown, up to 20,000 characters) for background, specs, links, and plans.
+    - It is shown in the task drawer (images as links, headings sized for the drawer, long text folded) and is part of task search and context packets.
+    - It is set when creating a task (in the app or by Claude) and edited by the creator and admins.
+  - **Claude's task tools:**
+    - Every field says what it is for; the definition of done is a short checklist (up to 1,500 characters when creating), and the real defaults are stated.
+    - Creating and updating reply with the task as saved, line breaks kept, so Claude can check it and fix it with update_task.
+    - get_task keeps line breaks too.
+  - **Guard:** any Claude tool refuses text holding leftover tool-call markup (or a closing tag named after one of the call's own fields), so nothing garbled is saved. Code blocks and inline code are exempt, so the syntax can be written on purpose.
+  - **App:** the outcome, definition of done, and evidence show their line breaks.
+  - **Also:**
+    - Claude's instructions now take the only venture without asking, and read the new venture's context when the conversation switches.
+    - post_message tells Claude to write @handles so mentions show names.
+  - **Verified:**
+    - API tests cover Details permissions and clearing, the guard's shapes and exemptions, the read-back, and line breaks. The backend smoke passes; the search index is replaced in place on an existing database.
+    - In the browser: the drawer and the edit form. Web typecheck, lint, and build pass.
+    - An independent review's findings are fixed.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

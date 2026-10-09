@@ -46,6 +46,14 @@ export async function ensurePushEndpointIndex(collection: Collection<AppDocument
   await collection.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
 }
 
+/** A collection has one text index: the task one now covers details too, so an older one without them is replaced. */
+async function ensureTaskTextIndex(db: AppDb): Promise<void> {
+  const tasks = db.collection("tasks");
+  const existing = (await tasks.listIndexes().toArray().catch(() => [])).find((index) => index.key?._fts === "text");
+  if (existing && !existing.weights?.details) await tasks.dropIndex(String(existing.name));
+  await tasks.createIndex({ title: "text", outcome: "text", definitionOfDone: "text", details: "text", tags: "text" });
+}
+
 export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensurePushEndpointIndex(db.collection("push_subscriptions"));
   await Promise.all([
@@ -67,7 +75,7 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("message_saves").createIndex({ userId: 1, createdAt: -1, _id: -1 }),
     db.collection("tasks").createIndex({ workspaceId: 1, assigneeId: 1, status: 1, dueAt: 1 }),
     db.collection("tasks").createIndex({ ventureId: 1, groupId: 1, status: 1 }),
-    db.collection("tasks").createIndex({ title: "text", outcome: "text", definitionOfDone: "text", tags: "text" }),
+    ensureTaskTextIndex(db),
     db.collection("command_executions").createIndex({ workspaceId: 1, actorId: 1, idempotencyKey: 1 }, { unique: true }),
     db.collection("reminders").createIndex({ state: 1, scheduledAt: 1, leaseUntil: 1 }),
     db.collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true }),

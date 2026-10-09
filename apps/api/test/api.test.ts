@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
+import { contextParts } from "../src/mcp/tools-context.js";
 import type { Request, Response } from "express";
 
 /** One JSON-RPC call to the hosted MCP endpoint, as Claude Code would send it. */
@@ -555,7 +556,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     const peerNotice = await database.db.collection("notification_outbox").findOne({ resourceId: followedId, userId: "user-peer" });
     assert.equal(peerNotice?.type, "channel_message");
     assert.match(String(peerNotice?.title), / in #general$/);
-    assert.equal(peerNotice?.body, "Standup moved to 11 @ashutosh");
+    assert.equal(peerNotice?.body, "Standup moved to 11 @Ashutosh", "mentions read as names in notices");
     assert.equal(peerNotice?.chatKind, "channel");
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: followedId, userId: "user-ashutosh" }), 0, "a channel turned off silences @mentions too");
     assert.equal(await database.db.collection("notification_outbox").countDocuments({ resourceId: followedId, userId: "user-test" }), 0, "never the sender");
@@ -568,10 +569,12 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     // Back to the default, the stored choice goes; an @mention notifies again, with who and where.
     assert.equal((await fetch(levelUrl, { method: "PUT", headers: as("user-ashutosh"), body: JSON.stringify({ level: "mentions" }) })).status, 200);
     assert.equal(await database.db.collection("channel_notification_settings").countDocuments({ userId: "user-ashutosh" }), 0);
-    const mentionedAgain = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Thanks @ashutosh", mentionUserIds: ["user-ashutosh"], clientId: "follow-check-0002" }) });
+    const mentionedAgain = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Thanks @ashutosh.", mentionUserIds: ["user-ashutosh"], clientId: "follow-check-0002" }) });
     const mentionNotice = await database.db.collection("notification_outbox").findOne({ resourceId: ((await mentionedAgain.json()) as any).data.message.id, userId: "user-ashutosh" });
     assert.equal(mentionNotice?.type, "mention");
     assert.match(String(mentionNotice?.title), / mentioned you in #general$/);
+    // The notice reads mentions as names, keeping the full stop that ends the sentence.
+    assert.equal(mentionNotice?.body, "Thanks @Ashutosh.");
     // A follower who loses the group hears nothing more from its channel.
     await database.db.collection("memberships").updateOne({ _id: "membership-peer" }, { $set: { groupIds: [] } });
     const afterLeaving = await fetch(`${origin}/v1/channels/channel-a/messages`, { method: "POST", headers, body: JSON.stringify({ body: "Quiet now", mentionUserIds: [], clientId: "follow-check-0003" }) });
@@ -722,7 +725,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.equal(imageThumbnail.headers.get("cache-control"), "private, no-store");
     const thumbnailBody = Buffer.from(await imageThumbnail.arrayBuffer());
     assert.ok(thumbnailBody.length < imageBody.length);
-    assert.equal((await sharp(thumbnailBody).metadata()).width, 512);
+    assert.equal((await sharp(thumbnailBody).metadata()).width, 720, "large enough to stay sharp inline in chat");
     assert.equal((await fetch(`${origin}/v1/files/image-thumbnail-test/thumbnail`, { headers: { "x-dev-user-id": "user-hidden" } })).status, 404);
     assert.equal((await fetch(`${origin}/v1/files/${intent.data.file.id}/thumbnail`, { headers })).status, 415);
     await store.write("workspace-a/venture-a/objects/broken-thumbnail-test", Buffer.from("not an image"));
@@ -2127,9 +2130,9 @@ test("hosted MCP: tokens, sign-in, every tool through the product API, permissio
     assert.ok(listed.every((item: any) => item.tokenHash === undefined && item.prefix && item.expiresAt));
     const tools = (token: string) => mcpCall(origin, token, "tools/list").then((response) => response.body.result.tools.map((item: any) => item.name).sort());
     assert.deepEqual(await tools(readOnly.token), ["get_task", "list_tasks", "my_plate"]);
-    // The 17 original tools, plus the batch-one tools these same scopes unlock (ventures, knowledge, and tasks).
+    // The 17 original tools, plus the batch-one tools these same scopes unlock (ventures, knowledge, and tasks), and venture context and skills.
     const memberTools = await tools(member.token);
-    assert.equal(memberTools.length, 22);
+    assert.equal(memberTools.length, 25);
     for (const name of ["find_person", "list_documents", "create_task", "update_task", "review_evidence"]) assert.ok(memberTools.includes(name), name);
     const listedTool = (await mcpCall(origin, member.token, "tools/list")).body.result.tools.find((item: any) => item.name === "my_plate");
     assert.equal(listedTool.annotations.readOnlyHint, true);
@@ -2512,6 +2515,10 @@ test("hosted MCP batch 1: knowledge drafts, file reading and uploads, tasks, rev
     await refused(member, "update_task", { taskId: newTask.id, priority: "urgent" }, /venture lead/);
     assert.equal((await ok(member, "update_task", { taskId: newTask.id, blocker: "Waiting on pricing" })).blocker, "Waiting on pricing");
     assert.equal((await ok(lead, "update_task", { taskId: newTask.id, priority: "high", blocker: null })).blocker, undefined);
+    await refused(member, "update_task", { taskId: newTask.id, title: "Mine now" }, /creator or a workspace admin/);
+    assert.equal((await ok(lead, "update_task", { taskId: newTask.id, title: "Send the signed proposal", definitionOfDone: "Signed copy in the folder", tags: ["sales"] })).title, "Send the signed proposal");
+    await ok(lead, "update_task", { taskId: newTask.id, tags: [] });
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: newTask.id }))?.tags, []);
     const evidence = await ok(member, "add_evidence", { taskId: "task-ev", title: "Draft pitch", url: "https://example.com/pitch", requestId: "evidence-add-0001" });
     await refused(member, "review_evidence", { evidenceId: evidence.evidenceId, decision: "accept", requestId: "evidence-review-01" }, /reviewer or venture lead/);
     const reviewed = await ok(lead, "review_evidence", { evidenceId: evidence.evidenceId, decision: "send_back", comment: "Add the pricing slide.", requestId: "evidence-review-02" });
@@ -2941,6 +2948,245 @@ test("workspace-wide knowledge: a sharing permission, requests approvers review,
     assert.equal(demoted.status, 200, await demoted.clone().text());
     assert.equal((await json(demoted)).canShareKnowledge, false);
     assert.equal((await json(await call("PUT", "/admin/memberships/membership-sharer", "admin", { role: "contributor", ventureIds: ["venture-a"], groupIds: ["group-a"] }))).canShareKnowledge, false);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("task details: only the creator or an admin edits them, the assignee hears, and images carry their size", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_task_details`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  await db.collection("channels").insertOne({ _id: "channel-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", name: "general", createdAt: now } as never);
+  const people = [["admin", "admin"], ["lead", "venture_head"], ["creator", "contributor"], ["member", "contributor"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: now, updatedAt: now })) as never);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  try {
+    const created = await json(await call("POST", "/tasks", "creator", { ventureId: "venture-a", groupId: "group-a", title: "Ship it", outcome: "Shipped", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Live", evidenceRequirement: "Link" }));
+    const path = `/tasks/${created.id}`;
+    // The creator edits the details: only what changed is logged, the assignee is told, and the start reminder takes the new title.
+    const edited = await call("PATCH", path, "creator", { title: "Ship the launch page", definitionOfDone: "Live on the domain", tags: ["launch", "web"] });
+    assert.equal(edited.status, 200, await edited.clone().text());
+    const after = await json(edited);
+    assert.equal(after.title, "Ship the launch page");
+    assert.deepEqual(after.tags, ["launch", "web"]);
+    assert.equal(after.outcome, "Shipped");
+    assert.ok((await json(await call("GET", path, "member"))).updates.some((item: any) => item.body === "Edited the title, definition of done and tags"));
+    const notice = await db.collection("notification_outbox").findOne({ resourceId: created.id, userId: "user-member", idempotencyKey: /:details:/ });
+    assert.equal(notice?.title, "Task updated: Ship the launch page");
+    assert.equal(notice?.body, "Person creator edited the title, definition of done and tags.");
+    assert.equal(await db.collection("reminders").countDocuments({ taskId: created.id, message: "Start: Ship the launch page" }), 1);
+    // Nobody else edits them: not the assignee, not a venture lead. The other rules are unchanged.
+    assert.equal((await call("PATCH", path, "member", { title: "Mine now" })).status, 403);
+    assert.equal((await call("PATCH", path, "lead", { outcome: "Different" })).status, 403);
+    assert.equal((await call("PATCH", path, "lead", { priority: "high" })).status, 200);
+    assert.equal((await call("PATCH", path, "creator", { priority: "low" })).status, 403);
+    assert.equal((await call("PATCH", path, "creator", { title: "   " })).status, 400);
+    // An admin edits any task's details, and an empty list clears the tags. Editing your own task tells nobody.
+    const cleared = await json(await call("PATCH", path, "admin", { tags: [], evidenceRequirement: "A link to the live page" }));
+    assert.deepEqual(cleared.tags, []);
+    assert.equal(cleared.evidenceRequirement, "A link to the live page");
+    const own = await json(await call("POST", "/tasks", "member", { ventureId: "venture-a", groupId: "group-a", title: "Mine", outcome: "Done", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Done", evidenceRequirement: "Note" }));
+    assert.equal((await call("PATCH", `/tasks/${own.id}`, "member", { outcome: "Done well" })).status, 200);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: own.id, idempotencyKey: /:details:/ }), 0);
+    // Details and work in one request: the creator (not the assignee here) can't slip a status change in.
+    assert.equal((await call("PATCH", path, "creator", { title: "Sneaky", status: "in_progress" })).status, 403);
+    // Reassigned and retitled at once: the new assignee's notice and start reminder use the new title.
+    const moved = await call("PATCH", path, "admin", { assigneeId: "user-lead", title: "Ship the launch page today" });
+    assert.equal(moved.status, 200, await moved.clone().text());
+    assert.equal((await db.collection("notification_outbox").findOne({ resourceId: created.id, userId: "user-lead", type: "assignment" }))?.title, "Ship the launch page today");
+    assert.equal(await db.collection("reminders").countDocuments({ taskId: created.id, userId: "user-lead", state: "scheduled", message: "Start: Ship the launch page today" }), 1);
+    // The activity entry keeps what each detail was before the edit.
+    assert.equal((await db.collection("task_updates").findOne({ taskId: created.id, body: "Edited the title" }))?.previous?.title, "Ship the launch page");
+    // A finished task's details stay as they were.
+    await db.collection("tasks").updateOne({ _id: created.id }, { $set: { status: "done" } });
+    assert.equal((await call("PATCH", path, "admin", { title: "Rewritten" })).status, 409);
+
+    // Images say their pixel size, and whether they were sent in HD; chat messages carry both.
+    const image = (extra: Record<string, unknown>) => ({ ventureId: "venture-a", groupId: "group-a", name: "photo.webp", contentType: "image/webp", size: 3, ...extra });
+    assert.equal((await call("POST", "/uploads", "member", image({ width: 1440 }))).status, 400, "width and height go together");
+    assert.equal((await call("POST", "/uploads", "member", { ...image({ width: 10, height: 10 }), name: "notes.txt", contentType: "text/plain" })).status, 400, "only images have a size");
+    const intent = await json(await call("POST", "/uploads", "member", image({ width: 1440, height: 1080, hd: true })));
+    assert.equal(intent.file.width, 1440);
+    const target = new URL(intent.uploadUrl, origin);
+    assert.equal((await fetch(`${origin}${target.pathname}${target.search}`, { method: "PUT", headers: { "content-type": "image/webp" }, body: "abc" })).status, 204);
+    assert.equal((await call("POST", `/uploads/${intent.file.id}/complete`, "member", { etag: "local" })).status, 200);
+    const sent = await call("POST", "/channels/channel-a/messages", "member", { body: "", attachmentFileIds: [intent.file.id], mentionUserIds: [], clientId: "image-size-0001" });
+    assert.equal(sent.status, 201, await sent.clone().text());
+    assert.deepEqual((await json(sent)).message.attachments, [{ id: intent.file.id, name: "photo.webp", contentType: "image/webp", size: 3, width: 1440, height: 1080, hd: true }]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("venture context, skills, and shared files: who writes, who reads, and Claude reads the context first", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  // Long contexts reach Claude in parts of about 10,000 tokens (four English characters a token, one for other scripts),
+  // with files kept whole where they fit; empty files are skipped.
+  const titles = (parts: ReturnType<typeof contextParts>) => parts.map((part) => part.map((piece) => piece.title));
+  assert.deepEqual(titles(contextParts([{ title: "Short", markdown: "a".repeat(10) }, { title: "Big", markdown: "b".repeat(90_000) }], 10_000)), [["Short"], ["Big (1 of 3)"], ["Big (2 of 3)"], ["Big (3 of 3)"]]);
+  assert.deepEqual(titles(contextParts([{ title: "Empty", markdown: "" }, { title: "Hindi", markdown: "क".repeat(15_000) }], 10_000)), [["Hindi (1 of 2)"], ["Hindi (2 of 2)"]]);
+  const paragraphs = contextParts([{ title: "Notes", markdown: `${"a".repeat(30_000)}
+
+${"b".repeat(30_000)}` }], 10_000);
+  assert.deepEqual(paragraphs.flat().map((piece) => piece.text.length), [30_000, 30_000], "cut at the paragraph break, Windows line endings too");
+
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_agent_context`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  const people = [["boss", "admin", [], [], false], ["lead", "venture_head", ["venture-a"], ["group-a"], false], ["member", "contributor", ["venture-a"], ["group-a"], false], ["sharer", "contributor", ["venture-a"], ["group-a"], true], ["learner", "learner", ["venture-a"], ["group-a"], false], ["outsider", "contributor", ["venture-b"], ["group-b"], false]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role, ventureIds, groupIds, shares]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: [...ventureIds], groupIds: [...groupIds], ...(shares ? { canShareKnowledge: true } : {}), status: "active", createdAt: now, updatedAt: now })) as never);
+  for (const key of ["a", "b"]) {
+    await db.collection("ventures").insertOne({ _id: `venture-${key}`, workspaceId: "workspace-a", name: key === "a" ? "Alpha" : "Beta", status: "active", goal30Day: "", createdAt: now } as never);
+    await db.collection("groups").insertOne({ _id: `group-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, name: "Core", createdAt: now } as never);
+    await db.collection("channels").insertOne({ _id: `channel-${key}`, workspaceId: "workspace-a", ventureId: `venture-${key}`, groupId: `group-${key}`, name: "general", createdAt: now } as never);
+  }
+  await db.collection("channels").insertOne({ _id: "channel-a2", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", name: "design", createdAt: now } as never);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: { "content-type": "application/json", "x-dev-user-id": `user-${handle}` }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const json = async (response: globalThis.Response) => ((await response.json()) as any).data;
+  try {
+    // Venture context: the venture's head and admins write it; everyone in the venture reads it; nobody else sees it.
+    const overview = await call("POST", "/ventures/venture-a/context", "lead", { title: "Overview", markdown: "# Alpha\n\nWe build websites." });
+    assert.equal(overview.status, 201, await overview.clone().text());
+    const overviewId = (await json(overview)).id;
+    assert.equal((await call("POST", "/ventures/venture-a/context", "member", { title: "Mine", markdown: "x" })).status, 403);
+    assert.equal((await call("POST", "/ventures/venture-a/context", "sharer", { title: "Mine", markdown: "x" })).status, 403);
+    assert.equal((await call("POST", "/ventures/venture-b/context", "lead", { title: "Theirs", markdown: "x" })).status, 404);
+    assert.equal((await call("POST", "/ventures/venture-a/context", "lead", { title: "Blank", markdown: "   " })).status, 400);
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Beta overview", markdown: "# Beta" })).status, 201);
+    // A venture's whole context stays within what Claude can read before starting.
+    const big = await json(await call("POST", "/ventures/venture-b/context", "boss", { title: "Big one", markdown: "x".repeat(200_000) }));
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Big two", markdown: "y".repeat(200_000) })).status, 201);
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Too much", markdown: "z".repeat(150_000) })).status, 409);
+    assert.equal((await call("PUT", `/context/${big.id}`, "boss", { markdown: "x".repeat(150_000) })).status, 200, "replacing a file counts its new size only");
+    assert.equal((await json(await call("GET", "/ventures/venture-b/context", "boss"))).items.find((item: any) => item.id === big.id).characters, 150_000);
+    const learnerView = await json(await call("GET", "/ventures/venture-a/context", "learner"));
+    assert.deepEqual(learnerView.items.map((item: any) => item.title), ["Overview"]);
+    assert.equal(learnerView.canEdit, false);
+    assert.equal(learnerView.items[0].markdown, undefined, "the list leaves the text out");
+    assert.equal((await call("GET", "/ventures/venture-a/context", "outsider")).status, 404);
+    assert.equal((await call("GET", `/context/${overviewId}`, "outsider")).status, 404);
+    assert.equal((await call("PUT", `/context/${overviewId}`, "member", { markdown: "Hijacked" })).status, 403);
+    assert.equal((await json(await call("PUT", `/context/${overviewId}`, "lead", { markdown: "# Alpha\n\nWe build websites for agencies." }))).markdown, "# Alpha\n\nWe build websites for agencies.");
+    const scratch = await json(await call("POST", "/ventures/venture-a/context", "boss", { title: "Old notes", markdown: "Outdated" }));
+    assert.equal((await call("DELETE", `/context/${scratch.id}`, "lead")).status, 200);
+    assert.deepEqual((await json(await call("GET", "/ventures/venture-a/context", "member"))).items.map((item: any) => item.title), ["Overview"]);
+
+    // Skills: workspace-wide ones need the share permission; a venture's own need its head. Moving needs both ends.
+    const email = await call("POST", "/skills", "sharer", { title: "Sales email", description: "Writing to a new lead", markdown: "Be brief and specific." });
+    assert.equal(email.status, 201, await email.clone().text());
+    const emailId = (await json(email)).id;
+    assert.equal((await call("POST", "/skills", "member", { title: "Nope", description: "x", markdown: "x" })).status, 403);
+    assert.equal((await call("POST", "/skills", "lead", { title: "Nope", description: "x", markdown: "x" })).status, 403);
+    const pitch = await json(await call("POST", "/skills", "lead", { ventureId: "venture-a", title: "Pitch review", description: "Reviewing a pitch deck", markdown: "Check the ask first." }));
+    assert.equal((await call("POST", "/skills", "lead", { ventureId: "venture-b", title: "Nope", description: "x", markdown: "x" })).status, 404);
+    assert.deepEqual((await json(await call("GET", "/skills", "outsider"))).items.map((item: any) => item.title), ["Sales email"]);
+    assert.equal((await call("GET", `/skills/${pitch.id}`, "outsider")).status, 404);
+    const forAlpha = (await json(await call("GET", "/skills?ventureId=venture-a", "member"))).items;
+    assert.deepEqual(forAlpha.map((item: any) => [item.title, item.canEdit]), [["Pitch review", false], ["Sales email", false]]);
+    assert.equal((await call("GET", "/skills?ventureId=venture-b", "member")).status, 404);
+    assert.equal((await call("PUT", `/skills/${pitch.id}`, "lead", { ventureId: null })).status, 403, "the head can't make it workspace-wide");
+    assert.equal((await call("PUT", `/skills/${emailId}`, "sharer", { ventureId: "venture-a" })).status, 403, "the sharer doesn't lead venture-a");
+    const moved = await json(await call("PUT", `/skills/${pitch.id}`, "boss", { ventureId: "venture-b" }));
+    assert.equal(moved.ventureId, "venture-b");
+    assert.ok((await json(await call("GET", "/skills", "outsider"))).items.some((item: any) => item.id === pitch.id));
+    const workspaceWide = await json(await call("PUT", `/skills/${pitch.id}`, "boss", { ventureId: null, title: "Pitch review (all)" }));
+    assert.equal(workspaceWide.ventureId, undefined);
+    assert.equal((await db.collection("skills").findOne({ _id: pitch.id }))?.ventureId, undefined);
+    assert.equal((await call("DELETE", `/skills/${emailId}`, "lead")).status, 403);
+
+    // Shared files: what a group's chats shared (newest first, by channel and type), and task attachments by group.
+    const at = (minutes: number) => new Date(now.getTime() + minutes * 60_000);
+    const image = (id: string) => ({ id, name: `${id}.webp`, contentType: "image/webp", size: 10, width: 1440, height: 1080 });
+    const pdf = (id: string) => ({ id, name: `${id}.pdf`, contentType: "application/pdf", size: 20 });
+    await db.collection("messages").insertMany([
+      { _id: "message-1", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-member", body: "", mentionUserIds: [], attachments: [image("photo-1"), pdf("brief-1")], clientId: "c1", createdAt: at(1) },
+      { _id: "message-2", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a2", authorId: "user-lead", body: "Logo", mentionUserIds: [], attachments: [image("photo-2")], clientId: "c2", createdAt: at(2) },
+      { _id: "message-3", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", channelId: "channel-a", authorId: "user-lead", body: "No files", mentionUserIds: [], attachments: [], clientId: "c3", createdAt: at(3) },
+      { _id: "message-4", workspaceId: "workspace-a", ventureId: "venture-b", groupId: "group-b", channelId: "channel-b", authorId: "user-outsider", body: "", mentionUserIds: [], attachments: [image("photo-b")], clientId: "c4", createdAt: at(4) },
+    ] as never);
+    const groupFiles = await json(await call("GET", "/groups/group-a/attachments", "member"));
+    assert.deepEqual(groupFiles.items.map((item: any) => [item.id, item.channelId, item.sharedBy]), [["photo-2", "channel-a2", "user-lead"], ["photo-1", "channel-a", "user-member"], ["brief-1", "channel-a", "user-member"]]);
+    assert.deepEqual((await json(await call("GET", "/groups/group-a/attachments?kind=image", "member"))).items.map((item: any) => item.id), ["photo-2", "photo-1"]);
+    assert.deepEqual((await json(await call("GET", "/groups/group-a/attachments?kind=document", "member"))).items.map((item: any) => item.id), ["brief-1"]);
+    assert.deepEqual((await json(await call("GET", "/groups/group-a/attachments?channelId=channel-a2", "member"))).items.map((item: any) => item.id), ["photo-2"]);
+    const firstPage = await json(await call("GET", "/groups/group-a/attachments?limit=1", "member"));
+    assert.deepEqual(firstPage.items.map((item: any) => item.id), ["photo-2"]);
+    assert.deepEqual((await json(await call("GET", `/groups/group-a/attachments?limit=1&cursor=${firstPage.nextCursor}`, "member"))).items.map((item: any) => item.id), ["photo-1", "brief-1"]);
+    assert.equal((await call("GET", "/groups/group-a/attachments", "outsider")).status, 404);
+    assert.equal((await call("GET", "/groups/group-a/attachments?channelId=channel-b", "member")).status, 404);
+    await db.collection("tasks").insertMany([
+      { _id: "task-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: "Launch page", outcome: "o", creatorId: "user-lead", assigneeId: "user-member", priority: "medium", status: "todo", dueAt: at(2880), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", tags: [], deadlineRisk: false, createdAt: now, updatedAt: now },
+      { _id: "task-b", workspaceId: "workspace-a", ventureId: "venture-b", groupId: "group-b", title: "Beta page", outcome: "o", creatorId: "user-outsider", assigneeId: "user-outsider", priority: "medium", status: "todo", dueAt: at(2880), timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", tags: [], deadlineRisk: false, createdAt: now, updatedAt: now },
+    ] as never);
+    await db.collection("files").insertMany([
+      { _id: "file-a", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", taskId: "task-a", ownerId: "user-member", name: "mock.webp", contentType: "image/webp", size: 10, width: 1620, height: 1080, objectKey: "k1", status: "ready", createdAt: at(5), completedAt: at(5) },
+      { _id: "file-a-pending", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", taskId: "task-a", ownerId: "user-member", name: "half.pdf", contentType: "application/pdf", size: 10, objectKey: "k2", status: "pending", createdAt: at(6) },
+      { _id: "file-b", workspaceId: "workspace-a", ventureId: "venture-b", groupId: "group-b", taskId: "task-b", ownerId: "user-outsider", name: "beta.pdf", contentType: "application/pdf", size: 10, objectKey: "k3", status: "ready", createdAt: at(7), completedAt: at(7) },
+      { _id: "file-group", workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", ownerId: "user-member", name: "chat.webp", contentType: "image/webp", size: 10, objectKey: "k4", status: "ready", createdAt: at(8) },
+    ] as never);
+    assert.deepEqual((await json(await call("GET", "/attachments/tasks", "member"))).items.map((item: any) => [item.id, item.taskTitle, item.width]), [["file-a", "Launch page", 1620]]);
+    assert.deepEqual((await json(await call("GET", "/attachments/tasks", "outsider"))).items.map((item: any) => item.id), ["file-b"]);
+    assert.deepEqual((await json(await call("GET", "/attachments/tasks?kind=document", "boss"))).items.map((item: any) => item.id), ["file-b"]);
+    assert.equal((await call("GET", "/attachments/tasks?ventureId=venture-b", "member")).status, 404);
+
+    // Claude: until it reads a venture's context, its tools remind it to; reading it (in parts) clears the reminder.
+    const tokenResponse = await call("POST", "/pats", "member", { name: "member laptop", scopes: [...PAT_READ_SCOPES, ...PAT_WRITE_SCOPES], expiresInDays: 30 });
+    assert.equal(tokenResponse.status, 201, await tokenResponse.clone().text());
+    const token = (await json(tokenResponse)).token as string;
+    const tool = async (name: string, args: Record<string, unknown> = {}) => { const result = await mcpTool(origin, token, name, args); assert.equal(result.isError, false, `${name}: ${result.text}`); return result.data; };
+    assert.match(String((await tool("my_plate", { timezone: "UTC" })).contextReminder), /read_venture_context/);
+    assert.equal((await tool("list_ventures")).contextReminder, undefined, "getting started isn't nagged");
+    const context = await tool("read_venture_context", { ventureId: "venture-a" });
+    assert.equal(context.venture, "Alpha");
+    assert.deepEqual(context.files, [{ title: "Overview", text: "# Alpha\n\nWe build websites for agencies." }]);
+    assert.equal(context.nextPart, undefined);
+    assert.equal((await tool("my_plate", { timezone: "UTC" })).contextReminder, undefined);
+    assert.equal((await mcpTool(origin, token, "read_venture_context", { ventureId: "venture-b" })).isError, true, "not their venture");
+    const skills = await tool("list_skills", { ventureId: "venture-a" });
+    assert.deepEqual(skills.skills.map((item: any) => [item.title, item.scope]), [["Pitch review (all)", "every venture"], ["Sales email", "every venture"]]);
+    const skill = await tool("get_skill", { skillId: emailId });
+    assert.equal(skill.instructions, "Be brief and specific.");
+    assert.equal(skill.useWhen, "Writing to a new lead");
   } finally {
     server.close();
     await once(server, "close");

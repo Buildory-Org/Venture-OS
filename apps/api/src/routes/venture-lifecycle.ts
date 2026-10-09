@@ -120,7 +120,9 @@ async function deleteVentureCascade(db: AppDb, scope: { workspaceId: string; ven
   const documents = await remove("documents", { ventureId });
   const classes = await remove("classes", { ventureId });
   const previews = await remove("command_previews", { ventureId });
-  for (const collection of ["outcomes", "decisions", "information_requests", "files", "pipelines", "opportunities", "events", "document_chunks"]) await remove(collection, { ventureId });
+  for (const collection of ["outcomes", "decisions", "information_requests", "files", "pipelines", "opportunities", "events", "document_chunks", "venture_context", "skills"]) await remove(collection, { ventureId });
+  // Claude's note that it read this venture's context goes too; it is only a reminder, so it gets no recovery copy.
+  await db.collection("mcp_context_reads").deleteMany({ workspaceId, ventureId }, { session });
   const calendarEvents = await remove("calendar_events", { ventureId });
   // Text read out of the venture's files is derived from them, so it goes without a recovery copy.
   await db.collection("file_texts").deleteMany({ workspaceId, ventureId }, { session });

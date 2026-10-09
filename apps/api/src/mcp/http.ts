@@ -119,6 +119,8 @@ const MCP_ROUTES: [string, RegExp][] = [
   ["GET", /^\/v1\/classes$/], ["GET", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/], ["POST", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications$/],
   ["PATCH", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications\/[A-Za-z0-9_-]+\/review$/],
   // Calendar: reading, scheduling, and answering invitations (editing and cancelling stay in the app).
+  // Venture context and skills, read-only (they are written in the app).
+  ["GET", /^\/v1\/ventures\/[A-Za-z0-9_-]+\/context$/], ["GET", /^\/v1\/skills$/], ["GET", /^\/v1\/skills\/[A-Za-z0-9_-]+$/],
   ["GET", /^\/v1\/calendar$/], ["POST", /^\/v1\/calendar\/events$/], ["POST", /^\/v1\/calendar\/events\/[A-Za-z0-9_-]+\/respond$/],
 ];
 export const isMcpRoute = (method: string, path: string) => MCP_ROUTES.some(([allowed, pattern]) => allowed === method && pattern.test(path));

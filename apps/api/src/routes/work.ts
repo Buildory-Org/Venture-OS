@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createEvidenceSchema, createOutcomeSchema, createReminderSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createEvidenceSchema, createOutcomeSchema, createReminderSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskDetailFields, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
@@ -91,7 +91,12 @@ export function workRoutes(database: Database): Router {
       if (!membership || (membership.role !== "admin" && (!membership.ventureIds.includes(String(current.ventureId)) || !membership.groupIds.includes(String(current.groupId))))) throw new AppError(404, "NOT_FOUND", "Task not found");
       if (!can(membership as unknown as Parameters<typeof can>[0], "task:update", { ventureId: String(current.ventureId), groupId: String(current.groupId) })) throw new AppError(403, "FORBIDDEN", "Current role cannot update tasks");
       const elevated = membership.role === "admin" || membership.role === "venture_head";
-      if (!elevated && current.assigneeId !== actor.id && current.reviewerId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the assignee, assigned reviewer, or venture lead may update this task");
+      // The task's details (title, outcome, definition of done, evidence requirement, tags) belong to whoever created it, and admins.
+      const editsDetails = taskDetailFields.some((field) => input[field] !== undefined);
+      if (editsDetails && membership.role !== "admin" && current.creatorId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the task's creator or a workspace admin may edit its details");
+      if (editsDetails && ["done", "cancelled"].includes(String(current.status))) throw new AppError(409, "CONFLICT", "This task is finished, so its details can't change; reopen it first");
+      const editsWork = Object.keys(input).some((field) => !(taskDetailFields as readonly string[]).includes(field));
+      if (editsWork && !elevated && current.assigneeId !== actor.id && current.reviewerId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the assignee, assigned reviewer, or venture lead may update this task");
       if (!elevated && (["assigneeId", "reviewerId", "priority", "dueAt", "estimatedMinutes"] as const).some((field) => input[field] !== undefined)) throw new AppError(403, "FORBIDDEN", "Only a venture lead or workspace admin may change task planning or assignment");
       if (input.status && !elevated && current.assigneeId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the assignee or venture lead may change task progress");
       if (input.assigneeId) await fenceAssignableMember(db, actor.membership.workspaceId, input.assigneeId, String(current.ventureId), String(current.groupId), "Assignee", session);
@@ -103,6 +108,8 @@ export function workRoutes(database: Database): Router {
       const nextDueAt = input.dueAt ? new Date(input.dueAt) : new Date(current.dueAt);
       const nextEstimate = input.estimatedMinutes ?? Number(current.estimatedMinutes);
       const nextAssignee = input.assigneeId ?? String(current.assigneeId);
+      const nextTitle = String(input.title ?? current.title);
+      const nextOutcome = String(input.outcome ?? current.outcome);
       const assigneeChanged = nextAssignee !== current.assigneeId;
       const planningChanged = assigneeChanged || nextDueAt.getTime() !== new Date(current.dueAt).getTime() || nextEstimate !== current.estimatedMinutes;
       const deadlineRisk = hasDeadlineRisk(nextDueAt, nextEstimate, now);
@@ -112,11 +119,19 @@ export function workRoutes(database: Database): Router {
       if (input.status === "in_progress" && !current.startedAt) $set.startedAt = now;
       if (input.status === "done") $set.completedAt = now;
       await db.collection("tasks").updateOne({ _id: id }, input.blocker === null ? { $set, $unset: { blocker: "" } } : { $set }, { session });
-      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? "Task updated", fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
+      const changedDetails = taskDetailFields.filter((field) => input[field] !== undefined && JSON.stringify(input[field]) !== JSON.stringify(current[field] ?? (field === "tags" ? [] : undefined)));
+      const detailNames = { title: "title", outcome: "outcome", definitionOfDone: "definition of done", evidenceRequirement: "evidence requirement", tags: "tags" } as const;
+      const detailSummary = changedDetails.length ? `Edited the ${changedDetails.map((field) => detailNames[field]).join(", ").replace(/, ([^,]*)$/, " and $1")}` : "";
+      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? (detailSummary || "Task updated"), ...(changedDetails.length ? { previous: Object.fromEntries(changedDetails.map((field) => [field, current[field] ?? null])) } : {}), fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
       if (assigneeChanged) {
         await db.collection("notification_outbox").updateMany({ resourceType: "task", resourceId: id, userId: current.assigneeId, type: { $in: ["assignment", "deadline_warning", "reminder"] }, state: "pending" }, { $set: { state: "cancelled", updatedAt: now } }, { session });
-        await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: current.title, body: current.outcome, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:reassigned:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
+        await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: nextTitle, body: nextOutcome, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:reassigned:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
       }
+      // The assignee hears when someone else changes what the task asks of them; reminders take the new title.
+      if (changedDetails.length && nextAssignee !== actor.id && !assigneeChanged) {
+        await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: `Task updated: ${nextTitle}`.slice(0, 200), body: `${actor.name} ${detailSummary.charAt(0).toLowerCase()}${detailSummary.slice(1)}.`, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:details:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
+      }
+      if (input.title !== undefined && input.title !== current.title) await db.collection("reminders").updateMany({ taskId: id, $or: [{ kind: "task_start" }, { kind: { $exists: false }, repeatMinutes: 10 }], state: { $in: ["scheduled", "claimed"] } }, { $set: { message: `Start: ${input.title}`, updatedAt: now } }, { session });
       const terminalOrStarted = ["done", "cancelled"].includes(input.status ?? String(current.status)) || Boolean(current.startedAt || $set.startedAt);
       if (terminalOrStarted) {
         await db.collection("reminders").updateMany({ taskId: id, state: { $in: ["scheduled", "claimed"] } }, { $set: { state: "cancelled", cancelReason: "task_started_or_terminal", updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
@@ -129,11 +144,11 @@ export function workRoutes(database: Database): Router {
         const scheduledAt = latestStartAt > now ? latestStartAt : now;
         if (assigneeChanged || !reminder) {
           if (reminder) await db.collection("reminders").updateMany({ taskId: id, state: { $in: ["scheduled", "claimed"] } }, { $set: { state: "cancelled", cancelReason: "reassigned", updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" } }, { session });
-          await db.collection("reminders").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, taskId: id, kind: "task_start", message: `Start: ${current.title}`, scheduledAt, timezone: current.timezone, repeatMinutes: 10, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now }, { session });
+          await db.collection("reminders").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, taskId: id, kind: "task_start", message: `Start: ${nextTitle}`, scheduledAt, timezone: current.timezone, repeatMinutes: 10, state: "scheduled", sequence: 0, createdAt: now, updatedAt: now }, { session });
         } else if (["scheduled", "claimed"].includes(String(reminder.state))) {
           await db.collection("reminders").updateOne({ _id: reminder._id }, { $set: { scheduledAt, state: "scheduled", updatedAt: now }, $unset: { leaseUntil: "", claimedBy: "" }, $inc: { sequence: 1 } }, { session });
         }
-        if (deadlineRisk && (!current.deadlineRisk || assigneeChanged)) await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "deadline_warning", title: `Deadline risk: ${current.title}`, body: "Estimated work exceeds the time remaining before the deadline.", resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:deadline-risk:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
+        if (deadlineRisk && (!current.deadlineRisk || assigneeChanged)) await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "deadline_warning", title: `Deadline risk: ${nextTitle}`, body: "Estimated work exceeds the time remaining before the deadline.", resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:deadline-risk:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
       }
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.update", objectType: "task", objectId: id, ventureId: String(existing.ventureId), result: "success" }, session);
     });

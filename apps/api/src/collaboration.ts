@@ -21,6 +21,24 @@ async function publish(database: Database, value?: Record<string, unknown>) {
   catch (error) { console.error(JSON.stringify({ level: "error", event: "realtime.publish_failed", eventId: value.eventId, error: error instanceof Error ? error.message : "unknown" })); }
 }
 
+const MENTION = /(^|[^\w@])@([a-z0-9][a-z0-9._-]*)/gi;
+
+/** A notice's copy of a message, with each @handle of someone in the workspace written as @Name. */
+async function readableMentions(db: AppDb, workspaceId: string, body: string): Promise<string> {
+  // A handle at the end of a sentence may carry its full stop ("@ann-lee."), so look up both spellings.
+  const handles = [...new Set([...body.matchAll(MENTION)].flatMap((match) => { const handle = match[2]!.toLowerCase(); return [handle, handle.replace(/[._-]+$/, "")]; }))].slice(0, 40);
+  if (!handles.length) return body;
+  const people = await db.collection("users").find({ workspaceId, handle: { $in: handles } }, { projection: { handle: 1, name: 1 } }).toArray();
+  const names = new Map(people.map((person) => [String(person.handle).toLowerCase(), String(person.name)]));
+  return body.replace(MENTION, (all, before: string, handle: string) => {
+    const exact = names.get(handle.toLowerCase());
+    if (exact) return `${before}@${exact}`;
+    const trimmed = handle.replace(/[._-]+$/, "");
+    const name = names.get(trimmed.toLowerCase());
+    return name ? `${before}@${name}${handle.slice(trimmed.length)}` : all;
+  });
+}
+
 async function channelScope(db: AppDb, actor: Actor, channelId: string) {
   const channel = await db.collection("channels").findOne({ _id: channelId, workspaceId: actor.membership.workspaceId });
   if (!channel || inArchivedVenture(actor.membership, channel.ventureId) || (actor.membership.role !== "admin" && (!actor.membership.ventureIds.includes(String(channel.ventureId)) || !actor.membership.groupIds.includes(String(channel.groupId))))) throw new AppError(404, "NOT_FOUND", "Channel not found");
@@ -40,7 +58,7 @@ async function messageAttachments(db: AppDb, actor: Actor, ids: string[], scope:
   const byId = new Map(files.map((file) => [String(file._id), file]));
   return ids.map((id) => {
     const file = byId.get(id)!;
-    return messageAttachmentSchema.parse({ id, name: file.name, contentType: file.contentType, size: file.size });
+    return messageAttachmentSchema.parse({ id, name: file.name, contentType: file.contentType, size: file.size, ...(file.width && file.height ? { width: file.width, height: file.height } : {}), ...(file.hd === true ? { hd: true } : {}) });
   });
 }
 
@@ -111,7 +129,7 @@ async function createChannelMessage(database: Database, actor: Actor, channelId:
   const followers = [...levels].filter(([userId, level]) => level === "all" && userId !== actor.id && !mentioned.includes(userId)).map(([userId]) => userId);
   const followerRecipients = followers.length ? (await database.db.collection("memberships").find({ workspaceId: actor.membership.workspaceId, userId: { $in: followers }, status: "active", $or: [{ role: "admin" }, { ventureIds: channel.ventureId, groupIds: channel.groupId }] }, { projection: { userId: 1 } }).toArray()).map((row) => String(row.userId)) : [];
   const author = `${actor.name}${interfaceChannel === "mcp" ? " (via Claude)" : ""}`;
-  const preview = parsed.body.slice(0, 500) || (parsed.attachmentFileIds.length ? "Shared a file" : "New message");
+  const preview = mentionRecipients.length || followerRecipients.length ? (await readableMentions(database.db, actor.membership.workspaceId, parsed.body)).slice(0, 500) || (parsed.attachmentFileIds.length ? "Shared a file" : "New message") : "";
   const { attachmentFileIds: _attachmentFileIds, ...content } = parsed;
   const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId: channel.ventureId, groupId: channel.groupId, channelId, authorId: actor.id, ...content, attachments, ...(interfaceChannel === "mcp" ? { via: "claude" } : {}), createdAt: new Date() };
   let createdEvent: Record<string, unknown> | undefined;
@@ -212,12 +230,13 @@ export function collaborationRoutes(database: Database): Router {
     const attachments = await messageAttachments(db, actor, input.attachmentFileIds, { recipientId: input.recipientId });
     const { attachmentFileIds: _attachmentFileIds, ...content } = input;
     const viaClaude = req.interfaceChannel === "mcp";
+    const preview = (await readableMentions(db, actor.membership.workspaceId, input.body)).slice(0, 500) || "Shared a file";
     const message = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, dmKey: key, authorId: actor.id, ...content, attachments, ...(viaClaude ? { via: "claude" } : {}), createdAt: new Date() };
     let createdEvent: Record<string, unknown> | undefined;
     try { await atomic(database, async (session) => {
       await db.collection("messages").insertOne(message, { session });
       createdEvent = await event(db, actor, "direct_message.created", message, { audienceUserIds: [actor.id, input.recipientId] }, session);
-      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}${viaClaude ? " (via Claude)" : ""}`, body: input.body.slice(0, 500) || "Shared a file", resourceType: "message", resourceId: message._id, chatKind: "direct", chatId: actor.id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
+      await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: input.recipientId, type: "message", title: `Message from ${actor.name}${viaClaude ? " (via Claude)" : ""}`, body: preview, resourceType: "message", resourceId: message._id, chatKind: "direct", chatId: actor.id, idempotencyKey: `dm:${message._id}:${input.recipientId}`, state: "pending", attempts: 0, nextAttemptAt: new Date(), createdAt: new Date(), updatedAt: new Date() }, { session });
     }); } catch (error) {
       if ((error as { code?: number }).code !== 11000) throw error;
       const duplicate = await db.collection("messages").findOne({ workspaceId: actor.membership.workspaceId, authorId: actor.id, clientId: input.clientId, dmKey: key });

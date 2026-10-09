@@ -14,6 +14,8 @@ import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import { KnowledgeDocumentTile } from "@/components/studio/knowledge-document-tile";
 import { KnowledgeFileIcon } from "@/components/studio/knowledge-file-icon";
 import { MarkdownBody, MarkdownViewToggle, type MarkdownView } from "@/components/studio/knowledge-markdown";
+import { SkillsPanel, VentureContextPanel } from "@/components/studio/knowledge-agent-sections";
+import { ChatFilesPanel, TaskFilesPanel } from "@/components/studio/knowledge-shared-files";
 import { KnowledgeUploadDialog } from "@/components/studio/knowledge-upload-dialog";
 import { useStudio } from "@/lib/studio-store";
 
@@ -23,7 +25,9 @@ type DocumentDetail = Awaited<ReturnType<typeof getLiveDocument>>;
 type DocumentMetadata = Awaited<ReturnType<typeof listLiveDocuments>>["items"][number];
 type FileMetadata = Awaited<ReturnType<typeof listLiveFiles>>["items"][number];
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value));
-const SECTION_TABS = [{ key: "library", label: "Library" }, { key: "search", label: "Evidence search" }];
+const SECTION_TABS = [{ key: "library", label: "Library" }, { key: "context", label: "Venture context" }, { key: "skills", label: "Skills" }, { key: "tasks", label: "Tasks" }, { key: "chats", label: "Group chats" }, { key: "search", label: "Evidence search" }];
+type Section = "library" | "context" | "skills" | "tasks" | "chats" | "search";
+const SECTIONS = SECTION_TABS.map((tab) => tab.key) as Section[];
 /** Wraps the searched words in <mark> so a reader sees why a result matched. */
 function highlight(text: string, query: string) {
   const terms = query.trim().split(/\s+/).filter((term) => term.length >= 2).map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
@@ -88,9 +92,13 @@ function FileReader({ file, url, venture, onBack }: { file: FileMetadata; url: s
 export function LiveKnowledgeScreen() {
   const { activeVentureId: ventureId } = useStudio();
   const router = useRouter();
-  const requestedDocumentId = useSearchParams().get("doc");
-  const [view, setView] = useState<"library" | "search">("library");
-  const sectionMotion = useTabMotion(view, ["library", "search"]);
+  const searchParams = useSearchParams();
+  const requestedDocumentId = searchParams.get("doc");
+  // ?tab=skills&skill=… opens a section (and a skill) directly, as links from Claude do.
+  const requestedSection = SECTIONS.find((key) => key === searchParams.get("tab"));
+  const requestedSkillId = searchParams.get("skill") ?? undefined;
+  const [view, setView] = useState<Section>(requestedSection ?? "library");
+  const sectionMotion = useTabMotion(view, SECTIONS);
   const [packetMode, setPacketMode] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [q, setQ] = useState("");
@@ -365,7 +373,11 @@ export function LiveKnowledgeScreen() {
     {!selected && <><Notice tone="error" message={libraryErrorShown && error === loadError ? "" : error} onDismiss={() => setError("")} className="pb-4" /><Notice tone="success" message={result} onDismiss={() => setResult("")} autoDismissMs={5000} className="pb-4" /></>}
     {requestedDocumentId && missingDocumentId === requestedDocumentId && !selected && <Panel className="mb-4"><EmptyState variant="error" icon={FileQuestion} title={documentError ? "Couldn't open this document" : "This document is not available"} body={documentError || "It may have been removed, or you may not have access to it."} action={{ label: "Back to library", icon: ArrowLeft, onClick: () => router.replace("/knowledge/live") }} /></Panel>}
     {requestedDocumentId && !selected && missingDocumentId !== requestedDocumentId ? <Panel><SkeletonRows rows={5} label="Opening document" /></Panel> : selected ? <DocumentReader key={selected.document.id} detail={selected} venture={ventureName(selected.document.ventureId)} onBack={closeDocument} onDetails={() => setDetailOpen(true)} onEdit={canEdit ? () => router.push(`/knowledge/live/edit/${encodeURIComponent(selected.document.id)}`) : undefined} /> : <>
-      <SlidingTabs fitContent label="Knowledge sections" className="mb-4 bg-neutral-100 shadow-none" active={view} onChange={(key) => setView(key as "library" | "search")} tabs={SECTION_TABS} />
+      <SlidingTabs fitContent label="Knowledge sections" className="mb-4 bg-neutral-100 shadow-none" active={view} onChange={(key) => setView(key as Section)} tabs={SECTION_TABS} />
+      {session && view === "context" && <div key="context" className={sectionMotion.className} style={sectionMotion.style}><VentureContextPanel session={session} ventureId={ventureId} nameOf={nameOf} /></div>}
+      {session && view === "skills" && <div key="skills" className={sectionMotion.className} style={sectionMotion.style}><SkillsPanel session={session} ventureId={ventureId} nameOf={nameOf} initialSkillId={requestedSkillId} /></div>}
+      {view === "tasks" && <div key="tasks" className={sectionMotion.className} style={sectionMotion.style}><TaskFilesPanel ventureId={ventureId} nameOf={nameOf} /></div>}
+      {session && view === "chats" && <div key="chats" className={sectionMotion.className} style={sectionMotion.style}><ChatFilesPanel session={session} ventureId={ventureId} nameOf={nameOf} /></div>}
       {view === "library" && <div key="library" className={sectionMotion.className} style={sectionMotion.style}>{libraryEmpty && !status ? <EmptyState variant="page" icon={BookOpenText} tone="violet" title="Your library is empty"
         body={canCreate ? "Add a record, or drop files anywhere on this page to upload them." : "Records and files shared with you will appear here."}
         action={canCreate ? { label: "New record", icon: Plus, onClick: startCreate } : undefined}

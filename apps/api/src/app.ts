@@ -12,6 +12,7 @@ import { workRoutes } from "./routes/work.js";
 import { collaborationRoutes } from "./collaboration.js";
 import { commandRoutes } from "./routes/commands.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
+import { agentContextRoutes } from "./routes/agent-context.js";
 import { fileRoutes, localObjectRoutes } from "./routes/files.js";
 import { patRoutes } from "./routes/pats.js";
 import { adminRoutes, invitationAcceptanceRoutes } from "./routes/admin.js";
@@ -59,6 +60,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", collaborationRoutes(database));
   app.use("/v1", commandRoutes(database));
   app.use("/v1", knowledgeRoutes(database));
+  app.use("/v1", agentContextRoutes(database));
   app.use("/v1", fileRoutes(database.db, store, localStore));
   app.use("/v1", patRoutes(database.db, config));
   app.use("/v1", adminRoutes(database, config));

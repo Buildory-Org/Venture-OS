@@ -7,3 +7,4 @@ export * from "./knowledge.js";
 export * from "./dashboard.js";
 export * from "./sales.js";
 export * from "./calendar.js";
+export * from "./agent-context.js";

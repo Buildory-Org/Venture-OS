@@ -6,6 +6,9 @@ export const messageAttachmentSchema = z.object({
   name: z.string().min(1).max(255),
   contentType: z.string().min(1).max(120),
   size: z.number().int().min(1).max(25 * 1024 * 1024),
+  width: z.number().int().min(1).max(20_000).optional(),
+  height: z.number().int().min(1).max(20_000).optional(),
+  hd: z.literal(true).optional(),
 });
 
 export const messageSchema = z.object({

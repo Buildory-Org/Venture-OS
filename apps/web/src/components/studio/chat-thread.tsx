@@ -1,11 +1,12 @@
 "use client";
 
 import type { ChatAttachment } from "@/components/studio/chat-attachments";
-import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { Fragment, useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
 import type { Message } from "@venture-studio/contracts";
 import { ChevronDown, Reply } from "@/components/ui/icons";
 import { prefersReducedMotion, replayAnimation } from "@/lib/motion";
+import { mentionName, type MentionNames } from "@/lib/mention-names";
 
 /** A message shown the moment it is sent; it becomes the real message (same row, no jump) once the server confirms it. */
 export type PendingMessage = { clientId: string; conversationId: string; body: string; threadRootId?: string; attachmentFileIds: string[]; attachments?: ChatAttachment[]; createdAt: string; state: "sending" | "failed"; error?: string };
@@ -36,12 +37,17 @@ export function DaySeparator({ iso }: { iso: string }) {
   return <div role="separator" aria-label={dayLabel(iso)} className="flex items-center gap-3 py-1 text-[10px] font-semibold uppercase tracking-[.12em] text-[var(--color-neutral-400)]"><span className="h-px flex-1 bg-[var(--color-neutral-100)]" />{dayLabel(iso)}<span className="h-px flex-1 bg-[var(--color-neutral-100)]" /></div>;
 }
 
-/** Message text with @mentions drawn as pills. */
-export function MessageText({ body, mine, className }: { body: string; mine: boolean; className?: string }) {
+/** Message text with @mentions drawn as pills, showing the person's name (their handle on hover). */
+export function MessageText({ body, mine, className, names }: { body: string; mine: boolean; className?: string; names?: MentionNames }) {
   const parts = body.split(/(@[a-z0-9][a-z0-9._-]*)/gi);
-  return <p className={className}>{parts.map((part, index) => index % 2
-    ? <span key={index} className={clsx("rounded px-0.5 font-semibold", mine ? "bg-white/20 text-white" : "bg-[var(--color-primary-100)] text-[var(--color-primary-700)]")}>{part}</span>
-    : part)}</p>;
+  return <p className={className}>{parts.map((part, index) => {
+    if (!(index % 2)) return part;
+    const found = names ? mentionName(part.slice(1), names) : null;
+    return <Fragment key={index}>
+      <span title={found ? part.slice(0, part.length - found.rest.length) : undefined} className={clsx("rounded px-0.5 font-semibold", mine ? "bg-white/20 text-white" : "bg-[var(--color-primary-100)] text-[var(--color-primary-700)]")}>{found ? `@${found.name}` : part}</span>
+      {found?.rest}
+    </Fragment>;
+  })}</p>;
 }
 
 /** Applies a reaction toggle locally so the chip responds before the server does. */

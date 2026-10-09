@@ -406,6 +406,50 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - Independent review: its four medium and seven low findings are fixed.
     - In the browser: both people's views of a request and a suggestion, granting and removing the permission, the button and destination labels, and notices arriving through the worker.
     - Checks: web typecheck, lint, and the production build.
+- [x] Mentions read as names (2026-10-09), built and tested locally, not yet live.
+  - **In chat:** mentions show as "@Adarsh Singh" instead of "@adarsh-singh-52aa2ced", in channels and direct messages, in reply quotes and pinned messages, and when copying text. Hovering shows the handle.
+  - **Writing:** picking someone from the @ list writes their name; it is still sent as their handle, so mentions and notices work as before. When two people share a name, the second is written by handle.
+  - **Notices:** notifications, push alerts, and the new-message notch show names too.
+  - **Verified:** in the browser (channel and direct message, both people notified, stored text still uses handles); the backend smoke passes; web typecheck, lint, and the production build pass.
+- [x] Photos like WhatsApp: smaller by default, HD on request, shown inside the chat (2026-10-09), built and tested locally, not yet live.
+  - **Standard quality:** the browser shrinks a photo to fit 1080p (either way round: at most 1920 px long and 1080 px short) and saves it as WebP (JPEG where the browser can't write WebP). This also drops location and other metadata.
+    - Example: a 4 MB phone photo becomes about 150–350 KB.
+    - Left as they are: animations (GIF, animated PNG or WebP), small images, and anything that wouldn't come out meaningfully smaller.
+  - **HD:** an "HD" switch in the chat tray (and an "Upload in HD" box for task attachments) sends the original untouched. Switching after picking re-uploads the photos. It turns itself off after every message or upload.
+  - **In chat:**
+    - Images show inside the message at their own shape. Several form a grid with "+N", and HD originals carry a badge.
+    - Clicking opens a full-screen viewer with arrows or ← →, download, and Escape or a click outside to close.
+    - Thumbnails load as they come into view, a few at a time, retrying while the server is busy. Messages still sending show their photos too.
+  - **Verified:**
+    - In the browser: compression sizes, the HD switch both ways, grid, viewer, keyboard and focus, phone width, task uploads, and no message menu from the viewer.
+    - An API test covers image sizes on uploads and messages; the backend smoke, web typecheck, lint, and production build pass.
+    - An independent review's findings are fixed.
+- [x] Task details editable by their creator and admins (2026-10-09), built and tested locally, not yet live.
+  - **What:** the title, outcome, definition of done, evidence requirement, and tags, through "Edit details" on the task or Claude's update_task. Not once a task is done or cancelled.
+  - **Effects:**
+    - The activity log names what changed (and keeps the old values).
+    - The assignee is told when someone else edits.
+    - Start reminders take the new title.
+    - A reassignment in the same change uses the new title.
+  - **Verified:** API tests (creator, admin, lead and assignee refused, mixed changes, finished tasks, Claude's tool); in the browser, editing as an admin with the assignee's notice.
+- [x] Knowledge tabs: Venture context, Skills, Tasks, and Group chats, with Claude reading the venture context first (2026-10-09), built and tested locally, not yet live.
+  - **Venture context:**
+    - Several Markdown files per venture, written in the app or uploaded in bulk. Admins and the venture's head edit them; everyone in the venture reads them.
+    - Limits: up to 100 files and 500,000 characters per venture.
+  - **Skills:**
+    - Instructions for kinds of work, either workspace-wide (every venture) or one venture's own.
+    - Workspace skills need the share-with-all-ventures permission; a venture's need its head or an admin.
+    - Moving a skill between scopes needs both. Claude skill files (`name`/`description` front matter) upload as they are.
+  - **Tasks:** every task attachment I can open, newest first, filtered by type, linked to its task.
+  - **Group chats:** pick a group (and optionally a channel) to see everything shared there, newest first, filtered by type, with the photo viewer.
+  - **Claude:**
+    - The connector tells Claude to ask which venture you're working on, then read all of that venture's context (read_venture_context, in parts of about 10,000 tokens) before acting.
+    - Until it has read one to the end, its other tools carry a reminder.
+    - list_skills and get_skill let it follow a matching skill. The context and skills are guidance and never override what the user asks.
+  - **Verified:**
+    - API tests cover permissions, scope moves, limits, filters, cursors, Claude's tools and the reminder, and the splitting into parts. The backend smoke passes.
+    - In the browser: uploading, editing, moving a skill, and the Tasks and Group chats tabs with filters. Web typecheck, lint, and the production build pass.
+    - An independent review's findings are fixed. A permanently deleted venture takes its context and skills with it, with a recovery copy.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

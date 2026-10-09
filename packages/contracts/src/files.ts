@@ -1,20 +1,25 @@
 import { z } from "zod";
 import { cursorQuerySchema, idSchema, isoDateSchema } from "./common.js";
 
+/** An image's pixel size (so chat can reserve its space before it loads) and whether it was sent in HD, untouched. */
+const imageFields = { width: z.number().int().min(1).max(20_000).optional(), height: z.number().int().min(1).max(20_000).optional(), hd: z.literal(true).optional() };
+
 export const fileSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema.optional(), groupId: idSchema.optional(), taskId: idSchema.optional(), recipientId: idSchema.optional(),
   ownerId: idSchema, name: z.string().min(1).max(255), contentType: z.string().min(1).max(120),
   size: z.number().int().min(1).max(25 * 1024 * 1024), objectKey: z.string(),
   status: z.enum(["pending", "ready", "abandoned", "deleted"]),
-  createdAt: isoDateSchema, completedAt: isoDateSchema.optional(),
+  createdAt: isoDateSchema, completedAt: isoDateSchema.optional(), ...imageFields,
 });
 export const groupFileSchema = fileSchema.omit({ objectKey: true });
 
 export const uploadIntentSchema = z.object({
   ventureId: idSchema.optional(), groupId: idSchema.optional(), taskId: idSchema.optional(), recipientId: idSchema.optional(), name: z.string().trim().min(1).max(255),
   contentType: z.enum(["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/markdown", "text/plain", "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm", "video/quicktime", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/webm", "audio/wav"]),
-  size: z.number().int().min(1).max(25 * 1024 * 1024),
+  size: z.number().int().min(1).max(25 * 1024 * 1024), ...imageFields,
 }).refine((value) => Boolean(value.ventureId) !== Boolean(value.recipientId), { message: "Choose a venture or a direct-message recipient" })
+  .refine((value) => (value.width === undefined) === (value.height === undefined), { message: "Give an image's width and height together", path: ["width"] })
+  .refine((value) => value.contentType.startsWith("image/") || (value.width === undefined && value.hd === undefined), { message: "Only images have a pixel size or HD", path: ["contentType"] })
   .refine((value) => !value.recipientId || (!value.groupId && !value.taskId), { message: "Direct-message uploads cannot have a group or task" })
   .refine((value) => !value.taskId || Boolean(value.groupId), { message: "Task attachments require a group", path: ["groupId"] });
 export const uploadCompleteSchema = z.object({ etag: z.string().min(1).max(200) });

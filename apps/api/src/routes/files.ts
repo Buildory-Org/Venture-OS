@@ -37,7 +37,7 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
 
   function rememberThumbnail(key: string, bytes: Buffer) {
     if (bytes.length > 512 * 1024) return;
-    while (thumbnailCache.size >= 64 || thumbnailCacheBytes + bytes.length > 12 * 1024 * 1024) {
+    while (thumbnailCache.size >= 256 || thumbnailCacheBytes + bytes.length > 32 * 1024 * 1024) {
       const oldest = thumbnailCache.keys().next().value;
       if (!oldest) break;
       thumbnailCacheBytes -= thumbnailCache.get(oldest)!.bytes.length;
@@ -197,8 +197,8 @@ export function fileRoutes(db: AppDb, store: ObjectStore, localStore: LocalObjec
         pending = withThumbnailSlot(async () => {
           const original = await fileStore.read(String(file.objectKey), 25 * 1024 * 1024);
           try {
-            return await sharp(original, { limitInputPixels: 32_000_000, animated: false, failOn: "error" })
-              .rotate().resize(512, 384, { fit: "inside", withoutEnlargement: true }).webp({ quality: 76, effort: 4 }).toBuffer();
+            return await sharp(original, { limitInputPixels: 50_000_000, animated: false, failOn: "error" })
+              .rotate().resize(720, 720, { fit: "inside", withoutEnlargement: true }).webp({ quality: 76, effort: 4 }).toBuffer();
           } catch {
             throw new AppError(422, "BAD_REQUEST", "This image could not be previewed");
           }

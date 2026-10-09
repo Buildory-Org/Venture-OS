@@ -22,6 +22,7 @@ import { useStudio } from "@/lib/studio-store";
 import { ChatSendIcon, playChatSound, prepareChatAudio, useChatMessageArrival } from "@/components/studio/chat-message-effects";
 import { ChatMessageMenu } from "@/components/studio/chat-message-menu";
 import { useActiveChatPresence } from "@/lib/chat-presence";
+import { mentionsIn, useMentionNames, withMentionHandles, withMentionNames } from "@/lib/mention-names";
 import { autosize, continuesGroup, DaySeparator, ViaClaude, isComposing, jumpToMessage, MessageText, NewMessagesPill, PendingStatus, QuickReactionBar, ReactionChips, startsNewDay, timeLabel, toggledReaction, useChatScroll, type PendingMessage } from "@/components/studio/chat-thread";
 import { Notice } from "@/components/studio/primitives";
 import { toast } from "@/components/ui/toast";
@@ -165,6 +166,9 @@ export function LiveChannelsScreen() {
   const arrived = useChatMessageArrival(selectedId, messages, session?.user.id, !messagesLoading);
   useEffect(() => { activeConversationId.current = selectedId; }, [selectedId]);
   const [directory, setDirectory] = useState<Record<string, string>>({});
+  const mentionNames = useMentionNames();
+  // Mentions picked from the list read as "@Name" while writing; they are sent as "@handle".
+  const chosenMentions = useRef(new Map<string, string>());
   const sessionUserId = session?.user.id;
   useEffect(() => {
     if (!sessionUserId) return;
@@ -190,7 +194,11 @@ export function LiveChannelsScreen() {
 
   function chooseMention(member: Member) {
     if (!mentionRange || !member.handle) return;
-    const replacement = `@${member.handle} `;
+    // Two people with the same name: the second is written by handle, so each mention stays unambiguous.
+    const taken = chosenMentions.current.get(member.name);
+    const byName = !taken || taken === member.handle;
+    if (byName) chosenMentions.current.set(member.name, member.handle);
+    const replacement = `@${byName ? member.name : member.handle} `;
     const next = `${composer.slice(0, mentionRange.start)}${replacement}${composer.slice(mentionRange.end)}`;
     const caret = mentionRange.start + replacement.length;
     setComposer(next); setMentionRange(null); clientId.current = null;
@@ -328,7 +336,7 @@ export function LiveChannelsScreen() {
   }
 
   function resetConversation(channelId: string) {
-    setSelectedId(channelId); setMessages([]); setCursor(undefined); setMessagesLoading(Boolean(channelId)); setMessagesError(""); setPreview(null); setReplyTo(null); setComposer(""); setMentionRange(null); setSearchOpen(false); setResult(""); setError(""); clientId.current = null;
+    setSelectedId(channelId); setMessages([]); setCursor(undefined); setMessagesLoading(Boolean(channelId)); setMessagesError(""); setPreview(null); setReplyTo(null); setComposer(""); chosenMentions.current.clear(); setMentionRange(null); setSearchOpen(false); setResult(""); setError(""); clientId.current = null;
     requestAnimationFrame(() => autosize(composerRef.current));
   }
 
@@ -373,7 +381,7 @@ export function LiveChannelsScreen() {
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
-    const body = composer.trim();
+    const body = withMentionHandles(composer.trim(), chosenMentions.current);
     if (!selectedId || busy || (!body && !attachments.items.length) || attachments.uploading) return;
     prepareChatAudio();
     setError(""); setResult(""); setPreview(null);
@@ -388,7 +396,7 @@ export function LiveChannelsScreen() {
     }
     // The message appears at once (faded) and becomes real when the server confirms it.
     submit({ clientId: clientId.current ?? crypto.randomUUID(), conversationId: selectedId, body, attachmentFileIds: attachments.items.map((file) => file.id), attachments: attachments.items, ...(replyTo ? { threadRootId: replyTo.id } : {}), createdAt: new Date().toISOString(), state: "sending" });
-    clientId.current = null; setComposer(""); setMentionRange(null); setReplyTo(null); attachments.clear();
+    clientId.current = null; setComposer(""); chosenMentions.current.clear(); setMentionRange(null); setReplyTo(null); attachments.clear();
     requestAnimationFrame(() => autosize(composerRef.current));
   }
 
@@ -397,7 +405,7 @@ export function LiveChannelsScreen() {
     setPending((items) => [...items.filter((item) => item.clientId !== entry.clientId), { ...entry, state: "sending", error: undefined }]);
     void (async () => {
       try {
-        const handles = [...new Set([...entry.body.matchAll(/(?:^|[^\w@])@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase()))];
+        const handles = [...new Set([...entry.body.matchAll(/(?:^|[^\w@])@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase().replace(/[._-]+$/, "")))];
         const groupId = session?.hierarchy.ventures.flatMap((item) => item.groups).find((item) => item.channels.some((channel) => channel.id === channelId))?.id;
         const resolved = await Promise.all(handles.map(async (handle) => {
           const page = await listLiveMembers({ groupId, handle, limit: 1 });
@@ -419,7 +427,15 @@ export function LiveChannelsScreen() {
   function editPending(entry: PendingMessage) {
     if (composer.trim() || attachments.items.length) { toast({ tone: "info", title: "Finish your current draft first", body: "Send or clear what you're writing, then edit the message that failed." }); return; }
     setPending((items) => items.filter((item) => item.clientId !== entry.clientId));
-    setComposer(entry.body);
+    // Mentions read as names again (a name already picked for someone else stays a handle).
+    const editable = new Map<string, string>();
+    for (const [name, handle] of mentionsIn(entry.body, mentionNames)) {
+      const taken = chosenMentions.current.get(name);
+      if (taken && taken !== handle) continue;
+      chosenMentions.current.set(name, handle);
+      editable.set(handle.toLowerCase(), name);
+    }
+    setComposer(withMentionNames(entry.body, editable));
     clientId.current = entry.clientId;
     if (entry.attachments?.length) attachments.restore(entry.attachments);
     const root = entry.threadRootId ? messages.find((item) => item.id === entry.threadRootId) : undefined;
@@ -580,7 +596,7 @@ export function LiveChannelsScreen() {
       const replyCount = item.threadRootId ? 0 : messages.filter((message) => message.threadRootId === item.id).length;
       const actions = [
         ...(canPost ? [{ label: "Reply", onSelect: () => startReply(item) }] : []),
-        ...(item.body ? [{ label: "Copy text", onSelect: () => void copyText(item.body) }] : []),
+        ...(item.body ? [{ label: "Copy text", onSelect: () => void copyText(withMentionNames(item.body, mentionNames)) }] : []),
         { label: item.savedByMe ? "Remove from saved" : "Save message", onSelect: () => void updateMessage(item, "save") },
         ...(lead ? [{ label: item.pinned ? "Unpin message" : "Pin message", onSelect: () => void updateMessage(item, "pin") }] : []),
         ...(canPost ? [{ label: (item.myReactions ?? []).includes("👍") ? "Remove 👍" : "React 👍", onSelect: () => void react(item, "👍") }] : []),
@@ -590,10 +606,10 @@ export function LiveChannelsScreen() {
         <div className={clsx("relative max-w-[min(78%,620px)]", mine && "text-right")}>
           {canPost && <QuickReactionBar mine={mine} onReact={(emoji) => void react(item, emoji)} onReply={() => startReply(item)} />}
           {!grouped && <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : memberName(item.authorId)}</span>{item.via === "claude" && <ViaClaude />}<time dateTime={item.createdAt} title={stamp(item.createdAt)} className="text-[var(--color-neutral-400)]">{timeLabel(item.createdAt)}</time>{item.pinned && <span className="vso-fade-enter inline-flex items-center gap-0.5 text-[var(--color-primary-600)]"><Pin size={11} aria-hidden="true" />Pinned</span>}{item.savedByMe && <span className="vso-fade-enter inline-flex items-center gap-0.5 text-[var(--color-neutral-500)]"><Bookmark size={11} aria-hidden="true" />Saved</span>}{replyCount > 0 && <span className="text-[var(--color-neutral-500)]">{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>}</div>}
-          {item.threadRootId && <button type="button" onClick={() => jumpTo(item.threadRootId!)} title="Show the original message" className={clsx("mb-1 block max-w-full truncate border-l-2 border-[var(--color-primary-300)] px-2 text-left text-[10px] text-[var(--color-neutral-500)] transition-colors duration-150 hover:text-[var(--color-primary-700)]", mine && "ml-auto border-l-0 border-r-2 text-right")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : memberName(threadRoot.authorId)}: ${threadRoot.body.slice(0, 80) || "an attachment"}` : "an earlier message"}</button>}
+          {item.threadRootId && <button type="button" onClick={() => jumpTo(item.threadRootId!)} title="Show the original message" className={clsx("mb-1 block max-w-full truncate border-l-2 border-[var(--color-primary-300)] px-2 text-left text-[10px] text-[var(--color-neutral-500)] transition-colors duration-150 hover:text-[var(--color-primary-700)]", mine && "ml-auto border-l-0 border-r-2 text-right")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : memberName(threadRoot.authorId)}: ${withMentionNames(threadRoot.body, mentionNames).slice(0, 80) || "an attachment"}` : "an earlier message"}</button>}
           <ChatMessageMenu actions={actions} label={`Actions for message from ${mine ? "you" : memberName(item.authorId)}`}>
-            {item.body && <MessageText body={item.body} mine={mine} className={bubbleClass(mine, mentionsMe)} />}
-            <MessageAttachmentList files={messageAttachments(item)} />
+            {item.body && <MessageText body={item.body} mine={mine} names={mentionNames} className={bubbleClass(mine, mentionsMe)} />}
+            <MessageAttachmentList files={messageAttachments(item)} mine={mine} />
           </ChatMessageMenu>
           <ReactionChips message={item} mine={mine} disabled={!canPost} onToggle={(emoji) => void react(item, emoji)} />
         </div>
@@ -605,8 +621,8 @@ export function LiveChannelsScreen() {
         <span className="mt-5 shrink-0"><ChatAvatar id={session?.user.id ?? ""} name={session?.user.name ?? "You"} size={25} /></span>
         <div className="relative max-w-[min(78%,620px)] text-right">
           <div className="mb-1 flex flex-row-reverse items-center gap-2 text-[10px]"><span className="font-semibold">You</span><time className="text-[var(--color-neutral-400)]">{timeLabel(entry.createdAt)}</time></div>
-          {entry.body && <MessageText body={entry.body} mine className={clsx(bubbleClass(true, false), "transition-opacity duration-200", entry.state === "sending" ? "opacity-60" : "opacity-90 outline outline-2 outline-offset-2 outline-[var(--color-danger)]")} />}
-          {entry.attachmentFileIds.length > 0 && <p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{entry.attachmentFileIds.length} attachment{entry.attachmentFileIds.length === 1 ? "" : "s"}</p>}
+          {entry.body && <MessageText body={entry.body} mine names={mentionNames} className={clsx(bubbleClass(true, false), "transition-opacity duration-200", entry.state === "sending" ? "opacity-60" : "opacity-90 outline outline-2 outline-offset-2 outline-[var(--color-danger)]")} />}
+          {entry.attachments?.length ? <div className={clsx("transition-opacity duration-200", entry.state === "sending" && "opacity-70")}><MessageAttachmentList files={entry.attachments} mine /></div> : entry.attachmentFileIds.length > 0 && <p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{entry.attachmentFileIds.length} attachment{entry.attachmentFileIds.length === 1 ? "" : "s"}</p>}
           <PendingStatus pending={entry} onRetry={() => submit(entry)} onEdit={() => editPending(entry)} onDiscard={() => setPending((items) => items.filter((item) => item.clientId !== entry.clientId))} />
         </div>
       </article>);
@@ -620,7 +636,7 @@ export function LiveChannelsScreen() {
     {group ? <>
       <div className="mt-7 flex items-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--color-primary-100)] text-[var(--color-primary-600)]"><Hash size={22} /></span><div className="min-w-0"><h2 className="truncate text-sm font-semibold">{group.name}</h2><p className="mt-1 truncate text-[11px] text-[var(--color-neutral-400)]">{venture?.name}{selected ? ` · #${selected.name}` : ""}</p></div></div>
       <GroupPeople key={group.id} ventureId={venture?.id ?? ""} ventureName={venture?.name ?? ""} groupId={group.id} groupName={group.name} members={members} loading={membersLoading} error={membersError} canManage={canCreate} onOpen={() => setWorkspaceTab(null)} onRefresh={() => setMemberRevision((value) => value + 1)} />
-      <div className="mt-7 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Pinned messages</p>{messages.filter((item) => item.pinned).slice(0, 3).map((item) => <button type="button" key={item.id} onClick={() => jumpTo(item.id)} className="mt-2 line-clamp-3 w-full rounded-lg bg-[var(--color-neutral-50)] p-3 text-left text-[11px] leading-5 text-[var(--color-neutral-600)] transition-colors duration-150 hover:bg-[var(--color-primary-50)]">{item.body}</button>)}{!messages.some((item) => item.pinned) && <EmptyState variant="compact" icon={Pin} title="No pinned messages yet" body={lead ? "Pin one from a message's menu." : "Pinned messages appear here."} className="mt-2" />}</div>
+      <div className="mt-7 border-t border-[var(--color-neutral-100)] pt-5"><p className="text-xs font-semibold">Pinned messages</p>{messages.filter((item) => item.pinned).slice(0, 3).map((item) => <button type="button" key={item.id} onClick={() => jumpTo(item.id)} className="mt-2 line-clamp-3 w-full rounded-lg bg-[var(--color-neutral-50)] p-3 text-left text-[11px] leading-5 text-[var(--color-neutral-600)] transition-colors duration-150 hover:bg-[var(--color-primary-50)]">{withMentionNames(item.body, mentionNames)}</button>)}{!messages.some((item) => item.pinned) && <EmptyState variant="compact" icon={Pin} title="No pinned messages yet" body={lead ? "Pin one from a message's menu." : "Pinned messages appear here."} className="mt-2" />}</div>
       <div className="mt-7 space-y-2"><button type="button" onClick={() => openWorkspace("kanban")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[var(--color-primary-100)] px-3 text-left text-xs font-semibold text-[var(--color-primary-700)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-200)] active:scale-[0.98]"><Columns3 size={16} />Kanban</button><button type="button" onClick={() => openWorkspace("attachments")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[var(--color-neutral-100)] px-3 text-left text-xs font-semibold text-[var(--color-neutral-700)]"><FolderOpen size={16} />Attachments</button><button type="button" onClick={() => openWorkspace("saved")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[var(--color-neutral-100)] px-3 text-left text-xs font-semibold text-[var(--color-neutral-700)]"><Bookmark size={16} />Saved messages</button><button type="button" onClick={() => openWorkspace("knowledge")} className="flex min-h-10 w-full items-center gap-2 rounded-lg bg-[var(--color-neutral-100)] px-3 text-left text-xs font-semibold text-[var(--color-neutral-700)]"><BookOpenText size={16} />Knowledge</button></div>
     </> : <EmptyState variant="compact" icon={noAccess ? UserLock : Layers3} title={noAccess ? "You're not in a group yet" : "No group selected"} body={noAccess ? "Ask a workspace admin to add you." : "Choose a group to see its details."} className="mt-6" />}
     </div>
@@ -653,7 +669,7 @@ export function LiveChannelsScreen() {
       {dropActive && <div aria-hidden="true" className="vso-backdrop pointer-events-none absolute inset-3 z-30 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--color-primary-400)] bg-[var(--color-primary-50)]/90"><p className="vso-enter-modal text-sm font-semibold text-[var(--color-primary-800)]">Drop files to attach them</p></div>}
       {selected && <form onSubmit={send} className="absolute inset-x-4 bottom-4 z-10 sm:inset-x-6">
         {preview && <section aria-label="Review command" data-side="top" data-align="left" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPreview(null); composerRef.current?.focus(); } }} className="vso-enter-popover mb-2 rounded-xl border border-[var(--color-primary-200)] bg-[var(--color-primary-50)] px-4 py-3 shadow-e3"><p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-primary-700)]">Review command</p><p className="mt-1 text-xs font-semibold">{preview.command.kind === "assign" ? `Assign “${preview.command.title}” to @${preview.command.assignee}` : `Notify @${preview.command.recipient}: “${preview.command.message}”`}</p><p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{preview.command.kind === "assign" ? `Due ${stamp(preview.command.dueAt)} · ${preview.command.estimatedMinutes} min` : `At ${stamp(preview.command.scheduledAt)}`}</p>{preview.warnings.map((warning) => <p key={warning} className="mt-1 text-[10px] text-amber-700">{warning}</p>)}<div className="mt-2 flex gap-2"><button type="button" autoFocus disabled={busy} onClick={execute} className="min-h-8 rounded-lg bg-[var(--color-primary-600)] px-3 text-[11px] font-semibold text-white transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-700)] active:scale-[0.97] disabled:opacity-60">{busy ? "Working…" : "Confirm command"}</button><button type="button" onClick={() => { setPreview(null); composerRef.current?.focus(); }} className="min-h-8 rounded-lg px-3 text-[11px] font-semibold text-[var(--color-neutral-500)] transition-colors duration-150 hover:bg-white/70">Cancel</button></div></section>}
-        <div data-open={Boolean(replyTo)} className="vso-collapse"><div><div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="min-w-0 truncate"><span className="font-semibold">Replying to {replyShown ? replyShown.authorId === session?.user.id ? "yourself" : memberName(replyShown.authorId) : ""}</span>{replyShown ? `: ${replyShown.body.slice(0, 80) || "an attachment"}` : ""}</span><button type="button" tabIndex={replyTo ? 0 : -1} aria-label="Cancel reply" title="Cancel reply (Esc)" onClick={() => { setReplyTo(null); composerRef.current?.focus(); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-primary-100)]"><X size={13} /></button></div></div></div>
+        <div data-open={Boolean(replyTo)} className="vso-collapse"><div><div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="min-w-0 truncate"><span className="font-semibold">Replying to {replyShown ? replyShown.authorId === session?.user.id ? "yourself" : memberName(replyShown.authorId) : ""}</span>{replyShown ? `: ${withMentionNames(replyShown.body, mentionNames).slice(0, 80) || "an attachment"}` : ""}</span><button type="button" tabIndex={replyTo ? 0 : -1} aria-label="Cancel reply" title="Cancel reply (Esc)" onClick={() => { setReplyTo(null); composerRef.current?.focus(); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-primary-100)]"><X size={13} /></button></div></div></div>
         <AttachmentTray attachments={attachments} />
         <div className="relative">
           {slashMatches.length > 0 && !preview && <div id="channel-slash-options" role="listbox" aria-label="Commands" className="absolute bottom-full left-0 z-20 mb-2 w-[min(360px,100%)] rounded-xl border border-[var(--color-neutral-200)] bg-white p-1.5 shadow-e3">{slashMatches.map((item, index) => <button id={`slash-option-${index}`} key={item.command} type="button" role="option" aria-selected={index === slashIndex % slashMatches.length} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSlash(item.command)} className={clsx("flex w-full flex-col rounded-lg px-3 py-2 text-left text-[11px]", index === slashIndex % slashMatches.length ? "bg-[var(--color-primary-100)] text-[var(--color-primary-800)]" : "text-[var(--color-neutral-700)] hover:bg-[var(--color-neutral-100)]")}><span className="font-semibold">{item.command} <span className="font-normal text-[var(--color-neutral-400)]">{item.hint}</span></span><span className="text-[10px] text-[var(--color-neutral-500)]">{item.detail}</span></button>)}</div>}

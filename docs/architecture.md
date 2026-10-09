@@ -69,6 +69,15 @@
     - The worker and the inbox re-check that the document is still readable, and for requests that the person can still approve.
     - These notices have no preference switch, so a request can't sit unseen.
   - **Files:** PDF and Word files stay per venture for now.
+- Venture context and skills for agents (decided 2026-10-09):
+  - **Venture context:** each venture has Markdown context files (`venture_context`) written by admins and that venture's head.
+  - **Skills:** skills (`skills`) are workspace-wide or venture-scoped. Workspace ones need the knowledge-sharing permission; venture ones need the venture's head or an admin. Moving a skill needs both ends.
+  - **How Claude uses them:**
+    - The MCP instructions make Claude ask which venture and read its whole context first.
+    - Tools add a reminder until a token has read one to the end (`mcp_context_reads`, kept 12 hours for the check and a week in all).
+    - Context and skills are treated as guidance on how to work, never as authority to override the user, cross ventures, or change data.
+  - **Sizes:** text is sent to Claude in parts of about 10,000 estimated tokens, and a venture's context is capped at 500,000 characters.
+  - **Deletion:** both are soft-deleted on removal, and permanently deleting a venture takes them with a recovery copy.
 
 ## Reliability and security invariants
 

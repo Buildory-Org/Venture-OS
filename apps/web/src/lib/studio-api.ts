@@ -1,6 +1,16 @@
 import { localDevUserId } from "@/lib/dev-identity";
 import { validationSummary } from "@/lib/errors";
 import {
+  createSkillSchema,
+  createVentureContextSchema,
+  sharedAttachmentPageSchema,
+  skillListSchema,
+  skillSchema,
+  updateSkillSchema,
+  updateVentureContextSchema,
+  ventureContextListSchema,
+  ventureContextSchema,
+  type AttachmentKind,
   calendarEventSchema,
   calendarFeedSchema,
   calendarRangeSchema,
@@ -247,10 +257,11 @@ function signedObjectTarget(raw: string) {
   return url.href;
 }
 
-export async function uploadLiveFile(file: File, scope: UploadScope, onProgress?: (percent: number, phase: "uploading" | "finalizing") => void) {
+/** `image` carries a picture's pixel size and whether it is the HD original (see prepareUpload). */
+export async function uploadLiveFile(file: File, scope: UploadScope, onProgress?: (percent: number, phase: "uploading" | "finalizing") => void, image: { width?: number; height?: number; hd?: true } = {}) {
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
   const contentType = file.type || fileTypes.get(extension) || "";
-  const intent = uploadIntentSchema.parse({ ...scope, name: file.name, contentType, size: file.size });
+  const intent = uploadIntentSchema.parse({ ...scope, name: file.name, contentType, size: file.size, ...(contentType.startsWith("image/") ? image : {}) });
   const body = await request("/v1/uploads", { method: "POST", body: JSON.stringify(intent) });
   if (!body || typeof body !== "object" || !("data" in body) || !body.data || typeof body.data !== "object" || !("file" in body.data) || !("uploadUrl" in body.data) || typeof body.data.uploadUrl !== "string") throw new StudioApiError("The upload intent response was invalid.");
   const pending = fileSchema.parse(body.data.file);
@@ -299,7 +310,7 @@ export async function loadLiveImageThumbnail(id: string, signal?: AbortSignal) {
     signal,
     headers: devUserId ? { "x-dev-user-id": devUserId } : undefined,
   });
-  if (!response.ok) throw new StudioApiError(`The image thumbnail returned HTTP ${response.status}.`);
+  if (!response.ok) throw new StudioApiError(`The image thumbnail returned HTTP ${response.status}.`, `HTTP_${response.status}`);
   return response.blob();
 }
 
@@ -395,7 +406,7 @@ export async function listLiveDirectMessages(userId: string) {
 export async function listLiveEvents(after?: string) {
   const params = new URLSearchParams();
   if (after) params.set("after", after);
-  return successEnvelope(eventEnvelopeSchema.array()).parse(await request(`/v1/events${params.size ? `?${params}` : ""}`)).data;
+  return successEnvelope(eventEnvelopeSchema.array()).parse(await request(`/v1/events${params.toString() ? `?${params}` : ""}`)).data;
 }
 
 export async function sendLiveDirectMessage(input: unknown) {
@@ -791,4 +802,53 @@ export async function createLiveCalendarFeed() {
 
 export async function deleteLiveCalendarFeed() {
   await request("/v1/calendar/feed", { method: "DELETE" });
+}
+
+// Venture context: files an agent reads before working on a venture. Admins and the venture's head write them.
+export async function listLiveVentureContext(ventureId: string) {
+  return successEnvelope(ventureContextListSchema).parse(await request(`/v1/ventures/${encodeURIComponent(ventureId)}/context`)).data;
+}
+export async function getLiveVentureContext(id: string) {
+  return successEnvelope(ventureContextSchema).parse(await request(`/v1/context/${encodeURIComponent(id)}`)).data;
+}
+export async function createLiveVentureContext(ventureId: string, input: unknown) {
+  const valid = createVentureContextSchema.parse(input);
+  return successEnvelope(ventureContextSchema).parse(await request(`/v1/ventures/${encodeURIComponent(ventureId)}/context`, { method: "POST", body: JSON.stringify(valid) })).data;
+}
+export async function updateLiveVentureContext(id: string, input: unknown) {
+  const valid = updateVentureContextSchema.parse(input);
+  return successEnvelope(ventureContextSchema).parse(await request(`/v1/context/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+export async function deleteLiveVentureContext(id: string) {
+  await request(`/v1/context/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// Skills: the workspace's (every venture) and each venture's own.
+export async function listLiveSkills(ventureId?: string) {
+  return successEnvelope(skillListSchema).parse(await request(`/v1/skills${ventureId ? `?ventureId=${encodeURIComponent(ventureId)}` : ""}`)).data.items;
+}
+export async function getLiveSkill(id: string) {
+  return successEnvelope(skillSchema).parse(await request(`/v1/skills/${encodeURIComponent(id)}`)).data;
+}
+export async function createLiveSkill(input: unknown) {
+  const valid = createSkillSchema.parse(input);
+  return successEnvelope(skillSchema).parse(await request("/v1/skills", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+/** `ventureId: null` moves the skill to the whole workspace. */
+export async function updateLiveSkill(id: string, input: unknown) {
+  const valid = updateSkillSchema.parse(input);
+  return successEnvelope(skillSchema).parse(await request(`/v1/skills/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(valid) })).data;
+}
+export async function deleteLiveSkill(id: string) {
+  await request(`/v1/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// Files shared in a group's chats, and files attached to tasks, newest first.
+export async function listLiveGroupAttachments(groupId: string, filters: { channelId?: string; kind?: AttachmentKind; cursor?: string } = {}) {
+  const params = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1])));
+  return successEnvelope(sharedAttachmentPageSchema).parse(await request(`/v1/groups/${encodeURIComponent(groupId)}/attachments${params.toString() ? `?${params}` : ""}`)).data;
+}
+export async function listLiveTaskAttachments(filters: { ventureId?: string; kind?: AttachmentKind; cursor?: string } = {}) {
+  const params = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1])));
+  return successEnvelope(sharedAttachmentPageSchema).parse(await request(`/v1/attachments/tasks${params.toString() ? `?${params}` : ""}`)).data;
 }

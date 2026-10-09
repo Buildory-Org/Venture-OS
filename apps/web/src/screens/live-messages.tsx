@@ -10,6 +10,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { Message } from "@venture-studio/contracts";
 import { listLiveDirectMessages, listLiveMembers, loadLiveSession, sendLiveDirectMessage, updateLiveMessageReaction, updateLiveMessageSave } from "@/lib/studio-api";
 import { ChatMessageMenu } from "@/components/studio/chat-message-menu";
+import { useMentionNames, withMentionNames } from "@/lib/mention-names";
 import { autosize, continuesGroup, DaySeparator, ViaClaude, isComposing, jumpToMessage, MessageText, NewMessagesPill, PendingStatus, QuickReactionBar, ReactionChips, startsNewDay, timeLabel, toggledReaction, useChatScroll, type PendingMessage } from "@/components/studio/chat-thread";
 import { Notice } from "@/components/studio/primitives";
 import { toast } from "@/components/ui/toast";
@@ -26,6 +27,7 @@ const errorText = (value: unknown) => describeError(value, "Something went wrong
 export function LiveMessagesScreen() {
   const [session, setSession] = useState<Session | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
+  const mentionNames = useMentionNames();
   const [cursor, setCursor] = useState<string | undefined>();
   const [search, setSearch] = useState("");
   // People search accepts "@handle" as well as names.
@@ -128,7 +130,7 @@ export function LiveMessagesScreen() {
     setPending((items) => [...items.filter((item) => item.clientId !== entry.clientId), { ...entry, state: "sending", error: undefined }]);
     void (async () => {
       try {
-        const handles = [...entry.body.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase());
+        const handles = [...entry.body.matchAll(/(?:^|\s)@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1]!.toLowerCase().replace(/[._-]+$/, ""));
         const created = await sendLiveDirectMessage({ recipientId: to, body: entry.body, attachmentFileIds: entry.attachmentFileIds, mentionUserIds: handle && handles.includes(handle) ? [to] : [], clientId: entry.clientId, ...(entry.threadRootId ? { threadRootId: entry.threadRootId } : {}) });
         playChatSound("sent");
         setLocalKeys((keys) => ({ ...keys, [created.id]: entry.clientId }));
@@ -203,7 +205,7 @@ export function LiveMessagesScreen() {
       const threadRoot = item.threadRootId ? messages.find((message) => message.id === item.threadRootId) : undefined;
       const actions = [
         ...(canPost ? [{ label: "Reply", onSelect: () => startReply(item) }] : []),
-        ...(item.body ? [{ label: "Copy text", onSelect: () => void copyText(item.body) }] : []),
+        ...(item.body ? [{ label: "Copy text", onSelect: () => void copyText(withMentionNames(item.body, mentionNames)) }] : []),
         { label: item.savedByMe ? "Remove from saved" : "Save message", onSelect: () => void toggleSave(item) },
         ...(canPost ? [{ label: (item.myReactions ?? []).includes("👍") ? "Remove 👍" : "React 👍", onSelect: () => void react(item, "👍") }] : []),
       ];
@@ -212,10 +214,10 @@ export function LiveMessagesScreen() {
         <div className={clsx("relative max-w-[min(75%,560px)]", mine && "text-right")}>
           {canPost && <QuickReactionBar mine={mine} onReact={(emoji) => void react(item, emoji)} onReply={() => startReply(item)} />}
           {!grouped && <div className={clsx("mb-1 flex items-center gap-2 text-[10px]", mine && "flex-row-reverse")}><span className="font-semibold">{mine ? "You" : other.name}</span>{item.via === "claude" && <ViaClaude />}<time dateTime={item.createdAt} className="text-[var(--color-neutral-400)]">{timeLabel(item.createdAt)}</time>{item.savedByMe && <span className="vso-fade-enter inline-flex items-center gap-0.5 text-[var(--color-neutral-500)]"><Bookmark size={11} aria-hidden="true" />Saved</span>}</div>}
-          {item.threadRootId && <button type="button" onClick={() => { if (!jumpToMessage(listRef.current, item.threadRootId!)) toast({ tone: "info", title: "That message is further back" }); }} title="Show the original message" className={clsx("mb-1 block max-w-full truncate border-l-2 border-[var(--color-primary-300)] px-2 text-left text-[10px] text-[var(--color-neutral-500)] transition-colors duration-150 hover:text-[var(--color-primary-700)]", mine && "ml-auto border-l-0 border-r-2 text-right")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : other.name}: ${threadRoot.body.slice(0, 80) || "an attachment"}` : "an earlier message"}</button>}
+          {item.threadRootId && <button type="button" onClick={() => { if (!jumpToMessage(listRef.current, item.threadRootId!)) toast({ tone: "info", title: "That message is further back" }); }} title="Show the original message" className={clsx("mb-1 block max-w-full truncate border-l-2 border-[var(--color-primary-300)] px-2 text-left text-[10px] text-[var(--color-neutral-500)] transition-colors duration-150 hover:text-[var(--color-primary-700)]", mine && "ml-auto border-l-0 border-r-2 text-right")}>↳ Reply to {threadRoot ? `${threadRoot.authorId === session?.user.id ? "you" : other.name}: ${withMentionNames(threadRoot.body, mentionNames).slice(0, 80) || "an attachment"}` : "an earlier message"}</button>}
           <ChatMessageMenu actions={actions} label={`Actions for message from ${mine ? "you" : other.name}`}>
-            {item.body && <MessageText body={item.body} mine={mine} className={bubbleClass(mine)} />}
-            <MessageAttachmentList files={messageAttachments(item)} />
+            {item.body && <MessageText body={item.body} mine={mine} names={mentionNames} className={bubbleClass(mine)} />}
+            <MessageAttachmentList files={messageAttachments(item)} mine={mine} />
           </ChatMessageMenu>
           <ReactionChips message={item} mine={mine} disabled={!canPost} onToggle={(emoji) => void react(item, emoji)} />
         </div>
@@ -227,8 +229,8 @@ export function LiveMessagesScreen() {
         <span className="mt-5 shrink-0"><ChatAvatar id={session?.user.id ?? ""} name={session?.user.name ?? "You"} size={25} /></span>
         <div className="relative max-w-[min(75%,560px)] text-right">
           <div className="mb-1 flex flex-row-reverse items-center gap-2 text-[10px]"><span className="font-semibold">You</span><time className="text-[var(--color-neutral-400)]">{timeLabel(entry.createdAt)}</time></div>
-          {entry.body && <MessageText body={entry.body} mine className={clsx(bubbleClass(true), "transition-opacity duration-200", entry.state === "sending" ? "opacity-60" : "opacity-90 outline outline-2 outline-offset-2 outline-[var(--color-danger)]")} />}
-          {entry.attachmentFileIds.length > 0 && <p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{entry.attachmentFileIds.length} attachment{entry.attachmentFileIds.length === 1 ? "" : "s"}</p>}
+          {entry.body && <MessageText body={entry.body} mine names={mentionNames} className={clsx(bubbleClass(true), "transition-opacity duration-200", entry.state === "sending" ? "opacity-60" : "opacity-90 outline outline-2 outline-offset-2 outline-[var(--color-danger)]")} />}
+          {entry.attachments?.length ? <div className={clsx("transition-opacity duration-200", entry.state === "sending" && "opacity-70")}><MessageAttachmentList files={entry.attachments} mine /></div> : entry.attachmentFileIds.length > 0 && <p className="mt-1 text-[10px] text-[var(--color-neutral-400)]">{entry.attachmentFileIds.length} attachment{entry.attachmentFileIds.length === 1 ? "" : "s"}</p>}
           <PendingStatus pending={entry} onRetry={() => submit(entry)} onEdit={() => editPending(entry)} onDiscard={() => setPending((items) => items.filter((item) => item.clientId !== entry.clientId))} />
         </div>
       </article>);
@@ -261,7 +263,7 @@ export function LiveMessagesScreen() {
       <div ref={listRef} onScroll={scroll.onScroll} className="thin-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-6 pt-2 sm:px-7">{recipient ? !messagesLoaded ? <div role="status" aria-label="Loading messages" className="space-y-6 pt-6">{[46, 34, 58].map((width, index) => <div key={index} className={clsx("flex items-start gap-2", index % 2 && "flex-row-reverse")}><span className="vso-skeleton mt-5 h-[25px] w-[25px] shrink-0 rounded-full" /><span className="grid gap-1.5" style={{ width: `${width}%` }}><span className={clsx("vso-skeleton h-2.5 w-16", index % 2 && "justify-self-end")} /><span className="vso-skeleton h-10 rounded-2xl" /></span></div>)}</div> : messagesFailed ? <EmptyState variant="error" title="Messages unavailable" body={messagesError} action={{ label: "Try again", onClick: () => setRevision((value) => value + 1) }} className="h-full" /> : messages.length || conversationPending.length ? <div className="vso-fade-enter">{renderRows(recipient)}</div> : <ChatEmpty title="No messages yet" detail={canPost ? `Say hello to ${recipient.name}.` : `Messages with ${recipient.name} will appear here.`} /> : <ChatEmpty title="Your conversations, together" detail="Choose someone from the left to send a direct message." />}</div>
       <NewMessagesPill count={scroll.unseen} onClick={scroll.jumpToLatest} className="bottom-28" />
       {recipient && <form onSubmit={send} className="shrink-0 border-t border-[var(--color-neutral-200)] bg-white p-3 sm:px-6 sm:py-4">
-        <div data-open={Boolean(replyTo)} className="vso-collapse"><div><div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="min-w-0 truncate"><span className="font-semibold">Replying to {replyShown ? replyShown.authorId === session?.user.id ? "yourself" : recipient.name : ""}</span>{replyShown ? `: ${replyShown.body.slice(0, 80) || "an attachment"}` : ""}</span><button type="button" tabIndex={replyTo ? 0 : -1} aria-label="Cancel reply" title="Cancel reply (Esc)" onClick={() => { setReplyTo(null); composerRef.current?.focus(); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-primary-100)]"><X size={13} /></button></div></div></div>
+        <div data-open={Boolean(replyTo)} className="vso-collapse"><div><div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--color-primary-50)] px-3 py-2 text-[11px] text-[var(--color-primary-800)]"><span className="min-w-0 truncate"><span className="font-semibold">Replying to {replyShown ? replyShown.authorId === session?.user.id ? "yourself" : recipient.name : ""}</span>{replyShown ? `: ${withMentionNames(replyShown.body, mentionNames).slice(0, 80) || "an attachment"}` : ""}</span><button type="button" tabIndex={replyTo ? 0 : -1} aria-label="Cancel reply" title="Cancel reply (Esc)" onClick={() => { setReplyTo(null); composerRef.current?.focus(); }} className="grid h-6 w-6 shrink-0 place-items-center rounded-md transition-colors duration-150 hover:bg-[var(--color-primary-100)]"><X size={13} /></button></div></div></div>
         <div className="mb-2"><AttachmentPicker attachments={attachments} disabled={!canPost} /></div>
         <div className="flex items-end gap-2 rounded-xl border border-[var(--color-neutral-200)] px-3 py-2 transition-[border-color,box-shadow] duration-150 focus-within:border-[var(--color-primary-400)] focus-within:ring-2 focus-within:ring-[var(--color-primary-100)]"><label htmlFor="dm-composer" className="sr-only">Message</label><textarea ref={composerRef} id="dm-composer" maxLength={10000} rows={1} value={composer} onChange={(event) => { setComposer(event.target.value); autosize(event.currentTarget); clientId.current = null; }} onPaste={(event) => { if (event.clipboardData.files.length && canPost) { event.preventDefault(); void attachments.addFiles(event.clipboardData.files); } }} onKeyDown={(event) => { if (isComposing(event)) return; if (event.key === "Escape" && replyTo) { event.preventDefault(); event.stopPropagation(); setReplyTo(null); return; } if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} className="min-h-8 max-h-36 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-xs outline-none placeholder:text-[var(--color-neutral-400)]" disabled={!canPost} placeholder={canPost ? "Type a message..." : "Learners can read messages but cannot send them."} /><button type="submit" disabled={!canPost || attachments.uploading || (!composer.trim() && !attachments.items.length)} aria-label="Send message" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-600)] text-white transition-[background-color,transform,opacity] duration-150 hover:bg-[var(--color-primary-700)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-300)] active:scale-[0.92] disabled:opacity-40 disabled:active:scale-100"><ChatSendIcon /></button></div>
       </form>}

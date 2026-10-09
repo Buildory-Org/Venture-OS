@@ -68,7 +68,16 @@ export const updateTaskSchema = z.object({
   estimatedMinutes: z.number().int().min(1).max(100_800).optional(),
   evidenceLinks: z.array(z.url()).max(100).optional(),
   blocker: z.string().trim().max(2_000).nullable().optional(),
+  // The task's details: only its creator or a workspace admin may change these.
+  title: createTaskSchema.shape.title.optional(),
+  outcome: createTaskSchema.shape.outcome.optional(),
+  definitionOfDone: createTaskSchema.shape.definitionOfDone.optional(),
+  evidenceRequirement: createTaskSchema.shape.evidenceRequirement.optional(),
+  tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
 }).refine((value) => Object.keys(value).length > 0, "At least one update is required");
+
+/** The fields of a task only its creator or a workspace admin may edit. */
+export const taskDetailFields = ["title", "outcome", "definitionOfDone", "evidenceRequirement", "tags"] as const;
 
 export const outcomeSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema,

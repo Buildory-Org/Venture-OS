@@ -78,6 +78,18 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("documents").createIndex({ workspaceId: 1, ventureId: 1, sensitivity: 1 }),
     db.collection("document_versions").createIndex({ documentId: 1, version: 1 }, { unique: true }),
     db.collection("document_suggestions").createIndex({ documentId: 1, state: 1, createdAt: -1 }),
+    // Venture context, skills, and Claude's record of having read a venture's context.
+    db.collection("venture_context").createIndex({ workspaceId: 1, ventureId: 1, createdAt: 1, _id: 1 }),
+    db.collection("skills").createIndex({ workspaceId: 1, ventureId: 1, title: 1, _id: 1 }),
+    db.collection("mcp_context_reads").createIndex({ patId: 1, ventureId: 1 }, { unique: true }),
+    db.collection("mcp_context_reads").createIndex({ patId: 1, readAt: -1 }),
+    // A read only counts for 12 hours, so week-old rows are cleared away.
+    db.collection("mcp_context_reads").createIndex({ readAt: 1 }, { expireAfterSeconds: 7 * 86_400 }),
+    // The Knowledge screen's chat and task file browsers, newest first.
+    db.collection("messages").createIndex({ workspaceId: 1, groupId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { "attachments.0": { $exists: true } } }),
+    db.collection("files").createIndex({ workspaceId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    // Mentions in notices are looked up by handle.
+    db.collection("users").createIndex({ workspaceId: 1, handle: 1 }),
     db.collection("document_suggestions").createIndex({ workspaceId: 1, state: 1, createdAt: 1 }),
     // One waiting suggestion per person per document: suggesting again replaces it.
     db.collection("document_suggestions").createIndex({ documentId: 1, proposedBy: 1 }, { unique: true, partialFilterExpression: { state: "pending" } }),

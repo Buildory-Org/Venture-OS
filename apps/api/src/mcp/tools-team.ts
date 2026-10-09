@@ -63,12 +63,19 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
 
   tool("update_task", "tasks:write", {
     title: "Update task", annotations: writes(true),
-    description: "Reassign a task or change its reviewer, priority, due time, estimate, or blocker note (null clears it). Only venture leads and admins may change assignment and planning; the assignee or reviewer may set the blocker. Use set_task_status for status.",
-    inputSchema: z.object({ taskId: id, assignee: person.optional(), reviewer: person.optional(), priority: priority.optional(), dueAt: isoField("New due time, ISO 8601 with offset").optional(), estimatedMinutes: z.number().int().min(1).max(100_800).optional(), blocker: z.string().trim().max(2000).nullable().optional(), timezone: timezoneField }),
-  }, async ({ taskId, assignee, reviewer, priority: newPriority, dueAt, estimatedMinutes, blocker, timezone }) => {
+    description: "Change a task: its details (title, outcome, definition of done, evidence requirement, tags), its assignee or reviewer, priority, due time, estimate, or blocker note (null clears it). Only the task's creator or an admin may change the details, and not once the task is done or cancelled; only venture leads and admins may change assignment and planning; the assignee or reviewer may set the blocker. Tags replace the existing list. Use set_task_status for status.",
+    inputSchema: z.object({
+      taskId: id, title: z.string().trim().min(1).max(200).optional(), outcome: z.string().trim().min(1).max(2000).optional().describe("What the task should achieve"),
+      definitionOfDone: z.string().trim().min(1).max(5000).optional(), evidenceRequirement: z.string().trim().min(1).max(2000).optional().describe("What evidence proves it is done"),
+      tags: z.array(z.string().trim().min(1).max(50)).max(30).optional(),
+      assignee: person.optional(), reviewer: person.optional(), priority: priority.optional(), dueAt: isoField("New due time, ISO 8601 with offset").optional(), estimatedMinutes: z.number().int().min(1).max(100_800).optional(), blocker: z.string().trim().max(2000).nullable().optional(), timezone: timezoneField,
+    }),
+  }, async ({ taskId, title, outcome, definitionOfDone, evidenceRequirement, tags, assignee, reviewer, priority: newPriority, dueAt, estimatedMinutes, blocker, timezone }) => {
     const timeZone = validTimeZone(timezone);
-    const change = compact({ assigneeId: who(assignee), reviewerId: who(reviewer), priority: newPriority, dueAt, estimatedMinutes });
+    const change = compact({ title, outcome, definitionOfDone, evidenceRequirement, assigneeId: who(assignee), reviewerId: who(reviewer), priority: newPriority, dueAt, estimatedMinutes });
     if (blocker !== undefined) Object.assign(change, { blocker: blocker || null });
+    // An empty list clears the tags, so it is sent as it is.
+    if (tags !== undefined) Object.assign(change, { tags });
     if (!Object.keys(change).length) throw new ToolError("Say what to change.");
     const task = await ctx.api<any>("PATCH", `/tasks/${encodeURIComponent(taskId)}`, change);
     return compact({ ...await taskRow(ctx, look, task, timeZone), assignee: await name(task.assigneeId), reviewer: await name(task.reviewerId) });

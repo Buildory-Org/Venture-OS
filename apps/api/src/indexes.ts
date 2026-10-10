@@ -46,8 +46,25 @@ export async function ensurePushEndpointIndex(collection: Collection<AppDocument
   await collection.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
 }
 
+/**
+ * The do-not-contact list holds one entry per normalised value. Entries written without a key (older imports) must not collide,
+ * so the unique index covers only keyed entries; the first version of this index covered all of them and is replaced.
+ */
+export async function ensureSuppressionKeyIndex(collection: Collection<AppDocument>): Promise<void> {
+  let indexes: Awaited<ReturnType<typeof collection.indexes>>;
+  try { indexes = await collection.indexes(); }
+  catch (error) {
+    if ((error as { code?: number }).code !== 26) throw error; // Collection does not exist yet.
+    indexes = [];
+  }
+  const existing = indexes.find((index) => index.name === "workspaceId_1_key_1");
+  if (existing && !existing.partialFilterExpression) await collection.dropIndex("workspaceId_1_key_1");
+  await collection.createIndex({ workspaceId: 1, key: 1 }, { unique: true, partialFilterExpression: { key: { $type: "string" } } });
+}
+
 export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensurePushEndpointIndex(db.collection("push_subscriptions"));
+  await ensureSuppressionKeyIndex(db.collection("sales_suppression"));
   await Promise.all([
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
     // Recovery copies from permanent venture deletes expire on their own after 30 days.
@@ -119,5 +136,35 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("events").createIndex({ workspaceId: 1, occurredAt: 1, _id: 1 }),
     db.collection("audit_events").createIndex({ workspaceId: 1, occurredAt: -1 }),
     db.collection("api_rate_limits").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    // Sales (Dealflow): leads are the `opportunities` collection. List, owner, next-action, play and do-not-contact lookups.
+    db.collection("opportunities").createIndex({ workspaceId: 1, ventureId: 1, stage: 1, updatedAt: -1 }),
+    db.collection("opportunities").createIndex({ workspaceId: 1, ownerId: 1, stage: 1 }),
+    db.collection("opportunities").createIndex({ workspaceId: 1, ventureId: 1, nextActionAt: 1 }),
+    db.collection("opportunities").createIndex({ pipelineId: 1 }),
+    db.collection("opportunities").createIndex({ workspaceId: 1, playId: 1 }, { partialFilterExpression: { playId: { $exists: true } } }),
+    db.collection("opportunities").createIndex({ workspaceId: 1, suppressKeys: 1 }),
+    // Imports can be re-run: one lead per external reference.
+    db.collection("opportunities").createIndex({ workspaceId: 1, "externalRef.system": 1, "externalRef.id": 1 }, { unique: true, partialFilterExpression: { "externalRef.id": { $type: "string" } } }),
+    db.collection("sales_activities").createIndex({ leadId: 1, at: -1 }),
+    db.collection("sales_activities").createIndex({ workspaceId: 1, ventureId: 1, direction: 1, handledAt: 1, at: -1 }),
+    db.collection("sales_activities").createIndex({ workspaceId: 1, ventureId: 1, at: -1 }),
+    // The same requestId repeats the first answer instead of logging an activity twice.
+    db.collection("sales_activities").createIndex({ workspaceId: 1, leadId: 1, requestId: 1 }, { unique: true, partialFilterExpression: { requestId: { $type: "string" } } }),
+    db.collection("sales_verdicts").createIndex({ leadId: 1, createdAt: -1 }),
+    db.collection("sales_drafts").createIndex({ leadId: 1, createdAt: -1 }),
+    db.collection("sales_drafts").createIndex({ workspaceId: 1, ventureId: 1, status: 1, updatedAt: -1 }),
+    db.collection("sales_plays").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
+    db.collection("sales_find_runs").createIndex({ workspaceId: 1, ventureId: 1, createdAt: -1 }),
+    db.collection("sales_find_runs").createIndex({ workspaceId: 1, status: 1, createdAt: 1 }),
+    db.collection("sales_brain_items").createIndex({ workspaceId: 1, ventureId: 1, kind: 1, title: 1, status: 1 }),
+    // One do-not-contact list for every venture: one entry per normalised value.
+    db.collection("sales_suppression").createIndex({ workspaceId: 1, createdAt: -1 }),
+    // Saved Leads filters, one list per person; one view per name (any case) and page.
+    db.collection("sales_views").createIndex({ workspaceId: 1, userId: 1, createdAt: 1 }),
+    db.collection("sales_views").createIndex({ workspaceId: 1, userId: 1, page: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
+    // Daily send counters (sales/leads.ts claimSendSlot): one row per person, venture, channel and day, gone about 90 days after the day.
+    db.collection("sales_send_counters").createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 }),
+    // Claude's sales conversations (start_sales): expired sessions clear themselves; lookups are by _id.
+    db.collection("mcp_sales_sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
   ]);
 }

@@ -10,6 +10,10 @@ import { useStudio } from "@/lib/studio-store";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { LiveNotificationBell } from "./live-notification-pulse";
 import { openNewTask } from "@/components/studio/new-task-dialog";
+import { useAppMode } from "@/lib/app-mode";
+import { listLeads } from "@/lib/sales-api";
+import { STAGE_LABELS } from "@/components/sales/sales-ui";
+import type { Lead } from "@venture-studio/contracts";
 
 type Props = { collapsed: boolean; onToggleSidebar: () => void; onOpenMobileNav: () => void; focusOpen: boolean; onToggleFocus: () => void };
 const iconButton = "relative grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]";
@@ -42,7 +46,10 @@ const newTaskClass = "flex h-10 w-10 shrink-0 items-center justify-center gap-1.
 
 export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen, onToggleFocus }: Props) {
   const path = usePathname();
-  const { data, currentUserId, mode, workspaceName, role } = useStudio();
+  const { data, currentUserId, mode, workspaceName, role, activeVentureId } = useStudio();
+  // In Sales mode the primary button adds a lead and the search box looks through leads.
+  const { mode: appMode } = useAppMode();
+  const salesMode = mode === "connected" && appMode === "sales";
   const user = data.people.find((person) => person.id === currentUserId) ?? data.people[0];
   const unread = data.notices.filter((notice) => !notice.read).length;
   const [searchOpen, setSearchOpen] = useState(false);
@@ -61,12 +68,29 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  const items = [
+  const trimmed = query.trim();
+  const [leadHits, setLeadHits] = useState<{ key: string; leads: Lead[] } | null>(null);
+  useEffect(() => {
+    if (!salesMode || !searchOpen || trimmed.length < 2) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      listLeads({ q: trimmed, limit: 6, ...(activeVentureId ? { ventureId: activeVentureId } : {}) })
+        .then((page) => { if (active) setLeadHits({ key: trimmed, leads: page.items }); })
+        .catch(() => { if (active) setLeadHits({ key: trimmed, leads: [] }); });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [salesMode, searchOpen, trimmed, activeVentureId]);
+  const salesItems = trimmed ? [
+    { title: `Search all leads for “${trimmed}”`, meta: "Leads", href: `/sales/live/leads?q=${encodeURIComponent(trimmed)}` },
+    ...(leadHits?.key === trimmed ? leadHits.leads : []).map((lead) => ({ title: lead.companyName, meta: [lead.city, STAGE_LABELS[lead.stage]].filter(Boolean).join(" · "), href: `/sales/live/leads?lead=${encodeURIComponent(lead.id)}` })),
+  ] : [];
+  const studioItems = [
     ...data.tasks.map((task) => ({ title: task.title, meta: "Task", href: `/tasks?task=${task.id}` })),
     ...data.knowledge.map((doc) => ({ title: doc.title, meta: `${doc.evidenceClass} · Knowledge`, href: `/knowledge?doc=${doc.id}` })),
     ...data.ventures.map((venture) => ({ title: venture.name, meta: "Venture", href: `/ventures?venture=${venture.id}` })),
     ...data.people.map((person) => ({ title: person.name, meta: "Member", href: "/messages" })),
   ].filter((item) => `${item.title} ${item.meta}`.toLowerCase().includes(query.toLowerCase())).slice(0,8);
+  const items = salesMode ? salesItems : studioItems;
   const active = Math.min(activeIndex, Math.max(0, items.length - 1));
   function onSearchKey(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -88,13 +112,13 @@ export function Topbar({ collapsed, onToggleSidebar, onOpenMobileNav, focusOpen,
     <button type="button" onClick={onOpenMobileNav} className={clsx(iconButton,"lg:hidden")} aria-label="Open navigation"><Menu size={18}/></button>
     <button type="button" onClick={onToggleSidebar} className={clsx(iconButton,"hidden lg:grid")} aria-label={collapsed?"Expand navigation":"Collapse navigation"} title={collapsed ? "Expand navigation (Ctrl+B)" : "Collapse navigation (Ctrl+B)"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button>
     <span className="hidden shrink-0 px-1 text-xs font-semibold capitalize text-neutral-800 lg:block">{section}</span>
-    <div className="mx-auto min-w-0 max-w-[520px] flex-1 px-1 sm:px-3"><button type="button" onClick={openSearch} className="flex h-10 w-full items-center gap-2.5 rounded-xl bg-neutral-100 px-3.5 text-[13px] text-neutral-400 transition-[background-color,transform] duration-150 hover:bg-neutral-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]"><Search size={15}/><span className="min-w-0 flex-1 truncate text-left">{mode === "connected" ? "Search tasks, people, ventures…" : "Search tasks, knowledge, ventures…"}</span><kbd className="hidden rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-400 shadow-sm md:block">Ctrl K</kbd></button></div>
-    {(mode === "demo" || ["admin", "venture_head", "contributor"].includes(role)) && (mode === "demo" ? <Link href="/tasks?new=1" aria-label="New task" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></Link> : <button type="button" onClick={openNewTask} aria-label="New task" aria-haspopup="dialog" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></button>)}
+    <div className="mx-auto min-w-0 max-w-[520px] flex-1 px-1 sm:px-3"><button type="button" onClick={openSearch} className="flex h-10 w-full items-center gap-2.5 rounded-xl bg-neutral-100 px-3.5 text-[13px] text-neutral-400 transition-[background-color,transform] duration-150 hover:bg-neutral-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]"><Search size={15}/><span className="min-w-0 flex-1 truncate text-left">{salesMode ? "Search leads, companies, cities…" : mode === "connected" ? "Search tasks, people, ventures…" : "Search tasks, knowledge, ventures…"}</span><kbd className="hidden rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold text-neutral-400 shadow-sm md:block">Ctrl K</kbd></button></div>
+    {salesMode ? (role !== "learner" && <Link href="/sales/live/leads?new=1" aria-label="Add lead" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">Add lead</span></Link>) : (mode === "demo" || ["admin", "venture_head", "contributor"].includes(role)) && (mode === "demo" ? <Link href="/tasks?new=1" aria-label="New task" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></Link> : <button type="button" onClick={openNewTask} aria-label="New task" aria-haspopup="dialog" className={newTaskClass}><Plus size={14}/><span className="max-md:sr-only">New task</span></button>)}
     {mode === "demo" ? <button type="button" onClick={onToggleFocus} aria-label="Toggle focus sprint" aria-pressed={focusOpen} className={clsx(iconButton,focusOpen?"bg-primary-100 text-primary-700":"text-primary-600 hover:bg-primary-50")}><TimerReset size={18}/></button> : <LiveFocusLink />}
     <ThemeToggle />
     {mode === "connected" ? <LiveNotificationBell /> : <Link href="/notifications" aria-label={`Notifications, ${unread} unread`} className={iconButton}><Bell size={18}/>{unread>0&&<span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-white"/>}</Link>}
     <Link href="/knowledge" aria-label="Open studio knowledge and context packets" className={clsx(iconButton,"hidden text-ai hover:bg-ai-surface sm:grid")}><Sparkles size={18}/></Link>
     <Link href={mode === "demo" ? "/settings" : "/admin"} aria-label="Open account and settings" className="hidden min-h-10 shrink-0 items-center gap-2 rounded-xl px-1.5 pr-2.5 hover:bg-neutral-100 2xl:flex"><span className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-primary-400 to-primary-700 text-[10px] font-semibold text-white">{user.initials}</span><span className="text-left"><span className="block text-xs font-semibold text-neutral-800">{user.name}</span><span className="block text-[10px] font-semibold text-neutral-400">{role}</span></span></Link>
-    {searchOpen&&<div className="fixed inset-0 z-50 flex items-start justify-center bg-neutral-900/20 px-4 pt-[11vh] backdrop-blur-[2px]" onMouseDown={(event)=>event.target===event.currentTarget&&setSearchOpen(false)}><section role="dialog" aria-modal="true" aria-label="Search workspace" className="w-full max-w-[560px] overflow-hidden rounded-2xl bg-white p-2 shadow-e4 ring-1 ring-neutral-900/5"><div className="flex items-center gap-3 px-3"><Search size={18} className="text-neutral-400"/><input ref={input} value={query} onChange={(event)=>{setQuery(event.target.value);setActiveIndex(0);}} onKeyDown={onSearchKey} role="combobox" aria-expanded="true" aria-controls="workspace-search-results" aria-activedescendant={items[active] ? `workspace-search-${active}` : undefined} aria-autocomplete="list" placeholder={`Search ${workspaceName}`} className="h-12 min-w-0 flex-1 bg-transparent text-sm font-semibold text-neutral-900 outline-none placeholder:text-neutral-400"/><kbd className="rounded-md bg-neutral-100 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-500">Esc</kbd></div><div ref={results} id="workspace-search-results" role="listbox" aria-label="Search results" className="max-h-[60vh] overflow-y-auto border-t border-neutral-100 p-1.5">{items.map((item, index)=><Link key={`${item.meta}-${item.title}-${item.href}`} id={`workspace-search-${index}`} role="option" aria-selected={index === active} data-index={index} href={item.href} tabIndex={-1} onClick={()=>setSearchOpen(false)} onMouseMove={()=>{ if (index !== active) setActiveIndex(index); }} className={clsx("flex min-h-12 items-center gap-3 rounded-xl px-3", index === active && "bg-neutral-100")}><span className="grid h-8 w-8 place-items-center rounded-lg bg-primary-50 text-primary-600"><Search size={14}/></span><span><span className="block text-xs font-semibold text-neutral-800">{item.title}</span><span className="block text-[11px] font-medium text-neutral-400">{item.meta}</span></span></Link>)}{items.length===0&&<p className="px-3 py-8 text-center text-sm text-neutral-400">No matching records.</p>}</div></section></div>}
+    {searchOpen&&<div className="fixed inset-0 z-50 flex items-start justify-center bg-neutral-900/20 px-4 pt-[11vh] backdrop-blur-[2px]" onMouseDown={(event)=>event.target===event.currentTarget&&setSearchOpen(false)}><section role="dialog" aria-modal="true" aria-label={salesMode ? "Search leads" : "Search workspace"} className="w-full max-w-[560px] overflow-hidden rounded-2xl bg-white p-2 shadow-e4 ring-1 ring-neutral-900/5"><div className="flex items-center gap-3 px-3"><Search size={18} className="text-neutral-400"/><input ref={input} value={query} onChange={(event)=>{setQuery(event.target.value);setActiveIndex(0);}} onKeyDown={onSearchKey} role="combobox" aria-expanded="true" aria-controls="workspace-search-results" aria-activedescendant={items[active] ? `workspace-search-${active}` : undefined} aria-autocomplete="list" placeholder={salesMode ? "Search leads by company, contact or city" : `Search ${workspaceName}`} className="h-12 min-w-0 flex-1 bg-transparent text-sm font-semibold text-neutral-900 outline-none placeholder:text-neutral-400"/><kbd className="rounded-md bg-neutral-100 px-2 py-1 font-mono text-[10px] font-semibold text-neutral-500">Esc</kbd></div><div ref={results} id="workspace-search-results" role="listbox" aria-label="Search results" className="max-h-[60vh] overflow-y-auto border-t border-neutral-100 p-1.5">{items.map((item, index)=><Link key={`${item.meta}-${item.title}-${item.href}`} id={`workspace-search-${index}`} role="option" aria-selected={index === active} data-index={index} href={item.href} tabIndex={-1} onClick={()=>setSearchOpen(false)} onMouseMove={()=>{ if (index !== active) setActiveIndex(index); }} className={clsx("flex min-h-12 items-center gap-3 rounded-xl px-3", index === active && "bg-neutral-100")}><span className="grid h-8 w-8 place-items-center rounded-lg bg-primary-50 text-primary-600"><Search size={14}/></span><span><span className="block text-xs font-semibold text-neutral-800">{item.title}</span><span className="block text-[11px] font-medium text-neutral-400">{item.meta}</span></span></Link>)}{items.length===0&&<p className="px-3 py-8 text-center text-sm text-neutral-400">{salesMode && !trimmed ? "Type a company, contact or city." : "No matching records."}</p>}</div></section></div>}
   </header>;
 }

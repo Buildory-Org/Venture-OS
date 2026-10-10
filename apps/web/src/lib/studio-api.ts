@@ -102,7 +102,8 @@ export class StudioApiError extends Error {
   }
 }
 
-async function request(path: string, init?: RequestInit, options: { devAuth?: boolean } = {}): Promise<unknown> {
+/** Shared JSON request helper (dev identity, error envelopes). Also used by lib/sales-api.ts. */
+export async function request(path: string, init?: RequestInit, options: { devAuth?: boolean } = {}): Promise<unknown> {
   const devUserId = options.devAuth !== false ? localDevUserId() : null;
   const response = await fetch(path, {
     ...init,

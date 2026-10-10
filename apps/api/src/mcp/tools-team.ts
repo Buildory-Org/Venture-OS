@@ -5,29 +5,17 @@ import { id, isoField, type Look, once, READ_ONLY, type Register, requestIdField
 
 const person = z.union([z.literal("me"), id]).describe('"me" or a person id from find_person');
 const priority = z.enum(["low", "medium", "high", "urgent"]);
-const stage = z.enum(["identified", "qualified", "contacted", "conversation", "proposal", "won", "lost"]);
+// The SLS-01 stages, plus the older names `conversation` (replied) and `won` (invoice_contract), which the app still accepts.
 const confidence = z.enum(["low", "medium", "high"]);
 const channelLink = (ctx: ToolContext, channelId: string) => `${ctx.origin}/channels/live?channel=${encodeURIComponent(channelId)}`;
 const money = (minor: unknown, currency: unknown) => typeof minor === "number" ? `${(minor / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })} ${typeof currency === "string" ? currency : ""}`.trim() : undefined;
 /** The app de-duplicates messages by a client id; deriving it from requestId makes a retried tool call post once. */
 const clientId = (requestId: string) => `mcp-${createHash("sha256").update(requestId).digest("hex").slice(0, 40)}`;
 
-/** People, tasks, reviews, messages, decisions, information requests, sales, and classes. */
+/** Tasks, reviews, messages, decisions, information requests, and classes. (People lookups are in tools-lookup.ts; sales is its own connector.) */
 export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look): void {
   const who = (value: string | undefined) => value === "me" ? ctx.userId : value;
   const name = async (personId: unknown) => personId === ctx.userId ? "me" : look.person(personId);
-
-  tool("find_person", "ventures:read", {
-    title: "Find person", annotations: READ_ONLY,
-    description: "Look people up by name or @handle (optionally only those in a venture or group) to get the person id that create_task, mentions, requests, and messages need.",
-    inputSchema: z.object({ query: z.string().trim().min(2).max(80).optional().describe("Part of a name, or @handle for an exact handle"), ventureId: id.optional(), groupId: id.optional(), limit: z.number().int().min(1).max(25).default(10) }),
-  }, async ({ query, ventureId, groupId, limit }) => {
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (query?.startsWith("@")) params.set("handle", query.slice(1)); else if (query) params.set("q", query);
-    if (ventureId) params.set("ventureId", ventureId); if (groupId) params.set("groupId", groupId);
-    const page = await ctx.api<{ items: any[] }>("GET", `/members?${params}`);
-    return compact({ people: page.items.map((item) => compact({ id: item.id, name: clip(item.name, 120), handle: item.handle ? `@${item.handle}` : undefined, role: item.role, you: item.id === ctx.userId || undefined })), hint: page.items.length ? undefined : "Nobody matches; try part of the name." });
-  });
 
   tool("create_task", "tasks:write", {
     title: "Create task", annotations: writes(false),
@@ -161,55 +149,6 @@ export function registerTeamTools(tool: Register, ctx: ToolContext, look: Look):
   }, async ({ informationRequestId, answer }) => {
     const item = await ctx.api<any>("PATCH", `/information-requests/${encodeURIComponent(informationRequestId)}`, { status: "answered", responseMarkdown: answer });
     return { informationRequestId, status: item.status, url: `${ctx.origin}/requests/live` };
-  });
-
-  tool("list_deals", "sales:read", {
-    title: "List deals", annotations: READ_ONLY,
-    description: "Sales pipelines and their deals in ventures I can open, filtered by venture or stage. Pipeline ids are needed by add_deal.",
-    inputSchema: z.object({ ventureId: id.optional(), stage: stage.optional(), limit: z.number().int().min(1).max(100).default(30), timezone: timezoneField }),
-  }, async ({ ventureId, stage: wanted, limit, timezone }) => {
-    const timeZone = validTimeZone(timezone);
-    const [pipelines, deals] = await Promise.all([ctx.api<any[]>("GET", "/pipelines"), ctx.api<any[]>("GET", "/opportunities")]);
-    const { ventures } = await look.ventures();
-    const shownPipelines = pipelines.filter((item) => !ventureId || item.ventureId === ventureId);
-    const names = new Map(shownPipelines.map((item) => [item.id, item.name]));
-    const rows = deals.filter((item) => names.has(item.pipelineId) && (!wanted || item.stage === wanted)).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0, limit);
-    return compact({
-      pipelines: shownPipelines.map((item) => compact({ id: item.id, name: clip(item.name, 120), offer: clip(item.offerName, 160), status: item.status, venture: ventures.get(item.ventureId)?.name })),
-      deals: await Promise.all(rows.map(async (item) => compact({ id: item.id, company: clip(item.companyName, 160), contact: clip(item.contactName, 120), stage: item.stage, value: money(item.valueEstimateMinor, item.currency), owner: item.ownerId === ctx.userId ? "me" : await look.person(item.ownerId), nextAction: clip(item.nextAction, 200), nextActionAt: localTime(item.nextActionAt, timeZone), pipeline: names.get(item.pipelineId), confidence: item.evidenceConfidence }))),
-      url: `${ctx.origin}/sales/live`, note: UNTRUSTED_NOTE,
-      hint: shownPipelines.length ? undefined : "No sales pipeline here yet; a venture lead creates one in the app.",
-    });
-  });
-
-  tool("add_deal", "sales:write", {
-    title: "Add deal", annotations: writes(false),
-    description: "Add a deal (opportunity) to a sales pipeline (ids from list_deals). value is in whole currency units, e.g. 200000 with currency INR.",
-    inputSchema: z.object({
-      pipelineId: id, companyName: z.string().trim().min(1).max(200), contactName: z.string().trim().max(200).optional(), stage: stage.default("identified"),
-      source: z.string().trim().max(500).optional().describe("Where the lead came from"), observedSignal: z.string().trim().max(2000).optional().describe("What suggests they need it"), fitReason: z.string().trim().max(2000).optional(),
-      confidence: confidence.default("low"), nextAction: z.string().trim().max(1000).optional(), nextActionAt: isoField("When the next action is due").optional(),
-      value: z.number().nonnegative().max(1e12).optional(), currency: z.string().trim().length(3).toUpperCase().optional(), owner: person.optional(), requestId: requestIdField,
-    }),
-  }, async (input) => {
-    if (input.value !== undefined && !input.currency) throw new ToolError("Give the currency with the value, e.g. INR or USD.");
-    const body = { pipelineId: input.pipelineId, companyName: input.companyName, contactName: input.contactName ?? "", stage: input.stage, source: input.source ?? "", observedSignal: input.observedSignal ?? "", fitReason: input.fitReason ?? "", evidenceConfidence: input.confidence, nextAction: input.nextAction ?? "", ...(input.nextActionAt ? { nextActionAt: input.nextActionAt } : {}), ...(input.value !== undefined ? { valueEstimateMinor: Math.round(input.value * 100), currency: input.currency } : {}), ownerId: who(input.owner) ?? ctx.userId };
-    return once(ctx, "add_deal", input.requestId, body, async () => {
-      const item = await ctx.api<any>("POST", "/opportunities", body);
-      return compact({ dealId: item.id, company: item.companyName, stage: item.stage, value: money(item.valueEstimateMinor, item.currency), url: `${ctx.origin}/sales/live` });
-    });
-  });
-
-  tool("update_deal", "sales:write", {
-    title: "Update deal", annotations: writes(true),
-    description: "Move a deal to another stage or change its next action, value, contact, confidence, or owner. The deal's owner or a venture lead may change it.",
-    inputSchema: z.object({ dealId: id, stage: stage.optional(), nextAction: z.string().trim().max(1000).optional(), nextActionAt: isoField("When the next action is due").optional(), value: z.number().nonnegative().max(1e12).optional(), currency: z.string().trim().length(3).toUpperCase().optional(), contactName: z.string().trim().max(200).optional(), confidence: confidence.optional(), owner: person.optional() }),
-  }, async ({ dealId, stage: nextStage, nextAction, nextActionAt, value, currency, contactName, confidence: nextConfidence, owner }) => {
-    if (value !== undefined && !currency) throw new ToolError("Give the currency with the value, e.g. INR or USD.");
-    const change = compact({ stage: nextStage, nextAction, nextActionAt, contactName, evidenceConfidence: nextConfidence, ownerId: who(owner), ...(value !== undefined ? { valueEstimateMinor: Math.round(value * 100), currency } : {}) });
-    if (!Object.keys(change).length) throw new ToolError("Say what to change.");
-    const item = await ctx.api<any>("PATCH", `/opportunities/${encodeURIComponent(dealId)}`, change);
-    return compact({ dealId, company: item?.companyName, stage: item?.stage, value: money(item?.valueEstimateMinor, item?.currency), url: `${ctx.origin}/sales/live` });
   });
 
   tool("list_classes", "classes:read", {

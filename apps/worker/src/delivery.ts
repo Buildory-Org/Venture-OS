@@ -71,7 +71,7 @@ export class Delivery {
     // knowledge requests and their results, since muting them would leave a request waiting unseen.
     // Calendar invitations, changes, and replies have their own switch; calendar reminders follow the reminders switch.
     // A channel followed for every message has no account-wide switch: the per-channel choice is the switch.
-    const category = item.type === "member_joined" || item.type === "channel_message" || String(item.type).startsWith("knowledge_") ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" ? "assignments" : "reminders";
+    const category = item.type === "member_joined" || item.type === "channel_message" || String(item.type).startsWith("knowledge_") ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" || String(item.type).startsWith("sales_") ? "assignments" : "reminders";
     if (category && preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
       return;

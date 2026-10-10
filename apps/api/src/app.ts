@@ -18,6 +18,9 @@ import { patRoutes } from "./routes/pats.js";
 import { adminRoutes, invitationAcceptanceRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { salesRoutes } from "./routes/sales.js";
+import { salesEngineRoutes } from "./routes/sales-engine.js";
+import { salesReportsRoutes } from "./routes/sales-reports.js";
+import { salesIoRoutes } from "./routes/sales-io.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
 import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
@@ -37,12 +40,16 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", localObjectRoutes(database.db, localStore));
   // MCP messages are small; parsed first so the 2 MB limit below never applies to /mcp.
   app.use("/mcp", express.json({ limit: "64kb" }), mcpBodyErrors);
-  app.use(express.json({ limit: "2mb" }));
+  // A CSV import carries a file of up to 5 MB: those two routes read their larger body only after the person is signed in (below).
+  const jsonBody = express.json({ limit: "2mb" });
+  app.use((req, res, next) => (req.path.startsWith("/v1/sales/leads/import/") ? next() : jsonBody(req, res, next)));
   // Hosted MCP authenticates with personal access tokens, so it sits before the /v1 session gate.
   app.use(mcpRouter(database.db, config));
   // MCP tools act as the token owner, but only on the routes the tools use; everything else (tokens, admin, invitations,
   // deletes, push subscriptions, uploads...) is refused even if a future tool tried to reach it.
   app.use((req, _res, next) => next(req.interfaceChannel === "mcp" && !isMcpRoute(req.method, req.path) ? new AppError(403, "FORBIDDEN", "Not available to Claude connections") : undefined));
+  // The office PC lead-finding worker: a Bearer token with the sales:engine scope, never a session, a dev header or the MCP loopback.
+  app.use("/v1/sales/engine", salesEngineRoutes(database));
   app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
   app.use("/v1/setup/first-admin", rateLimit(database.db, 60, 60_000, "setup-ip"));
   app.use("/v1", firstAdminRoutes(database, config, auth));
@@ -55,6 +62,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   const writeLimit = rateLimit(database.db, 120, 60_000, "actor-write");
   app.use("/v1", requireActor(resolveActor, rateLimit(database.db, 60, 60_000, "anonymous-ip")));
   app.use("/v1", (req, res, next) => (req.method === "GET" || req.method === "HEAD" ? readLimit : writeLimit)(req, res, next));
+  app.use("/v1/sales/leads/import", express.json({ limit: "12mb" }));
   app.use("/v1", hierarchyRoutes(database.db));
   app.use("/v1", workRoutes(database));
   app.use("/v1", collaborationRoutes(database));
@@ -66,7 +74,10 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", adminRoutes(database, config));
   app.use("/v1", ventureLifecycleRoutes(database));
   app.use("/v1", notificationRoutes(database.db, config.VAPID_PUBLIC_KEY));
-  app.use("/v1", salesRoutes(database.db));
+  // Before the lead routes: "export.csv" and "bulk" are not lead ids.
+  app.use("/v1/sales", salesIoRoutes(database));
+  app.use("/v1", salesRoutes(database));
+  app.use("/v1/sales", salesReportsRoutes(database));
   app.use("/v1", searchRoutes(database.db));
   app.use("/v1", calendarRoutes(database));
   app.use("/v1", calendarFeedRoutes(database, config));

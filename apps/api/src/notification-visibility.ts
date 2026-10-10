@@ -30,6 +30,15 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
     // Knowledge notices only while the document is still readable: a withdrawn request, or one no longer theirs to approve, drops out.
     const documentIds = [...new Set(page.filter((item) => item.resourceType === "document").map((item) => String(item.resourceId)))];
     const readableDocumentIds = new Set(documentIds.length ? (await db.collection("documents").find({ $and: [authorizedDocumentFilter(actor), { _id: { $in: documentIds } }] }).project({ _id: 1 }).toArray()).map((document) => String(document._id)) : []);
+    // Sales notices (a deal was won) only while the lead still exists and its venture is open to this member.
+    const opportunityIds = [...new Set(page.filter((item) => item.resourceType === "opportunity").map((item) => String(item.resourceId)))];
+    const openOpportunityIds = new Set(opportunityIds.length ? (await db.collection("opportunities").find({ _id: { $in: opportunityIds }, workspaceId: actor.membership.workspaceId, deletedAt: null }).project({ _id: 1, ventureId: 1 }).toArray()).filter((lead) => !archived.includes(String(lead.ventureId)) && (actor.membership.role === "admin" || actor.membership.ventureIds.includes(String(lead.ventureId)))).map((lead) => String(lead._id)) : []);
+    // "Approve a message" notices only while the draft still waits for approval and its lead is open to this member.
+    const draftIds = [...new Set(page.filter((item) => item.resourceType === "sales_draft").map((item) => String(item.resourceId)))];
+    const waitingDrafts = draftIds.length ? await db.collection("sales_drafts").find({ _id: { $in: draftIds }, workspaceId: actor.membership.workspaceId, status: "ready", personApproval: null }).project({ _id: 1, leadId: 1 }).toArray() : [];
+    const draftLeads = waitingDrafts.length ? await db.collection("opportunities").find({ _id: { $in: [...new Set(waitingDrafts.map((draft) => String(draft.leadId)))] }, workspaceId: actor.membership.workspaceId, deletedAt: null }).project({ _id: 1, ventureId: 1 }).toArray() : [];
+    const openLeadIds = new Set(draftLeads.filter((lead) => !archived.includes(String(lead.ventureId)) && (actor.membership.role === "admin" || actor.membership.ventureIds.includes(String(lead.ventureId)))).map((lead) => String(lead._id)));
+    const waitingDraftIds = new Set(waitingDrafts.filter((draft) => openLeadIds.has(String(draft.leadId))).map((draft) => String(draft._id)));
     for (const item of page) {
       const legacy = !item.chatKind && item.resourceType === "message" ? messageById.get(String(item.resourceId)) : undefined;
       if (!item.chatKind && item.resourceType === "message" && !legacy) continue;
@@ -38,6 +47,8 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
       if (item.resourceType === "task" && archivedTaskIds.has(String(item.resourceId))) continue;
       if (item.resourceType === "event" && archivedEventIds.has(String(item.resourceId))) continue;
       if (item.resourceType === "document" && !readableDocumentIds.has(String(item.resourceId))) continue;
+      if (item.resourceType === "opportunity" && !openOpportunityIds.has(String(item.resourceId))) continue;
+      if (item.resourceType === "sales_draft" && !waitingDraftIds.has(String(item.resourceId))) continue;
       visible.push(item);
       if (visible.length === limit) break;
     }

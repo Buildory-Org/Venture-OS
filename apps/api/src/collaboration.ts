@@ -100,7 +100,7 @@ async function event(db: AppDb, actor: Actor, type: string, payload: Record<stri
   return value;
 }
 
-async function createChannelMessage(database: Database, actor: Actor, channelId: string, input: unknown, interfaceChannel: "api" | "socket" | "mcp") {
+async function createChannelMessage(database: Database, actor: Actor, channelId: string, input: unknown, interfaceChannel: "api" | "socket" | "mcp" | "engine") {
   const parsed = createChannelMessageSchema.parse(input);
   const channel = await channelScope(database.db, actor, channelId);
   if (!can(actor.membership, "message:write", { ventureId: String(channel.ventureId), groupId: String(channel.groupId) })) throw new AppError(403, "FORBIDDEN", "You cannot post in this channel");

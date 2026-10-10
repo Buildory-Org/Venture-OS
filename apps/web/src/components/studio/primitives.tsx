@@ -95,7 +95,8 @@ export function Notice({ tone, message, onDismiss, autoDismissMs, className }: {
  * Side drawer. Closing (button, Esc, backdrop) plays a short exit before `onClose` unmounts it.
  * With `dirty`, closing first asks inside the drawer whether to discard the changes.
  */
-export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = true, children }: { title: string; subtitle?: string; onClose: () => void; dirty?: boolean; enter?: boolean; children: React.ReactNode }) {
+/** `actions` sit beside Close in the header (they stay put while the body scrolls); `footer` is a bar pinned under the body. */
+export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = true, actions, footer, children }: { title: string; subtitle?: React.ReactNode; onClose: () => void; dirty?: boolean; enter?: boolean; actions?: React.ReactNode; footer?: React.ReactNode; children: React.ReactNode }) {
   const titleId = useId();
   const drawer = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -135,9 +136,10 @@ export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = 
   }, []);
   return <div data-state={state} data-enter={enter} className="vso-backdrop fixed inset-0 z-50 flex justify-end bg-neutral-900/25 backdrop-blur-[1px]" onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
     <aside ref={drawer} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className="vso-enter-right flex h-full w-full max-w-[640px] flex-col bg-white shadow-e4">
-      <header className="flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4"><div className="min-w-0"><h2 id={titleId} className="text-lg font-bold text-neutral-900 [overflow-wrap:anywhere]">{title}</h2>{subtitle && <p className="mt-1 text-xs text-neutral-500">{subtitle}</p>}</div><button ref={close} type="button" onClick={requestClose} aria-label="Close detail" className="min-h-10 rounded-xl px-3 text-sm font-semibold text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]">Close</button></header>
+      <header className="flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4"><div className="min-w-0"><h2 id={titleId} className="text-lg font-bold text-neutral-900 [overflow-wrap:anywhere]">{title}</h2>{subtitle && <p className="mt-1 text-xs text-neutral-500">{subtitle}</p>}</div><div className="flex shrink-0 items-center gap-1.5">{actions}<button ref={close} type="button" onClick={requestClose} aria-label="Close detail" className="min-h-10 rounded-xl px-3 text-sm font-semibold text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]">Close</button></div></header>
       <div data-open={confirming} className="vso-collapse"><div><div role="alertdialog" aria-label="Discard changes?" className="flex flex-wrap items-center justify-between gap-3 border-b border-warning-surface bg-warning-surface px-5 py-3"><p className="text-sm font-semibold text-warning-text">Discard your unsaved changes?</p><div className="flex gap-2"><button ref={keepEditing} type="button" tabIndex={confirming ? 0 : -1} onClick={() => setConfirming(false)} className={clsx(secondaryClass, "!min-h-9")}>Keep editing</button><button type="button" tabIndex={confirming ? 0 : -1} onClick={() => { setConfirming(false); exit(); }} className="inline-flex min-h-9 items-center rounded-xl bg-danger px-3 text-sm font-semibold text-white transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.97]">Discard</button></div></div></div></div>
       <div className="thin-scroll flex-1 overflow-y-auto p-5">{children}</div>
+      {footer && <div className="shrink-0 border-t border-neutral-100 bg-white px-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">{footer}</div>}
     </aside>
   </div>;
 }

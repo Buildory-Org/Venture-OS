@@ -20,6 +20,9 @@ const schema = z.object({
   // Hosted MCP (`/mcp`) and its write tools can be switched off without a code change.
   MCP_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   MCP_WRITES_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  // Company search for the Dealflow Sales connector (search_companies). Blank means off: the tool then says search is not set up.
+  TINYFISH_API_KEY: z.string().trim().min(1).optional(),
+  EXA_API_KEY: z.string().trim().min(1).optional(),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),
   R2_ENDPOINT: z.url().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),

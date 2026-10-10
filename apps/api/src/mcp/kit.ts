@@ -13,6 +13,8 @@ export type ToolContext = {
   toolBudget: (tool: string, perMinute: number) => Promise<void>;
   /** Counts bytes uploaded through Claude against the person's daily allowance; throws once it is used up. */
   uploadBudget: (bytes: number) => Promise<void>;
+  /** Keys for the company search of the Dealflow Sales connector (from the API's environment). A missing key switches that engine off; never logged or returned. */
+  search?: { tinyfishKey?: string | undefined; exaKey?: string | undefined };
 };
 
 export const OPEN = (status: unknown) => status !== "done" && status !== "cancelled";

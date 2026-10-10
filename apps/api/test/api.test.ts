@@ -2416,13 +2416,15 @@ test("hosted MCP batch 1: knowledge drafts, file reading and uploads, tasks, rev
     const readOnly = await tokenFor("member", PAT_READ_SCOPES);
     const names = async (token: string) => (await mcpCall(origin, token, "tools/list")).body.result.tools.map((item: any) => item.name);
     const full = await names(member);
-    for (const name of ["list_documents", "create_document", "update_document", "import_file_as_document", "list_files", "read_file", "start_upload", "finish_upload", "find_person", "create_task", "update_task", "review_evidence", "post_message", "record_decision", "list_requests", "ask_for_information", "answer_request", "list_deals", "add_deal", "update_deal", "list_classes", "list_class_applications", "apply_to_class", "review_class_application"]) assert.ok(full.includes(name), name);
+    for (const name of ["list_documents", "create_document", "update_document", "import_file_as_document", "list_files", "read_file", "start_upload", "finish_upload", "find_person", "create_task", "update_task", "review_evidence", "post_message", "record_decision", "list_requests", "ask_for_information", "answer_request", "list_classes", "list_class_applications", "apply_to_class", "review_class_application"]) assert.ok(full.includes(name), name);
     // Direct messages need their own permission; a read-only key gets no tool that changes anything.
     assert.ok(!full.includes("read_direct_messages") && !full.includes("send_direct_message"));
     assert.ok((await names(memberDm)).includes("send_direct_message"));
     const readTools = await names(readOnly);
     for (const name of ["create_document", "start_upload", "create_task", "post_message", "add_deal", "set_task_status"]) assert.ok(!readTools.includes(name), name);
-    assert.ok(readTools.includes("read_file") && readTools.includes("list_deals"));
+    assert.ok(readTools.includes("read_file") && readTools.includes("list_classes"));
+    // Sales has its own connector (/mcp/sales): the older deal tools and the sales tools are not on this one.
+    for (const name of ["list_deals", "add_deal", "update_deal", "start_sales", "find_leads", "save_verdict"]) assert.ok(!full.includes(name) && !readTools.includes(name), name);
 
     // Knowledge: Claude writes drafts; only an approval in the app makes them approved, and a new version is a draft again.
     const created = await ok(member, "create_document", { title: "Discovery call guide", markdown: "# Discovery\n\nAsk about the budget and the decision maker first.", ventureId: "venture-a", evidence: "planning_assumption", requestId: "doc-create-0001" });
@@ -2562,16 +2564,8 @@ test("hosted MCP batch 1: knowledge drafts, file reading and uploads, tasks, rev
 
     // A second key for the same person (one key would pass the 30-changes-a-minute limit in this test).
     const memberLater = await tokenFor("member", FULL);
-    // Sales: deals in the venture's pipeline, owned by someone who can open it.
-    const deal = await ok(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Acme Agency", value: 200000, currency: "inr", requestId: "deal-add-0000001" });
-    assert.equal(deal.value, "2,00,000 INR");
-    await refused(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Other", owner: "user-outsider", requestId: "deal-add-0000002" }, /owner must be an active member/);
-    await refused(memberLater, "add_deal", { pipelineId: "pipeline-a", companyName: "Other", value: 5, requestId: "deal-add-0000003" }, /currency/);
-    assert.equal((await ok(memberLater, "update_deal", { dealId: deal.dealId, stage: "proposal" })).stage, "proposal");
-    const deals = await ok(memberLater, "list_deals", { ventureId: "venture-a" });
-    assert.equal(deals.deals[0].stage, "proposal");
-    assert.equal(deals.pipelines[0].id, "pipeline-a");
-    assert.deepEqual((await ok(outsider, "list_deals", {})).deals, undefined);
+    // Sales moved to its own connector: the older deal tools are gone from this one (see mcp-sales.test.ts).
+    for (const name of ["list_deals", "add_deal", "update_deal"]) await refused(memberLater, name, {}, /not found/i);
 
     // Classes: a participant applies, the named reviewer assesses.
     assert.equal((await ok(memberLater, "list_classes", {})).items[0].id, "class-a");
@@ -2581,7 +2575,7 @@ test("hosted MCP batch 1: knowledge drafts, file reading and uploads, tasks, rev
     assert.equal((await ok(lead, "review_class_application", { classId: "class-a", applicationId: application.applicationId, assessment: "Good questions; tighten the close.", nextGap: "Closing" })).reviewed, true);
 
     // Every write was audited as a Claude action.
-    assert.ok(await db.collection("audit_events").countDocuments({ channel: "mcp", action: { $in: ["mcp.create_document", "mcp.start_upload", "mcp.create_task", "mcp.post_message", "mcp.add_deal"] } }) >= 5);
+    assert.ok(await db.collection("audit_events").countDocuments({ channel: "mcp", action: { $in: ["mcp.create_document", "mcp.start_upload", "mcp.create_task", "mcp.post_message"] } }) >= 4);
   } finally {
     server.close();
     await once(server, "close");

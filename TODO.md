@@ -459,3 +459,30 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
 - [ ] Show newly delivered in-app notifications without manual refresh (unread bell and accessible reminder toast); verify no duplicate initial-load alerts
 - [ ] Staging sign-off and release checklist
 
+
+## Phase 7 — Sales (Dealflow)
+
+Spec: `docs/sales-dealflow.md`. Built 2026-10-09 on the local dev stack (standalone MongoDB, dev auth) against the owner's real leads imported into `vso_dealflow_dev`. Uncommitted, awaiting the owner's review.
+
+- [x] Contracts: SLS-01 stages with legacy names, leads, activities, Claude verdicts, drafts, plays, find-lead runs, brain items, do-not-contact list, overview; partial updates never re-apply defaults
+- [x] API under `/v1/sales`: permissions by venture role, automatic stage rules, separate-session review, first-batch approval, WhatsApp only after a person-confirmed opt-in, one do-not-contact list, soft delete, won notices, delivery work as a task, idempotent writes; legacy `/pipelines` and `/opportunities` kept (bounded)
+    - `sales.test.ts` + `mcp-sales.test.ts` 32/32 on a standalone MongoDB; the five replica-set cases in `api.test.ts` are unchanged and still need a replica set.
+- [x] Claude's hosted MCP tools (`tools-sales.ts`): work and review sessions, verdicts with quoted evidence, drafts, reviews, replies, calls, leads, plays, find-lead plans, brain proposals; no send, approve, veto, override or won-stage tools; the loopback allowlist excludes app-only routes
+- [x] Web: one Sales item with Overview (phone "On the go"), Leads table and lead drawer, Review split view, Inbox, Pipeline board, Plays, Calls, Find leads, Brain; desktop and 375px phone, light and dark
+    - Live checks (Prospector `tooling/vso-qa`): API flow 42/42 as every role, connector flow 15/15 over HTTP, click-through desktop and phone, WhatsApp consent 9/9, screenshots of every page with no console errors or failed calls. Web typecheck and lint pass; no production build was run (low disk).
+- [x] Independent review (2026-10-09): no Critical; three High and nine Medium findings fixed and re-tested (Claude self-granted WhatsApp consent, cross-venture do-not-contact removal, Claude reopening or overriding a person's decisions, double mark-sent, suppression matching, mailto parameters, phone approval from a snippet, import refresh)
+- [x] Import of the Dealflow SQLite (read-only) with guards: production, non-local hosts and non-`_dev` databases refused; re-runs never overwrite app edits
+- [x] Studio | Sales mode switch at the top of the sidebar (owner's pick A): Sales mode has its own menu with live counts, Shared group (Calendar, Knowledge, Messages, Notifications, People & access) in both, "Sales knowledge" naming, top bar Add lead and lead search; verified desktop, phone drawer, collapsed rail, dark
+- [x] Two Claude connectors: Venture Studio (`/mcp`, no sales or deal tools) and Dealflow Sales (`/mcp/sales`, sales tools + venture/person lookups); Connect Claude page shows both with one-click keys; connector flow 16/16
+- [x] Studio | Sales modes, two Claude connectors (`/mcp` Venture Studio, `/mcp/sales` Dealflow Sales), guided `start_sales` with say/next, MCP Apps cards, `search_companies` (TinyFish/Exa keys optional), `weekly_report` and `daybreak` tools, Sales OS guide and Claude Code skill
+- [x] Office PC engine bridge: `/v1/sales/engine/*` (engine-scoped tokens, atomic claims, find and enrich runs) plus the Prospector worker (`dealflow_backend.vso_bridge`, 50 tests); Find leads page shows live runs and queues contact look-ups
+- [x] Reminders and notices (next action, reply, approval, needs you), per-venture sales settings (working days, blackouts, caps, channels, approval mode) with a setup checklist and banner
+- [x] Revenue layer (value, close date, probability, lost reasons, board totals, forecast card), lead drawer redesign (identity header, at-a-glance tiles, tabs, action bar), filters by state, city, industry and contact, bulk actions, CSV export and import, saved views, Do-not-contact page, Inbox reply clock, Reports with Claude calibration, Sales knowledge two-pane page
+- [x] Independent audits round 2 (engine, settings, notices, reports, connector, web) and round 3 (bulk, CSV, import, views): 1 high and 7 medium findings fixed in round 2, 1 high and 4 medium in round 3, plus lows; all with regression tests
+    - 2026-10-10 final check: API suites 47 + 9 + 10 + 18 + 3 + 13 pass one at a time; `tooling/vso-qa/run-all.mjs` all ok (API flow 42/42, connector 16/16, click-through desktop and phone, consent 10/10, 56 screenshot views with no page errors); typecheck and lint clean for API, worker and web. Still uncommitted.
+- [ ] Owner walkthrough and refinements
+- [ ] Run against a MongoDB replica set (transactions) and repeat the live checks
+- [ ] Email lane: send from each person's own mailbox over SMTP (off until the owner switches it on per venture)
+- [ ] WhatsApp Cloud API lane: webhook (verify token, signature check, de-duplication), templates, 24-hour window (off until the owner has the business number)
+- [ ] Office-PC engine bridge: pick up queued find-lead runs and add leads with contact routes from the company's own pages
+- [ ] Deploy with the production stack and connect Claude on claude.ai for each teammate

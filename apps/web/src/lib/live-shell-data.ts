@@ -1,4 +1,5 @@
 import type { StudioData, TaskStatus } from "./studio-demo";
+import { WON_STAGES, type SalesStage } from "@venture-studio/contracts";
 import { listLiveClasses, listLiveDecisions, listLiveDocuments, listLiveFocusHistory, listLiveMembers, listLiveNotifications, listLiveOpportunities, listLiveOutcomes, listLiveTasks, loadLiveSession } from "./studio-api";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
@@ -11,6 +12,16 @@ type Documents = Awaited<ReturnType<typeof listLiveDocuments>>;
 type Opportunities = Awaited<ReturnType<typeof listLiveOpportunities>>;
 type FocusHistory = Awaited<ReturnType<typeof listLiveFocusHistory>>;
 type Classes = Awaited<ReturnType<typeof listLiveClasses>>;
+
+/** The demo-shaped deal stage for a Sales (SLS-01) stage: any won stage is Won, replied and thinking are a conversation. */
+function dealStage(stage: SalesStage): StudioData["deals"][number]["stage"] {
+  if (WON_STAGES.includes(stage)) return "Won";
+  if (stage === "qualified" || stage === "discovery_booked") return "Qualified";
+  if (stage === "proposal") return "Proposal";
+  if (stage === "lost" || stage === "disqualified") return "Lost";
+  if (stage === "replied" || stage === "thinking") return "Negotiation";
+  return "New";
+}
 
 const taskStatus: Record<TaskPage["items"][number]["status"], TaskStatus> = {
   draft: "Backlog", proposed: "Backlog", accepted: "Ready", backlog: "Backlog",
@@ -75,7 +86,7 @@ export function connectedDashboardData(session: Session, input: {
     })),
     deals: input.opportunities.map((item) => ({
       id: item.id, ventureId: item.ventureId, lead: item.companyName, offer: item.observedSignal,
-      stage: item.stage === "qualified" ? "Qualified" : item.stage === "proposal" ? "Proposal" : item.stage === "won" ? "Won" : item.stage === "lost" ? "Lost" : item.stage === "conversation" ? "Negotiation" : "New",
+      stage: dealStage(item.stage),
       ownerId: item.ownerId, lastAction: "", nextAction: item.nextAction, nextAt: item.nextActionAt ?? item.updatedAt,
       evidence: item.fitReason, result: "",
     })),

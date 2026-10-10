@@ -3,7 +3,7 @@ import type { ClientSession } from "mongodb";
 import type { AppDb } from "./db.js";
 
 export type AuditInput = {
-  workspaceId: string; actorId: string | null; channel: "api" | "web" | "socket" | "mcp" | "worker";
+  workspaceId: string; actorId: string | null; channel: "api" | "web" | "socket" | "mcp" | "worker" | "engine";
   action: string; objectType: string; objectId?: string; ventureId?: string; result: "success" | "denied" | "validation_failure" | "failure";
   metadata?: Record<string, string | number | boolean | null>;
 };

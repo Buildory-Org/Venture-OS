@@ -1,16 +1,32 @@
 const opaqueId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const ALLOWED_PATHS = ["/tasks/live", "/notifications/live", "/messages/live", "/channels/live", "/calendar/live"];
+/** Sales opens on its own screens: /sales/live and every tab under it (review, inbox, leads, calls…). */
+const isSalesPath = (pathname) => pathname === "/sales/live" || /^\/sales\/live\/[a-z-]+$/.test(pathname);
+const allowedPath = (pathname) => ALLOWED_PATHS.includes(pathname) || isSalesPath(pathname);
+/** A same-site path under /sales/live carried by the notice itself (path and query only), or "". */
+function salesUrl(value) {
+  if (typeof value !== "string" || !value.startsWith("/sales/live") || value.startsWith("//")) return "";
+  try {
+    const url = new URL(value, self.location.origin);
+    return url.origin === self.location.origin && isSalesPath(url.pathname) ? url.pathname + url.search : "";
+  } catch { return ""; }
+}
 
 // This worker only shows notifications, so a new version can take over at once.
 self.addEventListener("install", () => { self.skipWaiting(); });
 self.addEventListener("activate", (event) => { event.waitUntil(self.clients.claim()); });
 
-/** Where a notice opens: its conversation, task, or event; otherwise the inbox. */
+/** Where a notice opens: its conversation, task, event, or Sales screen (lead, draft, reply); otherwise the inbox. */
 function noticeUrl(notice) {
+  const sales = salesUrl(notice?.url);
+  if (sales) return sales;
   if (notice?.chatKind === "channel" && opaqueId(notice.chatId)) return `/channels/live?channel=${encodeURIComponent(notice.chatId)}`;
   if (notice?.chatKind === "direct" && opaqueId(notice.chatId)) return `/messages/live?with=${encodeURIComponent(notice.chatId)}`;
   if (notice?.resourceType === "task" && opaqueId(notice.resourceId)) return `/tasks/live?task=${encodeURIComponent(notice.resourceId)}`;
   if (notice?.resourceType === "event" && opaqueId(notice.resourceId)) return `/calendar/live?event=${encodeURIComponent(notice.resourceId)}`;
+  if (notice?.resourceType === "opportunity" && opaqueId(notice.resourceId)) return `/sales/live/leads?lead=${encodeURIComponent(notice.resourceId)}`;
+  if ((notice?.resourceType === "draft" || notice?.resourceType === "sales_draft") && opaqueId(notice.resourceId)) return `/sales/live/review?draft=${encodeURIComponent(notice.resourceId)}`;
+  if (notice?.resourceType === "activity" && opaqueId(notice.resourceId)) return `/sales/live/inbox?reply=${encodeURIComponent(notice.resourceId)}`;
   return "/notifications/live";
 }
 
@@ -46,7 +62,8 @@ self.addEventListener("push", (event) => {
       badge: "/brand/badge-96.png",
       // A tab someone is looking at plays the app's own sound; otherwise (behind, frozen, or closed) the system sound plays.
       silent: windows.some((client) => client.visibilityState === "visible"),
-      data: { url: notice ? noticeUrl(notice) : "/notifications/live" },
+      // A push may name its Sales screen itself (url: "/sales/live/..."); otherwise the notice decides.
+      data: { url: salesUrl(payload.url) || (notice ? noticeUrl(notice) : "/notifications/live") },
     });
   })());
 });
@@ -55,7 +72,7 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const path = event.notification.data?.url;
   let target = new URL(typeof path === "string" ? path : "/notifications/live", self.location.origin);
-  if (target.origin !== self.location.origin || !ALLOWED_PATHS.includes(target.pathname)) target = new URL("/notifications/live", self.location.origin);
+  if (target.origin !== self.location.origin || !allowedPath(target.pathname)) target = new URL("/notifications/live", self.location.origin);
   event.waitUntil((async () => {
     const windows = (await self.clients.matchAll({ type: "window", includeUncontrolled: true })).filter((client) => new URL(client.url).origin === target.origin);
     const existing = windows.find((client) => client.focused) ?? windows.find((client) => client.visibilityState === "visible") ?? windows[0];

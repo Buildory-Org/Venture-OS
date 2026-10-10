@@ -18,6 +18,7 @@ import { patRoutes } from "./routes/pats.js";
 import { adminRoutes, invitationAcceptanceRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { salesRoutes } from "./routes/sales.js";
+import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
 import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
@@ -67,6 +68,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", ventureLifecycleRoutes(database));
   app.use("/v1", notificationRoutes(database.db, config.VAPID_PUBLIC_KEY));
   app.use("/v1", salesRoutes(database.db));
+  app.use("/v1", leaderboardRoutes(database, config));
   app.use("/v1", searchRoutes(database.db));
   app.use("/v1", calendarRoutes(database));
   app.use("/v1", calendarFeedRoutes(database, config));

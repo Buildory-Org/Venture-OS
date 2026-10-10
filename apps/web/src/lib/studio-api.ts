@@ -60,6 +60,11 @@ import {
   channelNotificationLevelSchema,
   type ChannelNotificationLevel,
   outcomeSchema,
+  leaderboardPersonSchema,
+  leaderboardSchema,
+  leaderboardWeeklySchema,
+  leaderboardWeeklyStatusSchema,
+  type LeaderboardPeriod,
   pagedDataSchema,
   pagedSuccessEnvelope,
   reminderSchema,
@@ -220,6 +225,26 @@ export async function listLiveTasks(cursor?: string, { counts, ...filters }: Tas
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
   return successEnvelope(pagedDataSchema(taskSchema).extend({ counts: taskListCountsSchema.optional() })).parse(await request(`/v1/tasks?${params}`)).data;
+}
+
+/** The leaderboard: everyone's fair score for a period (see contracts/leaderboard.ts for how it's worked out). */
+export async function getLeaderboard(options: { period: LeaderboardPeriod; ventureId?: string; learners?: boolean }) {
+  const params = new URLSearchParams({ period: options.period, ...(options.ventureId ? { ventureId: options.ventureId } : {}), ...(options.learners ? { learners: "true" } : {}) });
+  return successEnvelope(leaderboardSchema).parse(await request(`/v1/leaderboard?${params}`)).data;
+}
+export async function getLeaderboardPerson(userId: string, options: { period: LeaderboardPeriod; ventureId?: string; learners?: boolean; week?: string }) {
+  const params = new URLSearchParams({ period: options.period, ...(options.ventureId ? { ventureId: options.ventureId } : {}), ...(options.learners ? { learners: "true" } : {}), ...(options.week ? { week: options.week } : {}) });
+  return successEnvelope(leaderboardPersonSchema).parse(await request(`/v1/leaderboard/people/${encodeURIComponent(userId)}?${params}`)).data;
+}
+/** Last week's edition, made on Saturday; `seen` says whether this person has opened it. */
+export async function getWeeklyLeaderboard(learners = false) {
+  return successEnvelope(leaderboardWeeklySchema).parse(await request(`/v1/leaderboard/weekly${learners ? "?learners=true" : ""}`)).data;
+}
+export async function getWeeklyLeaderboardStatus() {
+  return successEnvelope(leaderboardWeeklyStatusSchema).parse(await request("/v1/leaderboard/weekly/status")).data;
+}
+export async function markWeeklyLeaderboardSeen(week: string) {
+  await request(`/v1/leaderboard/weekly/${encodeURIComponent(week)}/seen`, { method: "POST", body: "{}" });
 }
 
 export async function getLiveTask(id: string) {

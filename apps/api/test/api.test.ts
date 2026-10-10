@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
+import { computeBoard, periodRange, weekStartOf } from "../src/leaderboard.js";
 import { contextParts } from "../src/mcp/tools-context.js";
 import { markupField } from "../src/mcp/format.js";
 import type { Request, Response } from "express";
@@ -3355,6 +3356,155 @@ test("task lists: open, needs my review, overdue, and done views; sorted with st
     // Without a sort, the list is as before: every task in id order.
     assert.equal((await ids("limit=100")).length, 12);
     assert.deepEqual(await ids("status=parked"), ["t-parked"]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, short deadlines), ranks, learners, reviewers, and the Saturday edition", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_leaderboard`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const created = new Date("2026-01-01T00:00:00Z");
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: created } as never);
+  await db.collection("ventures").insertMany([
+    { _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: created },
+    { _id: "venture-b", workspaceId: "workspace-a", name: "Beta", status: "active", goal30Day: "", createdAt: created },
+  ] as never);
+  await db.collection("groups").insertMany([
+    { _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: created },
+    { _id: "group-b", workspaceId: "workspace-a", ventureId: "venture-b", name: "Core", createdAt: created },
+  ] as never);
+  const people = [["admin", "admin"], ["asha", "contributor"], ["ravi", "contributor"], ["meera", "contributor"], ["bob", "contributor"], ["pat", "contributor"], ["lee", "learner"], ["rev", "reviewer"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: created, updatedAt: created })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: created, updatedAt: created })) as never);
+
+  // A fixed clock for the scoring rules, well away from the real one: Saturday 13 June 2026, noon UTC.
+  const now = new Date("2026-06-13T12:00:00Z");
+  const hour = 3_600_000; const day = 24 * hour;
+  const at = (ms: number) => new Date(now.getTime() + ms);
+  const task = (id: string, assignee: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: id, outcome: "o", assigneeId: `user-${assignee}`, creatorId: "user-admin", priority: "medium", status: "done", dueAt, timezone: "UTC", estimatedMinutes: 60, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: new Date(dueAt.getTime() - 5 * day), updatedAt: now, ...extra });
+  let evidenceCount = 0;
+  const proof = (taskId: string, submittedAt: Date, reviewStatus = "accepted", reviewedAt?: Date, reviewedBy = "user-rev") => ({ _id: `e-${++evidenceCount}`, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy: "someone", submittedAt, reviewStatus, ...(reviewedAt ? { reviewedAt, reviewedBy } : {}) });
+  const tasks: Record<string, unknown>[] = []; const evidence: Record<string, unknown>[] = [];
+  // Asha: six tasks, all in on time; one was reviewed two days after it was due, which mustn't count against her.
+  for (let index = 0; index < 6; index++) { const due = at(-(index + 2) * day); tasks.push(task(`asha-${index}`, "asha", due)); evidence.push(proof(`asha-${index}`, new Date(due.getTime() - hour), "accepted", new Date(due.getTime() + (index === 0 ? 2 * day : hour)))); }
+  // Ravi: one on time, one half a day late (0.75), one never delivered (0).
+  tasks.push(task("ravi-on", "ravi", at(-3 * day)), task("ravi-late", "ravi", at(-4 * day)), task("ravi-missed", "ravi", at(-2 * day), { status: "todo" }));
+  evidence.push(proof("ravi-on", at(-3 * day - hour)), proof("ravi-late", at(-4 * day + 12 * hour)));
+  // Meera: two on time, so not ranked yet.
+  tasks.push(task("meera-1", "meera", at(-2 * day)), task("meera-2", "meera", at(-3 * day)));
+  evidence.push(proof("meera-1", at(-2 * day - hour)), proof("meera-2", at(-3 * day - hour)));
+  // Bob: blocked for two days (delivered a day and a half after the due date: on time); given an hour for four hours' work
+  // (delivered two hours after the due date: on time); evidence rejected once before the accepted one (on time, not first time right).
+  tasks.push(task("bob-blocked", "bob", at(-6 * day)), task("bob-short", "bob", at(-5 * day), { estimatedMinutes: 240, createdAt: at(-5 * day - hour) }), task("bob-redo", "bob", at(-4 * day)));
+  evidence.push(proof("bob-blocked", at(-6 * day + 36 * hour)), proof("bob-short", at(-5 * day + 2 * hour)), proof("bob-redo", at(-4 * day - 2 * hour), "rejected", at(-4 * day - 90 * 60_000)), proof("bob-redo", at(-4 * day - hour)));
+  // Pat: evidence still waiting for review counts (a slow reviewer mustn't make it missed); a task left blocked from before
+  // its due date gets a week at most, then it's missed.
+  tasks.push(task("pat-pending", "pat", at(-2 * day), { status: "review" }), task("pat-stuck", "pat", at(-10 * day), { status: "blocked" }));
+  evidence.push(proof("pat-pending", at(-2 * day - hour), "pending"));
+  // An admin accepting their own evidence isn't a review.
+  evidence.push({ ...proof("lee-0", at(-9 * day), "accepted", at(-9 * day + hour), "user-admin"), submittedBy: "user-admin" });
+  await db.collection("task_updates").insertMany([
+    { _id: "u-1", workspaceId: "workspace-a", taskId: "bob-blocked", authorId: "user-bob", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-7 * day) },
+    { _id: "u-2", workspaceId: "workspace-a", taskId: "bob-blocked", authorId: "user-bob", type: "status", body: "Unblocked", fromStatus: "blocked", toStatus: "in_progress", createdAt: at(-5 * day) },
+    // Marked blocked only after it was already late: no help.
+    { _id: "u-3", workspaceId: "workspace-a", taskId: "ravi-late", authorId: "user-ravi", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-4 * day + 2 * hour) },
+    { _id: "u-4", workspaceId: "workspace-a", taskId: "ravi-late", authorId: "user-ravi", type: "status", body: "Unblocked", fromStatus: "blocked", toStatus: "in_progress", createdAt: at(-4 * day + 10 * hour) },
+    { _id: "u-5", workspaceId: "workspace-a", taskId: "pat-stuck", authorId: "user-pat", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-11 * day) },
+  ] as never);
+  // Lee (a learner): three on time. Cancelled, parked, and not-yet-due work never counts.
+  for (let index = 0; index < 3; index++) { tasks.push(task(`lee-${index}`, "lee", at(-(index + 2) * day))); evidence.push(proof(`lee-${index}`, at(-(index + 2) * day - hour))); }
+  tasks.push(task("asha-cancelled", "asha", at(-2 * day), { status: "cancelled" }), task("asha-parked", "asha", at(-2 * day), { status: "parked" }), task("ravi-future", "ravi", at(2 * day), { status: "todo" }));
+  await db.collection("tasks").insertMany(tasks as never);
+  await db.collection("evidence_items").insertMany(evidence as never);
+
+  const range = { from: at(-30 * day), to: now };
+  const board = await computeBoard(db, { workspaceId: "workspace-a", ...range, now, includeLearners: false });
+  const person = (handle: string) => board.people.find((entry) => entry.userId === `user-${handle}`)!;
+  const result = (id: string) => [...board.tasks.values()].flat().find((item) => item.id === id)!;
+  // Each rule, task by task.
+  assert.equal(result("asha-0").outcome, "on_time", "delivered when the evidence was sent, not when it was reviewed");
+  assert.deepEqual([result("ravi-late").outcome, result("ravi-late").credit, result("ravi-late").blockedMs], ["late", 0.75, 0], "a block that starts once it's late doesn't help");
+  assert.equal(result("pat-pending").outcome, "on_time", "evidence waiting for review counts as handed in");
+  assert.deepEqual([result("pat-stuck").outcome, result("pat-stuck").blockedMs], ["missed", 7 * day], "blocked time moves the due date back a week at most");
+  assert.equal(person("pat").overdueNow, 1, "only the stuck task is overdue; the one waiting for review isn't");
+  assert.deepEqual([result("ravi-missed").outcome, result("ravi-missed").credit], ["missed", 0]);
+  assert.deepEqual([result("bob-blocked").outcome, result("bob-blocked").blockedMs], ["on_time", 2 * day], "blocked time moves the due date back");
+  assert.deepEqual([result("bob-short").outcome, result("bob-short").allowanceMs, result("bob-short").weight], ["on_time", 3 * hour, 4], "an impossible deadline gets the shortfall");
+  assert.deepEqual([result("bob-redo").outcome, result("bob-redo").firstTimeRight], ["on_time", false]);
+  assert.equal(board.tasks.get("user-ravi")!.some((item) => item.id === "ravi-future"), false, "not due yet");
+  assert.equal(board.tasks.get("user-asha")!.length, 6, "cancelled and parked tasks don't count");
+  // Rates are evened out toward the team's, so small numbers neither win nor lose by much.
+  const ravi = person("ravi");
+  const raviRaw = (1 + 0.75 + 0) / 3;
+  assert.ok(Math.abs(ravi.reliability - (3 * raviRaw + 5 * board.team.reliability) / 8) < 1e-3);
+  assert.deepEqual([ravi.tasksDue, ravi.delivered, ravi.onTime, ravi.late, ravi.missed, ravi.averageDaysLate, ravi.overdueNow], [3, 2, 1, 1, 1, 0.5, 1]);
+  assert.equal(person("bob").firstTimeRight, 2);
+  assert.ok(person("asha").score > person("bob").score && person("bob").score > ravi.score, "all on time and right first time ranks highest");
+  assert.deepEqual(board.people.filter((entry) => entry.rank).map((entry) => [entry.rank, entry.userId]), [[1, "user-asha"], [2, "user-bob"], [3, "user-ravi"]]);
+  assert.equal(person("meera").rank, undefined, "two tasks aren't enough to rank");
+  assert.equal(board.people.some((entry) => entry.userId === "user-lee"), false, "learners are left out unless asked for");
+  assert.deepEqual(board.mostDelivered, { userId: "user-asha", name: "Person asha", delivered: 6 });
+  assert.equal(board.reviewers[0]?.userId, "user-rev");
+  assert.equal(board.reviewers.some((item) => item.userId === "user-admin"), false, "reviewing your own evidence isn't a review");
+  const withLearners = await computeBoard(db, { workspaceId: "workspace-a", ...range, now, includeLearners: true });
+  assert.equal(withLearners.people.find((entry) => entry.userId === "user-lee")?.rank !== undefined, true);
+  // Weeks start on Saturday midnight in the leaderboard's time zone.
+  assert.equal(weekStartOf(now, "Asia/Kolkata").toISOString(), "2026-06-12T18:30:00.000Z");
+  assert.equal(weekStartOf(new Date("2026-06-12T18:29:00Z"), "Asia/Kolkata").toISOString(), "2026-06-05T18:30:00.000Z", "Friday 23:59 is still last week");
+  assert.deepEqual(periodRange("last_week", now, "Asia/Kolkata"), { from: new Date("2026-06-05T18:30:00.000Z"), to: new Date("2026-06-12T18:30:00.000Z") });
+
+  // Through the API, as people see it.
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string) => fetch(`${origin}/v1${path}`, { method, headers: { "x-dev-user-id": `user-${handle}` } });
+  const json = async (response: globalThis.Response) => { assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  try {
+    // Work due last week (by the real clock) for the weekly edition; one task in venture B the members can't open.
+    const lastWeek = periodRange("last_week", new Date(), "Asia/Kolkata");
+    const inWeek = (hours: number) => new Date(lastWeek.from.getTime() + hours * hour);
+    await db.collection("tasks").insertMany([0, 1, 2].map((index) => task(`week-${index}`, "meera", inWeek(24 + index * 24))).concat([task("week-beta", "meera", inWeek(100), { ventureId: "venture-b", groupId: "group-b" }), task("week-friday", "meera", inWeek(160))]) as never);
+    await db.collection("evidence_items").insertMany([0, 1, 2].map((index) => proof(`week-${index}`, inWeek(20 + index * 24))).concat([proof("week-beta", inWeek(90)), proof("week-friday", inWeek(169))]) as never);
+    const everyone = await json(await call("GET", "/leaderboard?period=last_week", "ravi"));
+    assert.equal(everyone.people.find((entry: any) => entry.userId === "user-meera")?.rank, 1, "everyone sees everyone's ranking");
+    assert.equal(everyone.minimumTasks, 3);
+    assert.equal((await call("GET", "/leaderboard?period=last_week&ventureId=venture-b", "ravi")).status, 404, "a venture's board is for those who can open it");
+    assert.equal((await call("GET", "/leaderboard?period=forever", "ravi")).status, 400);
+    const meera = await json(await call("GET", "/leaderboard/people/user-meera?period=last_week", "ravi"));
+    assert.deepEqual([meera.tasks.length, meera.hidden], [4, 1], "tasks the viewer can't open are only counted");
+    assert.equal(meera.tasks.find((item: any) => item.id === "week-friday").outcome, "late", "sent on Saturday, nine hours late");
+    assert.equal((await json(await call("GET", "/leaderboard/people/user-meera?period=last_week", "admin"))).hidden, 0);
+    // The Saturday edition: made once, the same for everyone, and shown to each person once.
+    const status = await json(await call("GET", "/leaderboard/weekly/status", "ravi"));
+    assert.deepEqual([status.seen, status.ranked >= 1, status.weekStart], [false, true, lastWeek.from.toISOString()]);
+    const edition = await json(await call("GET", "/leaderboard/weekly", "asha"));
+    assert.equal(edition.id, status.id);
+    assert.equal(edition.board.people[0].userId, "user-meera");
+    assert.equal(edition.board.people[0].missed, 1, "the edition is as of Saturday midnight: Saturday's evidence came after it");
+    const asEdition = await json(await call("GET", `/leaderboard/people/user-meera?week=${status.id}`, "ravi"));
+    assert.equal(asEdition.tasks.find((item: any) => item.id === "week-friday").outcome, "missed", "the breakdown can follow the edition");
+    assert.equal((await call("GET", "/leaderboard/people/user-meera?week=2001-01-06", "ravi")).status, 404);
+    await db.collection("tasks").insertOne(task("week-late-addition", "asha", inWeek(30)) as never);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly", "admin"))).generatedAt, edition.generatedAt, "kept as it was first made");
+    assert.equal((await call("POST", `/leaderboard/weekly/${status.id}/seen`, "ravi")).status, 200);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly/status", "ravi"))).seen, true);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly/status", "asha"))).seen, false, "seen is per person");
+    assert.equal((await call("POST", "/leaderboard/weekly/2001-01-06/seen", "ravi")).status, 404);
+    assert.equal((await call("POST", "/leaderboard/weekly/not-a-week/seen", "ravi")).status, 400);
   } finally {
     server.close();
     await once(server, "close");

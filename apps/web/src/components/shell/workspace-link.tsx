@@ -10,7 +10,7 @@ const connectedRoutes: Record<string, string> = {
   messages: "/messages/live", notifications: "/notifications/live",
   knowledge: "/knowledge/live", decisions: "/decisions/live", classes: "/classes/live",
   timeline: "/timeline/live", requests: "/requests/live", sales: "/sales/live",
-  admin: "/admin/live", settings: "/notifications/live", focus: "/focus/live", connect: "/connect/live",
+  admin: "/admin/live", settings: "/notifications/live", focus: "/focus/live", connect: "/connect/live", leaderboard: "/leaderboard/live",
 };
 
 export function workspaceHref(href: string, mode: "demo" | "connected") {

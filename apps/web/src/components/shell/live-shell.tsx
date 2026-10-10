@@ -1,7 +1,7 @@
 "use client";
 import { describeError } from "@/lib/errors";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Layers3 } from "@/components/ui/icons";
@@ -9,7 +9,7 @@ import { AppShell } from "./app-shell";
 import { StudioProvider } from "@/lib/studio-store";
 import { connectedNotices, connectedShellData } from "@/lib/live-shell-data";
 import { notificationSnapshotEvent } from "@/lib/notification-events";
-import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
+import { StudioApiError, getWeeklyLeaderboardStatus, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
 import { demoEnabled } from "@/lib/demo";
 import { NewTaskHost } from "@/components/studio/new-task-dialog";
 
@@ -25,6 +25,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
   const [hierarchyRevision, setHierarchyRevision] = useState(0);
+  const weeklyChecked = useRef(false);
 
   useEffect(() => {
     const refresh = () => setHierarchyRevision((value) => value + 1);
@@ -49,6 +50,14 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
         if (!active) return;
         setSnapshot({ session, data: connectedShellData(session) });
         setError(""); setNoAccess(false);
+        // On the first open after Saturday's edition is out, show it once (then carry on to where they were going).
+        if (!weeklyChecked.current) {
+          weeklyChecked.current = true;
+          void getWeeklyLeaderboardStatus().then((status) => {
+            if (status.seen || !status.ranked || window.location.pathname.startsWith("/leaderboard/weekly")) return;
+            router.replace(`/leaderboard/weekly/live?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`);
+          }, () => undefined);
+        }
         const [tasks, notifications, members] = await Promise.allSettled([
           listLiveTasks(), listLiveNotifications(), listLiveMembers({ limit: 100 }),
         ]);

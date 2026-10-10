@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prefersReducedMotion } from "@/lib/motion";
-import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, TrendingUp, Users, X } from "@/components/ui/icons";
+import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, TrendingUp, Trophy, Users, X } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { Select } from "@/components/ui/select";
@@ -21,6 +21,7 @@ const sections = [
   { label: "Ventures", href: "/ventures", icon: Layers3 },
   { label: "Tasks", href: "/tasks", icon: ListTodo },
   { label: "Board", href: "/board", icon: Columns3 },
+  { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
   { label: "Channels", href: "/channels", icon: Hash },
   { label: "Messages", href: "/messages", icon: MessageSquareText },
   { label: "Notifications", href: "/notifications", icon: Bell },
@@ -156,8 +157,9 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
       <nav ref={navScroll} className="vso-nav-scroll thin-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-3" aria-label="Main navigation" onScroll={hideTip}>
         <div className={clsx("mb-4 flex min-h-11 items-center gap-2 rounded-xl bg-neutral-50 px-2", collapsed && "lg:justify-center lg:px-1")}><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white text-[10px] font-semibold text-neutral-700 shadow-sm">{(data.ventures.find((venture) => venture.id === activeVentureId)?.short ?? workspaceName.slice(0, 2)).toUpperCase()}</span><span className={clsx("vso-nav-label min-w-0 flex-1", collapsed && "lg:hidden")}><Select aria-label="Active venture scope" value={activeVentureId} onChange={(event) => event.target.value === NEW_VENTURE ? setCreatingVenture(true) : setActiveVentureId(event.target.value)} className="!min-h-9 !w-full !border-0 !bg-transparent !px-1 !text-xs !shadow-none"><option value="">All ventures</option>{data.ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}{canCreateVenture && <option value={NEW_VENTURE}><span className="flex items-center gap-1.5 text-primary-700"><Plus size={14} aria-hidden="true" />New venture</span></option>}</Select></span></div>
         <p className={clsx("mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.1em] text-neutral-400", collapsed && "lg:text-center")}><span className="lg:hidden">Workspace</span><span className="hidden lg:inline">{collapsed ? "•••" : "Workspace"}</span></p>
-        <div ref={navList} className="vso-nav-list relative space-y-0.5"><span ref={pill} aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 rounded-xl bg-primary-700 opacity-0" />{sections.map(({ label, href, icon: Icon }) => {
-          const active = activePath === href;
+        <div ref={navList} className="vso-nav-list relative space-y-0.5"><span ref={pill} aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 rounded-xl bg-primary-700 opacity-0" />{sections.filter(({ href }) => href !== "/leaderboard" || mode === "connected").map(({ label, href, icon: Icon }) => {
+          // The weekly edition belongs to the leaderboard.
+          const active = activePath === href || (href === "/leaderboard" && activePath.startsWith("/leaderboard/"));
           const current = path === href;
           if (href === "/ventures") return <div key={href}>
             <div data-nav-active={active || undefined} className={clsx("relative flex items-center rounded-xl transition-colors duration-150", active ? "text-white" : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900")}>

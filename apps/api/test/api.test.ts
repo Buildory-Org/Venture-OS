@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
-import { computeBoard, periodRange, weekStartOf } from "../src/leaderboard.js";
+import { computeBoard, periodRange, previousRange, weekStartOf } from "../src/leaderboard.js";
 import { contextParts } from "../src/mcp/tools-context.js";
 import { markupField } from "../src/mcp/format.js";
 import type { Request, Response } from "express";
@@ -3385,7 +3385,7 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
     { _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: created },
     { _id: "group-b", workspaceId: "workspace-a", ventureId: "venture-b", name: "Core", createdAt: created },
   ] as never);
-  const people = [["admin", "admin"], ["asha", "contributor"], ["ravi", "contributor"], ["meera", "contributor"], ["bob", "contributor"], ["pat", "contributor"], ["lee", "learner"], ["rev", "reviewer"]] as const;
+  const people = [["admin", "admin"], ["asha", "contributor"], ["ravi", "contributor"], ["meera", "contributor"], ["bob", "contributor"], ["pat", "contributor"], ["eve", "contributor"], ["uma", "contributor"], ["lee", "learner"], ["rev", "reviewer"]] as const;
   await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: created, updatedAt: created })) as never);
   await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: created, updatedAt: created })) as never);
 
@@ -3423,6 +3423,13 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
     { _id: "u-4", workspaceId: "workspace-a", taskId: "ravi-late", authorId: "user-ravi", type: "status", body: "Unblocked", fromStatus: "blocked", toStatus: "in_progress", createdAt: at(-4 * day + 10 * hour) },
     { _id: "u-5", workspaceId: "workspace-a", taskId: "pat-stuck", authorId: "user-pat", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-11 * day) },
   ] as never);
+  // Eve: work handed in early counts in the period it was handed in, not when it falls due; work handed in before the
+  // period counts in that earlier one, wherever its due date falls.
+  tasks.push(task("eve-early", "eve", at(5 * day)), task("eve-early-2", "eve", at(10 * day)), task("eve-long-ago", "eve", at(3 * day)), task("eve-before", "eve", at(-5 * day)));
+  evidence.push(proof("eve-early", at(-day), "pending"), proof("eve-early-2", at(-2 * day)), proof("eve-long-ago", at(-40 * day)), proof("eve-before", at(-35 * day)));
+  // Uma: one task, so not ranked yet.
+  tasks.push(task("uma-1", "uma", at(-3 * day)));
+  evidence.push(proof("uma-1", at(-3 * day - hour)));
   // Lee (a learner): three on time. Cancelled, parked, and not-yet-due work never counts.
   for (let index = 0; index < 3; index++) { tasks.push(task(`lee-${index}`, "lee", at(-(index + 2) * day))); evidence.push(proof(`lee-${index}`, at(-(index + 2) * day - hour))); }
   tasks.push(task("asha-cancelled", "asha", at(-2 * day), { status: "cancelled" }), task("asha-parked", "asha", at(-2 * day), { status: "parked" }), task("ravi-future", "ravi", at(2 * day), { status: "todo" }));
@@ -3449,11 +3456,16 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
   const ravi = person("ravi");
   const raviRaw = (1 + 0.75 + 0) / 3;
   assert.ok(Math.abs(ravi.reliability - (3 * raviRaw + 5 * board.team.reliability) / 8) < 1e-3);
-  assert.deepEqual([ravi.tasksDue, ravi.delivered, ravi.onTime, ravi.late, ravi.missed, ravi.averageDaysLate, ravi.overdueNow], [3, 2, 1, 1, 1, 0.5, 1]);
+  assert.deepEqual([ravi.tasksDue, ravi.delivered, ravi.onTime, ravi.late, ravi.missed, ravi.averageMinutesLate, ravi.overdueNow], [3, 2, 1, 1, 1, 720, 1]);
+  assert.deepEqual(board.tasks.get("user-eve")!.map((item) => [item.id, item.outcome]), [["eve-early", "on_time"], ["eve-early-2", "on_time"]], "early work counts when handed in, and only in that period");
   assert.equal(person("bob").firstTimeRight, 2);
   assert.ok(person("asha").score > person("bob").score && person("bob").score > ravi.score, "all on time and right first time ranks highest");
-  assert.deepEqual(board.people.filter((entry) => entry.rank).map((entry) => [entry.rank, entry.userId]), [[1, "user-asha"], [2, "user-bob"], [3, "user-ravi"]]);
-  assert.equal(person("meera").rank, undefined, "two tasks aren't enough to rank");
+  const ranked = board.people.filter((entry) => entry.rank);
+  assert.equal(ranked[0]!.userId, "user-asha");
+  assert.deepEqual([person("eve").rank, person("meera").rank, person("bob").rank], [2, 2, 4], "equal scores share a rank (1, 2, 2, 4)");
+  assert.equal(person("eve").score, person("meera").score);
+  assert.ok(person("meera").rank && person("eve").rank, "two tasks are enough to rank");
+  assert.equal(person("uma").rank, undefined, "one task isn't");
   assert.equal(board.people.some((entry) => entry.userId === "user-lee"), false, "learners are left out unless asked for");
   assert.deepEqual(board.mostDelivered, { userId: "user-asha", name: "Person asha", delivered: 6 });
   assert.equal(board.reviewers[0]?.userId, "user-rev");
@@ -3464,6 +3476,9 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
   assert.equal(weekStartOf(now, "Asia/Kolkata").toISOString(), "2026-06-12T18:30:00.000Z");
   assert.equal(weekStartOf(new Date("2026-06-12T18:29:00Z"), "Asia/Kolkata").toISOString(), "2026-06-05T18:30:00.000Z", "Friday 23:59 is still last week");
   assert.deepEqual(periodRange("last_week", now, "Asia/Kolkata"), { from: new Date("2026-06-05T18:30:00.000Z"), to: new Date("2026-06-12T18:30:00.000Z") });
+  // Trends compare this week with the whole of last week, and this month with the whole of last month.
+  assert.deepEqual(previousRange("week", periodRange("week", now, "Asia/Kolkata"), "Asia/Kolkata"), periodRange("last_week", now, "Asia/Kolkata"));
+  assert.deepEqual(previousRange("month", periodRange("month", now, "Asia/Kolkata"), "Asia/Kolkata"), { from: new Date("2026-04-30T18:30:00.000Z"), to: new Date("2026-05-31T18:30:00.000Z") });
 
   // Through the API, as people see it.
   const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
@@ -3479,9 +3494,13 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
     const inWeek = (hours: number) => new Date(lastWeek.from.getTime() + hours * hour);
     await db.collection("tasks").insertMany([0, 1, 2].map((index) => task(`week-${index}`, "meera", inWeek(24 + index * 24))).concat([task("week-beta", "meera", inWeek(100), { ventureId: "venture-b", groupId: "group-b" }), task("week-friday", "meera", inWeek(160))]) as never);
     await db.collection("evidence_items").insertMany([0, 1, 2].map((index) => proof(`week-${index}`, inWeek(20 + index * 24))).concat([proof("week-beta", inWeek(90)), proof("week-friday", inWeek(169))]) as never);
+    // The board the app shows is the lifetime one, with moves since Saturday.
+    const lifetime = await json(await call("GET", "/leaderboard", "ravi"));
+    assert.deepEqual([lifetime.period.key, lifetime.period.from], ["all", new Date(0).toISOString()]);
+    assert.ok(lifetime.people.find((entry: any) => entry.userId === "user-asha")?.previousRank, "ranked before this week, so it has a move");
     const everyone = await json(await call("GET", "/leaderboard?period=last_week", "ravi"));
     assert.equal(everyone.people.find((entry: any) => entry.userId === "user-meera")?.rank, 1, "everyone sees everyone's ranking");
-    assert.equal(everyone.minimumTasks, 3);
+    assert.equal(everyone.minimumTasks, 2);
     assert.equal((await call("GET", "/leaderboard?period=last_week&ventureId=venture-b", "ravi")).status, 404, "a venture's board is for those who can open it");
     assert.equal((await call("GET", "/leaderboard?period=forever", "ravi")).status, 400);
     const meera = await json(await call("GET", "/leaderboard/people/user-meera?period=last_week", "ravi"));
@@ -3493,8 +3512,10 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
     assert.deepEqual([status.seen, status.ranked >= 1, status.weekStart], [false, true, lastWeek.from.toISOString()]);
     const edition = await json(await call("GET", "/leaderboard/weekly", "asha"));
     assert.equal(edition.id, status.id);
-    assert.equal(edition.board.people[0].userId, "user-meera");
-    assert.equal(edition.board.people[0].missed, 1, "the edition is as of Saturday midnight: Saturday's evidence came after it");
+    // The edition is the lifetime board as of Saturday midnight: everyone's earlier work counts, Saturday's evidence doesn't yet.
+    const meeraThen = edition.board.people.find((entry: any) => entry.userId === "user-meera");
+    assert.equal(meeraThen.missed, 1, "the edition is as of Saturday midnight: Saturday's evidence came after it");
+    assert.ok(edition.board.people.some((entry: any) => entry.userId === "user-asha" && entry.rank && entry.previousRank), "earlier work counts, with each person's move that week");
     const asEdition = await json(await call("GET", `/leaderboard/people/user-meera?week=${status.id}`, "ravi"));
     assert.equal(asEdition.tasks.find((item: any) => item.id === "week-friday").outcome, "missed", "the breakdown can follow the edition");
     assert.equal((await call("GET", "/leaderboard/people/user-meera?week=2001-01-06", "ravi")).status, 404);

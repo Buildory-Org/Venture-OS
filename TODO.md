@@ -516,19 +516,20 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Score:** fair whatever the workload.
     - 70% on time: each task due earns full credit on time, 0.75 up to a day late, 0.5 up to three days, 0.25 later, and nothing if not delivered. Bigger tasks (by estimate, capped) count more.
     - 30% right first time: evidence accepted without being sent back.
-    - Each rate is evened out toward the team's by five tasks' worth, and people are ranked from three tasks due.
+    - Each rate is evened out toward the team's by five tasks' worth, and people are ranked from two tasks.
+    - A task counts in the period it settled: when it was handed in, if early, otherwise when it was due. Finishing early counts straight away.
   - **Not their fault, not counted:**
     - Work counts as delivered when the accepted evidence was sent, not when it was reviewed.
     - Blocked time, and the shortfall when a task was given with less time than its estimate, move the due date back.
     - Cancelled, parked, and draft tasks don't count.
   - **Leaderboard page (sidebar):**
     - A podium for the top three and a list below, with on time, right first time, delivered, and a trend against the period before.
-    - Periods: this week, last week, this month, and the last 30 days, plus a toggle to include learners. It follows the venture switcher.
+    - Lifetime standings (every task to date), with arrows for each person's move since Saturday, and a toggle to include learners. It follows the venture switcher.
     - Side cards: Most delivered, Top reviewers, and how scores work.
     - Clicking a person shows the tasks behind their score; tasks the viewer can't open are only counted.
     - Everyone sees everyone's ranking.
   - **Weekly edition:**
-    - Weeks run Saturday to Friday (LEADERBOARD_TIME_ZONE, default Asia/Kolkata). The first open after Saturday midnight makes last week's edition, which is then kept as it was.
+    - Weeks run Saturday to Friday (LEADERBOARD_TIME_ZONE, default Asia/Kolkata). The first open after Saturday midnight makes the edition: the lifetime standings as of that midnight, with each person's move since the Saturday before, then kept as it was.
     - Each person's first open of the app after that shows it once, then continues to where they were going.
     - It has gold, silver, and bronze cards for the top three, ranks 4 to 10, and the week's most delivered and top reviewer, with or without learners.
   - **Verified:**
@@ -542,6 +543,12 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
       - reviewing your own evidence isn't a review, and equal scores share a rank;
       - "Continue" only goes to a page inside the app;
       - the board says which venture it shows.
+  - **Follow-up (2026-10-10):**
+    - Both boards are lifetime (every task to date). The Saturday edition shows the standings as the week closed, with each person's move that week; an edition made under the old weekly rules is remade once.
+    - The everyday leaderboard is full screen in its own design (after the green podium reference): avatars on frosted podium steps 2-1-3, then the list on a sheet below. The Saturday page keeps the trophy cards.
+    - Early work counts when it's handed in, and the minimum is two tasks. The live workspace had 13 of its 15 tasks due later, so no one could be ranked yet.
+    - Lateness reads in minutes, hours, or days, and someone not ranked yet shows no score.
+    - Verified: the API test (early hand-ins, hand-ins before the period, ties sharing a rank, one task not enough) and the browser on a copy of the live situation, desktop and phone. All 22 API tests, lint, typecheck, and build pass.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

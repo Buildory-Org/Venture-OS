@@ -101,6 +101,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("evidence_items").createIndex({ taskId: 1, submittedAt: 1 }),
     // Evidence waiting for review, for the "Needs my review" task list.
     db.collection("evidence_items").createIndex({ workspaceId: 1, reviewStatus: 1 }),
+    // Work handed in during a period (early work counts then), for the leaderboard.
+    db.collection("evidence_items").createIndex({ workspaceId: 1, submittedAt: 1 }),
     // Reviews done in a period, for the leaderboard's reviewers.
     db.collection("evidence_items").createIndex({ workspaceId: 1, reviewedAt: 1 }, { partialFilterExpression: { reviewedAt: { $exists: true } } }),
     // Tasks due in a period, and open tasks past due, for the leaderboard.

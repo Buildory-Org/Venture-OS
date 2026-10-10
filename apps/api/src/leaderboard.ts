@@ -2,8 +2,8 @@ import type { LeaderboardBoard, LeaderboardEntry, LeaderboardPeriod } from "@ven
 import { localDate, wallTime, zonedTimeToUtc } from "@venture-studio/core";
 import type { AppDb } from "./db.js";
 
-/** People need this many tasks due in a period to be ranked. */
-export const MINIMUM_TASKS = 3;
+/** People need this many tasks counted in a period to be ranked (the evening out guards against luck). */
+export const MINIMUM_TASKS = 2;
 /** Each person's rates are pulled toward the team's as if they had this many more tasks at the team average. */
 const PRIOR_TASKS = 5;
 /** The score: 70% on time, 30% evidence accepted the first time. */
@@ -33,14 +33,24 @@ export function weekStartOf(instant: Date, timeZone: string): Date {
 }
 export { localDate };
 export function periodRange(period: LeaderboardPeriod, now: Date, timeZone: string): { from: Date; to: Date } {
+  if (period === "all") return { from: new Date(0), to: now };
   const thisWeek = weekStartOf(now, timeZone);
   if (period === "week") return { from: thisWeek, to: now };
   if (period === "last_week") return { from: localMidnight(thisWeek, timeZone, -7), to: thisWeek };
   if (period === "month") { const wall = wallTime(now, timeZone); return { from: localMidnight(now, timeZone, 1 - wall.d), to: now }; }
   return { from: new Date(now.getTime() - 30 * DAY), to: now };
 }
-/** The same length of time just before, for the trend arrows. */
-export const previousRange = ({ from, to }: { from: Date; to: Date }) => ({ from: new Date(from.getTime() - (to.getTime() - from.getTime())), to: from });
+/**
+ * What the trend arrows compare with: for the lifetime board, the board as it stood at the start of this week (Saturday
+ * midnight), so the arrows show who moved this week; the whole previous week or month for those; otherwise the same length
+ * just before.
+ */
+export function previousRange(period: LeaderboardPeriod, { from, to }: { from: Date; to: Date }, timeZone: string) {
+  if (period === "all") return { from, to: weekStartOf(to, timeZone) };
+  if (period === "week") return { from: localMidnight(from, timeZone, -7), to: from };
+  if (period === "month") { const before = localMidnight(from, timeZone, -1); const wall = wallTime(before, timeZone); return { from: localMidnight(before, timeZone, 1 - wall.d), to: from }; }
+  return { from: new Date(from.getTime() - (to.getTime() - from.getTime())), to: from };
+}
 
 export type TaskResult = {
   id: string; title: string; ventureId: string; groupId: string; assigneeId: string; dueAt: Date; deliveredAt?: Date;
@@ -72,7 +82,15 @@ export async function computeBoard(db: AppDb, input: BoardInput): Promise<Comput
   const users = new Map((await db.collection("users").find({ _id: { $in: people } }, { projection: { name: 1, handle: 1 } }).toArray()).map((user) => [String(user._id), user]));
   const venture = input.ventureId ? { ventureId: input.ventureId } : input.archivedVentureIds?.length ? { ventureId: { $nin: input.archivedVentureIds } } : {};
 
-  const tasks = await db.collection("tasks").find({ workspaceId, assigneeId: { $in: people }, dueAt: { $gte: from, $lt: to }, status: { $nin: UNCOUNTED }, ...venture }, { projection: { title: 1, assigneeId: 1, dueAt: 1, createdAt: 1, estimatedMinutes: 1, ventureId: 1, groupId: 1 } }).toArray();
+  // A task counts in the period it settled: when it was handed in, if that was before its due date, otherwise when it was
+  // due. So work finished early counts straight away, and work not handed in still counts (as late or missed) when due.
+  const fields = { projection: { title: 1, assigneeId: 1, dueAt: 1, createdAt: 1, estimatedMinutes: 1, ventureId: 1, groupId: 1 } };
+  const dueInPeriod = await db.collection("tasks").find({ workspaceId, assigneeId: { $in: people }, dueAt: { $gte: from, $lt: to }, status: { $nin: UNCOUNTED }, ...venture }, fields).toArray();
+  const handedInEarly = await db.collection("evidence_items").distinct("taskId", { workspaceId, submittedAt: { $gte: from, $lt: to, $lte: now }, reviewStatus: { $in: HANDED_IN } });
+  const alreadyDue = new Set(dueInPeriod.map((task) => String(task._id)));
+  const laterIds = handedInEarly.map(String).filter((id) => !alreadyDue.has(id));
+  const dueLater = laterIds.length ? await db.collection("tasks").find({ workspaceId, _id: { $in: laterIds }, assigneeId: { $in: people }, dueAt: { $gte: to }, status: { $nin: UNCOUNTED }, ...venture }, fields).toArray() : [];
+  const tasks = [...dueInPeriod, ...dueLater];
   const taskIds = tasks.map((task) => String(task._id));
   const evidence = taskIds.length ? await db.collection("evidence_items").find({ workspaceId, taskId: { $in: taskIds }, submittedAt: { $lte: now } }, { projection: { taskId: 1, submittedAt: 1, reviewStatus: 1 } }).toArray() : [];
   const changes = taskIds.length ? await db.collection("task_updates").find({ taskId: { $in: taskIds }, type: "status" }, { projection: { taskId: 1, toStatus: 1, createdAt: 1 } }).sort({ createdAt: 1 }).toArray() : [];
@@ -87,6 +105,8 @@ export async function computeBoard(db: AppDb, input: BoardInput): Promise<Comput
     const deliveredAt = handedIn?.submittedAt as Date | undefined;
     const end = (deliveredAt ?? now).getTime();
     const dueAt = task.dueAt as Date;
+    const settledAt = deliveredAt && deliveredAt <= dueAt ? deliveredAt : dueAt;
+    if (settledAt < from || settledAt >= to) continue; // handed in early, in another period
     const estimateMs = Number(task.estimatedMinutes ?? 60) * 60_000;
     const allowanceMs = task.createdAt instanceof Date ? Math.max(0, estimateMs - (dueAt.getTime() - task.createdAt.getTime())) : 0;
     // Blocked time pauses the clock, but only for a block that began before the work was late, and for a week at most.
@@ -136,7 +156,7 @@ export async function computeBoard(db: AppDb, input: BoardInput): Promise<Comput
       score: round(100 * (ON_TIME_SHARE * reliability + (1 - ON_TIME_SHARE) * quality)), reliability: round(reliability, 4), quality: round(quality, 4),
       tasksDue: items.length, delivered: delivered.length, onTime: items.filter((item) => item.outcome === "on_time").length, late: late.length,
       missed: items.filter((item) => item.outcome === "missed").length, firstTimeRight,
-      ...(late.length ? { averageDaysLate: round(late.reduce((sum, item) => sum + item.lateMs, 0) / late.length / DAY) } : {}),
+      ...(late.length ? { averageMinutesLate: Math.round(late.reduce((sum, item) => sum + item.lateMs, 0) / late.length / 60_000) } : {}),
       overdueNow: overdueNow.get(userId) ?? 0,
     };
   });

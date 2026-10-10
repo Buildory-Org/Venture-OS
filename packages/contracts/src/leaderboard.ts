@@ -6,9 +6,10 @@ import { appRoleSchema, idSchema, isoDateSchema } from "./common.js";
  * 70% on time (credit per task due, weighted by its estimate) and 30% first-time-right evidence, each pulled
  * toward the team average by five tasks' worth so a few tasks can't win or lose unfairly. Weeks start on Saturday.
  */
-export const leaderboardPeriodSchema = z.enum(["week", "last_week", "month", "30d"]);
+/** "all" is the lifetime board (every task to date), the one the app shows; the others are narrower windows. */
+export const leaderboardPeriodSchema = z.enum(["all", "week", "last_week", "month", "30d"]);
 export const leaderboardQuerySchema = z.object({
-  period: leaderboardPeriodSchema.default("30d"),
+  period: leaderboardPeriodSchema.default("all"),
   ventureId: idSchema.optional(),
   learners: z.enum(["true", "false"]).optional(),
   /** A weekly edition's first day (YYYY-MM-DD): the breakdown as that edition saw it, as of the Saturday it closed. */
@@ -20,23 +21,23 @@ export const leaderboardEntrySchema = z.object({
   name: z.string(),
   handle: z.string().optional(),
   role: appRoleSchema,
-  /** 1 for the top; absent until someone has enough tasks due to be ranked. */
+  /** 1 for the top (equal scores share a rank); absent until someone has enough tasks counted to be ranked. */
   rank: z.number().int().optional(),
-  /** The rank in the period before, for the trend arrow. */
+  /** The rank before, for the trend arrow: for the lifetime board, as it stood at the start of this week (Saturday). */
   previousRank: z.number().int().optional(),
   score: z.number(),
   /** On-time credit and first-time-right share, after evening out small numbers (0 to 1). */
   reliability: z.number(),
   quality: z.number(),
-  /** Tasks that counted: due in the period (and not cancelled or parked). */
+  /** Tasks that counted: settled in the period, meaning handed in (if early) or due then, and not cancelled or parked. */
   tasksDue: z.number().int(),
   delivered: z.number().int(),
   onTime: z.number().int(),
   late: z.number().int(),
   missed: z.number().int(),
   firstTimeRight: z.number().int(),
-  /** Mean days late across the tasks delivered late. */
-  averageDaysLate: z.number().optional(),
+  /** Mean minutes late across the tasks delivered late. */
+  averageMinutesLate: z.number().int().optional(),
   /** Open tasks past due right now. */
   overdueNow: z.number().int(),
 });
@@ -50,7 +51,7 @@ export const leaderboardBoardSchema = z.object({
 export const leaderboardSchema = leaderboardBoardSchema.extend({
   period: z.object({ key: leaderboardPeriodSchema, from: isoDateSchema, to: isoDateSchema }),
   timeZone: z.string(),
-  /** People need this many tasks due in the period to be ranked. */
+  /** People need this many tasks counted in the period to be ranked. */
   minimumTasks: z.number().int(),
 });
 
@@ -61,7 +62,7 @@ export const leaderboardPersonSchema = z.object({
   /** The tasks that counted and what each earned (only tasks the viewer can open). */
   tasks: z.array(z.object({
     id: idSchema, title: z.string(), dueAt: isoDateSchema, deliveredAt: isoDateSchema.optional(),
-    outcome: leaderboardTaskOutcomeSchema, credit: z.number(), daysLate: z.number().optional(),
+    outcome: leaderboardTaskOutcomeSchema, credit: z.number(), minutesLate: z.number().int().optional(),
     /** Hours added to the due date: time spent blocked, and the shortfall when it was given with less time than its estimate. */
     blockedHours: z.number().optional(), allowanceHours: z.number().optional(),
     firstTimeRight: z.boolean().optional(),
@@ -70,7 +71,7 @@ export const leaderboardPersonSchema = z.object({
   hidden: z.number().int(),
 });
 
-/** The Saturday edition: last week's board, frozen when it was first opened. */
+/** The Saturday edition: the lifetime board as it stood at Saturday midnight (with each person's move that week), frozen when first opened. */
 export const leaderboardWeeklySchema = z.object({
   id: z.string(),
   weekStart: isoDateSchema,
@@ -79,6 +80,7 @@ export const leaderboardWeeklySchema = z.object({
   generatedAt: isoDateSchema,
   board: leaderboardBoardSchema,
   seen: z.boolean(),
+  minimumTasks: z.number().int(),
 });
 export const leaderboardWeeklyStatusSchema = z.object({ id: z.string(), weekStart: isoDateSchema, weekEnd: isoDateSchema, ranked: z.number().int(), seen: z.boolean() });
 

@@ -401,7 +401,12 @@ export function attachRealtime(server: HttpServer, database: Database, resolveAc
       }
     });
   });
-  const stopWatching = watchNotifications(io, database, resolveActor);
+  const stops = [
+    watchInserts(io, database, resolveActor, { collection: "notifications", event: "notification" }),
+    // A finished task's celebration plays on whatever page its person has open.
+    watchInserts(io, database, resolveActor, { collection: "celebrations", event: "celebration", match: { "fullDocument.state": "pending" } }),
+  ];
+  const stopWatching = () => { for (const stop of stops) stop(); };
   watchers.set(database, stopWatching);
   server.on("close", stopWatching);
   return io;
@@ -412,12 +417,12 @@ const watchers = new WeakMap<Database, () => void>();
 export function stopRealtime(database: Database): void { watchers.get(database)?.(); }
 
 /**
- * Nudges a person's open tabs the moment the worker adds something to their inbox, so alerts (sound, banner, pop-up)
- * arrive within a second instead of at the next poll. Only the id is sent; the tab reads its inbox, with its access rules.
- * Notices are handled one at a time so a message to many followers doesn't re-check every socket at once. Returns a stop
- * function. Tabs keep polling, so a gap while the watch restarts only delays alerts.
+ * Nudges a person's open tabs the moment something is added for them: a notice in their inbox (so alerts arrive within a
+ * second instead of at the next poll), or a celebration. Only the id is sent; the tab reads it back, with its access rules.
+ * Inserts are handled one at a time so a message to many followers doesn't re-check every socket at once. Returns a stop
+ * function. Tabs keep polling, so a gap while the watch restarts only delays them.
  */
-function watchNotifications(io: Server, database: Database, resolveActor: ReturnType<typeof createActorResolver>): () => void {
+function watchInserts(io: Server, database: Database, resolveActor: ReturnType<typeof createActorResolver>, source: { collection: string; event: string; match?: Record<string, unknown> }): () => void {
   let stream: ChangeStream | undefined;
   let retry: NodeJS.Timeout | undefined;
   let stopped = false;
@@ -431,15 +436,15 @@ function watchNotifications(io: Server, database: Database, resolveActor: Return
   };
   const start = () => {
     if (stopped) return;
-    const current = database.db.collection("notifications").watch([{ $match: { operationType: "insert" } }]);
+    const current = database.db.collection(source.collection).watch([{ $match: { operationType: "insert", ...source.match } }]);
     stream = current;
     current.on("change", (change) => {
       failures = 0;
       const notice = (change as { fullDocument?: Record<string, unknown> }).fullDocument;
       if (!notice || typeof notice.userId !== "string" || typeof notice.workspaceId !== "string") return;
       const target = { workspaceId: notice.workspaceId, audienceUserIds: [notice.userId] };
-      queue = queue.then(() => emitAuthorizedToUsers(io, resolveActor, target, { id: String(notice._id) }, "notification"))
-        .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "realtime.notification_failed", error: error instanceof Error ? error.message : "unknown" })));
+      queue = queue.then(() => emitAuthorizedToUsers(io, resolveActor, target, { id: String(notice._id) }, source.event))
+        .catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: `realtime.${source.event}_failed`, error: error instanceof Error ? error.message : "unknown" })));
     });
     current.on("error", (error: Error & { code?: number }) => {
       // A late error from a stream already replaced must not touch the new one.
@@ -447,8 +452,8 @@ function watchNotifications(io: Server, database: Database, resolveActor: Return
       stream = undefined;
       void current.close().catch(() => undefined);
       if (stopped) return;
-      if (error.code === 40573) { console.info(JSON.stringify({ level: "info", event: "realtime.notification_watch_unavailable", reason: "MongoDB is not a replica set; tabs poll for new notifications" })); return; }
-      console.error(JSON.stringify({ level: "error", event: "realtime.notification_watch_failed", error: error.message }));
+      if (error.code === 40573) { console.info(JSON.stringify({ level: "info", event: `realtime.${source.event}_watch_unavailable`, reason: `MongoDB is not a replica set; tabs poll for new ${source.collection}` })); return; }
+      console.error(JSON.stringify({ level: "error", event: `realtime.${source.event}_watch_failed`, error: error.message }));
       later();
     });
     // Dropping or renaming the collection ends the stream without an error.

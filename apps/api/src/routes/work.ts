@@ -12,6 +12,7 @@ import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue, omitNullFields, withDates } from "../json.js";
 import { assertNotBlank, assertOrderedDates } from "../validation.js";
 import { deleteTaskCascade, restoreTaskDeletion } from "../task-deletion.js";
+import { recordCelebration } from "../celebrations.js";
 import { z } from "zod";
 
 type TaskSortKey = { value: unknown; order: 1 | -1; date: boolean };
@@ -171,6 +172,7 @@ export function workRoutes(database: Database): Router {
     const actor = req.actor!;
     const existing = await accessibleTask(db, actor, id);
     const now = new Date();
+    let finishedFor: string | undefined;
     await atomic(database, async (session) => {
       const current = await db.collection("tasks").findOne({ _id: id, workspaceId: actor.membership.workspaceId }, { session });
       if (!current) throw new AppError(404, "NOT_FOUND", "Task not found");
@@ -207,6 +209,9 @@ export function workRoutes(database: Database): Router {
       if (input.status === "accepted") $set.acceptedAt = now;
       if (input.status === "in_progress" && !current.startedAt) $set.startedAt = now;
       if (input.status === "done") $set.completedAt = now;
+      // Finishing it is the assignee's moment: their celebration, unless it already came when the evidence was accepted.
+      const owner = input.assigneeId ?? (typeof current.assigneeId === "string" ? current.assigneeId : undefined);
+      finishedFor = input.status === "done" && current.status !== "done" ? owner : undefined;
       await db.collection("tasks").updateOne({ _id: id }, Object.keys($unset).length ? { $set, $unset } : { $set }, { session });
       // Empty details and missing details are the same thing.
       const comparable = (field: (typeof taskDetailFields)[number], value: unknown) => value === null || value === "" ? (field === "tags" ? [] : undefined) : value ?? (field === "tags" ? [] : undefined);
@@ -243,6 +248,7 @@ export function workRoutes(database: Database): Router {
       }
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.update", objectType: "task", objectId: id, ventureId: String(existing.ventureId), result: "success" }, session);
     });
+    if (finishedFor) await recordCelebration(db, { workspaceId: actor.membership.workspaceId, userId: finishedFor, taskId: id, trigger: "done", actorId: actor.id });
     res.json({ ok: true, data: jsonValue(await db.collection("tasks").findOne({ _id: id })) });
   });
 
@@ -335,6 +341,8 @@ export function workRoutes(database: Database): Router {
     // A Claude connection never reviews its owner's own work, admins included: a person makes that call in the app.
     if (req.interfaceChannel === "mcp" && (evidence.submittedBy === actor.id || task.assigneeId === actor.id)) throw new AppError(403, "FORBIDDEN", "Claude can't review evidence you submitted or that is on your own task; review it yourself in the app");
     await db.collection("evidence_items").updateOne({ _id: id }, { $set: { reviewStatus: status, reviewedBy: actor.id, reviewedAt: new Date() } });
+    // Approval is the assignee's moment: their celebration plays (once per task, so marking it done later won't repeat it).
+    if (status !== "rejected" && typeof task.assigneeId === "string" && task.assigneeId && !["cancelled", "done"].includes(String(task.status))) await recordCelebration(db, { workspaceId: actor.membership.workspaceId, userId: task.assigneeId, taskId: String(task._id), trigger: "approved", actorId: actor.id });
     const reviewed = await db.collection("evidence_items").findOne({ _id: id });
     res.json({ ok: true, data: reviewed ? jsonValue(omitNullFields(reviewed, ["uri"])) : null });
   });

@@ -29,14 +29,21 @@ export function openLiveSocket() {
   });
 }
 
-/** Calls `onNudge` the moment the server adds something to my inbox, and after every reconnect (to catch up). */
+/** Fired on the window when the server says one of my tasks is ready to celebrate. */
+export const celebrationNudgeEvent = "venture:celebration";
+
+/**
+ * Calls `onNudge` the moment the server adds something to my inbox, and after every reconnect (to catch up). The same
+ * connection passes on celebration nudges, as a window event.
+ */
 export function useNotificationNudges(onNudge: () => void) {
   const callback = useRef(onNudge);
   useEffect(() => { callback.current = onNudge; }, [onNudge]);
   useEffect(() => {
     const socket = openLiveSocket();
     socket.on("notification", () => callback.current());
-    socket.on("connect", () => callback.current());
+    socket.on("celebration", () => window.dispatchEvent(new Event(celebrationNudgeEvent)));
+    socket.on("connect", () => { callback.current(); window.dispatchEvent(new Event(celebrationNudgeEvent)); });
     return () => { socket.disconnect(); };
   }, []);
 }

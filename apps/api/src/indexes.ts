@@ -108,6 +108,9 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // Tasks due in a period, and open tasks past due, for the leaderboard.
     db.collection("tasks").createIndex({ workspaceId: 1, dueAt: 1 }),
     db.collection("tasks").createIndex({ workspaceId: 1, status: 1, dueAt: 1 }),
+    // One celebration per person per finished task, and each person's waiting ones.
+    db.collection("celebrations").createIndex({ workspaceId: 1, userId: 1, taskId: 1 }, { unique: true }),
+    db.collection("celebrations").createIndex({ workspaceId: 1, userId: 1, state: 1, createdAt: 1 }),
     db.collection("reminders").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
     db.collection("notification_outbox").createIndex({ resourceId: 1 }, { partialFilterExpression: { resourceId: { $exists: true } } }),
     db.collection("notification_outbox").createIndex({ reminderId: 1 }, { partialFilterExpression: { reminderId: { $exists: true } } }),

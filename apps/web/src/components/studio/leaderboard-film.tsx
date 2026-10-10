@@ -10,6 +10,8 @@ import { DitherBackground } from "@/components/ui/dither-background";
 import { Crown, Trophy, Volume2, VolumeX } from "@/components/ui/icons";
 import { CHORDS, createFilmAudio, filmSoundEnabled, PENTATONIC, type Cue, type FilmAudio } from "@/lib/film-sound";
 import { prefersReducedMotion } from "@/lib/motion";
+import { clamp, inCubic, inOutCubic, inOutQuint, mix, outBack, outCubic, outExpo, seeded, shuffled, span, spring } from "@/lib/film-timing";
+import { drawConfetti, makeConfetti, type Piece } from "@/lib/film-confetti";
 
 /*
  * The leaderboard's opening film, about ten seconds, cut to a 120 bpm score:
@@ -37,28 +39,6 @@ const THEMES = {
   board: { stage: "vso-board", dark: "#03140b", dither: [255, 255, 255, 30] as const, letter: "", sub: "text-white/80", pill: "bg-white text-primary-800", confetti: ["#ffe08a", "#ffffff", "#7ee2a8", "#f6cb52", "#ff9f8f", "#9bd8ff", "#c4b5fd"] },
   weekly: { stage: "vso-weekly", dark: "#020604", dither: [246, 203, 82, 26] as const, letter: "vso-weekly-title", sub: "text-[#f6cb52]", pill: "bg-[#f6cb52] text-[#3a2604]", confetti: ["#f6cb52", "#fff5c7", "#e09a1f", "#ffffff", "#7ee2a8", "#fbe39a"] },
 };
-
-/* ---------- Timing ---------- */
-const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
-const span = (t: number, start: number, length: number) => clamp((t - start) / length, 0, 1);
-const mix = (from: number, to: number, amount: number) => from + (to - from) * amount;
-const outExpo = (p: number) => (p >= 1 ? 1 : 1 - Math.pow(2, -10 * p));
-const outCubic = (p: number) => 1 - (1 - p) ** 3;
-const inCubic = (p: number) => p ** 3;
-const inOutCubic = (p: number) => (p < 0.5 ? 4 * p ** 3 : 1 - (-2 * p + 2) ** 3 / 2);
-const inOutQuint = (p: number) => (p < 0.5 ? 16 * p ** 5 : 1 - (-2 * p + 2) ** 5 / 2);
-const outBack = (p: number, overshoot = 1.7) => 1 + (overshoot + 1) * (p - 1) ** 3 + overshoot * (p - 1) ** 2;
-/** A damped spring from 0 to 1, `t` seconds after it was let go: `period` sets its pace, `bounce` its overshoot. */
-const spring = (t: number, period = 0.55, bounce = 0.3) => {
-  if (t <= 0) return 0;
-  const zeta = 1 - bounce; const omega = (2 * Math.PI) / period; const damped = omega * Math.sqrt(1 - zeta * zeta);
-  return 1 - Math.exp(-zeta * omega * t) * (Math.cos(damped * t) + ((zeta * omega) / damped) * Math.sin(damped * t));
-};
-const seeded = (seed: number) => {
-  let state = seed >>> 0;
-  return () => { state = (state + 0x6d2b79f5) >>> 0; let value = state; value = Math.imul(value ^ (value >>> 15), value | 1); value ^= value + Math.imul(value ^ (value >>> 7), value | 61); return ((value ^ (value >>> 14)) >>> 0) / 4294967296; };
-};
-const shuffled = <T,>(items: T[], random: () => number) => { const copy = [...items]; for (let index = copy.length - 1; index > 0; index--) { const swap = Math.floor(random() * (index + 1)); [copy[index], copy[swap]] = [copy[swap]!, copy[index]!]; } return copy; };
 
 /* ---------- The plan: who appears where and when ---------- */
 type Actor = {
@@ -225,43 +205,10 @@ const titleSize = (W: number, H: number, title: string) => {
   return Math.round(clamp(Math.min((W - 40) / (longest * 0.74), H * 0.2, 150), 28, 150));
 };
 
-/* ---------- Confetti: each piece's path is worked out from the time since the burst ---------- */
-type Piece = { x: number; y: number; vx: number; vy: number; delay: number; size: number; ratio: number; color: string; spin: number; flip: number; phase: number; sway: number };
-function makeConfetti(W: number, H: number, colors: readonly string[], random: () => number): Piece[] {
-  const scale = clamp(H / 800, 0.7, 1.4); const pieces: Piece[] = [];
-  const piece = (x: number, y: number, vx: number, vy: number, delay: number): Piece => ({ x, y, vx, vy, delay, size: 7 + random() * 6, ratio: 0.45 + random() * 0.5, color: colors[Math.floor(random() * colors.length)]!, spin: (random() - 0.5) * 12, flip: 6 + random() * 10, phase: random() * Math.PI * 2, sway: 2 + random() * 3 });
-  // Two cannons from the bottom corners, aimed in toward the winner.
-  const burst = W < 640 ? 36 : 56;
-  for (const side of [-1, 1]) for (let index = 0; index < burst; index++) {
-    const angle = (0.16 + random() * 0.45) * (side < 0 ? 1 : -1); const speed = (1300 + random() * 1100) * scale;
-    pieces.push(piece(side < 0 ? -10 : W + 10, H + 10, Math.sin(angle) * speed, -Math.cos(angle) * speed, random() * 0.1));
-  }
-  // And a gentle shower from above.
-  for (let index = 0; index < (W < 640 ? 30 : 50); index++) pieces.push(piece(random() * W, -20 - random() * 120, (random() - 0.5) * 160, 40 + random() * 140, 0.2 + random() * 0.7));
-  return pieces;
-}
-function drawConfetti(context: CanvasRenderingContext2D, pieces: Piece[], time: number, ratio: number, W: number, H: number) {
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  context.clearRect(0, 0, context.canvas.width, context.canvas.height);
-  const drag = 2.4; const gravity = 950 * clamp(H / 800, 0.7, 1.4);
-  for (const piece of pieces) {
-    const t = time - piece.delay; if (t <= 0) continue;
-    const alpha = 1 - span(t, 2.4, 0.8); if (alpha <= 0) continue;
-    const decay = 1 - Math.exp(-drag * t);
-    const x = piece.x + (piece.vx / drag) * decay + Math.sin(t * piece.sway + piece.phase) * 16 * Math.min(1, t);
-    const y = piece.y + (piece.vy / drag) * decay + (gravity / drag) * (t - decay / drag);
-    if (y > H + 30 || x < -30 || x > W + 30) continue;
-    const angle = piece.phase + piece.spin * t; const flip = Math.cos(piece.phase + piece.flip * t);
-    const cos = Math.cos(angle); const sin = Math.sin(angle);
-    context.setTransform(ratio * cos, ratio * sin, -ratio * sin * flip, ratio * cos * flip, ratio * x, ratio * y);
-    context.globalAlpha = alpha; context.fillStyle = piece.color;
-    context.fillRect(-piece.size / 2, (-piece.size * piece.ratio) / 2, piece.size, piece.size * piece.ratio);
-  }
-  context.globalAlpha = 1;
-}
-
 type ActorEls = { root: HTMLElement; avatar: HTMLElement; pulse: HTMLElement | null; label: HTMLElement; row: HTMLElement; rank: HTMLElement; info: HTMLElement; fill: HTMLElement; metal: HTMLElement; score: HTMLElement; stand: HTMLElement; standScore: HTMLElement; badge: HTMLElement };
 const subscribeNever = () => () => {};
+/** Fired on the window when a leaderboard film ends, so a celebration that waited for it can play. */
+export const filmEndedEvent = "venture:film-ended";
 const setText = (element: HTMLElement, value: string) => { if (element.textContent !== value) element.textContent = value; };
 
 /**
@@ -315,6 +262,7 @@ export function LeaderboardFilm({ theme, title, subtitle, people, failed, minimu
     const clock = () => (startedAt === null ? 0 : (performance.now() - startedAt) / 1000);
     const track = createFilmAudio(clock);
     audio.current = track;
+    document.documentElement.dataset.vsoFilm = "leaderboard";
 
     const one = (name: string) => node.querySelector<HTMLElement>(`[data-el="${name}"]`)!;
     const E = {
@@ -580,7 +528,12 @@ export function LeaderboardFilm({ theme, title, subtitle, people, failed, minimu
     skipButton.current?.focus({ preventScroll: true });
     const onVisibility = () => { if (document.hidden) finish(); };
     document.addEventListener("visibilitychange", onVisibility);
-    return () => { cancelAnimationFrame(raf); document.removeEventListener("visibilitychange", onVisibility); track.stop(0.2); audio.current = null; };
+    return () => {
+      cancelAnimationFrame(raf); document.removeEventListener("visibilitychange", onVisibility); track.stop(0.2); audio.current = null;
+      if (document.documentElement.dataset.vsoFilm === "leaderboard") delete document.documentElement.dataset.vsoFilm;
+      delete document.documentElement.dataset.vsoWeekly;
+      window.dispatchEvent(new Event(filmEndedEvent));
+    };
   }, [canPlay, title]);
 
   if (!canPlay) return null;

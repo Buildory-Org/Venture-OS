@@ -561,6 +561,28 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
       - the week is marked seen only once the poster is on screen;
       - the race and podium fit short screens;
       - the sound button has one clear name.
+- [x] Task celebrations (2026-10-11): when a task assigned to someone is finished, they get a short film on whatever page they have open.
+  - **When:** the first of its evidence being accepted (or an exception recorded) or it being marked done; once per task, whoever does it (in the app or through Claude).
+    - It plays the moment it happens: the server nudges that person's open tabs over the live connection.
+    - Otherwise it plays when the app opens, comes back into view, or within a few minutes. Anything from the last three days that hasn't been seen plays then.
+    - Several waiting at once share one film. It waits for a clear moment: the tab in view, no leaderboard film playing, and not while they're typing.
+  - **The film:** a ten-second montage cut to the beat of its own track.
+    - The opener is a stamp, a check that draws itself, or a word. Then come four quick cuts of hype words and what happened ("2 DAYS EARLY", "FIRST TRY", "5 IN A ROW", "#25").
+    - Next, the task on a card with a DONE badge, and two stats that count up (on time in a row, this week, how early, who approved it, total).
+    - Then their avatar and a line for them, word by word, and a sign-off with confetti.
+    - Each play picks its opener, colours, backgrounds, transitions, key, chords, and groove at random.
+    - The lines come from a library of over a hundred, grouped by what happened: early, on time, late but done, first time right, approved by someone, streaks, milestones, a big week, several at once, a big task, the time of day, and the day of the week. What this browser saw lately is left out.
+    - Big type fits any window.
+  - **Pause:** for an hour, 3 hours, or a day, from the film, with Undo. It's kept on the account, so it holds on every device. Anything finished meanwhile is skipped, not saved up. Sound has its own mute. Reduced motion gets a notice with the same line instead of the film.
+  - **Verified:**
+    - An API test: approval celebrates the assignee and nudges their open tab at once; marking it done later doesn't repeat it; marking another done does; sent-back evidence doesn't. It also checks the film's facts (venture, first time right, who approved, how early), the stats, that only the person sees or clears theirs, that cancelled tasks are dropped, and that a pause skips for good and Undo resumes. All 23 API tests pass.
+    - In the browser, on a throwaway stack: an approval by the reviewer played the film 0.17 s later on the Tasks page. Every shot fits a phone and an 800×450 window across several random edits. Pause with Undo, reduced motion, waiting while typing, and Escape all work. The soundtrack was rendered offline across six edits (peaks 0.83–0.88, no clipping). Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - the feed follows the same access rule as opening the task, and reading it changes nothing;
+      - it plays the newest five, and checks again just before playing (another tab may have played it), never replaying one in the same tab;
+      - it waits while the Saturday leaderboard is on its way or playing, and while there's unsent text in the box in focus;
+      - a film that can't play, fails, or never ends is taken down after 45 seconds;
+      - after a reconnect it looks again at once.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

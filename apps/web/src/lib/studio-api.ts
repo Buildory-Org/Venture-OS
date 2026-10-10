@@ -65,6 +65,8 @@ import {
   leaderboardWeeklySchema,
   leaderboardWeeklyStatusSchema,
   type LeaderboardPeriod,
+  celebrationFeedSchema,
+  celebrationPauseResultSchema,
   pagedDataSchema,
   pagedSuccessEnvelope,
   reminderSchema,
@@ -245,6 +247,18 @@ export async function getWeeklyLeaderboardStatus() {
 }
 export async function markWeeklyLeaderboardSeen(week: string) {
   await request(`/v1/leaderboard/weekly/${encodeURIComponent(week)}/seen`, { method: "POST", body: "{}" });
+}
+
+/** My finished tasks waiting to be celebrated (none while I've paused celebrations), with what the film shows. */
+export async function getCelebrations() {
+  return successEnvelope(celebrationFeedSchema).parse(await request("/v1/celebrations")).data;
+}
+export async function markCelebrationsSeen(ids: string[]) {
+  await request("/v1/celebrations/seen", { method: "POST", body: JSON.stringify({ ids }) });
+}
+/** Pause celebrations for 1, 3, or 24 hours (0 resumes them). */
+export async function pauseCelebrations(hours: 0 | 1 | 3 | 24) {
+  return successEnvelope(celebrationPauseResultSchema).parse(await request("/v1/celebrations/pause", { method: "PUT", body: JSON.stringify({ hours }) })).data;
 }
 
 export async function getLiveTask(id: string) {

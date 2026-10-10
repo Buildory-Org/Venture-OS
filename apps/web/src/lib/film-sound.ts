@@ -29,6 +29,9 @@ export const CHORDS = {
   c: [130.81, 196, 261.63, 329.63, 392],
 } as const;
 
+/** A MIDI note's frequency (69 is the A above middle C, 440 Hz). */
+export const noteHz = (note: number) => 440 * Math.pow(2, (note - 69) / 12);
+
 /** Every voice of the film: each method plays one sound at an exact audio-clock time. Works offline too, for testing. */
 export class FilmSynth {
   readonly master: GainNode;
@@ -252,6 +255,39 @@ export class FilmSynth {
       at += 0.08 - 0.045 * progress;
     }
   }
+  /** A hand clap: a few quick bursts of filtered noise, slightly apart, like several hands. */
+  clap(when: number, peak = 0.14) {
+    for (const [offset, share] of [[0, 0.7], [0.011, 0.85], [0.022, 1]] as const) {
+      const at = when + offset;
+      const level = this.hit(at, 0.001, peak * share, offset === 0.022 ? 0.16 : 0.02);
+      this.hiss(at, at + 0.22).connect(this.filter("bandpass", 1300, 1.1)).connect(level);
+      this.out(level, { send: 0.18, pan: -0.12 });
+    }
+  }
+  /** A short, bright chord hit, for the cuts of a montage. */
+  stab(when: number, frequencies: readonly number[], length = 0.22, peak = 0.05) {
+    const filter = this.filter("lowpass", 900, 1.4);
+    filter.frequency.setValueAtTime(3200, when);
+    filter.frequency.exponentialRampToValueAtTime(700, when + length);
+    const level = this.hit(when, 0.005, 1, length);
+    for (const frequency of frequencies) for (const detune of [-7, 7]) {
+      const voice = this.osc("sawtooth", frequency, when, when + length + 0.05);
+      voice.detune.value = detune;
+      const voiceLevel = this.context.createGain(); voiceLevel.gain.value = peak;
+      voice.connect(voiceLevel).connect(filter);
+    }
+    filter.connect(level); this.out(level, { send: 0.25 });
+  }
+  /** A plucked note, for arpeggios. */
+  pluck(when: number, frequency: number, peak = 0.06, pan = 0) {
+    const filter = this.filter("lowpass", 2600, 2);
+    filter.frequency.setValueAtTime(3400, when);
+    filter.frequency.exponentialRampToValueAtTime(600, when + 0.25);
+    const level = this.hit(when, 0.003, peak, 0.28);
+    this.osc("square", frequency, when, when + 0.32).connect(filter).connect(level);
+    this.out(level, { send: 0.3, pan });
+  }
+
   /** The winner's chord: brassy saws through a filter that opens on the hit. */
   fanfare(when: number) {
     const filter = this.filter("lowpass", 500, 1.1);

@@ -3533,3 +3533,115 @@ test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, sh
     await database.client.close();
   }
 });
+
+test("celebrations: approval or done celebrates the assignee once, with the film's facts, a live nudge, seen, and pause", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_celebrations`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  const day = 86_400_000;
+  const at = (days: number) => new Date(now.getTime() + days * day);
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  const people = [["admin", "admin"], ["lead", "venture_head"], ["member", "contributor"], ["rev", "contributor"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: now, updatedAt: now })) as never);
+  const task = (id: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: `Task ${id}`, outcome: "o", assigneeId: "user-member", reviewerId: "user-rev", creatorId: "user-lead", priority: "high", status: "review", dueAt, timezone: "UTC", estimatedMinutes: 120, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: at(-30), updatedAt: at(-30), ...extra });
+  await db.collection("tasks").insertMany([
+    task("t-approve", at(2)), task("t-done", at(1), { status: "in_progress" }), task("t-reject", at(3)), task("t-paused", at(3)), task("t-after", at(3)), task("t-cancel", at(3)),
+    // History: one finished on time ten days ago, one late before that.
+    task("t-old-on-time", at(-9), { status: "done", completedAt: at(-10) }), task("t-old-late", at(-20), { status: "done", completedAt: at(-17) }),
+  ] as never);
+  const evidence = (id: string, taskId: string, submittedAt: Date, reviewStatus = "pending", extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy: "user-member", submittedAt, reviewStatus, ...extra });
+  await db.collection("evidence_items").insertMany([
+    evidence("e-sent-back", "t-approve", at(-3), "rejected", { reviewedBy: "user-rev", reviewedAt: at(-2.5) }), evidence("e-approve", "t-approve", at(-1)),
+    evidence("e-done", "t-done", at(-0.002), "accepted", { reviewedBy: "user-lead", reviewedAt: at(-0.001) }),
+    evidence("e-reject", "t-reject", at(-1)), evidence("e-paused", "t-paused", at(-1)), evidence("e-after", "t-after", at(-1)), evidence("e-cancel", "t-cancel", at(-1)),
+    evidence("e-old-on-time", "t-old-on-time", at(-10), "accepted", { reviewedBy: "user-rev", reviewedAt: at(-10) }), evidence("e-old-late", "t-old-late", at(-18), "accepted", { reviewedBy: "user-rev", reviewedAt: at(-17) }),
+  ] as never);
+  const { app, resolveActor } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  const ioServer = attachRealtime(server, database, resolveActor, config.APP_ORIGIN, true);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const as = (handle: string) => ({ "content-type": "application/json", "x-dev-user-id": `user-${handle}` });
+  const send = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: as(handle), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const review = async (evidenceId: string, status: string, handle = "rev") => { const response = await send("POST", `/evidence/${evidenceId}/review`, handle, { status }); assert.equal(response.status, 200, await response.clone().text()); };
+  const feed = async (handle = "member") => { const response = await send("GET", "/celebrations", handle); assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  let socket: ReturnType<typeof socketClient> | undefined;
+  try {
+    socket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-member" }, transports: ["websocket"], reconnection: false });
+    await new Promise<void>((resolve, reject) => { socket!.once("connect", resolve); socket!.once("connect_error", reject); });
+    const nudge = new Promise<any>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("no celebration nudge")), 5000); socket!.once("celebration", (value: unknown) => { clearTimeout(timer); resolve(value); }); });
+
+    // The reviewer approves: the assignee's celebration, nudged to their open tabs at once.
+    await review("e-approve", "accepted");
+    const nudged = await nudge;
+    // Marking it done later doesn't celebrate the same task again; marking another one done does.
+    assert.equal((await send("PATCH", "/tasks/t-approve", "member", { status: "done" })).status, 200);
+    assert.equal((await send("PATCH", "/tasks/t-done", "member", { status: "done" })).status, 200);
+    // Sent back is not a celebration.
+    await review("e-reject", "rejected");
+
+    const mine = await feed();
+    assert.equal(mine.name, "Person member");
+    assert.deepEqual(mine.items.map((item: any) => [item.taskId, item.trigger]), [["t-approve", "approved"], ["t-done", "done"]]);
+    assert.deepEqual(nudged, { id: mine.items[0].id });
+    const [approved, done] = mine.items;
+    assert.equal(approved.ventureName, "Alpha");
+    assert.equal(approved.firstTimeRight, false, "it was sent back once before");
+    assert.deepEqual(approved.approvedBy, { userId: "user-rev", name: "Person rev" });
+    assert.equal(approved.minutesEarly, 3 * 24 * 60, "handed in a day before, due in two");
+    assert.equal(approved.estimatedMinutes, 120);
+    assert.equal(approved.priority, "high");
+    assert.equal(done.firstTimeRight, true);
+    assert.deepEqual(done.approvedBy, { userId: "user-lead", name: "Person lead" });
+    // Four finished, the two this week, three on time in a row (the late one ends the streak).
+    assert.equal(mine.stats.finished, 4);
+    assert.equal(mine.stats.thisWeek, 2);
+    assert.equal(mine.stats.onTimeStreak, 3);
+    assert.equal(mine.pausedUntil, undefined);
+    // Only the person themselves sees or clears theirs.
+    assert.deepEqual((await feed("rev")).items, []);
+    assert.equal(((await (await send("POST", "/celebrations/seen", "rev", { ids: [approved.id] })).json()) as any).data.updated, 0);
+    assert.equal(((await (await send("POST", "/celebrations/seen", "member", { ids: [approved.id, done.id] })).json()) as any).data.updated, 2);
+    assert.deepEqual((await feed()).items, []);
+
+    // A cancelled task's celebration is left out rather than played, and so is one for a task out of reach.
+    await review("e-cancel", "accepted");
+    assert.equal((await send("PATCH", "/tasks/t-cancel", "lead", { status: "cancelled" })).status, 200);
+    await db.collection("tasks").insertOne({ ...task("t-hidden", at(3)), groupId: "group-b", status: "done" } as never);
+    await db.collection("celebrations").insertOne({ _id: "c-hidden", workspaceId: "workspace-a", userId: "user-member", taskId: "t-hidden", trigger: "done", actorId: "user-lead", createdAt: new Date(), state: "pending" } as never);
+    assert.deepEqual((await feed()).items, []);
+
+    // Paused: nothing shows, and what's finished meanwhile is skipped for good; resuming doesn't bring it back.
+    assert.equal((await send("PUT", "/celebrations/pause", "member", { hours: 2 })).status, 400, "only 1, 3, or 24 hours");
+    const paused = ((await (await send("PUT", "/celebrations/pause", "member", { hours: 1 })).json()) as any).data;
+    assert.ok(new Date(paused.pausedUntil).getTime() > now.getTime() + 0.9 * 3_600_000);
+    await review("e-paused", "accepted");
+    const whilePaused = await feed();
+    assert.equal(whilePaused.pausedUntil, paused.pausedUntil);
+    assert.deepEqual(whilePaused.items, []);
+    assert.equal((await db.collection("celebrations").findOne({ taskId: "t-paused" }))?.state, "skipped");
+    assert.equal(((await (await send("PUT", "/celebrations/pause", "member", { hours: 0 })).json()) as any).data.pausedUntil, null);
+    assert.deepEqual((await feed()).items, []);
+    await review("e-after", "accepted");
+    assert.deepEqual((await feed()).items.map((item: any) => item.taskId), ["t-after"]);
+  } finally {
+    socket?.close();
+    await ioServer.close();
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});

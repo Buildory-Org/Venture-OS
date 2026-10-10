@@ -470,6 +470,48 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - API tests cover Details permissions and clearing, the guard's shapes and exemptions, the read-back, and line breaks. The backend smoke passes; the search index is replaced in place on an existing database.
     - In the browser: the drawer and the edit form. Web typecheck, lint, and build pass.
     - An independent review's findings are fixed.
+- [x] Task window, and deleting a task with Undo (2026-10-10), built and tested locally, not yet live.
+  - **Window:** a task opens in a centred window instead of the side panel, with tabs for Overview, Activity, Evidence, and Files.
+    - Status, blocker, people, and the plan sit in a side column. On phones the window is full screen and they move to a "Status & people" tab.
+    - A ⋯ menu holds Edit details, Copy link, and Delete task. Links can open a tab (`?task=…&tab=activity`).
+    - Escape, the focus trap, and the menu work from the keyboard. Closing with unsaved text asks first, and a refresh keeps unsaved status and people picks.
+    - The work flow and statuses are unchanged.
+  - **Deleting:** the creator (a contributor or venture head) or an admin deletes a task. Claude can't.
+    - Its comments, evidence, files, reminders, and notices go with it. Other tasks stop depending on it, and links to it elsewhere are cleared.
+    - Everything is kept for 30 days as a recovery copy. The toast's Undo (by whoever deleted it, or an admin) brings it all back, but not dependencies on tasks deleted since.
+    - Deleting and restoring run in one transaction, re-checking the person's membership. Comments and evidence touch the task in the same transaction, so a delete can't orphan them.
+  - **Claude's task updates:** get_task warns when saved text holds leftover tool-call markup. The guard's refusal explains how to fix text copied from it, so update_task can clean an old garbled task.
+  - **Verified:**
+    - API tests cover delete and restore permissions, the cleanup and its undo, dependencies, a second undo, an admin's delete, and the get_task warning and cleanup. All 20 API tests pass on a replica set, and the backend smoke passes.
+    - In the browser:
+      - tabs, comments, and the phone layout;
+      - delete, then Undo (once, even when clicked twice), then Open, then Back closing it;
+      - Escape and Tab from the page body, Tab inside a window above it, and the menu's keyboard and outside click;
+      - closing clears the link.
+    - Web typecheck, lint, and build pass.
+    - Two independent reviews' findings are fixed. The role check is repeated inside the transaction, so someone demoted meanwhile can't delete or restore.
+- [x] Task list: open work first, soonest due, with lists and filters (2026-10-10), built and tested locally, not yet live.
+  - **Lists:** Open (the default: not done, cancelled, or parked), Needs my review, Overdue, Done, and All, with counts on the tabs.
+    - Needs my review shows open tasks with evidence waiting that you may accept or reject, by the same rules as reviewing it.
+    - Done lists the most recently finished first and says when each was finished.
+  - **Order:** soonest due by default, under Overdue, Today, Next 7 days, and Later headings. Most urgent, recently updated, and newest are the other sorts.
+  - **Rows:** say "Overdue by 3 days" in red, "Due today, 5:00 PM", or "Due tomorrow", counting calendar days.
+  - **Filters:** Assigned to me, any assignee, status, priority, and due today or in the next 7 days. Picking a status a list can't hold moves to All.
+  - **Search:** titles, outcomes, and tags.
+  - **Link:** the list, sort, filters, and search live in the link, so it can be shared, and closing a task keeps them.
+  - **Server:** sorting, filtering, search, and counts run on the server, so they stay right past the first 100 tasks.
+    - Sorted lists page by their sort values and id, so a page never repeats or skips a task, and a cursor from another sort is refused.
+    - Without a sort, the list behaves as before, so the board, dashboard, and other callers are unchanged.
+    - Claude's list_tasks gains the same lists (open, needs_my_review, overdue, done, all), sorts (soonest due by default), and search.
+  - **Verified:**
+    - An API test covers each list, who sees Needs my review, paging across equal due dates and every sort, search with regex characters, counts, bad cursors, and the unsorted list. All 21 API tests pass on a replica set, and the backend smoke passes.
+    - In the browser: every list, the headings and counts, each filter, search, sort, the empty states, Clear, a shared link, opening a task and accepting its evidence from Needs my review, and the phone layout. Web typecheck, lint, and build pass.
+    - An independent review's findings are fixed:
+      - a search pause no longer brings back cleared filters;
+      - a late "Load more" can't mix old rows in;
+      - cursors are tied to their sort, and a null character in search is refused;
+      - switching lists reloads only the tasks;
+      - Needs my review through Claude leaves out the person's own work.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

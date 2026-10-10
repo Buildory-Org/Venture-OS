@@ -96,6 +96,22 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // The Knowledge screen's chat and task file browsers, newest first.
     db.collection("messages").createIndex({ workspaceId: 1, groupId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { "attachments.0": { $exists: true } } }),
     db.collection("files").createIndex({ workspaceId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    // Finding everything about one task (its page, and deleting or restoring it).
+    db.collection("task_updates").createIndex({ taskId: 1, createdAt: 1 }),
+    db.collection("evidence_items").createIndex({ taskId: 1, submittedAt: 1 }),
+    // Evidence waiting for review, for the "Needs my review" task list.
+    db.collection("evidence_items").createIndex({ workspaceId: 1, reviewStatus: 1 }),
+    db.collection("reminders").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("notification_outbox").createIndex({ resourceId: 1 }, { partialFilterExpression: { resourceId: { $exists: true } } }),
+    db.collection("notification_outbox").createIndex({ reminderId: 1 }, { partialFilterExpression: { reminderId: { $exists: true } } }),
+    db.collection("notifications").createIndex({ resourceId: 1 }, { partialFilterExpression: { resourceId: { $exists: true } } }),
+    db.collection("notifications").createIndex({ reminderId: 1 }, { partialFilterExpression: { reminderId: { $exists: true } } }),
+    db.collection("files").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("focus_sessions").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("class_applications").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("tasks").createIndex({ parentTaskId: 1 }, { partialFilterExpression: { parentTaskId: { $exists: true } } }),
+    db.collection("tasks").createIndex({ dependencies: 1 }),
+    db.collection("command_executions").createIndex({ "result.task._id": 1 }, { partialFilterExpression: { "result.task._id": { $exists: true } } }),
     // Mentions in notices are looked up by handle.
     db.collection("users").createIndex({ workspaceId: 1, handle: 1 }),
     db.collection("document_suggestions").createIndex({ workspaceId: 1, state: 1, createdAt: 1 }),

@@ -3031,6 +3031,39 @@ test("task details: only the creator or an admin edits them, the assignee hears,
     assert.equal(await db.collection("reminders").countDocuments({ taskId: created.id, userId: "user-lead", state: "scheduled", message: "Start: Ship the launch page today" }), 1);
     // The activity entry keeps what each detail was before the edit.
     assert.equal((await db.collection("task_updates").findOne({ taskId: created.id, body: "Edited the title" }))?.previous?.title, "Ship the launch page");
+    // Deleting: only the creator or an admin; everything about the task goes to the recovery copy, and Undo brings it all back.
+    const taskBody = (title: string, extra: Record<string, unknown> = {}) => ({ ventureId: "venture-a", groupId: "group-a", title, outcome: "o", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", ...extra });
+    const doomed = await json(await call("POST", "/tasks", "creator", taskBody("Duplicate")));
+    assert.equal((await call("POST", `/tasks/${doomed.id}/comments`, "member", { body: "Looks like a duplicate" })).status, 201);
+    const dependent = await json(await call("POST", "/tasks", "creator", taskBody("Depends on it", { dependencies: [doomed.id] })));
+    assert.ok(await db.collection("reminders").countDocuments({ taskId: doomed.id }) > 0);
+    assert.equal((await call("DELETE", `/tasks/${doomed.id}`, "member")).status, 403, "the assignee can't delete it");
+    assert.equal((await call("DELETE", `/tasks/${doomed.id}`, "lead")).status, 403, "nor a venture lead who didn't create it");
+    const deleted = await call("DELETE", `/tasks/${doomed.id}`, "creator");
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    const { deletionId } = await json(deleted);
+    assert.equal((await call("GET", `/tasks/${doomed.id}`, "creator")).status, 404);
+    for (const collection of ["task_updates", "reminders"]) assert.equal(await db.collection(collection).countDocuments({ taskId: doomed.id }), 0, collection);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: doomed.id }), 0);
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, [], "other tasks stop depending on it");
+    assert.ok(await db.collection("deleted_records").countDocuments({ deletionId, kind: "task" }) >= 4);
+    assert.equal((await call("POST", `/tasks/deletions/${deletionId}/restore`, "member")).status, 403, "only whoever deleted it, or an admin, restores it");
+    const restored = await call("POST", `/tasks/deletions/${deletionId}/restore`, "creator");
+    assert.equal(restored.status, 200, await restored.clone().text());
+    assert.ok((await json(await call("GET", `/tasks/${doomed.id}`, "member"))).updates.some((item: any) => item.body === "Looks like a duplicate"), "comments come back");
+    assert.ok(await db.collection("reminders").countDocuments({ taskId: doomed.id }) > 0, "reminders come back");
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, [doomed.id]);
+    assert.equal(await db.collection("deleted_records").countDocuments({ deletionId }), 0);
+    assert.equal((await call("POST", `/tasks/deletions/${deletionId}/restore`, "creator")).status, 404, "a delete is undone once");
+    // Restored after what it depended on was deleted, a task no longer depends on it.
+    const dependentDeletionId = (await json(await call("DELETE", `/tasks/${dependent.id}`, "creator"))).deletionId;
+    const byAdmin = await call("DELETE", `/tasks/${doomed.id}`, "admin");
+    assert.equal(byAdmin.status, 200, "an admin can delete anyone's task");
+    assert.deepEqual((await json(await call("POST", `/tasks/deletions/${dependentDeletionId}/restore`, "creator"))).dependencies, [], "the reply is the task as it now stands");
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, []);
+    const adminDeletionId = (await json(byAdmin)).deletionId;
+    assert.equal((await call("POST", `/tasks/deletions/${adminDeletionId}/restore`, "creator")).status, 403, "the creator can't undo an admin's delete");
+    assert.equal((await call("POST", `/tasks/deletions/${adminDeletionId}/restore`, "admin")).status, 200);
     // A finished task's details stay as they were.
     await db.collection("tasks").updateOne({ _id: created.id }, { $set: { status: "done" } });
     assert.equal((await call("PATCH", path, "admin", { title: "Rewritten" })).status, 409);
@@ -3220,9 +3253,108 @@ test("venture context, skills, and shared files: who writes, who reads, and Clau
     assert.equal(read.details, background);
     assert.equal(read.definitionOfDone, `${checklist}\n- Webhooks fan out`, "line breaks reach Claude as written");
     assert.equal((await tool("update_task", { taskId: made.id, details: null })).saved.details, undefined, "null clears the details");
+    // A task saved garbled earlier: get_task says so, copying the garble into an update is refused with a way out, and the cleaned text goes through.
+    await db.collection("tasks").updateOne({ _id: made.id }, { $set: { definitionOfDone: '- Owners connect a number</definitionOfDone> <parameter name="tags">["whatsapp"]' } });
+    assert.match(String((await tool("get_task", { taskId: made.id })).warning), /saved definitionOfDone holds leftover tool-call markup/);
+    const copied = await mcpTool(origin, token, "update_task", { taskId: made.id, details: '- Owners connect a number</definitionOfDone> <parameter name="tags">["whatsapp"]' });
+    assert.equal(copied.isError, true);
+    assert.match(String(copied.text), /already saved garbled/);
+    assert.equal((await tool("update_task", { taskId: made.id, definitionOfDone: "- Owners connect a number", tags: ["whatsapp"] })).saved.definitionOfDone, "- Owners connect a number");
+    assert.equal((await tool("get_task", { taskId: made.id })).warning, undefined);
     const skill = await tool("get_skill", { skillId: emailId });
     assert.equal(skill.instructions, "Be brief and specific.");
     assert.equal(skill.useWhen, "Writing to a new lead");
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("task lists: open, needs my review, overdue, and done views; sorted with stable paging; search; counts", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_task_lists`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  const people = [["admin", "admin"], ["lead", "venture_head"], ["creator", "contributor"], ["member", "contributor"], ["rev", "contributor"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: now, updatedAt: now })) as never);
+  const day = 86_400_000;
+  const at = (days: number) => new Date(now.getTime() + days * day);
+  const tie = at(20);
+  const task = (id: string, title: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title, outcome: "o", assigneeId: "user-member", creatorId: "user-creator", priority: "medium", status: "todo", dueAt, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: at(-30), updatedAt: at(-30), ...extra });
+  await db.collection("tasks").insertMany([
+    task("t-late", "Late invoice", at(-2), { priority: "high" }),
+    task("t-soon", "Soon launch", at(1), { priority: "urgent", status: "in_progress", tags: ["launch"] }),
+    task("t-later", "Later plan", at(10), { priority: "low" }),
+    task("t-parked", "Parked idea", at(-5), { status: "parked" }),
+    task("t-done", "Finished work", at(-1), { status: "done", updatedAt: at(-0.1) }),
+    task("t-cancel", "Dropped work", at(2), { status: "cancelled" }),
+    task("t-review1", "Check the photos", at(3), { status: "review", reviewerId: "user-rev" }),
+    task("t-review2", "The lead's own work", at(4), { status: "review", assigneeId: "user-lead" }),
+    task("t-review-done", "Done with stray evidence", at(-3), { status: "done", updatedAt: at(-2) }),
+    task("t-tie-c", "Tie c", tie), task("t-tie-a", "Tie a", tie), task("t-tie-b", "Tie b", tie),
+  ] as never);
+  const evidence = (id: string, taskId: string, submittedBy: string, reviewStatus = "pending") => ({ _id: id, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy, submittedAt: now, reviewStatus });
+  await db.collection("evidence_items").insertMany([evidence("e-1", "t-review1", "user-member"), evidence("e-2", "t-review2", "user-lead"), evidence("e-3", "t-review-done", "user-member"), evidence("e-4", "t-late", "user-member", "accepted")] as never);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (path: string, handle: string) => fetch(`${origin}/v1${path}`, { headers: { "x-dev-user-id": `user-${handle}` } });
+  const list = async (query: string, handle = "admin") => { const response = await call(`/tasks?${query}`, handle); assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  const ids = async (query: string, handle = "admin") => (await list(query, handle)).items.map((item: any) => item.id);
+  const walk = async (query: string) => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do { const page = await list(`${query}${cursor ? `&cursor=${cursor}` : ""}`); seen.push(...page.items.map((item: any) => item.id)); cursor = page.nextCursor; } while (cursor);
+    return seen;
+  };
+  try {
+    // Open: not done, cancelled, or parked; soonest due first, ties in id order.
+    const open = ["t-late", "t-soon", "t-review1", "t-review2", "t-later", "t-tie-a", "t-tie-b", "t-tie-c"];
+    assert.deepEqual(await ids("view=open&sort=due&limit=100"), open);
+    // Paging never repeats or skips, even across tasks due at the same moment.
+    assert.deepEqual(await walk("view=open&sort=due&limit=2"), open);
+    assert.deepEqual(await walk("view=open&sort=priority&limit=3"), ["t-soon", "t-late", "t-review1", "t-review2", "t-tie-a", "t-tie-b", "t-tie-c", "t-later"], "most urgent first, then soonest due");
+    assert.deepEqual(await walk("view=all&sort=updated&limit=4"), ["t-done", "t-review-done", "t-cancel", "t-late", "t-later", "t-parked", "t-review1", "t-review2", "t-soon", "t-tie-a", "t-tie-b", "t-tie-c"], "most recently changed first, ties in id order");
+    assert.deepEqual(await ids("view=overdue&sort=due"), ["t-late"], "parked and finished tasks aren't overdue");
+    assert.deepEqual(await ids("view=done&sort=updated"), ["t-done", "t-review-done"], "most recently finished first");
+    assert.deepEqual(await ids(`view=open&sort=due&dueFrom=${encodeURIComponent(now.toISOString())}&dueTo=${encodeURIComponent(at(5).toISOString())}`), ["t-soon", "t-review1", "t-review2"]);
+    // Needs my review: open tasks with evidence waiting, by the same rules as reviewing it.
+    assert.deepEqual(await ids("view=review&sort=due"), ["t-review1", "t-review2"], "an admin reviews anything");
+    assert.deepEqual(await ids("view=review&sort=due", "lead"), ["t-review1"], "a venture lead, but not their own task or evidence");
+    assert.deepEqual(await ids("view=review&sort=due", "rev"), ["t-review1"], "the assigned reviewer");
+    assert.deepEqual(await ids("view=review&sort=due", "member"), [], "not the assignee who submitted it");
+    assert.deepEqual(await ids("view=review&sort=due", "creator"), [], "not someone who can't review it");
+    // Search covers the title, outcome, and tags, and takes any characters.
+    assert.deepEqual(await ids("view=all&sort=due&q=LAUNCH"), ["t-soon"]);
+    assert.deepEqual(await ids(`view=all&sort=due&q=${encodeURIComponent("(*")}`), []);
+    // Counts follow the people and search, not the view.
+    assert.deepEqual((await list("view=open&sort=due&counts=true")).counts, { open: 8, review: 2, overdue: 1, done: 2, all: 12 });
+    assert.deepEqual((await list("view=open&sort=due&counts=true&assigneeId=user-lead")).counts, { open: 1, review: 1, overdue: 0, done: 0, all: 1 });
+    assert.equal((await list("view=open&sort=due")).counts, undefined);
+    // A cursor from another sort, or a made-up one, is refused rather than misread.
+    const dueCursor = (await list("view=open&sort=due&limit=2")).nextCursor;
+    assert.equal((await call(`/tasks?view=open&sort=priority&cursor=${dueCursor}`, "admin")).status, 400);
+    assert.equal((await call(`/tasks?view=open&sort=updated&cursor=${dueCursor}`, "admin")).status, 400, "even a sort with the same shape");
+    assert.equal((await call("/tasks?sort=due&cursor=nonsense", "admin")).status, 400);
+    assert.equal((await call("/tasks?sort=due&q=%00", "admin")).status, 400, "a null character is refused, not a server error");
+    // Without a sort, the list is as before: every task in id order.
+    assert.equal((await ids("limit=100")).length, 12);
+    assert.deepEqual(await ids("status=parked"), ["t-parked"]);
   } finally {
     server.close();
     await once(server, "close");

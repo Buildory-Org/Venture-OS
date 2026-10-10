@@ -116,10 +116,22 @@ export const taskUpdateSchema = z.object({
   via: z.literal("claude").optional(),
 });
 
+/** Ready-made lists: still open (not done, cancelled, or parked), evidence waiting for me to review, overdue, finished, or everything. */
+export const taskViewSchema = z.enum(["open", "review", "overdue", "done", "all"]);
+/** Soonest due first, most urgent first, most recently changed first, or newest first. Without one, tasks come in id order. */
+export const taskSortSchema = z.enum(["due", "priority", "updated", "newest"]);
 export const taskListQuerySchema = cursorQuerySchema.extend({
   ventureId: idSchema.optional(), groupId: idSchema.optional(), assigneeId: idSchema.optional(), reviewerId: idSchema.optional(),
   status: taskStatusSchema.optional(), priority: taskPrioritySchema.optional(), tag: z.string().optional(),
+  view: taskViewSchema.optional(), sort: taskSortSchema.optional(),
+  /** Words in the title, outcome, or tags. */
+  q: z.string().trim().min(1).max(100).regex(/^[^\u0000]*$/, "Search can't contain a null character").optional(),
+  /** Due on or after `dueFrom` and before `dueTo`. */
+  dueFrom: isoDateSchema.optional(), dueTo: isoDateSchema.optional(),
+  /** "true" adds how many tasks each list holds, under the same venture, people, priority, tag, and search. */
+  counts: z.enum(["true", "false"]).optional(),
 });
+export const taskListCountsSchema = z.object({ open: z.number().int(), review: z.number().int(), overdue: z.number().int(), done: z.number().int(), all: z.number().int() });
 
 export const commandPreviewRequestSchema = z.object({
   channelId: idSchema,

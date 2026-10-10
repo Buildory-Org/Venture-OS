@@ -60,6 +60,7 @@ import {
   channelNotificationLevelSchema,
   type ChannelNotificationLevel,
   outcomeSchema,
+  pagedDataSchema,
   pagedSuccessEnvelope,
   reminderSchema,
   documentListQuerySchema,
@@ -77,7 +78,10 @@ import {
   successEnvelope,
   patListItemSchema,
   patCreatedSchema,
+  taskListCountsSchema,
   taskListQuerySchema,
+  type taskSortSchema,
+  type taskViewSchema,
   taskSchema,
   taskUpdateSchema,
   updateTaskSchema,
@@ -206,13 +210,16 @@ export async function createLiveInvitation(input: { email: string; role: AppRole
   throw new StudioApiError("The invitation was created, but the API did not confirm email delivery or provide a manual link.");
 }
 
-type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string };
+export type TaskView = ReturnType<typeof taskViewSchema.parse>;
+export type TaskSort = ReturnType<typeof taskSortSchema.parse>;
+export type TaskListCounts = ReturnType<typeof taskListCountsSchema.parse>;
+type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string; view?: TaskView; sort?: TaskSort; q?: string; dueFrom?: string; dueTo?: string; counts?: boolean };
 
-export async function listLiveTasks(cursor?: string, filters: TaskFilters = {}) {
-  const query = taskListQuerySchema.parse({ limit: 100, cursor, ...filters });
+export async function listLiveTasks(cursor?: string, { counts, ...filters }: TaskFilters = {}) {
+  const query = taskListQuerySchema.parse({ limit: 100, cursor, ...filters, ...(counts ? { counts: "true" } : {}) });
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
-  return pagedSuccessEnvelope(taskSchema).parse(await request(`/v1/tasks?${params}`)).data;
+  return successEnvelope(pagedDataSchema(taskSchema).extend({ counts: taskListCountsSchema.optional() })).parse(await request(`/v1/tasks?${params}`)).data;
 }
 
 export async function getLiveTask(id: string) {
@@ -353,6 +360,17 @@ export async function searchLiveGroupContent(q: string, groupId: string): Promis
 export async function createLiveTask(input: unknown) {
   const valid = createTaskSchema.parse(input);
   return successEnvelope(taskSchema).parse(await request("/v1/tasks", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+/** Deletes a task (with its comments, evidence, and files); the returned id undoes it with restoreLiveTask. */
+export async function deleteLiveTask(id: string): Promise<{ deletionId: string }> {
+  const body = await request(`/v1/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const data = body && typeof body === "object" && "data" in body ? (body as { data: unknown }).data : null;
+  if (!data || typeof data !== "object" || !("deletionId" in data) || typeof data.deletionId !== "string") throw new StudioApiError("The delete response was invalid.");
+  return { deletionId: data.deletionId };
+}
+export async function restoreLiveTask(deletionId: string) {
+  return successEnvelope(taskSchema).parse(await request(`/v1/tasks/deletions/${encodeURIComponent(deletionId)}/restore`, { method: "POST" })).data;
 }
 
 export async function updateLiveTask(id: string, input: unknown) {

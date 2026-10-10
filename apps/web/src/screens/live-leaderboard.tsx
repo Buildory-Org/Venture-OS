@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -9,9 +9,10 @@ import { getLeaderboard, getWeeklyLeaderboardStatus } from "@/lib/studio-api";
 import { useStudio } from "@/lib/studio-store";
 import { describeError } from "@/lib/errors";
 import { ChatAvatar } from "@/components/studio/chat-ui";
-import { ChevronDown, Crown, RefreshCw, Trophy } from "@/components/ui/icons";
+import { ChevronDown, Crown, Play, RefreshCw, Trophy } from "@/components/ui/icons";
 import { SkeletonRows } from "@/components/studio/primitives";
 import { DitherBackground } from "@/components/ui/dither-background";
+import { LeaderboardFilm } from "@/components/studio/leaderboard-film";
 import { lateLabel, LeaderboardPersonDialog, ordinal, percent, ROLE_LABELS, TrendMark } from "@/components/studio/leaderboard-parts";
 
 /** One spot on the podium: the person above a frosted step; 2nd, 1st, and 3rd stand side by side, the winner tallest. */
@@ -51,6 +52,12 @@ export function LiveLeaderboardScreen() {
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  // The opening film plays each time the page opens (and on Replay); the board comes in underneath as it dissolves.
+  const [film, setFilm] = useState<"playing" | "revealed" | "done">("playing");
+  const [take, setTake] = useState(0);
+  const replayButton = useRef<HTMLButtonElement>(null);
+  // After a replay, keyboard focus goes back to Replay (it was hidden with the board while the film played).
+  useEffect(() => { if (film === "done" && take > 0) replayButton.current?.focus({ preventScroll: true }); }, [film, take]);
 
   useEffect(() => {
     let active = true;
@@ -91,13 +98,14 @@ export function LiveLeaderboardScreen() {
       <span aria-hidden="true" className="pointer-events-none absolute -right-20 top-10 -z-10 h-56 w-56 rotate-12 rounded-[48px] bg-white/10" />
       <span aria-hidden="true" className="pointer-events-none absolute -right-28 top-64 -z-10 h-80 w-80 rounded-full border-2 border-white/15" />
 
-      <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col">
+      {film !== "playing" && <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col">
       <header className="flex flex-wrap items-start justify-between gap-3 px-5 pt-6 sm:px-8 sm:pt-8">
         <div className="min-w-0">
           <h1 className="text-3xl font-extrabold tracking-[-.03em] sm:text-4xl">Leaderboard</h1>
           <p className="mt-1 text-sm font-semibold text-white/80">All time · {scope} · arrows show this week&apos;s moves</p>
         </div>
         <div className="flex items-center gap-2">
+          <button ref={replayButton} type="button" onClick={() => { setTake((value) => value + 1); setFilm("playing"); }} aria-label="Replay the opening" title="Replay the opening" className="grid h-10 w-10 place-items-center rounded-full bg-white/15 text-white transition-[background-color,transform] duration-150 hover:bg-white/25 active:scale-[0.95] motion-reduce:hidden"><Play size={16} /></button>
           <span className="text-sm font-semibold text-white/80">Score</span>
           <button type="button" onClick={() => setRevision((value) => value + 1)} aria-label="Refresh the leaderboard" className="grid h-10 w-10 place-items-center rounded-full bg-white/15 text-white transition-[background-color,transform] duration-150 hover:bg-white/25 active:scale-[0.95]"><RefreshCw size={16} className={clsx(busy && board && "vso-spin")} /></button>
         </div>
@@ -144,8 +152,10 @@ export function LiveLeaderboardScreen() {
           {weekly && <div className="mt-4 flex justify-center"><Link href={`/leaderboard/weekly/live?next=${encodeURIComponent(here)}`} className="inline-flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-primary-700 transition-colors duration-150 hover:bg-primary-50"><Trophy size={16} />This week&apos;s top performers</Link></div>}
         </div>
       </>}
-      </div>
+      </div>}
     </section>
+    {film !== "done" && <LeaderboardFilm key={take} theme="board" title="Leaderboard" subtitle={`All time · ${scope}`} people={board?.people ?? null} failed={Boolean(error) && !board} minimumTasks={minimum} currentUserId={currentUserId}
+      onReveal={() => setFilm((state) => (state === "playing" ? "revealed" : state))} onDone={() => setFilm("done")} />}
     {selected && board && <LeaderboardPersonDialog key={selected.userId} entry={selected} period="all" ventureId={ventureId || undefined} learners={learners} minimumTasks={minimum} onClose={() => setSelected(null)} />}
   </>;
 }

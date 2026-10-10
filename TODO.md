@@ -550,6 +550,17 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - Early work counts when it's handed in, and the minimum is two tasks. The live workspace had 13 of its 15 tasks due later, so no one could be ranked yet.
     - Lateness reads in minutes, hours, or days, and someone not ranked yet shows no score.
     - Verified: the API test (early hand-ins, hand-ins before the period, ties sharing a rank, one task not enough) and the browser on a copy of the live situation, desktop and phone. All 22 API tests, lint, typecheck, and build pass.
+  - **Opening film (2026-10-10):** every time either leaderboard opens (and on Replay), a short film of about ten seconds builds the board before it appears.
+    - The story: a line of light opens onto the stage and the title slams in. Everyone pops on as the counts tick up. The board forms as a race, rows overtaking as their scores run up, then locks. The rest step down to a strip, 3rd and 2nd rise on their steps, a drumroll and spotlights fall on the empty top step, and the winner launches up with a flash, confetti, a fanfare, and a crown. It shows your place, then dissolves into the live board. The Saturday edition has its own gold version.
+    - Its own score, made in the browser with no audio files: A minor resolving to C major on the winner at 120 bpm, with whooshes, hits, pops, ticks, a drumroll, chimes, and sparkle, each timed to the picture. Sound is on by default, with a mute that's remembered. If the browser holds sound back until a click, the button says "Tap for sound".
+    - Skip or Escape at any time. It holds on the title while the board loads, gets out of the way if loading fails, waits until a background tab is seen, ends if the tab is hidden, and is left out for reduced motion.
+    - Verified in the browser frame by frame on a throwaway stack: nine ranked with a tie, two not ranked, you in 5th; one person; no one ranked; slow and failed loads; phone, upright and on its side; mute, Tab, Escape; reduced motion. The soundtrack was rendered offline (peak 0.91, no clipping). Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - focus goes back to where it was (or to Replay);
+      - a sound the browser starts a moment late still plays;
+      - the week is marked seen only once the poster is on screen;
+      - the race and podium fit short screens;
+      - the sound button has one clear name.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

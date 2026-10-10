@@ -8,9 +8,10 @@ import { getWeeklyLeaderboard, markWeeklyLeaderboardSeen } from "@/lib/studio-ap
 import { useStudio } from "@/lib/studio-store";
 import { describeError } from "@/lib/errors";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ArrowRight, Trophy } from "@/components/ui/icons";
+import { ArrowRight, Play, Trophy } from "@/components/ui/icons";
 import { SkeletonRows } from "@/components/studio/primitives";
 import { DitherBackground } from "@/components/ui/dither-background";
+import { LeaderboardFilm } from "@/components/studio/leaderboard-film";
 import { dateRange, LeaderboardPersonDialog, LearnersToggle, ordinal, PosterHighlights, PosterPodium, PosterRow } from "@/components/studio/leaderboard-parts";
 
 /** Only a page inside the app may follow the edition, never another site, however the address is disguised. */
@@ -34,14 +35,24 @@ export function LiveWeeklyLeaderboardScreen() {
   const [selected, setSelected] = useState<LeaderboardEntry | null>(null);
   const [error, setError] = useState("");
   const marked = useRef("");
+  // The opening film plays each time the page opens (and on Replay); the poster comes in underneath as it dissolves.
+  const [film, setFilm] = useState<"playing" | "revealed" | "done">("playing");
+  const [take, setTake] = useState(0);
+  const replayButton = useRef<HTMLButtonElement>(null);
+  // Seen once the poster is on screen (as the film gives way to it), so the app doesn't bring the person here again this week.
+  useEffect(() => {
+    if (!edition || edition.seen || film === "playing" || marked.current === edition.id) return;
+    marked.current = edition.id;
+    void markWeeklyLeaderboardSeen(edition.id).catch(() => { marked.current = ""; });
+  }, [edition, film]);
+  // After a replay, keyboard focus goes back to Replay (it was hidden with the poster while the film played).
+  useEffect(() => { if (film === "done" && take > 0) replayButton.current?.focus({ preventScroll: true }); }, [film, take]);
 
   useEffect(() => {
     let active = true;
     getWeeklyLeaderboard(learners).then((data) => {
       if (!active) return;
       setEdition(data); setError("");
-      // Seen once it's on screen, so the app doesn't bring the person here again this week.
-      if (!data.seen && marked.current !== data.id) { marked.current = data.id; void markWeeklyLeaderboardSeen(data.id).catch(() => { marked.current = ""; }); }
     }, (cause: unknown) => { if (active) setError(describeError(cause, "Could not load this week's top performers.")); });
     return () => { active = false; };
   }, [learners]);
@@ -54,10 +65,13 @@ export function LiveWeeklyLeaderboardScreen() {
   return <>
     <section data-vso-stagger-group className="vso-fullbleed vso-weekly relative isolate overflow-hidden">
       <DitherBackground color={[246, 203, 82, 26]} density={0.5} className="absolute inset-0 -z-10 h-full w-full" />
-      <div className="relative mx-auto max-w-6xl px-4 pb-10 pt-6 sm:px-8 lg:px-12">
+      {film !== "playing" && <div className="relative mx-auto max-w-6xl px-4 pb-10 pt-6 sm:px-8 lg:px-12">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[.16em] text-white/70"><Trophy size={16} />Venture Studio</p>
-        <LearnersToggle value={learners} onChange={setLearners} />
+        <div className="flex items-center gap-2">
+          <button ref={replayButton} type="button" onClick={() => { setTake((value) => value + 1); setFilm("playing"); }} aria-label="Replay the opening" title="Replay the opening" className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white/80 transition-[background-color,color,transform] duration-150 hover:bg-white/20 hover:text-white active:scale-[0.95] motion-reduce:hidden"><Play size={15} /></button>
+          <LearnersToggle value={learners} onChange={setLearners} />
+        </div>
       </div>
       <header className="mx-auto mt-8 max-w-2xl text-center">
         <p className="text-sm font-extrabold uppercase tracking-[.2em] text-[#f6cb52]">{edition ? `Week of ${dateRange(edition.weekStart, edition.weekEnd)}` : "This week"}</p>
@@ -81,8 +95,10 @@ export function LiveWeeklyLeaderboardScreen() {
         <button type="button" onClick={() => router.push(safeNext(params.get("next")))} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#f6cb52] px-5 text-sm font-bold text-[#3a2604] transition-[filter,transform] duration-150 hover:brightness-105 active:scale-[0.97]">Continue to Venture Studio<ArrowRight size={16} /></button>
         <Link href="/leaderboard/live" className="inline-flex min-h-11 items-center rounded-xl px-4 text-sm font-semibold text-white/80 transition-colors duration-150 hover:bg-white/10 hover:text-white">See the full leaderboard</Link>
       </div>
-      </div>
+      </div>}
     </section>
+    {film !== "done" && <LeaderboardFilm key={take} theme="weekly" title="Top performers" subtitle="Of the week" people={edition?.board.people ?? null} failed={Boolean(error) && !edition} minimumTasks={minimum} currentUserId={currentUserId}
+      onReveal={() => setFilm((state) => (state === "playing" ? "revealed" : state))} onDone={() => setFilm("done")} />}
     {selected && edition && <LeaderboardPersonDialog key={selected.userId} entry={selected} period="all" learners={learners} week={edition.id} minimumTasks={minimum} onClose={() => setSelected(null)} />}
   </>;
 }

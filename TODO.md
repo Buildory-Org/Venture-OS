@@ -546,6 +546,7 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
   - **Follow-up (2026-10-10):**
     - Both boards are lifetime (every task to date). The Saturday edition shows the standings as the week closed, with each person's move that week; an edition made under the old weekly rules is remade once.
     - The everyday leaderboard is full screen in its own design (after the green podium reference): avatars on frosted podium steps 2-1-3, then the list on a sheet below. The Saturday page keeps the trophy cards.
+    - Both leaderboards fill the whole content area edge to edge (no card or margins), with a slowly moving dither in the background: white dots on the green stage, gold on the Saturday poster. It stays still with reduced motion and pauses while the tab is hidden.
     - Early work counts when it's handed in, and the minimum is two tasks. The live workspace had 13 of its 15 tasks due later, so no one could be ranked yet.
     - Lateness reads in minutes, hours, or days, and someone not ranked yet shows no score.
     - Verified: the API test (early hand-ins, hand-ins before the period, ties sharing a rank, one task not enough) and the browser on a copy of the live situation, desktop and phone. All 22 API tests, lint, typecheck, and build pass.

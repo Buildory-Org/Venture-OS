@@ -10,7 +10,8 @@ import { useStudio } from "@/lib/studio-store";
 import { describeError } from "@/lib/errors";
 import { ChatAvatar } from "@/components/studio/chat-ui";
 import { ChevronDown, Crown, RefreshCw, Trophy } from "@/components/ui/icons";
-import { PageFrame, SkeletonRows } from "@/components/studio/primitives";
+import { SkeletonRows } from "@/components/studio/primitives";
+import { DitherBackground } from "@/components/ui/dither-background";
 import { lateLabel, LeaderboardPersonDialog, ordinal, percent, ROLE_LABELS, TrendMark } from "@/components/studio/leaderboard-parts";
 
 /** One spot on the podium: the person above a frosted step; 2nd, 1st, and 3rd stand side by side, the winner tallest. */
@@ -81,13 +82,16 @@ export function LiveLeaderboardScreen() {
     </button></li>;
   };
 
-  return <PageFrame>
-    <section aria-busy={busy || undefined} className="vso-board relative isolate flex min-h-[calc(100dvh-7.5rem)] flex-col overflow-hidden rounded-[28px]">
+  // Full bleed: the green stage fills the whole content area beside the sidebar, with a slowly moving dither behind it.
+  return <>
+    <section aria-busy={busy || undefined} data-vso-stagger-group className="vso-fullbleed vso-board relative isolate flex flex-col overflow-hidden">
+      <DitherBackground color={[255, 255, 255, 30]} density={0.6} className="absolute inset-0 -z-10 h-full w-full" />
       {/* Quiet shapes behind the stage, like the reference. */}
       <span aria-hidden="true" className="pointer-events-none absolute -left-24 top-24 -z-10 h-72 w-72 rounded-full border-2 border-white/20" />
       <span aria-hidden="true" className="pointer-events-none absolute -right-20 top-10 -z-10 h-56 w-56 rotate-12 rounded-[48px] bg-white/10" />
       <span aria-hidden="true" className="pointer-events-none absolute -right-28 top-64 -z-10 h-80 w-80 rounded-full border-2 border-white/15" />
 
+      <div className="relative mx-auto flex w-full max-w-6xl flex-1 flex-col">
       <header className="flex flex-wrap items-start justify-between gap-3 px-5 pt-6 sm:px-8 sm:pt-8">
         <div className="min-w-0">
           <h1 className="text-3xl font-extrabold tracking-[-.03em] sm:text-4xl">Leaderboard</h1>
@@ -140,7 +144,8 @@ export function LiveLeaderboardScreen() {
           {weekly && <div className="mt-4 flex justify-center"><Link href={`/leaderboard/weekly/live?next=${encodeURIComponent(here)}`} className="inline-flex min-h-10 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-primary-700 transition-colors duration-150 hover:bg-primary-50"><Trophy size={16} />This week&apos;s top performers</Link></div>}
         </div>
       </>}
+      </div>
     </section>
     {selected && board && <LeaderboardPersonDialog key={selected.userId} entry={selected} period="all" ventureId={ventureId || undefined} learners={learners} minimumTasks={minimum} onClose={() => setSelected(null)} />}
-  </PageFrame>;
+  </>;
 }

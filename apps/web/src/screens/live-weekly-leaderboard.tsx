@@ -9,7 +9,8 @@ import { useStudio } from "@/lib/studio-store";
 import { describeError } from "@/lib/errors";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ArrowRight, Trophy } from "@/components/ui/icons";
-import { PageFrame, SkeletonRows } from "@/components/studio/primitives";
+import { SkeletonRows } from "@/components/studio/primitives";
+import { DitherBackground } from "@/components/ui/dither-background";
 import { dateRange, LeaderboardPersonDialog, LearnersToggle, ordinal, PosterHighlights, PosterPodium, PosterRow } from "@/components/studio/leaderboard-parts";
 
 /** Only a page inside the app may follow the edition, never another site, however the address is disguised. */
@@ -49,8 +50,11 @@ export function LiveWeeklyLeaderboardScreen() {
   const yours = ranked.find((entry) => entry.userId === currentUserId);
   const minimum = edition?.minimumTasks ?? 2;
 
-  return <PageFrame>
-    <section className="vso-weekly relative overflow-hidden rounded-[28px] px-4 pb-8 pt-6 sm:px-8 sm:pb-10 lg:px-12">
+  // Full bleed, like a poster: the stage fills the whole content area, with a slowly moving gold dither behind it.
+  return <>
+    <section data-vso-stagger-group className="vso-fullbleed vso-weekly relative isolate overflow-hidden">
+      <DitherBackground color={[246, 203, 82, 26]} density={0.5} className="absolute inset-0 -z-10 h-full w-full" />
+      <div className="relative mx-auto max-w-6xl px-4 pb-10 pt-6 sm:px-8 lg:px-12">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[.16em] text-white/70"><Trophy size={16} />Venture Studio</p>
         <LearnersToggle value={learners} onChange={setLearners} />
@@ -77,7 +81,8 @@ export function LiveWeeklyLeaderboardScreen() {
         <button type="button" onClick={() => router.push(safeNext(params.get("next")))} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#f6cb52] px-5 text-sm font-bold text-[#3a2604] transition-[filter,transform] duration-150 hover:brightness-105 active:scale-[0.97]">Continue to Venture Studio<ArrowRight size={16} /></button>
         <Link href="/leaderboard/live" className="inline-flex min-h-11 items-center rounded-xl px-4 text-sm font-semibold text-white/80 transition-colors duration-150 hover:bg-white/10 hover:text-white">See the full leaderboard</Link>
       </div>
+      </div>
     </section>
     {selected && edition && <LeaderboardPersonDialog key={selected.userId} entry={selected} period="all" learners={learners} week={edition.id} minimumTasks={minimum} onClose={() => setSelected(null)} />}
-  </PageFrame>;
+  </>;
 }

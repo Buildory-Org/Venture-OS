@@ -2,9 +2,10 @@
 import clsx from "clsx";
 import { ArrowUpRight } from "@/components/ui/icons";
 import { WorkspaceLink } from "@/components/shell/workspace-link";
-import type { FindRun } from "@/lib/sales-api";
+import type { FinderStatus, FindRun } from "@/lib/sales-api";
 
-// The office PC engine, as the runs show it: which worker last reported, and how long ago.
+// Who works the runs: the lead finder built into this server (its status from the API), or, when that is off, the office PC engine as the
+// runs show it (which worker last reported, and how long ago).
 
 /** A running run that has not reported for this long is probably stuck, or the PC is off. */
 export const STALE_HEARTBEAT_MS = 5 * 60_000;
@@ -52,5 +53,31 @@ export function FindEngineStrip({ runs, now }: { runs: readonly FindRun[]; now: 
           : <><b className="font-bold">Office PC:</b> last heartbeat {since(engine.at, now)} ago{worker}{engine.state === "stale" ? ". It may have stopped, or lost its connection." : ""}</>}
     </p>
     {engine.queued > 0 && <span className="shrink-0 font-semibold">{engine.queued} {engine.queued === 1 ? "run" : "runs"} waiting</span>}
+  </div>;
+}
+
+/**
+ * One line above the two ways to find leads, when the built-in finder is on: it works the runs on this server, or it waits for a
+ * company-search key (an admin adds one in Sales setup); while it works, the run it is on and its progress note. Off: the office PC line.
+ */
+export function FindFinderStrip({ status, runs, now, setupHref }: { status: FinderStatus; runs: readonly FindRun[]; now: number; setupHref?: string | undefined }) {
+  const finder = status.builtIn;
+  if (!finder.on) return <FindEngineStrip runs={runs} now={now} />;
+  const queued = runs.filter((run) => run.status === "queued").length;
+  const running = finder.running;
+  const tone = !finder.searchReady ? "bg-warning-surface text-warning-text" : running ? "bg-success-surface text-success-text" : "bg-neutral-100 text-neutral-600";
+  const setup = setupHref ? <WorkspaceLink href={setupHref} className="inline-flex items-center gap-0.5 font-bold underline underline-offset-2 hover:opacity-80">Sales setup<ArrowUpRight size={11} aria-hidden="true" /></WorkspaceLink> : "Sales setup";
+  const last = finder.lastRun;
+  return <div role="status" className={clsx("mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-xl px-3.5 py-2.5 text-xs leading-5", tone)}>
+    <span aria-hidden="true" className={clsx("h-2 w-2 shrink-0 rounded-full bg-current", running && "animate-pulse")} />
+    <p className="min-w-0 flex-1 font-medium [overflow-wrap:anywhere]">
+      {!finder.searchReady
+        ? <><b className="font-bold">Company search has no key yet:</b> an admin adds one in {setup}. Queued runs wait until then.</>
+        : <><b className="font-bold">Runs are worked by the built-in finder on this server</b>
+          {running
+            ? <> · {running.kind === "enrich" ? "filling in contacts" : "now"}: “{running.request.length > 80 ? `${running.request.slice(0, 80)}…` : running.request}”{running.note ? <span className="opacity-80"> · {running.note}</span> : null}</>
+            : last ? <span className="opacity-80"> · last run {since(last.finishedAt, now)} ago, {last.status === "failed" ? "failed" : `${last.added} ${last.kind === "enrich" ? "filled in" : "added"}`}</span> : null}</>}
+    </p>
+    {queued > 0 && <span className="shrink-0 font-semibold">{queued} {queued === 1 ? "run" : "runs"} waiting</span>}
   </div>;
 }

@@ -10,6 +10,7 @@ import type { SalesCtx } from "./ctx.js";
 import { approvalNeed, canSendNow, needsPersonApproval } from "./drafts.js";
 import { settingsFor } from "./ctx.js";
 import { leadCard, leadJson, leadSummary, present, whyFor } from "./present.js";
+import { offerClause, offerNames } from "./offers.js";
 import { leadTotals } from "./revenue.js";
 import { OUTBOUND_KINDS } from "./rules.js";
 import { calendarOf } from "./settings.js";
@@ -61,10 +62,11 @@ const CONTACT_CLAUSES: Record<"phone" | "email" | "whatsapp" | "none", Document>
   whatsapp: { whatsappOptIn: { $ne: null } },
   none: { contactRoutes: { $not: { $elemMatch: { kind: { $in: ["phone", "whatsapp", "email"] } } } } },
 };
-type FacetKey = "region" | "city" | "category" | "contact";
-/** The where/what/how-to-reach filters, one clause per kind. */
+type FacetKey = "region" | "city" | "category" | "contact" | "offer";
+/** The where/what/how-to-reach filters and the offer (an id, or "none" for no offer), one clause per kind. */
 function facetClauses(query: LeadFacetsQuery): Partial<Record<FacetKey, Document>> {
   return {
+    ...(query.offerId ? { offer: offerClause(query.offerId) } : {}),
     ...(query.region ? { region: exactText("region", query.region) } : {}), ...(query.city ? { city: exactText("city", query.city) } : {}),
     ...(query.category ? { category: exactText("category", query.category) } : {}), ...(query.contact ? { contact: CONTACT_CLAUSES[query.contact] } : {}),
   };
@@ -133,12 +135,13 @@ function cityFacet(match: Document, limit: number): Document[] {
  * go together: the state counts ignore the chosen city, so a state can still be switched while a city is picked.
  */
 export async function leadFacets(ctx: SalesCtx, query: LeadFacetsQuery) {
-  const none = { total: 0, regions: [] as FacetRow[], cities: [] as CityRow[], categories: [] as FacetRow[], notSet: { regions: 0, cities: 0, categories: 0 }, contact: { phone: 0, email: 0, whatsappOptIn: 0, none: 0 } };
+  const none = { total: 0, regions: [] as FacetRow[], cities: [] as CityRow[], categories: [] as FacetRow[], offers: [] as (FacetRow & { name: string })[], notSet: { regions: 0, cities: 0, categories: 0, offers: 0 }, contact: { phone: 0, email: 0, whatsappOptIn: 0, none: 0 } };
   const base = leadBaseFilter(ctx, query);
   if (!base) return none;
   const leads = ctx.db.collection("opportunities");
   const clauses = facetClauses(query);
-  const [total, regions, cities, categories, phone, email, whatsappOptIn, noRoute] = await Promise.all([
+  const [offerRows, total, regions, cities, categories, phone, email, whatsappOptIn, noRoute] = await Promise.all([
+    leads.aggregate<{ _id: string | null; count: number }>([{ $match: withClauses(base, clauses, ["offer"]) }, { $group: { _id: { $ifNull: ["$offerId", null] }, count: { $sum: 1 } } }]).toArray(),
     leads.countDocuments(withClauses(base, clauses)),
     leads.aggregate<{ _id: string } & FacetRow>(textFacet("region", withClauses(base, clauses, ["region", "city"]), FACET_LIMIT.regions)).toArray(),
     leads.aggregate<{ _id: string; count: number; value: string; region: string }>(cityFacet(withClauses(base, clauses, ["city"]), FACET_LIMIT.cities)).toArray(),
@@ -147,12 +150,16 @@ export async function leadFacets(ctx: SalesCtx, query: LeadFacetsQuery) {
   ]);
   const split = <T extends { _id: string; count: number }>(rows: T[], limit: number) => ({ set: rows.filter((row) => row._id !== "").slice(0, limit), notSet: rows.find((row) => row._id === "")?.count ?? 0 });
   const region = split(regions, FACET_LIMIT.regions), city = split(cities, FACET_LIMIT.cities), category = split(categories, FACET_LIMIT.categories);
+  // Leads per offer, by name (most leads first); leads with no offer are "not set".
+  const named = await offerNames(ctx.db, ctx.workspaceId, offerRows.map((row) => row._id));
+  const offers = offerRows.filter((row): row is { _id: string; count: number } => typeof row._id === "string").map((row) => ({ value: row._id, name: named.get(row._id) ?? "Offer", count: row.count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   return {
     total,
     regions: region.set.map(({ value, count }) => ({ value, count })),
     cities: city.set.map(({ value, count, region: where }) => ({ value, count, ...(where ? { region: where } : {}) })),
     categories: category.set.map(({ value, count }) => ({ value, count })),
-    notSet: { regions: region.notSet, cities: city.notSet, categories: category.notSet },
+    offers,
+    notSet: { regions: region.notSet, cities: city.notSet, categories: category.notSet, offers: offerRows.find((row) => row._id === null)?.count ?? 0 },
     contact: { phone, email, whatsappOptIn, none: noRoute },
   };
 }
@@ -224,15 +231,17 @@ export async function getDraftWithLead(ctx: SalesCtx, id: string) {
 
 const emptyCounts = { replies: 0, callsDue: 0, followUpsDue: 0, toReview: 0, readyToSend: 0, needsYou: 0, wonToHandOver: 0, openLeads: 0, totalLeads: 0 };
 
-/** Today for one person or venture: what needs a person now, the stage counts and the last seven days. */
-export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string | undefined; owner?: string | undefined; tz?: string | undefined }, now = new Date()) {
+/** Today for one person or venture (optionally one offer, or `none`): what needs a person now, the stage counts and the last seven days. */
+export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string | undefined; owner?: string | undefined; offerId?: string | undefined; tz?: string | undefined }, now = new Date()) {
   const stageCounts: Record<string, number> = Object.fromEntries(SALES_STAGES.map((stage) => [stage, 0]));
   const scope = ventureScope(ctx.actor, query.ventureId);
   const blank = { counts: emptyCounts, replies: [], callsDue: [], followUpsDue: [], needsYou: [], wonToHandOver: [], toReview: [], readyToSend: [], stageCounts, week: { contacted: 0, replied: 0, meetings: 0, proposals: 0, won: 0 } };
   if (!scope) return blank;
   const { db, workspaceId } = ctx;
   const owner = ownerOf(ctx, query.owner);
-  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(owner ? { ownerId: owner } : {}) };
+  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(owner ? { ownerId: owner } : {}), ...offerClause(query.offerId) };
+  // The same narrowing for rows joined to their lead (replies, drafts, activity).
+  const ofLead: Document = { "lead.deletedAt": null, ...(owner ? { "lead.ownerId": owner } : {}), ...offerClause(query.offerId, "lead.offerId") };
   const leads = db.collection("opportunities");
   // "Today" is in the venture's time zone (its sales settings) unless the request names one.
   const tz = query.tz ?? (query.ventureId ? (await settingsFor(ctx, query.ventureId)).timezone : SALES_TZ);
@@ -259,20 +268,20 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
     db.collection("sales_activities").aggregate<{ items: (AppDocument & { lead: AppDocument })[]; total: { n: number }[] }>([
       { $match: { workspaceId, direction: "in", handledAt: null, ...scope } },
       { $lookup: { from: "opportunities", localField: "leadId", foreignField: "_id", as: "lead" } }, { $unwind: "$lead" },
-      { $match: { "lead.deletedAt": null, ...(owner ? { "lead.ownerId": owner } : {}) } },
+      { $match: ofLead },
       { $sort: { at: -1, _id: -1 } },
       { $facet: { items: [{ $limit: LIST_LIMIT }], total: [{ $count: "n" }] } },
     ]).toArray(),
     db.collection("sales_drafts").aggregate<DraftRow>([
       { $match: { workspaceId, status: { $in: ["in_review", "needs_changes", "ready"] }, ...scope } },
       { $lookup: { from: "opportunities", localField: "leadId", foreignField: "_id", as: "lead" } }, { $unwind: "$lead" },
-      { $match: { "lead.deletedAt": null, ...(owner ? { "lead.ownerId": owner } : {}) } },
+      { $match: ofLead },
       { $sort: { updatedAt: -1, _id: -1 } }, { $limit: 5_000 },
     ]).toArray(),
     db.collection("sales_activities").aggregate<Record<string, { _id: string }[]>>([
       { $match: { workspaceId, at: { $gte: since }, ...scope } },
       { $lookup: { from: "opportunities", localField: "leadId", foreignField: "_id", as: "lead" } }, { $unwind: "$lead" },
-      { $match: { "lead.deletedAt": null, ...(owner ? { "lead.ownerId": owner } : {}) } },
+      { $match: ofLead },
       { $facet: {
         contacted: [{ $match: { direction: "out", kind: { $in: [...OUTBOUND_KINDS] }, callOutcome: { $ne: "wrong_number" } } }, { $group: { _id: "$leadId" } }],
         replied: [{ $match: { direction: "in" } }, { $group: { _id: "$leadId" } }],

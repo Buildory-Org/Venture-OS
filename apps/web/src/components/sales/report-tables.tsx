@@ -107,7 +107,7 @@ export function CalibrationGrid({ grid }: { grid: Cell[] }) {
 /** People overriding Claude, newest first, with their reasons. */
 export function OverrideList({ overrides, onOpen, personName }: { overrides: Calibration["overrides"]; onOpen: (leadId: string) => void; personName: (id: string) => string }) {
   const word = { recommend: "go", hold: "hold", reject: "no" } as const;
-  if (!overrides.recent.length) return <WillAppear title="No overrides in this period" body="When someone disagrees with Claude's verdict and changes it, the reason lands here. Many overrides in one direction is a sign to adjust the sales knowledge." />;
+  if (!overrides.recent.length) return <WillAppear title="No overrides in this period" body="When someone disagrees with Claude's verdict and changes it, the reason lands here. Many overrides in one direction is a sign to adjust the offer's gates." />;
   return <ul className="divide-y divide-neutral-100">
     {overrides.recent.map((row) => <li key={row.verdictId} className="py-2.5 first:pt-0 last:pb-0">
       <button type="button" onClick={() => onOpen(row.leadId)} className="block w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">

@@ -5,7 +5,7 @@ import { getLeadFacets } from "@/lib/sales-api";
 import { FacetPicker, type FacetOption } from "@/components/sales/lead-facet-picker";
 
 /** The filters the facets count with (everything the list takes except sorting and paging). */
-export type FacetFilters = { ventureId?: string; pipelineId?: string; stage?: string; q?: string; owner?: "me"; needsYou?: "true"; playId?: string; verdict?: "recommend" | "hold" | "reject" | "none"; region?: string; city?: string; category?: string; contact?: "phone" | "email" | "whatsapp" | "none" };
+export type FacetFilters = { ventureId?: string; pipelineId?: string; stage?: string; q?: string; owner?: "me"; needsYou?: "true"; playId?: string; offerId?: string; verdict?: "recommend" | "hold" | "reject" | "none"; region?: string; city?: string; category?: string; contact?: "phone" | "email" | "whatsapp" | "none" };
 export const CONTACT_FILTERS = [["phone", "Has phone"], ["email", "Has email"], ["whatsapp", "WhatsApp open"], ["none", "No contact yet"]] as const;
 export type ContactFilter = (typeof CONTACT_FILTERS)[number][0];
 export const isContactFilter = (value: string | null): value is ContactFilter => CONTACT_FILTERS.some(([key]) => key === value);
@@ -44,6 +44,15 @@ export function categoryOptions(facets: LeadFacets | null, chosen: string): Face
   if (chosen && chosen !== "none" && !options.some((option) => sameText(option.value, chosen))) options.push({ value: chosen, label: chosen, count: 0 });
   return options;
 }
+/** Options for the Offer picker (value = the offer id). The chosen offer stays listed, by the name `names` knows, when other filters leave it with none. */
+export function offerOptions(facets: LeadFacets | null, chosen: string, names: Record<string, string>): FacetOption[] {
+  const options = (facets?.offers ?? []).map(({ value, name, count }) => ({ value, label: name || names[value] || "Offer", count }));
+  if (chosen && chosen !== "none" && !options.some((option) => option.value === chosen)) options.push({ value: chosen, label: names[chosen] ?? "This offer", count: 0 });
+  return options;
+}
+/** An Offer filter only helps when there is a choice: two offers or more, some leads without one, or one already picked. */
+export const offerFilterUseful = (facets: LeadFacets | null, chosen: string) => !!chosen || (!!facets && (facets.offers.length > 1 || (facets.offers.length > 0 && facets.notSet.offers > 0)));
+
 /** The state a city sits in (its most common one), if the counts know it. */
 export const regionOfCity = (facets: LeadFacets | null, city: string) => facets?.cities.find((item) => sameText(item.value, city))?.region;
 export const incompatibleCity = (facets: LeadFacets | null, city: string, nextRegion: string) => {

@@ -26,13 +26,13 @@ const TABS = [
   { key: "inbox", label: "Inbox", href: "/sales/live/inbox" },
   { key: "pipeline", label: "Pipeline", href: "/sales/live/pipeline" },
   { key: "plays", label: "Plays", href: "/sales/live/plays" },
-  { key: "brain", label: "Sales knowledge", href: "/sales/live/brain" },
+  { key: "brain", label: "Offers", href: "/sales/live/brain" },
 ] as const;
 
 /** Reached from buttons, not tabs. */
 const TOOLS: Record<string, { title: string; description: string }> = {
   calls: { title: "Calls", description: "One lead at a time: the opener, the number, and the outcome buttons." },
-  find: { title: "Find leads", description: "Describe who to find; Claude plans the search and the office PC runs it." },
+  find: { title: "Find leads", description: "Describe who to find; Claude plans the search and the lead finder runs it." },
   "do-not-contact": { title: "Do not contact", description: "People and companies we never message or call again." },
   reports: { title: "Reports", description: "How the pipeline is doing, and how good Claude's judgement has been." },
   setup: { title: "Set up sales", description: "Make this venture ready for Claude to research leads and write drafts." },
@@ -44,7 +44,7 @@ const DESCRIPTIONS: Record<string, string> = {
   inbox: "Replies from the people we have contacted.",
   pipeline: "Deals from first touch to delivery.",
   plays: "Campaigns with a message, a few steps, and a stop rule.",
-  brain: "The offer, buyers and message rules Claude sells with, for each venture.",
+  brain: "What the venture sells: one packet per offer, with the buyers, gates and message rules Claude works with.",
 };
 
 function tabOf(pathname: string) {

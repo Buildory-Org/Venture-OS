@@ -13,10 +13,15 @@ import { isApproved } from "./brain-model";
 import { Trash } from "./draft-icons";
 import { kickerClass, stamp } from "./draft-shared";
 import { useSalesShell } from "./sales-context";
+import { plural } from "./sales-ui";
+
+const chipClass = "inline-flex min-h-8 items-center gap-1 rounded-lg bg-[var(--color-neutral-0)] px-2.5 font-semibold text-neutral-800 transition-[filter] duration-150 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600";
 
 /** The right pane: one knowledge item, who proposed or approved it, and what a person can do with it. */
-export function BrainReader({ item, twin, proposals, canApprove, canWrite, onBack, onSelect, onEdit, onPropose, onApproved, onArchived }: {
-  item: BrainItem; twin?: BrainItem | undefined; proposals: BrainItem[]; canApprove: boolean; canWrite: boolean;
+export function BrainReader({ item, twin, proposals, retires, canApprove, canWrite, showBack = true, onBack, onSelect, onEdit, onPropose, onApproved, onArchived }: {
+  item: BrainItem; twin?: BrainItem | undefined; proposals: BrainItem[]; retires: BrainItem[]; canApprove: boolean; canWrite: boolean;
+  /** The phone-only Back button in the header; off where the page has its own way back. */
+  showBack?: boolean;
   onBack: () => void; onSelect: (item: BrainItem) => void; onEdit: (item: BrainItem) => void; onPropose: (target: BrainFormTarget) => void;
   onApproved: (item: BrainItem) => void; onArchived: (item: BrainItem) => void;
 }) {
@@ -32,7 +37,7 @@ export function BrainReader({ item, twin, proposals, canApprove, canWrite, onBac
 
   async function approve() {
     setBusy("approve"); setError("");
-    try { const saved = await approveBrainItem(item.id); toast({ title: "Approved", body: `${saved.title}. Claude uses it from now on.` }); onApproved(saved); refresh(); }
+    try { const saved = await approveBrainItem(item.id); toast({ title: "Approved", body: `${saved.title}. Claude uses it from now on.${saved.retired ? ` ${plural(saved.retired, "approved item")} it replaces ${saved.retired === 1 ? "was" : "were"} retired.` : ""}` }); onApproved(saved); refresh(); }
     catch (cause) { setError(describeError(cause, "Could not approve. Try again.")); }
     finally { setBusy(""); }
   }
@@ -45,7 +50,7 @@ export function BrainReader({ item, twin, proposals, canApprove, canWrite, onBac
   return <article className="vso-fade-enter min-w-0">
     <header className="space-y-2.5 border-b border-neutral-100 px-4 py-4 sm:px-6">
       <div className="flex items-start gap-3">
-        <button type="button" onClick={onBack} aria-label="Back to the list" className="-ml-1 grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.95] lg:hidden"><ArrowLeft size={18} /></button>
+        {showBack && <button type="button" onClick={onBack} aria-label="Back to the list" className="-ml-1 grid h-10 w-10 shrink-0 place-items-center rounded-xl text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.95] lg:hidden"><ArrowLeft size={18} /></button>}
         <div className="min-w-0 flex-1">
           <p className={kickerClass}>{KIND_LABEL[item.kind]}</p>
           <h2 className="mt-0.5 text-xl font-extrabold leading-tight tracking-[-.02em] text-neutral-900 [overflow-wrap:anywhere]">{item.title}</h2>
@@ -64,9 +69,13 @@ export function BrainReader({ item, twin, proposals, canApprove, canWrite, onBac
     <div className="space-y-4 px-4 py-4 sm:px-6 sm:py-5">
       {!approved && twin && <p className="rounded-xl bg-warning-surface px-3.5 py-2.5 text-xs leading-5 text-warning-text">This proposal would replace version {twin.version}. Until it is approved, Claude keeps using version {twin.version}.</p>}
       {!approved && !twin && <p className="rounded-xl bg-warning-surface px-3.5 py-2.5 text-xs leading-5 text-warning-text">New and not approved yet, so Claude does not use it.</p>}
+      {!approved && retires.length > 0 && <div className="space-y-1.5 rounded-xl bg-warning-surface px-3.5 py-2.5 text-xs leading-5 text-warning-text">
+        <p className="font-semibold">Approving this retires {plural(retires.length, "approved item")}:</p>
+        <ul className="flex flex-wrap gap-2">{retires.map((other) => <li key={other.id} className="min-w-0 max-w-full"><button type="button" onClick={() => onSelect(other)} className={clsx(chipClass, "max-w-full text-left")}><span className="min-w-0 [overflow-wrap:anywhere]">{other.title}</span><span className="shrink-0 font-normal text-neutral-500">· {KIND_LABEL[other.kind]}</span></button></li>)}</ul>
+      </div>}
       {approved && proposals.length > 0 && <div className="space-y-1.5 rounded-xl bg-warning-surface px-3.5 py-2.5 text-xs leading-5 text-warning-text">
         <p>{proposals.length === 1 ? "A change to this item is waiting for approval." : `${proposals.length} changes to this item are waiting for approval.`}</p>
-        <div className="flex flex-wrap gap-2">{proposals.map((proposal) => <button key={proposal.id} type="button" onClick={() => onSelect(proposal)} className="inline-flex min-h-8 items-center gap-1 rounded-lg bg-[var(--color-neutral-0)] px-2.5 font-semibold text-neutral-800 transition-[filter] duration-150 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">View version {proposal.version}<ArrowRight size={12} aria-hidden="true" /></button>)}</div>
+        <div className="flex flex-wrap gap-2">{proposals.map((proposal) => <button key={proposal.id} type="button" onClick={() => onSelect(proposal)} className={chipClass}>View version {proposal.version}<ArrowRight size={12} aria-hidden="true" /></button>)}</div>
       </div>}
 
       <Notice tone="error" message={error} onDismiss={() => setError("")} />

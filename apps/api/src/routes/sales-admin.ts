@@ -7,6 +7,7 @@ import { AppError } from "../errors.js";
 import { canSeeVenture, canWriteIn, forbidClaude, forbidden, isHeadOf, notFound, requireHead, requireWriter, ventureScope, loadVenture } from "../sales/access.js";
 import { auditSales, salesCtx, type SalesCtx } from "../sales/ctx.js";
 import { addSuppression, defined, loadLead } from "../sales/leads.js";
+import { LEGACY_BRAIN_KINDS, LEGACY_KIND_REFUSAL, assertUsableOffer, assertVentureOffer, defaultOfferId } from "../sales/offers.js";
 import { present } from "../sales/present.js";
 import { isSharedDomain, normalizeValue, suppressionKey } from "../sales/suppression.js";
 
@@ -17,7 +18,7 @@ const findRunQuerySchema = z.object({ ventureId: idSchema.optional(), queue: z.e
 const MEETING_AND_BEYOND = ["discovery_booked", "qualified", "proposal", ...WON_STAGES, "won"];
 const REPLIED_AND_BEYOND = ["replied", "thinking", ...MEETING_AND_BEYOND];
 
-/** Plays, find-leads runs, the venture's brain and the do-not-contact list. */
+/** Plays, find-leads runs, the venture's brain (shared notes and settings; offers are in sales-offers.ts) and the do-not-contact list. */
 export function salesAdminRoutes(database: Database): Router {
   const db = database.db;
   const router = Router();
@@ -60,8 +61,10 @@ export function salesAdminRoutes(database: Database): Router {
     requireWriter(ctx.actor, input.ventureId, "propose plays");
     await loadVenture(db, ctx.actor, input.ventureId);
     if (input.pipelineId && !await db.collection("pipelines").findOne({ _id: input.pipelineId, workspaceId: ctx.workspaceId, ventureId: input.ventureId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That pipeline does not belong to this venture");
+    // The offer the play sells: one of the venture, not archived; its name fills offerName.
+    const offer = input.offerId ? await assertVentureOffer(ctx, input.ventureId, input.offerId) : undefined;
     const now = new Date();
-    const play = defined({ _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, status: "draft", createdBy: ctx.actor.id, createdVia: ctx.via, firstBatchReviewed: false, createdAt: now, updatedAt: now });
+    const play = defined({ _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, ...(offer ? { offerName: String(offer.name) } : {}), status: "draft", createdBy: ctx.actor.id, createdVia: ctx.via, firstBatchReviewed: false, createdAt: now, updatedAt: now });
     await atomic(database, async (session) => {
       await db.collection("sales_plays").insertOne(play, { session });
       await auditSales(ctx, "sales.play.create", "play", play._id, input.ventureId, undefined, session);
@@ -84,6 +87,8 @@ export function salesAdminRoutes(database: Database): Router {
     if (status === "approved") throw new AppError(400, "BAD_REQUEST", "Approve a play with the approve action");
     if (status === "running" && !play.approvedAt) throw new AppError(409, "CONFLICT", "A play must be approved before it runs");
     if (pipelineId && !await db.collection("pipelines").findOne({ _id: pipelineId, workspaceId: ctx.workspaceId, ventureId: play.ventureId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That pipeline does not belong to this venture");
+    const offer = content.offerId !== undefined && content.offerId !== play.offerId ? await assertVentureOffer(ctx, play.ventureId, content.offerId) : undefined;
+    if (offer) content.offerName = String(offer.name);
     const now = new Date();
     const $set: Record<string, unknown> = { ...content, ...(pipelineId ? { pipelineId } : {}), ...(status !== undefined ? { status } : {}), ...(firstBatchReviewed !== undefined ? { firstBatchReviewed } : {}), updatedAt: now };
     const $unset: Record<string, ""> = {};
@@ -135,11 +140,14 @@ export function salesAdminRoutes(database: Database): Router {
     if (input.kind !== "find" || input.leadIds) throw new AppError(400, "BAD_REQUEST", "This plans a search for new leads; to enrich a lead use POST /sales/leads/:id/enrich");
     await loadVenture(db, ctx.actor, input.ventureId);
     if (input.playId && !await db.collection("sales_plays").findOne({ _id: input.playId, workspaceId: ctx.workspaceId, ventureId: input.ventureId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That play does not belong to this venture");
+    // The offer to search for: the one named (active, with an approved packet), else the venture's only usable offer.
+    if (input.offerId) await assertUsableOffer(ctx, input.ventureId, input.offerId);
+    const offerId = input.offerId ?? await defaultOfferId(db, ctx.workspaceId, input.ventureId);
     const now = new Date();
-    const run = defined({ _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, status: queue ? "queued" : "planned", createdBy: ctx.actor.id, createdVia: ctx.via, createdAt: now, updatedAt: now });
+    const run = defined({ _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, ...(offerId ? { offerId } : {}), status: queue ? "queued" : "planned", createdBy: ctx.actor.id, createdVia: ctx.via, createdAt: now, updatedAt: now });
     await atomic(database, async (session) => {
       await db.collection("sales_find_runs").insertOne(run, { session });
-      await auditSales(ctx, "sales.find_run.create", "find_run", run._id, input.ventureId, { status: run.status, limit: input.plan.limit }, session);
+      await auditSales(ctx, "sales.find_run.create", "find_run", run._id, input.ventureId, { status: run.status, limit: input.plan.limit, ...(offerId ? { offerId } : {}) }, session);
     });
     res.status(201).json(ok(present(run)));
   });
@@ -167,6 +175,25 @@ export function salesAdminRoutes(database: Database): Router {
     if (!item || !canSeeVenture(ctx.actor, item.ventureId)) throw notFound("Brain item");
     return item;
   }
+  /** The approved items a proposal says it replaces: duplicates dropped, and each one an approved item of the same venture (any kind), or a 400. */
+  async function checkReplaces(ctx: SalesCtx, ventureId: unknown, ids: string[] | undefined): Promise<string[] | undefined> {
+    if (!ids) return undefined;
+    const unique = [...new Set(ids)];
+    const found = unique.length ? await db.collection("sales_brain_items").find({ _id: { $in: unique }, workspaceId: ctx.workspaceId, ventureId, status: "approved" }, { projection: { _id: 1 } }).toArray() : [];
+    const bad = unique.filter((id) => !found.some((row) => String(row._id) === id));
+    if (bad.length) throw new AppError(400, "BAD_REQUEST", `A proposal can only replace approved items of the same venture; ${bad.length === 1 ? "this one is" : `${bad.length} of these are`} not: ${bad.slice(0, 5).join(", ")}`);
+    return unique;
+  }
+  /** Brain items as API JSON, each naming the items it replaces (title, kind, version and status now) so the app and Claude can show them. */
+  async function brainJson(ctx: SalesCtx, items: AppDocument[]): Promise<Record<string, unknown>[]> {
+    const ids = [...new Set(items.flatMap((item) => Array.isArray(item.replaces) ? item.replaces.map(String) : []))];
+    const named = new Map((ids.length ? await db.collection("sales_brain_items").find({ _id: { $in: ids }, workspaceId: ctx.workspaceId }, { projection: { title: 1, kind: 1, version: 1, status: 1 } }).toArray() : []).map((row) => [String(row._id), row]));
+    return items.map((item) => {
+      const replaced = (Array.isArray(item.replaces) ? item.replaces.map(String) : []).flatMap((id) => { const row = named.get(id); return row ? [{ id, title: String(row.title), kind: row.kind, version: Number(row.version), status: row.status }] : []; });
+      return { ...present(item), ...(replaced.length ? { replacesItems: replaced } : {}) };
+    });
+  }
+  const oneBrainJson = async (ctx: SalesCtx, item: AppDocument) => (await brainJson(ctx, [item]))[0]!;
 
   router.get("/brain", async (req, res) => {
     const ctx = salesCtx(database, req);
@@ -175,53 +202,64 @@ export function salesAdminRoutes(database: Database): Router {
     if (!scope) { res.json(ok([])); return; }
     const statuses = query.status ? query.status.split(",").map((item) => item.trim()).filter(Boolean) : ["draft", "approved"];
     const items = await db.collection("sales_brain_items").find({ workspaceId: ctx.workspaceId, ...scope, status: { $in: statuses } }).sort({ ventureId: 1, kind: 1, title: 1, version: -1 }).limit(500).toArray();
-    res.json(ok(items.map(present)));
+    res.json(ok(await brainJson(ctx, items)));
   });
 
   router.post("/brain", async (req, res) => {
     const ctx = salesCtx(database, req);
-    const input = brainItemInputSchema.parse(req.body);
+    const { replaces: asked, ...input } = brainItemInputSchema.parse(req.body);
     requireWriter(ctx.actor, input.ventureId, "propose brain items");
+    // Offers, target profiles and message rules live in offers now (docs/sales-offers.md): the brain keeps shared notes and settings.
+    if (LEGACY_BRAIN_KINDS.has(input.kind)) throw new AppError(400, "BAD_REQUEST", LEGACY_KIND_REFUSAL);
     await loadVenture(db, ctx.actor, input.ventureId);
+    const replaces = await checkReplaces(ctx, input.ventureId, asked);
     const now = new Date();
     const latest = await db.collection("sales_brain_items").find({ workspaceId: ctx.workspaceId, ventureId: input.ventureId, kind: input.kind, title: input.title }).sort({ version: -1 }).limit(1).toArray();
-    const item = { _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, status: "draft", version: Number(latest[0]?.version ?? 0) + 1, proposedBy: ctx.actor.id, via: ctx.via, createdAt: now, updatedAt: now };
+    const item = { _id: randomUUID(), workspaceId: ctx.workspaceId, ...input, ...(replaces?.length ? { replaces } : {}), status: "draft", version: Number(latest[0]?.version ?? 0) + 1, proposedBy: ctx.actor.id, via: ctx.via, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       await db.collection("sales_brain_items").insertOne(item, { session });
-      await auditSales(ctx, "sales.brain.propose", "brain_item", item._id, input.ventureId, { kind: input.kind, version: item.version }, session);
+      await auditSales(ctx, "sales.brain.propose", "brain_item", item._id, input.ventureId, { kind: input.kind, version: item.version, ...(replaces?.length ? { replaces: replaces.length } : {}) }, session);
     });
-    res.status(201).json(ok(present(item)));
+    res.status(201).json(ok(await oneBrainJson(ctx, item)));
   });
 
   router.patch("/brain/:id", async (req, res) => {
     const ctx = salesCtx(database, req);
     const item = await loadBrainItem(ctx, idSchema.parse(req.params.id));
-    const input = brainItemUpdateSchema.parse(req.body);
+    const { replaces: asked, ...input } = brainItemUpdateSchema.parse(req.body);
     if (!isHeadOf(ctx.actor, item.ventureId) && !(canWriteIn(ctx.actor, item.ventureId) && item.proposedBy === ctx.actor.id)) throw forbidden("Only the person who proposed this item or a venture head can edit it");
     if (item.status !== "draft") throw new AppError(409, "CONFLICT", "Only a draft can be edited: propose a new version of an approved item instead");
+    const replaces = await checkReplaces(ctx, item.ventureId, asked);
     const now = new Date();
     await atomic(database, async (session) => {
-      await db.collection("sales_brain_items").updateOne({ _id: item._id, status: "draft" }, { $set: { ...input, updatedAt: now } }, { session });
-      await auditSales(ctx, "sales.brain.update", "brain_item", String(item._id), String(item.ventureId), undefined, session);
+      await db.collection("sales_brain_items").updateOne({ _id: item._id, status: "draft" }, { $set: { ...input, ...(replaces ? { replaces } : {}), updatedAt: now } }, { session });
+      await auditSales(ctx, "sales.brain.update", "brain_item", String(item._id), String(item.ventureId), replaces ? { replaces: replaces.length } : undefined, session);
     });
-    res.json(ok(present((await db.collection("sales_brain_items").findOne({ _id: item._id }))!)));
+    res.json(ok(await oneBrainJson(ctx, (await db.collection("sales_brain_items").findOne({ _id: item._id }))!)));
   });
 
-  // Approving archives the previous approved item with the same venture, kind and title. A person's decision: Claude cannot.
+  // Approving archives the previous approved item with the same venture, kind and title, and the approved items the proposal lists in
+  // `replaces` (one already archived meanwhile is skipped). A person's decision: Claude cannot.
   router.post("/brain/:id/approve", async (req, res) => {
     const ctx = salesCtx(database, req);
     const item = await loadBrainItem(ctx, idSchema.parse(req.params.id));
     forbidClaude(ctx.via, "Approving a brain item");
     requireHead(ctx.actor, item.ventureId, "approve brain items");
     if (item.status !== "draft") throw new AppError(409, "CONFLICT", "Only a draft can be approved");
+    if (LEGACY_BRAIN_KINDS.has(String(item.kind))) throw new AppError(400, "BAD_REQUEST", `This draft is a ${String(item.kind).replaceAll("_", " ")}, which can no longer be approved here. ${LEGACY_KIND_REFUSAL} Archive this draft once it is carried over.`);
     const now = new Date();
-    await atomic(database, async (session) => {
-      await db.collection("sales_brain_items").updateMany({ workspaceId: ctx.workspaceId, ventureId: item.ventureId, kind: item.kind, title: item.title, status: "approved", _id: { $ne: item._id } }, { $set: { status: "archived", updatedAt: now } }, { session });
+    const retire = { status: "archived", archivedBy: ctx.actor.id, archivedAt: now, replacedBy: item._id, updatedAt: now };
+    const listed = (Array.isArray(item.replaces) ? item.replaces.map(String) : []).filter((id) => id !== item._id);
+    const retired = await atomic(database, async (session) => {
+      await db.collection("sales_brain_items").updateMany({ workspaceId: ctx.workspaceId, ventureId: item.ventureId, kind: item.kind, title: item.title, status: "approved", _id: { $ne: item._id } }, { $set: retire }, { session });
+      // The same-title predecessor went just above, so `retired` counts only the other items it replaces.
+      const replaced = listed.length ? (await db.collection("sales_brain_items").updateMany({ _id: { $in: listed }, workspaceId: ctx.workspaceId, ventureId: item.ventureId, status: "approved" }, { $set: retire }, { session })).modifiedCount : 0;
       const changed = await db.collection("sales_brain_items").updateOne({ _id: item._id, status: "draft" }, { $set: { status: "approved", approvedBy: ctx.actor.id, approvedAt: now, updatedAt: now } }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This item changed: reload it and try again");
-      await auditSales(ctx, "sales.brain.approve", "brain_item", String(item._id), String(item.ventureId), { version: Number(item.version) }, session);
+      await auditSales(ctx, "sales.brain.approve", "brain_item", String(item._id), String(item.ventureId), { version: Number(item.version), retired: replaced }, session);
+      return replaced;
     });
-    res.json(ok(present((await db.collection("sales_brain_items").findOne({ _id: item._id }))!)));
+    res.json(ok({ ...await oneBrainJson(ctx, (await db.collection("sales_brain_items").findOne({ _id: item._id }))!), retired }));
   });
 
   // Archiving takes an item out of use: a venture head or admin any item; the proposer their own draft. Claude never archives an approved item.

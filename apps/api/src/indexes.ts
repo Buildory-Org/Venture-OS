@@ -142,6 +142,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("opportunities").createIndex({ workspaceId: 1, ventureId: 1, nextActionAt: 1 }),
     db.collection("opportunities").createIndex({ pipelineId: 1 }),
     db.collection("opportunities").createIndex({ workspaceId: 1, playId: 1 }, { partialFilterExpression: { playId: { $exists: true } } }),
+    // The leads of an offer: the Offer filter, its counts and the offer facet.
+    db.collection("opportunities").createIndex({ workspaceId: 1, offerId: 1, stage: 1 }, { partialFilterExpression: { offerId: { $exists: true } } }),
     db.collection("opportunities").createIndex({ workspaceId: 1, suppressKeys: 1 }),
     // Imports can be re-run: one lead per external reference.
     db.collection("opportunities").createIndex({ workspaceId: 1, "externalRef.system": 1, "externalRef.id": 1 }, { unique: true, partialFilterExpression: { "externalRef.id": { $type: "string" } } }),
@@ -156,7 +158,13 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_plays").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
     db.collection("sales_find_runs").createIndex({ workspaceId: 1, ventureId: 1, createdAt: -1 }),
     db.collection("sales_find_runs").createIndex({ workspaceId: 1, status: 1, createdAt: 1 }),
+    // The built-in lead finder looks across workspaces for the oldest queued (or stale) run.
+    db.collection("sales_find_runs").createIndex({ status: 1, createdAt: 1 }),
     db.collection("sales_brain_items").createIndex({ workspaceId: 1, ventureId: 1, kind: 1, title: 1, status: 1 }),
+    // Offers (sales/offers.ts): one name per venture (any case), and one number per version of an offer.
+    db.collection("sales_offers").createIndex({ workspaceId: 1, ventureId: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
+    db.collection("sales_offer_versions").createIndex({ offerId: 1, version: -1 }, { unique: true }),
+    db.collection("sales_offer_versions").createIndex({ workspaceId: 1, offerId: 1, status: 1 }),
     // One do-not-contact list for every venture: one entry per normalised value.
     db.collection("sales_suppression").createIndex({ workspaceId: 1, createdAt: -1 }),
     // Saved Leads filters, one list per person; one view per name (any case) and page.

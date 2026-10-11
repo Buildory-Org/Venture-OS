@@ -142,7 +142,7 @@ const sessionCard: CardBuilder = (body, args, ctx) => {
 
 // ---- one lead ----------------------------------------------------------------------------------------------------------------
 
-/** get_lead: stage, verdict with its quotes and links, contact routes and the next action. */
+/** get_lead: stage, the offer it is pursued for, verdict with its quotes and links, contact routes and the next action. */
 const leadCard: CardBuilder = (body) => {
   const lead = body.lead as Body | undefined;
   if (!lead || typeof lead !== "object") return null;
@@ -174,7 +174,7 @@ const leadCard: CardBuilder = (body) => {
   return {
     kind: "lead",
     title: company || "Lead",
-    subtitle: dot(lead.city, lead.region, lead.venture, lead.owner && `owner ${str(lead.owner)}`),
+    subtitle: dot(lead.city, lead.region, lead.venture, str(lead.offerId) && str(lead.offer), lead.owner && `owner ${str(lead.owner)}`),
     badges: present<CardBadge>([
       { text: stageLabel(lead.stage), tone: STAGE_TONE[str(lead.stage)] ?? "accent" },
       verdictLine ? { text: verdictLine, tone: verdictTone(verdictLine) } : { text: "No verdict yet", tone: "muted" },

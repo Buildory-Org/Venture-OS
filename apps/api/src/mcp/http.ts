@@ -5,6 +5,7 @@ import { hashPat } from "@venture-studio/core";
 import type { AppConfig } from "../config.js";
 import type { AppDb } from "../db.js";
 import { overLimit, rateLimitAddress } from "../middleware.js";
+import { resolveSearchKeys } from "../sales/search-keys.js";
 import { apiClient, ToolError } from "./format.js";
 import type { ToolContext } from "./kit.js";
 import { registerPrompts, registerTools, SERVER_INSTRUCTIONS } from "./tools.js";
@@ -81,7 +82,7 @@ export function mcpRouter(db: AppDb, config: AppConfig): Router {
       const base = `http://127.0.0.1:${req.socket.localPort}`;
       const toolContext: ToolContext = {
         api: apiClient(base, grant.userId), db, userId: grant.userId, workspaceId: grant.workspaceId, patId: grant.patId, scopes: grant.scopes,
-        writesEnabled: config.MCP_WRITES_ENABLED, origin: appOrigin, search: { tinyfishKey: config.TINYFISH_API_KEY, exaKey: config.EXA_API_KEY },
+        writesEnabled: config.MCP_WRITES_ENABLED, origin: appOrigin, searchKeys: () => resolveSearchKeys(db, grant.workspaceId, config),
         writeBudget: async () => { const seconds = await overLimit(db, `mcp-write:${grant.patId}`, WRITES_PER_MINUTE); if (seconds) throw new ToolError(`Too many changes in a minute from this token; retry in ${seconds} s.`, 429); },
         toolBudget: async (tool, perMinute) => { const seconds = await overLimit(db, `mcp-tool:${tool}:${grant.patId}`, perMinute); if (seconds) throw new ToolError(`Too many ${tool.replaceAll("_", " ")} calls in a minute; retry in ${seconds} s.`, 429); },
         uploadBudget: async (bytes) => { const seconds = await overLimit(db, `mcp-upload-bytes:${grant.userId}`, UPLOAD_BYTES_PER_DAY, 86_400_000, bytes); if (seconds) throw new ToolError("You've reached today's 250 MB upload allowance through Claude; upload larger files in the app.", 429); },
@@ -135,8 +136,9 @@ const MCP_ROUTES: [string, RegExp][] = [
   ["PATCH", /^\/v1\/classes\/[A-Za-z0-9_-]+\/applications\/[A-Za-z0-9_-]+\/review$/],
   // Sales (Dealflow Sales connector, /mcp/sales): what the sales tools read and write. The older /v1/opportunities and /v1/pipelines writes are not reachable. Approving plays, brain items and drafts, marking drafts sent or vetoed or discarded,
   // overriding verdicts, deleting leads, delivery work, handling the inbox and the do-not-contact list stay in the app: Claude never approves its own work.
-  ["GET", /^\/v1\/sales\/(overview|inbox|drafts|plays|brain|leads|suppression|find-runs|settings|reports|daybreak)$/], ["GET", /^\/v1\/sales\/leads\/[A-Za-z0-9_-]+$/], // leads/:id and leads/facets
-  ["POST", /^\/v1\/sales\/(leads|plays|brain|find-runs)$/], ["POST", /^\/v1\/sales\/leads\/[A-Za-z0-9_-]+\/(verdicts|drafts|activities|enrich)$/],
+  ["GET", /^\/v1\/sales\/(overview|inbox|drafts|plays|brain|offers|leads|suppression|find-runs|settings|reports|daybreak)$/], ["GET", /^\/v1\/sales\/(leads|offers)\/[A-Za-z0-9_-]+$/], // leads/:id, leads/facets and offers/:id
+  // Offers: Claude proposes a new offer or a new draft version (POST /offers); editing, approving, discarding and the offer's state stay in the app.
+  ["POST", /^\/v1\/sales\/(leads|plays|brain|offers|find-runs)$/], ["POST", /^\/v1\/sales\/leads\/[A-Za-z0-9_-]+\/(verdicts|drafts|activities|enrich)$/],
   ["PATCH", /^\/v1\/sales\/(leads|drafts)\/[A-Za-z0-9_-]+$/], ["POST", /^\/v1\/sales\/drafts\/[A-Za-z0-9_-]+\/review$/],
   // Calendar: reading, scheduling, and answering invitations (editing and cancelling stay in the app).
   // Venture context and skills, read-only (they are written in the app).

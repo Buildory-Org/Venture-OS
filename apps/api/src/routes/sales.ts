@@ -15,10 +15,11 @@ import { salesDraftRoutes } from "./sales-drafts.js";
 import { salesEnrichRoutes } from "./sales-engine.js";
 import { salesSettingsRoutes } from "./sales-settings.js";
 import { salesLeadRoutes } from "./sales-leads.js";
+import { salesOfferRoutes } from "./sales-offers.js";
 
 /**
  * Sales: the older /pipelines and /opportunities routes (same records as the leads, hiding soft-deleted ones and using
- * the current stages) and everything under /sales (see docs/sales-dealflow.md).
+ * the current stages) and everything under /sales (see docs/sales-dealflow.md; offers: docs/sales-offers.md).
  */
 export function salesRoutes(database: Database): Router {
   const db = database.db;
@@ -64,6 +65,6 @@ export function salesRoutes(database: Database): Router {
     res.json({ ok: true, data: leadJson(await updateLead(ctx, lead, updateOpportunitySchema.parse(req.body))) });
   });
 
-  router.use("/sales", salesLeadRoutes(database), salesDraftRoutes(database), salesAdminRoutes(database), salesEnrichRoutes(database), salesSettingsRoutes(database));
+  router.use("/sales", salesLeadRoutes(database), salesDraftRoutes(database), salesAdminRoutes(database), salesEnrichRoutes(database), salesSettingsRoutes(database), salesOfferRoutes(database));
   return router;
 }

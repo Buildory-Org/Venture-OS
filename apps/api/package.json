@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test test/api.test.ts test/sales.test.ts test/mcp-sales.test.ts test/mcp-sales-guided.test.ts test/sales-engine.test.ts test/sales-reports.test.ts",
+    "test": "node --import tsx --test test/api.test.ts test/sales.test.ts test/mcp-sales.test.ts test/mcp-sales-guided.test.ts test/sales-engine.test.ts test/sales-reports.test.ts test/sales-io.test.ts test/sales-offers.test.ts test/sales-search-keys.test.ts test/sales-finder.test.ts",
     "seed": "tsx src/seed.ts",
     "migrate": "tsx src/migrate.ts"
   },

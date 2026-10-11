@@ -13,11 +13,12 @@ import { applyActivity, applyReplyType, createLead, discardOpenDrafts, loadLead,
 import { leadJson, present } from "../sales/present.js";
 import { pipelineValue } from "../sales/revenue.js";
 import { notifyNeedsYou } from "../sales/notify.js";
+import { verdictOffer } from "../sales/offers.js";
 import { buildOverview, leadFacets, listInbox, listLeads } from "../sales/queries.js";
 import { isPreContactStage, normalizeStage, planOverride, planVerdict } from "../sales/rules.js";
 import { SALES_TZ } from "../sales/workdays.js";
 
-const overviewQuerySchema = z.object({ ventureId: idSchema.optional(), owner: z.union([z.literal("me"), idSchema]).optional(), tz: timezoneSchema.optional() });
+const overviewQuerySchema = z.object({ ventureId: idSchema.optional(), owner: z.union([z.literal("me"), idSchema]).optional(), offerId: z.union([idSchema, z.literal("none")]).optional(), tz: timezoneSchema.optional() });
 const inboxQuerySchema = z.object({ ventureId: idSchema.optional(), handled: z.enum(["true", "false"]).optional(), owner: z.union([z.literal("me"), idSchema]).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
 const ok = (data: unknown) => ({ ok: true, data });
 
@@ -28,7 +29,7 @@ export function salesLeadRoutes(database: Database): Router {
 
   router.get("/overview", async (req, res) => {
     const query = overviewQuerySchema.parse(req.query);
-    res.json(ok(await buildOverview(salesCtx(database, req), { ventureId: query.ventureId, owner: query.owner, tz: query.tz })));
+    res.json(ok(await buildOverview(salesCtx(database, req), { ventureId: query.ventureId, owner: query.owner, offerId: query.offerId, tz: query.tz })));
   });
 
   router.get("/leads", async (req, res) => {
@@ -171,6 +172,8 @@ export function salesLeadRoutes(database: Database): Router {
   });
 
   // Claude's verdict on a lead: saved with its evidence, then the lead's summary, needs-you flag and (before first contact) stage follow.
+  // It is judged against an offer (sales/offers.ts verdictOffer): the lead's, the one it names (a lead with no offer takes it), or the
+  // venture's only usable one; naming another offer than the lead's is refused.
   router.post("/leads/:id/verdicts", async (req, res) => {
     const ctx = salesCtx(database, req);
     const lead = await loadLead(ctx, idSchema.parse(req.params.id));
@@ -183,11 +186,13 @@ export function salesLeadRoutes(database: Database): Router {
       if (current?.via === "app") throw new AppError(409, "CONFLICT", "A person set the current verdict on this lead: Claude cannot replace it. Ask a person to review it in the app");
       if (lead.needsYou) throw new AppError(409, "CONFLICT", "This lead is waiting for a person's decision (needs you): Claude cannot save a new verdict until a person has decided");
     }
+    const offer = await verdictOffer(ctx, lead, input.offerId);
     const now = new Date();
     const verdictId = randomUUID();
     const plan = planVerdict(lead, input, verdictId, now, { via: ctx.via, actorId: ctx.actor.id });
+    if (offer.setOnLead) plan.set.offerId = offer.offerId;
     const verdict = {
-      _id: verdictId, workspaceId: ctx.workspaceId, ventureId: lead.ventureId, leadId: lead._id, createdBy: ctx.actor.id, via: ctx.via, createdAt: now, ...input,
+      _id: verdictId, workspaceId: ctx.workspaceId, ventureId: lead.ventureId, leadId: lead._id, createdBy: ctx.actor.id, via: ctx.via, createdAt: now, ...input, ...(offer.offerId ? { offerId: offer.offerId } : {}),
       evidence: input.evidence.map((item) => ({ ...item, ...(item.seenAt ? { seenAt: new Date(item.seenAt) } : {}) })), ...(input.signalSeenAt ? { signalSeenAt: new Date(input.signalSeenAt) } : {}),
     };
     await atomic(database, async (session) => {
@@ -199,7 +204,7 @@ export function salesLeadRoutes(database: Database): Router {
       }
       // The lead just landed in "needs you": its owner is told (once while it stays there).
       if (plan.set.needsYou === true && lead.needsYou !== true) await notifyNeedsYou(ctx, lead, verdictId, `${input.decision}, ${input.confidence} confidence: ${input.summary}`, now, session);
-      await auditSales(ctx, "sales.verdict.save", "verdict", verdictId, String(lead.ventureId), { decision: input.decision, confidence: input.confidence, needsYou: Boolean(plan.set.needsYou), ...(plan.stageTo ? { stageTo: plan.stageTo } : {}) }, session);
+      await auditSales(ctx, "sales.verdict.save", "verdict", verdictId, String(lead.ventureId), { decision: input.decision, confidence: input.confidence, needsYou: Boolean(plan.set.needsYou), ...(offer.offerId ? { offerId: offer.offerId } : {}), ...(plan.stageTo ? { stageTo: plan.stageTo } : {}) }, session);
     });
     res.status(201).json(ok({ verdict: present(verdict), lead: leadJson((await db.collection("opportunities").findOne({ _id: lead._id }))!) }));
   });

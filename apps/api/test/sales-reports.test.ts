@@ -192,7 +192,7 @@ test("Reports: the funnel counts the leads that moved and how far each got, by s
   assert.deepEqual(r.funnel.stages[2]!.conversion, { count: 2, n: 4, value: null, small: true }, "fewer than 5 cases: no percentage");
   assert.deepEqual(r.funnel.closed, { lost: 1, disqualified: 0 });
   const rows = (list: typeof r.funnel.by.source) => Object.fromEntries(list.map((row) => [row.key, [row.label, row.leads, row.contacted, row.replied, row.won, row.lostOrDisqualified]]));
-  assert.deepEqual(rows(r.funnel.by.source), { manual: ["Added in the app", 2, 2, 1, 0, 0], claude: ["Claude", 1, 1, 0, 0, 1], engine: ["Office PC engine", 1, 0, 0, 0, 0], import: ["Imported", 1, 1, 1, 1, 0] });
+  assert.deepEqual(rows(r.funnel.by.source), { manual: ["Added in the app", 2, 2, 1, 0, 0], claude: ["Claude", 1, 1, 0, 0, 1], engine: ["Lead finder", 1, 0, 0, 0, 0], import: ["Imported", 1, 1, 1, 1, 0] });
   assert.deepEqual(rows(r.funnel.by.play), { none: ["No play", 4, 3, 1, 0, 1], [play.id]: ["Raipur dealers", 1, 1, 1, 1, 0] });
   assert.deepEqual(rows(r.funnel.by.owner), { "user-contrib": ["contrib", 5, 4, 2, 1, 1] });
   assert.deepEqual(rows(r.funnel.by.city), { raipur: ["Raipur", 2, 2, 1, 0, 0], bhopal: ["Bhopal", 1, 1, 0, 0, 1], indore: ["Indore", 1, 0, 0, 0, 0], none: ["Not set", 1, 1, 1, 1, 0] });
@@ -523,5 +523,48 @@ test("Daybreak and Reports measure the reply time with the venture's own rules, 
     await db.collection("memberships").updateMany({ _id: { $in: ["membership-head", "membership-contrib"] } }, { $pull: { ventureIds: "venture-r6" } } as never);
     await db.collection("opportunities").updateMany({ ventureId: "venture-r6" }, { $set: { deletedAt: new Date() } });
     await db.collection("ventures").updateOne({ _id: "venture-r6" }, { $set: { status: "archived" } });
+  }
+});
+
+test("Reports, Daybreak and the Overview narrow to one offer, or to the leads with none (docs/sales-offers.md)", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const now = new Date();
+  await db.collection("ventures").insertOne({ _id: "venture-r7", workspaceId: "workspace-a", name: "Venture r7", status: "active", createdAt: now });
+  await db.collection("pipelines").insertOne({ _id: "pipeline-r7", workspaceId: "workspace-a", ventureId: "venture-r7", name: "Leads", offerName: "Offer", status: "active", createdAt: now, updatedAt: now });
+  await db.collection("memberships").updateMany({ _id: { $in: ["membership-head", "membership-contrib"] } }, { $push: { ventureIds: "venture-r7" } } as never);
+  // Two usable offers, so a lead with none named keeps none.
+  await db.collection("sales_offers").insertMany(["a", "b"].map((key) => ({ _id: `offer-r7-${key}`, workspaceId: "workspace-a", ventureId: "venture-r7", name: `Offer ${key.toUpperCase()}`, state: "active", approvedVersionId: `version-r7-${key}`, createdBy: "user-head", createdAt: now, updatedAt: now })));
+  try {
+    const a = await newLead(h, "venture-r7", { offerId: "offer-r7-a" });
+    const b = await newLead(h, "venture-r7", { offerId: "offer-r7-b" });
+    const none = await newLead(h, "venture-r7");
+    assert.deepEqual([a.offerId, b.offerId, none.offerId], ["offer-r7-a", "offer-r7-b", undefined]);
+    for (const lead of [a, b, none]) await log(h, lead.id, { kind: "email", direction: "in", body: "Tell me more", replyType: "interested" });
+    await claudeVerdict(h, b.id, "hold", "low");
+
+    const all = await report(h, "head", "ventureId=venture-r7");
+    const onlyA = await report(h, "head", "ventureId=venture-r7&offerId=offer-r7-a");
+    const withNone = await report(h, "head", "ventureId=venture-r7&offerId=none");
+    assert.deepEqual([all.funnel.active, onlyA.funnel.active, withNone.funnel.active], [3, 1, 1]);
+    assert.deepEqual([onlyA.range.offerId, all.range.offerId], ["offer-r7-a", undefined]);
+    assert.deepEqual([all.activity.totals.replies, onlyA.activity.totals.replies], [3, 1]);
+    assert.deepEqual([all.calibration.verdicts, onlyA.calibration.verdicts, (await report(h, "head", "ventureId=venture-r7&offerId=offer-r7-b")).calibration.verdicts], [1, 0, 1]);
+
+    const morning = await daybreak(h, "contrib", "ventureId=venture-r7");
+    const morningB = await daybreak(h, "contrib", "ventureId=venture-r7&offerId=offer-r7-b");
+    assert.deepEqual([morning.counts.repliesWaiting, morningB.counts.repliesWaiting, morningB.counts.needsYou, morningB.offerId], [3, 1, 1, "offer-r7-b"]);
+    assert.deepEqual(morningB.repliesWaiting.map((item) => [item.lead.id, item.lead.offerId]), [[b.id, "offer-r7-b"]]);
+    assert.equal((await daybreak(h, "contrib", "ventureId=venture-r7&offerId=none")).counts.repliesWaiting, 1);
+
+    const overview = (offer: string) => h.call("contrib", "GET", `/sales/overview?ventureId=venture-r7&owner=me${offer}`);
+    const counts = async (offer: string) => expectStatus(await overview(offer), 200).data.counts;
+    assert.deepEqual([(await counts("")).replies, (await counts("&offerId=offer-r7-a")).replies, (await counts("&offerId=none")).replies, (await counts("&offerId=offer-r7-b")).needsYou], [3, 1, 1, 1]);
+    assert.equal((await counts("&offerId=offer-r7-a")).totalLeads, 1);
+    expectStatus(await h.call("head", "GET", "/sales/reports?ventureId=venture-r7&offerId=not%20an%20id!"), 400);
+  } finally {
+    await db.collection("memberships").updateMany({ _id: { $in: ["membership-head", "membership-contrib"] } }, { $pull: { ventureIds: "venture-r7" } } as never);
+    await db.collection("opportunities").updateMany({ ventureId: "venture-r7" }, { $set: { deletedAt: new Date() } });
+    await db.collection("ventures").updateOne({ _id: "venture-r7" }, { $set: { status: "archived" } });
   }
 });

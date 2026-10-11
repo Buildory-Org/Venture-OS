@@ -69,6 +69,8 @@ services:
       # Company search for the Dealflow Sales connector; blank means off.
       TINYFISH_API_KEY: ${TINYFISH_API_KEY:-}
       EXA_API_KEY: ${EXA_API_KEY:-}
+      # The lead finder built into the API (works queued find-leads runs); on unless set to off.
+      SALES_FINDER: ${SALES_FINDER:-on}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 15s

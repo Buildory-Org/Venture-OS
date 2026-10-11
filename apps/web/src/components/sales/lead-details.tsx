@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { ContactRoute, Lead } from "@venture-studio/contracts";
 import { Check, Edit, LinkIcon, Mail, MessageCircle, Users, type Icon } from "@/components/ui/icons";
+import { Select } from "@/components/ui/select";
+import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { toast } from "@/components/ui/toast";
 import { ActionLabel, Badge, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { describeError } from "@/lib/errors";
@@ -10,6 +12,8 @@ import { deleteLead, updateLead } from "@/lib/sales-api";
 import type { SalesMember } from "@/components/sales/overview-context";
 import { dealFacts } from "@/components/sales/lead-deal";
 import { LeadOwnership } from "@/components/sales/lead-manage";
+import { offerChip, offerHref, openOffers, useVentureOffers } from "@/components/sales/offer-model";
+import { useSalesShell } from "@/components/sales/sales-context";
 import { hostOf, isDialable, isPlainEmail, Lock, mailHref, Phone, phoneOf, safeUrl, telHref, emailOf } from "@/components/sales/sales-ui";
 
 const sectionLabel = "text-[11px] font-semibold uppercase tracking-[.08em] text-neutral-400";
@@ -189,6 +193,55 @@ function DealGroup({ lead, canEdit, editing, onEdit }: { lead: Lead; canEdit: bo
   </Group>;
 }
 
+/**
+ * The offer the lead is pursued for: Claude judges it, and writes to it, with that offer's approved packet. An editor moves it to another
+ * of the venture's offers that is not archived (an offer cannot be cleared, only changed).
+ */
+function OfferGroup({ lead, canEdit, onSaved, onDirty }: { lead: Lead; canEdit: boolean; onSaved: () => void; onDirty: (key: string, dirty: boolean) => void }) {
+  const { refreshKey } = useSalesShell();
+  const offers = useVentureOffers(lead.ventureId, refreshKey);
+  const current = lead.offerId ? offers?.find((offer) => offer.id === lead.offerId) : undefined;
+  const choices = openOffers(offers ?? []);
+  const [editing, setEditing] = useState(false);
+  const [pick, setPick] = useState(lead.offerId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const dirty = editing && pick !== (lead.offerId ?? "");
+  useEffect(() => { onDirty("offer", dirty); return () => onDirty("offer", false); }, [dirty, onDirty]);
+  const picked = choices.find((offer) => offer.id === pick);
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (!picked) return;
+    setBusy(true); setError("");
+    try { await updateLead(lead.id, { offerId: picked.id }); toast({ title: "Offer changed", body: `${lead.companyName}: ${picked.name}` }); setEditing(false); onSaved(); }
+    catch (cause) { setError(describeError(cause, "Could not change the offer.")); }
+    finally { setBusy(false); }
+  }
+
+  const chip = current ? offerChip(current) : null;
+  const canChange = canEdit && offers !== null && (choices.length > 1 || (choices.length === 1 && choices[0]!.id !== lead.offerId));
+  return <Group title="Offer" aside={canChange && !editing ? <EditButton label="Change the offer" onClick={() => { setPick(lead.offerId ?? ""); setError(""); setEditing(true); }} /> : undefined}>
+    {!editing
+      ? offers === null ? <span className="vso-skeleton block h-4 w-40" />
+        : current ? <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm">
+          <span className="font-semibold text-neutral-800 [overflow-wrap:anywhere]">{current.name}</span>
+          {chip && chip.label !== "Active" && <Badge tone={chip.tone}>{chip.label}</Badge>}
+          <WorkspaceLink href={offerHref(lead.ventureId, current.id)} className="inline-flex min-h-8 items-center text-xs font-semibold text-primary-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">Open the offer</WorkspaceLink>
+        </div>
+          : <p className="text-sm leading-6 text-neutral-500">{lead.offerId ? "Its offer could not be found." : choices.length ? "No offer yet. Pick the one this lead is pursued for: Claude judges it against that offer's packet." : "No offer yet. The venture has no offers to choose from."}</p>
+      : <form onSubmit={save} className="vso-fade-enter grid grid-cols-1 gap-3">
+        <Field label="Pursued for"><Select aria-label="Offer" className={inputClass} value={pick} onChange={(event) => setPick(event.target.value)}>{!lead.offerId && <option value="">Choose an offer</option>}{choices.map((offer) => { const state = offerChip(offer); return <option key={offer.id} value={offer.id}>{offer.name}{state.label === "Active" ? "" : ` (${state.label.toLowerCase()})`}</option>; })}</Select></Field>
+        {lead.verdict && dirty && <p className="rounded-xl bg-warning-surface p-3 text-xs leading-5 text-warning-text">Claude&apos;s verdict was made against {current ? current.name : "the old offer"}. Ask Claude to judge this lead again for {picked?.name ?? "the new one"}.</p>}
+        <Notice tone="error" message={error} onDismiss={() => setError("")} />
+        <div className="flex flex-wrap gap-2">
+          <button disabled={!dirty || busy || !picked} className={clsx(primaryClass, "flex-1 sm:flex-none")}><ActionLabel busy={busy} idle={<><Check size={15} />Save</>} /></button>
+          <button type="button" onClick={() => { setEditing(false); setError(""); }} className={clsx(secondaryClass, "flex-1 sm:flex-none")}>Cancel</button>
+        </div>
+      </form>}
+  </Group>;
+}
+
 function DangerZone({ lead, onDeleted }: { lead: Lead; onDeleted: () => void }) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -214,6 +267,7 @@ export function LeadDetails({ lead, canEdit, canReassign, canDelete, members, pe
     <FieldsGroup id="company" title="Company" lead={lead} specs={COMPANY} canEdit={canEdit} build={companyPatch} onSaved={onSaved} onDirty={onDirty} />
     <FieldsGroup id="contact" title="Contact" lead={lead} specs={CONTACT} canEdit={canEdit} build={contactPatch} view={contactView} onSaved={onSaved} onDirty={onDirty} />
     <DealGroup lead={lead} canEdit={canEdit} editing={editingDeal} onEdit={onEditDeal} />
+    <OfferGroup lead={lead} canEdit={canEdit} onSaved={onSaved} onDirty={onDirty} />
     <Group title="Ownership"><LeadOwnership lead={lead} canEdit={canEdit} canReassign={canReassign} members={members} personName={personName} onSaved={onSaved} onDirty={onDirty} /></Group>
     <FieldsGroup id="about" title="About" lead={lead} specs={ABOUT} canEdit={canEdit} build={aboutPatch} view={aboutView} onSaved={onSaved} onDirty={onDirty} />
     {canDelete && <DangerZone lead={lead} onDeleted={onDeleted} />}

@@ -854,6 +854,70 @@ test("brain items can be archived: a head any item, the proposer their own draft
   assert.equal(next.version, 2);
 });
 
+test("a brain proposal can replace several approved items: checked when proposed, all retired in the approval", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const propose = (who: Who, input: Record<string, unknown>, options?: { via?: "claude" }) => h.call(who, "POST", "/sales/brain", { ventureId: "venture-a", body: "Rules", ...input }, options);
+  const approve = async (id: string) => expectStatus(await h.call("head", "POST", `/sales/brain/${id}/approve`, {}), 200).data;
+  const approved = async (kind: string, title: string, ventureId = "venture-a") => { const item = expectStatus(await propose("head", { kind, title: `${title} ${suffix}`, ventureId }), 201).data; await approve(item.id); return item as { id: string }; };
+  const doc = (id: string) => db.collection("sales_brain_items").findOne({ _id: id });
+  // Overlapping approved items in two kinds (the shared ones: offers live in offers now), one that stays, and the merged item's own same-title predecessor.
+  const tone = await approved("venture_settings", "Tone");
+  const length = await approved("venture_settings", "Length");
+  const pricing = await approved("notes", "Pricing talk");
+  const keep = await approved("notes", "Keep me");
+  const predecessor = await approved("venture_settings", "Writing rules");
+  // Only approved items of the same venture: not a draft, an archived item, another venture's item or an unknown id.
+  const draft = expectStatus(await propose("contrib", { kind: "notes", title: `Just a draft ${suffix}` }), 201).data;
+  const gone = await approved("notes", "Gone");
+  expectStatus(await h.call("head", "POST", `/sales/brain/${gone.id}/archive`, {}), 200);
+  const elsewhere = await approved("notes", "Gamma rules", "venture-c");
+  for (const bad of [draft.id, gone.id, elsewhere.id, "no-such-item"]) {
+    const refused = expectStatus(await propose("contrib", { kind: "venture_settings", title: `Bad ${suffix}`, replaces: [tone.id, bad] }), 400);
+    assert.match(JSON.stringify(refused.body), /only replace approved items of the same venture.*not: /, bad);
+  }
+  expectStatus(await propose("contrib", { kind: "notes", title: `Too many ${suffix}`, replaces: Array.from({ length: 21 }, (_, index) => `id-${index}`) }), 400);
+  assert.equal(await db.collection("sales_brain_items").countDocuments({ title: { $in: [`Bad ${suffix}`, `Too many ${suffix}`] } }), 0);
+
+  // Proposing (here through Claude): duplicates dropped, any kind, and the predecessor may be listed. The answer names the items.
+  const merged = parse(brainItemSchema, expectStatus(await propose("contrib", { kind: "venture_settings", title: `Writing rules ${suffix}`, body: "One clean set", replaces: [tone.id, length.id, tone.id, predecessor.id] }, { via: "claude" }), 201).data);
+  assert.deepEqual([merged.status, merged.version, merged.replaces], ["draft", 2, [tone.id, length.id, predecessor.id]]);
+  assert.deepEqual(merged.replacesItems?.map((entry) => [entry.title, entry.kind, entry.version, entry.status]), [[`Tone ${suffix}`, "venture_settings", 1, "approved"], [`Length ${suffix}`, "venture_settings", 1, "approved"], [`Writing rules ${suffix}`, "venture_settings", 1, "approved"]]);
+  // Editing the draft changes the list, with the same checks.
+  expectStatus(await h.call("contrib", "PATCH", `/sales/brain/${merged.id}`, { replaces: [elsewhere.id] }), 400);
+  expectStatus(await h.call("contrib", "PATCH", `/sales/brain/${merged.id}`, { replaces: [draft.id] }), 400);
+  const edited = parse(brainItemSchema, expectStatus(await h.call("contrib", "PATCH", `/sales/brain/${merged.id}`, { replaces: [tone.id, length.id, pricing.id, predecessor.id, length.id] }), 200).data);
+  assert.deepEqual(edited.replaces, [tone.id, length.id, pricing.id, predecessor.id]);
+  assert.equal(edited.replacesItems?.length, 4);
+  assert.equal((await h.call("learner", "GET", "/sales/brain?ventureId=venture-a")).data.find((entry: any) => entry.id === merged.id).replacesItems.length, 4);
+
+  // Approving stays a person's decision: never Claude, never a contributor. Nothing retires until then.
+  expectStatus(await h.call("head", "POST", `/sales/brain/${merged.id}/approve`, {}, { via: "claude" }), 403);
+  expectStatus(await h.call("admin", "POST", `/sales/brain/${merged.id}/approve`, {}, { via: "claude" }), 403);
+  expectStatus(await h.call("contrib", "POST", `/sales/brain/${merged.id}/approve`, {}), 403);
+  assert.equal((await doc(tone.id))?.status, "approved");
+  // One listed item is archived meanwhile: the approval skips it silently.
+  expectStatus(await h.call("head", "POST", `/sales/brain/${pricing.id}/archive`, {}), 200);
+  const done = parse(brainItemSchema, await approve(merged.id));
+  assert.deepEqual([done.status, done.retired], ["approved", 2], "the predecessor goes as the previous version, and is not counted");
+  for (const id of [tone.id, length.id, predecessor.id]) {
+    const row = await doc(id);
+    assert.deepEqual([row?.status, row?.replacedBy, row?.archivedBy, row?.archivedAt instanceof Date], ["archived", merged.id, "user-head", true], id);
+  }
+  assert.deepEqual([(await doc(pricing.id))?.status, (await doc(pricing.id))?.replacedBy], ["archived", undefined]);
+  assert.equal((await doc(keep.id))?.status, "approved");
+  assert.equal((await doc(elsewhere.id))?.status, "approved");
+  const audit = await db.collection("audit_events").findOne({ action: "sales.brain.approve", objectId: merged.id });
+  assert.deepEqual([audit?.metadata.retired, audit?.metadata.version], [2, 2]);
+  // The list: the retired items are out of the approved ones; the approved item still names what it replaced.
+  const live = parse(successEnvelope(brainItemSchema.array()), (await h.call("learner", "GET", "/sales/brain?ventureId=venture-a")).body).data;
+  assert.deepEqual(live.filter((entry) => [tone.id, length.id, pricing.id, predecessor.id].includes(entry.id)), []);
+  assert.ok(live.some((entry) => entry.id === keep.id));
+  assert.deepEqual(live.find((entry) => entry.id === merged.id)?.replacesItems?.map((entry) => entry.status), ["archived", "archived", "archived", "archived"]);
+  // A new proposal can't name the retired items any more.
+  expectStatus(await propose("contrib", { kind: "notes", title: `Later ${suffix}`, replaces: [tone.id] }), 400);
+});
+
 test("Claude's requests keep to the safety rules the tools rely on: verdicts, stages, WhatsApp opt-in, silence", skip, async () => {
   const h = await getHarness();
   const claude = { via: "claude" as const };
@@ -1838,8 +1902,18 @@ test("plays, find-leads runs and the brain: proposals by writers, approvals by a
   expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${queued.id}/cancel`, {}), 409);
   assert.equal(expectStatus(await h.call("head", "POST", `/sales/find-runs/${planned.id}/cancel`, {}), 200).data.status, "cancelled");
 
-  // Brain: proposals are drafts; a head approves in the app; approving archives the previous approved item with the same title.
-  const item = (body: string) => h.call("contrib", "POST", "/sales/brain", { ventureId: "venture-a", kind: "offer", title: `Order tracking ${suffix}`, body });
+  // Brain: shared notes. Offers, target profiles and message rules live in offers now (docs/sales-offers.md): a new proposal of
+  // those kinds is refused with a pointer to offers, and so is approving an old draft of one.
+  for (const kind of ["offer", "target_profile", "message_rules"]) {
+    const legacy = expectStatus(await h.call("contrib", "POST", "/sales/brain", { ventureId: "venture-a", kind, title: `Legacy ${kind} ${suffix}`, body: "Old style" }), 400);
+    assert.match(legacy.body.error.message, /now live in offers.*propose a new offer/);
+  }
+  const oldDraft = `old-profile-${suffix}`;
+  await h.database.db.collection("sales_brain_items").insertOne({ _id: oldDraft, workspaceId: "workspace-a", ventureId: "venture-a", kind: "target_profile", title: `Old profile ${suffix}`, body: "Who we sell to", status: "draft", version: 1, proposedBy: "user-contrib", via: "claude", createdAt: new Date(), updatedAt: new Date() });
+  assert.match(expectStatus(await h.call("head", "POST", `/sales/brain/${oldDraft}/approve`, {}), 400).body.error.message, /target profile, which can no longer be approved here/);
+  assert.equal(expectStatus(await h.call("contrib", "POST", `/sales/brain/${oldDraft}/archive`, {}), 200).data.status, "archived");
+  // Notes: proposals are drafts; a head approves in the app; approving archives the previous approved item with the same title.
+  const item = (body: string) => h.call("contrib", "POST", "/sales/brain", { ventureId: "venture-a", kind: "notes", title: `Order tracking ${suffix}`, body });
   const first = parse(brainItemSchema, expectStatus(await item("Version one"), 201).data);
   assert.deepEqual([first.status, first.version], ["draft", 1]);
   expectStatus(await h.call("contrib", "POST", `/sales/brain/${first.id}/approve`, {}), 403);

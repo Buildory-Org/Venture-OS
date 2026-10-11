@@ -9,6 +9,7 @@ import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { ActionLabel, Badge, DetailDrawer, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { approvePlay, updatePlay } from "@/lib/sales-api";
 import { canHead, ChannelTile, isLearner, kickerClass, stamp } from "./draft-shared";
+import { offerChip, offerHref, useVentureOffers } from "./offer-model";
 import { MOTION_LABEL } from "./play-form";
 import { useSalesShell } from "./sales-context";
 
@@ -20,7 +21,10 @@ const STEP_LABEL: Record<string, string> = { call: "Call", email: "Email", whats
 
 /** One play: what it is, its steps, its numbers, and the buttons that move it along. */
 export function PlayDetail({ play, onClose, onEdit, onChanged }: { play: Play; onClose: () => void; onEdit: () => void; onChanged: (play: Play) => void }) {
-  const { session, ventureName, personName, refresh } = useSalesShell();
+  const { session, ventureName, personName, refresh, refreshKey } = useSalesShell();
+  const offers = useVentureOffers(play.offerId ? play.ventureId : undefined, refreshKey);
+  const offer = play.offerId ? offers?.find((item) => item.id === play.offerId) : undefined;
+  const offerName = offer?.name ?? play.offerName;
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const head = canHead(session, play.ventureId);
@@ -77,10 +81,15 @@ export function PlayDetail({ play, onClose, onEdit, onChanged }: { play: Play; o
         {play.stopRule && <p className="rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600"><b className="text-neutral-800">Stops: </b>{play.stopRule}</p>}
       </section>
 
-      {Boolean(play.audience || play.offerName || play.hypothesis || play.metric) && <section className="space-y-3">
+      {Boolean(play.audience || offerName || play.hypothesis || play.metric) && <section className="space-y-3">
         <h3 className={kickerClass}>Who, and why</h3>
         <dl className="space-y-3 text-sm">
-          {([["Audience", play.audience], ["Offer", play.offerName], ["What we expect", play.hypothesis], ["How we measure it", play.metric]] as const).map(([label, value]) => value ? <div key={label}><dt className="text-xs font-semibold text-neutral-500">{label}</dt><dd className="mt-0.5 leading-6 text-neutral-800 [overflow-wrap:anywhere]">{value}</dd></div> : null)}
+          {offerName && <div><dt className="text-xs font-semibold text-neutral-500">Offer</dt><dd className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 leading-6 text-neutral-800">
+            <span className="[overflow-wrap:anywhere]">{offerName}</span>
+            {offer && offerChip(offer).label !== "Active" && <Badge tone={offerChip(offer).tone}>{offerChip(offer).label}</Badge>}
+            {offer && <WorkspaceLink href={offerHref(play.ventureId, offer.id)} className="inline-flex min-h-8 items-center text-xs font-semibold text-primary-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">Open the offer</WorkspaceLink>}
+          </dd></div>}
+          {([["Audience", play.audience], ["What we expect", play.hypothesis], ["How we measure it", play.metric]] as const).map(([label, value]) => value ? <div key={label}><dt className="text-xs font-semibold text-neutral-500">{label}</dt><dd className="mt-0.5 leading-6 text-neutral-800 [overflow-wrap:anywhere]">{value}</dd></div> : null)}
         </dl>
       </section>}
 

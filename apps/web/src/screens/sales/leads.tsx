@@ -17,9 +17,10 @@ import { LeadImportDrawer } from "@/components/sales/lead-import-drawer";
 import { LeadViews, VIEW_KEYS, type ViewFilters } from "@/components/sales/lead-views";
 import { PopAvatar, PopCard } from "@/components/sales/pop-card";
 import { FacetPicker } from "@/components/sales/lead-facet-picker";
-import { categoryOptions, CONTACT_FILTERS, isContactFilter, PlaceFilters, useLeadFacets, type FacetFilters } from "@/components/sales/lead-filters";
+import { categoryOptions, CONTACT_FILTERS, isContactFilter, offerFilterUseful, offerOptions, PlaceFilters, useLeadFacets, type FacetFilters } from "@/components/sales/lead-filters";
+import { openOffers, useVentureOffers } from "@/components/sales/offer-model";
 import {
-  canCreateLeads, FilterChip, isOverdue, Lock, number, PersonChip, plural, Phone, callablePhone, stageGroup, StageChip, STAGE_GROUPS, stageList, telHref, timeAgo, useDebounced, useUrlParams, VerdictChip, when,
+  canCreateLeads, FilterChip, isOverdue, Lock, number, OfferChip, PersonChip, plural, Phone, callablePhone, stageGroup, StageChip, STAGE_GROUPS, stageList, telHref, timeAgo, useDebounced, useUrlParams, VerdictChip, when,
 } from "@/components/sales/sales-ui";
 
 const PAGE = 50;
@@ -80,6 +81,7 @@ export function LeadsScreen() {
   const needsYou = params.get("needsYou") === "true";
   const mine = params.get("mine") === "1";
   const playId = params.get("play") ?? "";
+  const offerId = params.get("offer") ?? "";
   const sort = SORTS.find((item) => item.value === params.get("sort"))?.value ?? "updated";
   const selectedLead = params.get("lead");
   // Where, what and how to reach them: chosen from the counted lists, kept in the URL.
@@ -122,13 +124,22 @@ export function LeadsScreen() {
   // Counts for the dropdowns use the same filters as the list, so each one shows what choosing a value would leave.
   const facetFilters = useMemo<FacetFilters>(() => ({
     ...(ventureId ? { ventureId } : {}), ...(rawStage ? { stage: rawStage } : group ? { stage: stageList(group) } : {}), ...(q ? { q } : {}), ...(mine ? { owner: "me" as const } : {}),
-    ...(needsYou ? { needsYou: "true" as const } : {}), ...(playId ? { playId } : {}), ...(verdict ? { verdict } : {}),
+    ...(needsYou ? { needsYou: "true" as const } : {}), ...(playId ? { playId } : {}), ...(offerId ? { offerId } : {}), ...(verdict ? { verdict } : {}),
     ...(state ? { region: state } : {}), ...(city ? { city } : {}), ...(category ? { category } : {}), ...(contact ? { contact } : {}),
-  }), [ventureId, rawStage, group, q, mine, needsYou, playId, verdict, state, city, category, contact]);
+  }), [ventureId, rawStage, group, q, mine, needsYou, playId, offerId, verdict, state, city, category, contact]);
   const query = useMemo<Query>(() => ({ ...facetFilters, sort }), [facetFilters, sort]);
   const queryKey = JSON.stringify(query);
   const { facets } = useLeadFacets(facetFilters, refreshKey);
   const industries = useMemo(() => categoryOptions(facets, category), [facets, category]);
+  // Offers: names for the filter and the row chips. A row names its offer only where the venture sells more than one (in All ventures:
+  // when the leads in view span more than one offer).
+  const ventureOffers = useVentureOffers(ventureId || undefined, refreshKey);
+  const offerNames = useMemo(() => ({ ...Object.fromEntries((facets?.offers ?? []).map((item) => [item.value, item.name])), ...Object.fromEntries((ventureOffers ?? []).map((item) => [item.id, item.name])) }) as Record<string, string>, [facets, ventureOffers]);
+  const showOfferChip = ventureId ? (ventureOffers?.length ?? 0) > 1 : (facets?.offers.length ?? 0) > 1;
+  const offerName = (lead: Lead) => showOfferChip && lead.offerId ? offerNames[lead.offerId] : undefined;
+  const offerChoices = useMemo(() => offerOptions(facets, offerId, offerNames), [facets, offerId, offerNames]);
+  const offerFilter = offerFilterUseful(facets, offerId);
+  const offerNotSet = facets ? { count: facets.notSet.offers, label: "No offer" } : undefined;
   const contactOptions = CONTACT_FILTERS.map(([value, label]) => ({ value, label, count: facets ? (value === "whatsapp" ? facets.contact.whatsappOptIn : facets.contact[value]) : 0 }));
   const setPlace = ({ state: nextState, city: nextCity }: { state: string | null; city: string | null }) => update({ state: nextState, city: nextCity });
 
@@ -219,13 +230,14 @@ export function LeadsScreen() {
     finally { setExporting(false); }
   };
 
-  const activeFilters = [group || rawStage, verdict, needsYou, mine, playId, q, state, city, category, contact].filter(Boolean).length;
-  const clearAll = () => { setSearch(""); update({ group: null, stage: null, verdict: null, needsYou: null, mine: null, play: null, state: null, city: null, category: null, contact: null }); };
+  const activeFilters = [group || rawStage, verdict, needsYou, mine, playId, offerId, q, state, city, category, contact].filter(Boolean).length;
+  const clearAll = () => { setSearch(""); update({ group: null, stage: null, verdict: null, needsYou: null, mine: null, play: null, offer: null, state: null, city: null, category: null, contact: null }); };
   // On phones the filters live in a sheet; the ones in use also show as chips under the search box.
   const sheetCount = activeFilters - (q ? 1 : 0);
   const chips: { key: string; label: string; clear: () => void }[] = [
     ...(group ? [{ key: "stage", label: group.label, clear: () => update({ group: null, stage: null }) }] : rawStage ? [{ key: "stage", label: "Stages", clear: () => update({ stage: null }) }] : []),
     ...(verdict ? [{ key: "verdict", label: VERDICT_LABELS[verdict], clear: () => update({ verdict: null }) }] : []),
+    ...(offerId ? [{ key: "offer", label: offerId === "none" ? "No offer" : offerNames[offerId] ?? "Offer", clear: () => update({ offer: null }) }] : []),
     ...(state ? [{ key: "state", label: state === "none" ? "No state" : state, clear: () => update({ state: null }) }] : []),
     ...(city ? [{ key: "city", label: city === "none" ? "No city" : city, clear: () => update({ city: null }) }] : []),
     ...(category ? [{ key: "category", label: category === "none" ? "No industry" : category, clear: () => update({ category: null }) }] : []),
@@ -246,6 +258,7 @@ export function LeadsScreen() {
     <div role="group" aria-label="Filters" className="mb-3 hidden flex-wrap items-center gap-2 sm:flex">
       <Select aria-label="Stage" className={filterControl(!!group || !!rawStage)} value={group?.key ?? ""} onChange={(event) => update({ group: event.target.value || null, stage: null })}><option value="">All stages</option>{STAGE_GROUPS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</Select>
       <Select aria-label="Claude's verdict" className={filterControl(!!verdict)} value={verdict} onChange={(event) => update({ verdict: event.target.value || null })}><option value="">Any verdict</option><option value="recommend">Claude: go</option><option value="hold">Claude: hold</option><option value="reject">Claude: no</option><option value="none">Not judged</option></Select>
+      {offerFilter && <FacetPicker label="Offer" allLabel="All offers" value={offerId} options={offerChoices} notSet={offerNotSet} onChange={(next) => update({ offer: next || null })} />}
       <PlaceFilters facets={facets} region={state} city={city} onChange={setPlace} />
       <FacetPicker label="Industry" allLabel="All industries" value={category} options={industries} searchable notSet={facets ? { count: facets.notSet.categories, label: "Not set" } : undefined} onChange={(next) => update({ category: next || null })} />
       <FacetPicker label="Contact" allLabel="Any contact" value={contact} options={contactOptions} onChange={(next) => update({ contact: next || null })} />
@@ -306,7 +319,7 @@ export function LeadsScreen() {
           <tbody className="divide-y divide-neutral-100">
             {items.map((lead) => <tr key={lead.id} data-flash-id={lead.id} onClick={() => openLead(lead.id)} className={clsx("cursor-pointer align-top transition-colors duration-150 hover:bg-neutral-50", selectedLead === lead.id ? "bg-primary-50/70 hover:bg-primary-50" : isPicked(lead.id) && "bg-primary-50/40")}>
               {canBulk && <td className="py-3.5 pl-4"><RowCheck checked={isPicked(lead.id)} label={`Select ${lead.companyName}`} onChange={() => toggle(lead.id)} /></td>}
-              <td className={clsx("py-3.5 pr-5", canBulk ? "pl-2" : "pl-5")}><button type="button" onClick={(event) => { event.stopPropagation(); openLead(lead.id); }} className="block w-full min-w-0 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><span className="block truncate text-sm font-semibold text-neutral-800">{lead.companyName}</span><span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-500"><span className="truncate">{[lead.city, lead.category].filter(Boolean).join(" · ") || "No place yet"}</span><Flags lead={lead} /></span></button></td>
+              <td className={clsx("py-3.5 pr-5", canBulk ? "pl-2" : "pl-5")}><button type="button" onClick={(event) => { event.stopPropagation(); openLead(lead.id); }} className="block w-full min-w-0 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><span className="block truncate text-sm font-semibold text-neutral-800">{lead.companyName}</span><span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-neutral-500"><span className="truncate">{[lead.city, lead.category].filter(Boolean).join(" · ") || "No place yet"}</span>{offerName(lead) && <OfferChip name={offerName(lead)!} />}<Flags lead={lead} /></span></button></td>
               <td className="px-3 py-3.5"><StageChip stage={lead.stage} /></td>
               <td className="px-3 py-3.5"><VerdictChip verdict={lead.verdict} />{lead.verdict && <span className="mt-1 block truncate text-xs text-neutral-500" title={lead.verdict.summary}>{lead.verdict.summary}</span>}</td>
               <td className="px-3 py-3.5"><NextCell lead={lead} /></td>
@@ -328,7 +341,7 @@ export function LeadsScreen() {
                 <PopAvatar name={lead.companyName} size="sm" />
                 <span className="min-w-0 flex-1"><span className="block text-[15px] font-bold leading-5 text-neutral-900 [overflow-wrap:anywhere]">{lead.companyName}</span><span className="mt-0.5 block truncate text-xs text-neutral-500">{[lead.city, lead.category].filter(Boolean).join(" · ") || "No place yet"}</span></span>
               </span>
-              <span className="mt-2 flex flex-wrap items-center gap-1.5"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} /><Flags lead={lead} /></span>
+              <span className="mt-2 flex flex-wrap items-center gap-1.5"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} />{offerName(lead) && <OfferChip name={offerName(lead)!} />}<Flags lead={lead} /></span>
               {(lead.nextAction || lead.nextActionAt) && <span className="mt-2 block text-xs text-neutral-600"><span className="font-medium">{lead.nextAction || "Follow up"}</span> <span className={clsx("font-semibold", isOverdue(lead.nextActionAt) ? "text-danger-text" : "text-neutral-400")}>· {when(lead.nextActionAt)}</span></span>}
             </button>
             {tel && <a href={tel} aria-label={`Call ${lead.companyName}`} className="grid w-14 shrink-0 place-items-center rounded-r-2xl border-l border-neutral-100 text-primary-700 transition-colors duration-150 hover:bg-primary-50 active:bg-primary-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-600"><Phone size={19} /></a>}
@@ -341,6 +354,7 @@ export function LeadsScreen() {
       <div className="grid grid-cols-1 gap-4">
         <Field label="Stage"><Select aria-label="Stage" className={inputClass} value={group?.key ?? ""} onChange={(event) => update({ group: event.target.value || null, stage: null })}><option value="">All stages</option>{STAGE_GROUPS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</Select></Field>
         <Field label="Claude's verdict"><Select aria-label="Claude's verdict" className={inputClass} value={verdict} onChange={(event) => update({ verdict: event.target.value || null })}><option value="">Any verdict</option><option value="recommend">Claude: go</option><option value="hold">Claude: hold</option><option value="reject">Claude: no</option><option value="none">Not judged</option></Select></Field>
+        {offerFilter && <div className="grid gap-1.5"><span className="text-xs font-semibold text-neutral-600">Offer</span><FacetPicker variant="field" label="Offer" allLabel="All offers" value={offerId} options={offerChoices} notSet={offerNotSet} onChange={(next) => update({ offer: next || null })} /></div>}
         <PlaceFilters facets={facets} region={state} city={city} onChange={setPlace} variant="field" />
         <div className="grid gap-1.5"><span className="text-xs font-semibold text-neutral-600">Industry</span><FacetPicker variant="field" label="Industry" allLabel="All industries" value={category} options={industries} searchable notSet={facets ? { count: facets.notSet.categories, label: "Not set" } : undefined} onChange={(next) => update({ category: next || null })} /></div>
         <div className="grid gap-1.5"><span className="text-xs font-semibold text-neutral-600">How to reach them</span><FacetPicker variant="field" label="Contact" allLabel="Any contact" value={contact} options={contactOptions} onChange={(next) => update({ contact: next || null })} /></div>
@@ -352,6 +366,6 @@ export function LeadsScreen() {
     </DetailDrawer>}
     {creating && <LeadCreate onClose={() => setCreating(false)} onCreated={(leadId) => { setCreating(false); openLead(leadId); }} />}
     {importing && <LeadImportDrawer onClose={() => setImporting(false)} />}
-    {showBar && <LeadBulkBar count={picked.all ? total : Math.min(pickedCount, BULK_MAX)} target={bulkTarget} canAssign={canAssign} members={members} plays={plays} onClear={() => { clearSelection(); setSelecting(false); }} onDone={bulkDone} />}
+    {showBar && <LeadBulkBar count={picked.all ? total : Math.min(pickedCount, BULK_MAX)} target={bulkTarget} canAssign={canAssign} members={members} plays={plays} offers={ventureId ? openOffers(ventureOffers ?? []) : null} ventureId={ventureId} onClear={() => { clearSelection(); setSelecting(false); }} onDone={bulkDone} />}
   </div>;
 }

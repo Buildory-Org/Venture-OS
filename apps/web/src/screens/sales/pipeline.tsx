@@ -15,7 +15,8 @@ import { useDeliveryWork } from "@/components/sales/lead-actions";
 import { PipelineCard } from "@/components/sales/pipeline-card";
 import { PipelineClose } from "@/components/sales/pipeline-close";
 import { canEditLead, FilterChip, moneyFull, moneyLine, moneyShort, groupOfStage, isManager, isWonStage, number, STAGE_GROUPS, stageList, useDebounced, useUrlParams, type StageGroup, type StageGroupKey } from "@/components/sales/sales-ui";
-import { PlaceFilters, useLeadFacets } from "@/components/sales/lead-filters";
+import { FacetPicker } from "@/components/sales/lead-facet-picker";
+import { offerFilterUseful, offerOptions, PlaceFilters, useLeadFacets } from "@/components/sales/lead-filters";
 
 const PAGE = 20;
 type Totals = NonNullable<Awaited<ReturnType<typeof listLeads>>["totals"]>;
@@ -23,7 +24,7 @@ type Col = { items: Lead[]; total: number; ready: boolean; error: string; totals
 type Columns = Record<StageGroupKey, Col>;
 const blank: Col = { items: [], total: 0, ready: false, error: "" };
 const blankColumns = () => Object.fromEntries(STAGE_GROUPS.map((group) => [group.key, blank])) as Columns;
-type Filters = { ventureId?: string; q?: string; owner?: "me"; region?: string; city?: string };
+type Filters = { ventureId?: string; q?: string; owner?: "me"; offerId?: string; region?: string; city?: string };
 
 const fetchColumn = async (group: StageGroup, filters: Filters, limit: number, offset = 0): Promise<Col> => {
   const page = await listLeads({ ...filters, stage: stageList(group), sort: "updated", offset, limit, totals: "true" });
@@ -62,6 +63,7 @@ export function PipelineScreen() {
   const { params, update } = useUrlParams();
   const state = params.get("state") ?? "";
   const city = params.get("city") ?? "";
+  const offerId = params.get("offer") ?? "";
   const [closedOpen, setClosedOpen] = useState(false);
   const [mobileGroup, setMobileGroup] = useState<StageGroupKey>("new");
   const [board, setBoard] = useState<{ key: string; columns: Columns }>({ key: "", columns: blankColumns() });
@@ -70,9 +72,11 @@ export function PipelineScreen() {
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [closing, setClosing] = useState<Lead | null>(null);
   const [moreBusy, setMoreBusy] = useState<StageGroupKey | "">("");
-  const filters = useMemo<Filters>(() => ({ ...(ventureId ? { ventureId } : {}), ...(q ? { q } : {}), ...(mine ? { owner: "me" as const } : {}), ...(state ? { region: state } : {}), ...(city ? { city } : {}) }), [ventureId, q, mine, state, city]);
+  const filters = useMemo<Filters>(() => ({ ...(ventureId ? { ventureId } : {}), ...(q ? { q } : {}), ...(mine ? { owner: "me" as const } : {}), ...(offerId ? { offerId } : {}), ...(state ? { region: state } : {}), ...(city ? { city } : {}) }), [ventureId, q, mine, offerId, state, city]);
   const filterKey = JSON.stringify(filters);
   const { facets } = useLeadFacets(filters, refreshKey);
+  const offerNames = useMemo(() => Object.fromEntries((facets?.offers ?? []).map((item) => [item.value, item.name])) as Record<string, string>, [facets]);
+  const offerChoices = useMemo(() => offerOptions(facets, offerId, offerNames), [facets, offerId, offerNames]);
   const latest = useRef({ board, closedOpen });
   useEffect(() => { latest.current = { board, closedOpen }; });
   const { create: handOver, busyId } = useDeliveryWork(refresh);
@@ -168,7 +172,7 @@ export function PipelineScreen() {
   };
   const openValue = openMoney("valueMinor"), openWeighted = openMoney("weightedMinor");
   const failed = ready && STAGE_GROUPS.every((group) => columns[group.key].error);
-  const filtered = !!(q || mine || state || city);
+  const filtered = !!(q || mine || offerId || state || city);
 
   if (failed) return <Panel><EmptyState variant="error" title="Could not load the pipeline" body={columns.new.error} action={{ label: busy ? "Trying again…" : "Try again", onClick: () => setAttempt((value) => value + 1), disabled: busy }} /></Panel>;
 
@@ -176,8 +180,9 @@ export function PipelineScreen() {
     <div className="mb-3 flex flex-wrap items-center gap-2">
       <label className="relative min-w-0 flex-1 basis-56"><span className="sr-only">Search the board</span><Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} maxLength={200} placeholder="Search the board…" className={`${inputClass} pl-10 pr-10 [&::-webkit-search-cancel-button]:appearance-none`} />{search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")} className="absolute right-1.5 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-neutral-400 transition-[background-color,color] duration-150 hover:bg-neutral-100 hover:text-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><X size={15} /></button>}</label>
       <FilterChip active={mine} onClick={() => setMine(!mine)}>Mine</FilterChip>
+      {offerFilterUseful(facets, offerId) && <FacetPicker label="Offer" allLabel="All offers" value={offerId} options={offerChoices} notSet={facets ? { count: facets.notSet.offers, label: "No offer" } : undefined} onChange={(next) => update({ offer: next || null })} />}
       <PlaceFilters facets={facets} region={state} city={city} onChange={({ state: nextState, city: nextCity }) => update({ state: nextState, city: nextCity })} />
-      {filtered && <button type="button" onClick={() => { setSearch(""); setMine(false); update({ state: null, city: null }); }} className="inline-flex min-h-9 items-center gap-1 rounded-full px-3 text-[13px] font-semibold text-neutral-500 transition-colors duration-150 hover:bg-neutral-100 hover:text-neutral-800"><X size={13} />Clear filters</button>}
+      {filtered && <button type="button" onClick={() => { setSearch(""); setMine(false); update({ offer: null, state: null, city: null }); }} className="inline-flex min-h-9 items-center gap-1 rounded-full px-3 text-[13px] font-semibold text-neutral-500 transition-colors duration-150 hover:bg-neutral-100 hover:text-neutral-800"><X size={13} />Clear filters</button>}
       <span aria-live="polite" className="ml-auto text-xs font-semibold text-neutral-500 tnum">{ready ? `${number(totals)} lead${totals === 1 ? "" : "s"}` : ""}{ready && openValue.some((row) => row.minor > 0) && <> · <span title={`${moneyLine(openValue, false)} open, ${moneyLine(openWeighted, false)} weighted`}>open {moneyLine(openValue)} · weighted {moneyLine(openWeighted)}</span></>}{busy && ready ? " · updating…" : ""}</span>
     </div>
 

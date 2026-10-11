@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { ArrowUpRight, BookOpenText, CircleCheck, Plus, Sparkles } from "@/components/ui/icons";
+import { ArrowUpRight, CircleCheck, Plus, Sparkles } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
@@ -9,27 +9,26 @@ import { createLivePipeline } from "@/lib/studio-api";
 import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { ActionLabel, Badge, Field, inputClass, Notice, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { useStudio } from "@/lib/studio-store";
-import { BrainForm, type BrainFormTarget } from "@/components/sales/brain-form";
 import { canHead, isLearner, useSalesLoad } from "@/components/sales/draft-shared";
+import { Package } from "@/components/sales/lead-icons";
+import { OfferEditor } from "@/components/sales/offer-editor";
+import { newestFirst, offerHref } from "@/components/sales/offer-model";
 import { PlayForm } from "@/components/sales/play-form";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { DEFAULT_SETTINGS } from "@/components/sales/setup-api";
-import { approvedOf, daysLabel, evaluateSetup, loadSetupData, proposalsOf, sellersOf, SETUP_TOTAL, type SetupData, type SetupItem, type SetupKey } from "@/components/sales/setup-checks";
+import { daysLabel, evaluateSetup, loadSetupData, sellersOf, SETUP_TOTAL, usableOffersOf, type SetupData, type SetupItem, type SetupKey } from "@/components/sales/setup-checks";
 import { SetupItemCard } from "@/components/sales/setup-item";
+import { SetupSearchKeys } from "@/components/sales/setup-search-keys";
 import { SetupSettingsForm } from "@/components/sales/setup-settings-form";
-import { SETUP_TEMPLATES } from "@/components/sales/setup-templates";
 
 const ROLE_LABEL: Record<string, string> = { admin: "Admin", venture_head: "Venture head", contributor: "Contributor", reviewer: "Reviewer", learner: "Learner" };
-const BRAIN_STEP: Record<"offer" | "target_profile" | "message_rules", { propose: string; noun: string }> = {
-  offer: { propose: "Propose the offer", noun: "offer" }, target_profile: { propose: "Propose the target profile", noun: "target profile" }, message_rules: { propose: "Propose the message rules", noun: "message rules" },
-};
 
 /** Set up sales for {venture} (route /sales/live/setup): a checklist that makes a venture sales-ready, each step completed in place. */
 export function SetupScreen() {
   const { session, ventureId, ventureName, refresh } = useSalesShell();
   const { setActiveVentureId } = useStudio();
   const checks = useSalesLoad<SetupData | null>(`setup|${ventureId}`, () => ventureId ? loadSetupData(ventureId) : Promise.resolve(null));
-  const [brainForm, setBrainForm] = useState<BrainFormTarget | null>(null);
+  const [offerForm, setOfferForm] = useState(false);
   const [playForm, setPlayForm] = useState(false);
   const [pipelineForm, setPipelineForm] = useState(false);
   const learner = isLearner(session);
@@ -52,28 +51,30 @@ export function SetupScreen() {
   const done = items.filter((item) => item.done).length;
   const name = ventureName(ventureId);
 
-  const brainAction = (kind: "offer" | "target_profile" | "message_rules", item: SetupItem) => {
-    const proposals = proposalsOf(data.brain.data, kind);
-    const template = SETUP_TEMPLATES[kind]!;
+  const offers = data.offers.data ?? [];
+  const usable = usableOffersOf(offers);
+  const offerAction = (item: SetupItem) => {
+    if (item.unknown) return <WorkspaceLink href={offerHref(ventureId)} className={secondaryClass}><Package size={15} />Open Offers</WorkspaceLink>;
+    if (item.done) return <WorkspaceLink href={offerHref(ventureId, usable.length === 1 ? usable[0]!.id : undefined)} className={secondaryClass}><Package size={15} />Open {usable.length === 1 ? "the offer" : "Offers"}</WorkspaceLink>;
+    // A proposal waiting comes first: approving it is the shortest way to a usable offer. Then a paused offer, then a new one.
+    const waiting = offers.filter((offer) => offer.state !== "archived" && offer.proposals.length > 0);
+    const first = waiting[0];
+    const paused = offers.find((offer) => offer.approved && offer.state === "paused");
+    const proposals = waiting.reduce((sum, offer) => sum + offer.proposals.length, 0);
     return <div className="flex flex-wrap items-center gap-2">
-      {item.done
-        ? <WorkspaceLink href={`/sales/live/brain?venture=${encodeURIComponent(ventureId)}&item=${encodeURIComponent(approvedOf(data.brain.data, kind)[0]!.id)}`} className={secondaryClass}><BookOpenText size={15} />Open in Sales knowledge</WorkspaceLink>
-        : <>
-          {proposals.length > 0 && <WorkspaceLink href={`/sales/live/brain?venture=${encodeURIComponent(ventureId)}&item=${encodeURIComponent(proposals[0]!.id)}`} className={head ? primaryClass : secondaryClass}>{head ? `Review ${proposals.length === 1 ? "the proposal" : `${proposals.length} proposals`}` : `See ${proposals.length === 1 ? "the proposal" : "the proposals"}`}<ArrowUpRight size={14} aria-hidden="true" /></WorkspaceLink>}
-          {canWrite && !item.unknown && <button type="button" onClick={() => setBrainForm({ mode: "propose", kind, title: template.title, body: template.body, template: true })} className={proposals.length > 0 ? secondaryClass : primaryClass}><Plus size={15} />{proposals.length > 0 ? "Write a new one" : BRAIN_STEP[kind].propose}</button>}
-          {proposals.length > 0 && !head && <span className="text-xs text-neutral-500">A venture head approves it.</span>}
-          {proposals.length === 0 && <span className="text-xs text-neutral-500">Or ask Claude to draft it while you talk the business through.</span>}
-        </>}
+      {first && <WorkspaceLink href={offerHref(ventureId, first.id, newestFirst(first.proposals)[0]!.id)} className={head ? primaryClass : secondaryClass}>{head ? `Review ${proposals === 1 ? "the proposal" : `${proposals} proposals`}` : `See ${proposals === 1 ? "the proposal" : "the proposals"}`}<ArrowUpRight size={14} aria-hidden="true" /></WorkspaceLink>}
+      {!first && paused && <WorkspaceLink href={offerHref(ventureId, paused.id)} className={head ? primaryClass : secondaryClass}>{head ? `Activate ${paused.name}` : `Open ${paused.name}`}<ArrowUpRight size={14} aria-hidden="true" /></WorkspaceLink>}
+      {canWrite && !first && !paused && <button type="button" onClick={() => setOfferForm(true)} className={primaryClass}><Plus size={15} />Create the offer</button>}
+      {first && !head && <span className="text-xs text-neutral-500">A venture head approves it.</span>}
+      {!first && !paused && <span className="text-xs text-neutral-500">Or tell Claude about the offer and it proposes the packet.</span>}
     </div>;
   };
 
   const actions: Record<SetupKey, (item: SetupItem) => React.ReactNode> = {
     pipeline: (item) => item.done ? null : !head ? <p className="text-xs text-neutral-500">A venture head or admin creates the pipeline.</p> : pipelineForm
-      ? <PipelineForm ventureId={ventureId} defaultName={`${name} opportunities`} defaultOffer={approvedOf(data.brain.data, "offer")[0]?.title ?? ""} onCancel={() => setPipelineForm(false)} onCreated={() => { setPipelineForm(false); changed(); }} />
+      ? <PipelineForm ventureId={ventureId} defaultName={`${name} opportunities`} defaultOffer={usable[0]?.name ?? ""} onCancel={() => setPipelineForm(false)} onCreated={() => { setPipelineForm(false); changed(); }} />
       : <button type="button" onClick={() => setPipelineForm(true)} className={primaryClass}><Plus size={15} />Create the pipeline</button>,
-    offer: (item) => brainAction("offer", item),
-    target_profile: (item) => brainAction("target_profile", item),
-    message_rules: (item) => brainAction("message_rules", item),
+    offer: offerAction,
     play: (item) => <div className="flex flex-wrap items-center gap-2">
       {item.done ? <WorkspaceLink href="/sales/live/plays" className={secondaryClass}>See the plays<ArrowUpRight size={14} aria-hidden="true" /></WorkspaceLink> : canWrite && !item.unknown && <button type="button" onClick={() => setPlayForm(true)} className={primaryClass}><Plus size={15} />Plan the first play</button>}
       {!item.done && <span className="text-xs text-neutral-500">A venture head approves it before it starts.</span>}
@@ -105,7 +106,7 @@ export function SetupScreen() {
   return <>
     <Panel className="mb-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0"><h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900">Set up sales for {name}</h2><p className="mt-1 max-w-xl text-xs leading-5 text-neutral-500">Eight things make a venture ready for Claude to research leads and write drafts for. Do them in any order.</p></div>
+        <div className="min-w-0"><h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900">Set up sales for {name}</h2><p className="mt-1 max-w-xl text-xs leading-5 text-neutral-500">Six things make a venture ready for Claude to research leads and write drafts for. Do them in any order.</p></div>
         <span className={clsx("inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold", done === SETUP_TOTAL ? "bg-success-surface text-success-text" : "bg-neutral-100 text-neutral-700")}>{done === SETUP_TOTAL && <CircleCheck size={14} aria-hidden="true" />}<span className="tnum">{done} of {SETUP_TOTAL} done</span></span>
       </div>
       <div role="progressbar" aria-label="Setup progress" aria-valuemin={0} aria-valuemax={SETUP_TOTAL} aria-valuenow={done} className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-100"><div className="h-full rounded-full bg-primary-600 transition-[width] duration-300" style={{ width: `${(done / SETUP_TOTAL) * 100}%` }} /></div>
@@ -113,7 +114,8 @@ export function SetupScreen() {
     </Panel>
     {checks.error && <p role="alert" className="mb-3 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{checks.error}</p>}
     <ol className="space-y-3">{items.map((item, index) => <SetupItemCard key={`${item.key}-${item.done}`} number={index + 1} item={item}>{learner ? null : actions[item.key](item)}</SetupItemCard>)}</ol>
-    {brainForm && <BrainForm ventureId={ventureId} target={brainForm} onClose={() => setBrainForm(null)} onSaved={changed} />}
+    {session?.membership.role === "admin" && <SetupSearchKeys />}
+    {offerForm && <OfferEditor ventureId={ventureId} target={{ mode: "new" }} onClose={() => setOfferForm(false)} onSaved={changed} />}
     {playForm && <PlayForm onClose={() => setPlayForm(false)} onSaved={changed} />}
   </>;
 }

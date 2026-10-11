@@ -21,7 +21,8 @@ deals won. The details behind it are in `docs/sales-dealflow.md`; this page is f
 4. Start a new chat and say **start sales**.
 
 Treat the key like a password: never paste it into a chat. Revoke it on the same page if a computer is lost. The third
-preset on that page, **Office PC engine**, is for the lead-finding worker on the office PC and does nothing for Claude.
+preset on that page, **Office PC engine**, is only for the optional lead-finding worker on the office PC and does nothing
+for Claude. Venture OS has its own lead finder built in, so most teams never need it.
 
 ## What to say
 
@@ -53,16 +54,27 @@ and `weekly_review`.
 - **A compact table** in a terminal. Reports are never pasted as paragraphs.
 - If a name matches several leads ("Jain"), Claude asks which one. If none matches, it says so and offers to search.
 
+## Offers
+
+Each venture sells one or more **offers** (Buildory: Dealer Commerce). An offer is one packet: who it is for, the checks a
+lead must pass, what to look for on a company's site, what we say, how messages are written and what may be said about price.
+Every lead belongs to one offer, and Claude judges it and writes to it with that offer's approved packet only. Claude can
+propose a new offer or a change to one; a venture head reads it in the app (**Offers**, where Sales knowledge used to be),
+compares it with the approved packet and approves it as a whole, or pauses, activates or archives the offer. What every
+offer shares (how the business works, delivery, timing) stays as shared notes under "Shared for the venture". When a
+venture sells several offers, tell Claude which one you are working on ("find leads for Dealer Commerce").
+
 ## What Claude can and can't do
 
 **Can:** search for companies, add leads, research and judge them with quoted evidence, write drafts (one at a time or up
 to 25), review drafts in a separate chat, log replies and calls you tell it about, move a lead one step at a time, ask the
-office PC to look up contacts (`enrich`), plan plays and searches, and propose changes to the sales brain.
+lead finder to look up contacts (`enrich`), plan plays and find-leads runs, and propose new offers, changes to an offer and
+shared notes.
 
 **Can't, by design:**
 
 - **Send anything.** You send from your own mail or phone, then mark it sent in the app.
-- **Approve** a play, a brain item or a draft's first batch, **override** a verdict, **confirm WhatsApp**, **mark a deal
+- **Approve** a play, an offer, a shared note or a draft's first batch, **pause or archive** an offer, **override** a verdict, **confirm WhatsApp**, **mark a deal
   won**, reopen a lost lead, send a contacted lead back, or contact anyone on the do-not-contact list. These are
   people's decisions in the app: when Claude hits one it says so in one sentence and points you to the page.
 - **Review its own drafts.** A draft is reviewed in a different chat, started with "review drafts".
@@ -84,8 +96,10 @@ Claude reads them at the start and drafts within them.
 
 ## If something doesn't work
 
-- **"Search isn't set up":** the owner adds `TINYFISH_API_KEY` and/or `EXA_API_KEY` to the API's environment. Until then
-  Claude can write a search down for the office PC instead.
+- **"Search isn't set up":** an admin opens **Sales → Setup → Company search keys**, pastes a TinyFish key (free, 1,500
+  searches a day; get one at tinyfish.ai) and/or an Exa key (exa.ai), and presses Test. The key is stored encrypted and
+  never shown again, only its last four characters. Until then Claude can add the companies you name, and find-leads
+  runs wait in the queue.
 - **Claude refuses something:** it is a rule, not a fault. The reply says what a person has to do, with the link.
 - **No tools or an authorisation error:** the key may be revoked or expired, or it is the wrong preset (a Venture Studio
   key has no sales tools, an engine key is not accepted). Make a new Dealflow Sales key.

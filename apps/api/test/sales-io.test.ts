@@ -71,6 +71,8 @@ test("import columns are guessed from the header names, each column once", () =>
   assert.deepEqual([yesNo.company, yesNo.phone, yesNo.contactName, yesNo.category], [0, 1, null, 6]);
   assert.equal(guessMapping(["Company", "Primary contact person name"]).contactName, 1);
   assert.equal(guessMapping(["Company", "Contact"]).contactName, 1);
+  // An "Offer" column names the venture's offer by name; without one, no column is taken for it.
+  assert.deepEqual([guessMapping(["Company", "Offer"]).offer, guessMapping(["Company", "Offer name", "City"]).offer, guessMapping(["Company", "City"]).offer], [1, 1, null]);
 });
 
 test("import cells: numbers split on / and are kept only in full, a mailto cell keeps one address, safety apostrophes and invisible characters come off", () => {
@@ -394,16 +396,17 @@ test("the export is a CSV of the filtered leads: business fields only, escaped, 
   assert.deepEqual([reply.headers.get("x-exported-rows"), reply.headers.get("x-matching-rows")], ["2", "2"]);
   assert.ok(reply.text.startsWith(CSV_BOM));
   const rows = parseCsv(reply.text);
-  assert.deepEqual(rows[0], ["Company", "Contact person", "Website", "Industry", "City", "State", "Country", "Phone", "Email", "Stage", "Owner", "Next action", "Next action date", "Deal value", "Currency", "Expected close", "Chance (%)", "Source", "Tags", "Do not contact", "Added"]);
+  assert.deepEqual(rows[0], ["Company", "Contact person", "Website", "Industry", "City", "State", "Country", "Phone", "Email", "Stage", "Offer", "Owner", "Next action", "Next action date", "Deal value", "Currency", "Expected close", "Chance (%)", "Source", "Tags", "Do not contact", "Added"]);
   assert.equal(rows.length, 3);
   const [first, second] = [rows[1]!, rows[2]!];
   // Sorted by name: "Blocked Co" before "Sharma".
   assert.equal(first[0], `Blocked Co ${suffix}`);
-  assert.deepEqual([first[7], first[8], first[19]], ["", "", "Yes"]); // a do-not-contact lead is exported without its phone and email
+  assert.deepEqual([first[7], first[8], first[20]], ["", "", "Yes"]); // a do-not-contact lead is exported without its phone and email
   assert.equal(second[0], `Sharma "Best", Sons\nTraders ${suffix}`);
   assert.equal(second[1], "'=HYPERLINK(\"http://evil.example\")");
-  assert.deepEqual([second[2], second[3], second[4], second[7], second[8], second[9], second[10], second[11], second[13], second[14], second[16], second[17], second[18], second[19]], ["https://sharma.example", "Pipes, fittings", city, "'+91 98765 43210", "sharma@sharma.example", "Identified", "Casey Contrib", "Call back", "12500", "INR", "2", "justdial", "a; b", ""]);
-  assert.match(String(second[20]), /^\d{4}-\d{2}-\d{2}$/);
+  // The Offer column is empty for a venture without offers (sales-offers.test.ts covers it with offers).
+  assert.deepEqual([second[2], second[3], second[4], second[7], second[8], second[9], second[10], second[11], second[12], second[14], second[15], second[17], second[18], second[19], second[20]], ["https://sharma.example", "Pipes, fittings", city, "'+91 98765 43210", "sharma@sharma.example", "Identified", "", "Casey Contrib", "Call back", "12500", "INR", "2", "justdial", "a; b", ""]);
+  assert.match(String(second[21]), /^\d{4}-\d{2}-\d{2}$/);
   assert.ok(!reply.text.includes("SECRET internal note")); // no research notes, verdicts or activity
   assert.ok(reply.text.includes("\r\n"));
   assert.equal(nasty.stage, "identified");

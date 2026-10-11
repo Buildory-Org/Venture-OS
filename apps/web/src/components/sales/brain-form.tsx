@@ -31,11 +31,14 @@ const BODY_HINT: Record<BrainKind, string> = {
 /** `template`: the text is a starting point for a new item (title editable, kind fixed), not a change to an approved one. */
 export type BrainFormTarget = { mode: "propose"; kind?: BrainKind; title?: string; body?: string; template?: boolean } | { mode: "edit"; item: BrainItem };
 
-/** Drawer to propose a change to the brain, or edit a pending proposal. Nothing changes what Claude does until a venture head approves it. */
-export function BrainForm({ ventureId, target, onClose, onSaved }: { ventureId: string; target: BrainFormTarget; onClose: () => void; onSaved: (item: BrainItem) => void }) {
+/**
+ * Drawer to propose a change to the brain, or edit a pending proposal. Nothing changes what Claude does until a venture head approves it.
+ * `kinds` limits what a new item can be (the Offers page offers only the shared kinds: notes and venture settings).
+ */
+export function BrainForm({ ventureId, target, kinds = BRAIN_KINDS, onClose, onSaved }: { ventureId: string; target: BrainFormTarget; kinds?: readonly BrainKind[]; onClose: () => void; onSaved: (item: BrainItem) => void }) {
   const { ventureName } = useSalesShell();
   const editing = target.mode === "edit";
-  const [initial] = useState(() => editing ? { kind: target.item.kind as BrainKind, title: target.item.title, body: target.item.body } : { kind: target.kind ?? "offer", title: target.title ?? "", body: target.body ?? "" });
+  const [initial] = useState(() => editing ? { kind: target.item.kind as BrainKind, title: target.item.title, body: target.item.body } : { kind: target.kind ?? kinds[0] ?? "notes", title: target.title ?? "", body: target.body ?? "" });
   const [kind, setKind] = useState<BrainKind>(initial.kind);
   const [title, setTitle] = useState(initial.title);
   const [body, setBody] = useState(initial.body);
@@ -60,7 +63,7 @@ export function BrainForm({ ventureId, target, onClose, onSaved }: { ventureId: 
   return <DetailDrawer title={editing ? "Edit proposal" : replacing ? "Propose a change" : target.mode === "propose" && target.template ? `Propose the ${KIND_LABEL[kind].toLowerCase()}` : "Propose something new"} subtitle={`${ventureName(ventureId)} · ${KIND_LABEL[kind]}`} dirty={dirty} onClose={onClose}>
     <form onSubmit={submit} className="space-y-4">
       <p className="rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">Claude uses only approved text. Your proposal waits for a venture head, who approves it on this page.{replacing ? " Keep the same title: approving it replaces the current version, which is kept in the history." : ""}</p>
-      <Field label="What is it about?"><Select className={inputClass} disabled={editing || replacing || (target.mode === "propose" && Boolean(target.template))} value={kind} onChange={(event) => setKind(event.target.value as BrainKind)}>{BRAIN_KINDS.map((item) => <option key={item} value={item}>{KIND_LABEL[item]}</option>)}</Select></Field>
+      <Field label="What is it about?"><Select className={inputClass} disabled={editing || replacing || (target.mode === "propose" && Boolean(target.template))} value={kind} onChange={(event) => setKind(event.target.value as BrainKind)}>{(kinds.includes(kind) ? kinds : [kind, ...kinds]).map((item) => <option key={item} value={item}>{KIND_LABEL[item]}</option>)}</Select></Field>
       <p className="-mt-2 text-xs leading-5 text-neutral-500">{KIND_HINT[kind]}</p>
       <Field label="Title"><input required maxLength={160} value={title} readOnly={replacing} onChange={(event) => setTitle(event.target.value)} placeholder={kind === "offer" ? "Dealer catalogue and orders" : KIND_LABEL[kind]} className={clsx(inputClass, replacing && "bg-neutral-50")} /></Field>
       <Field label="Text (Markdown works)"><textarea required maxLength={20000} rows={16} value={body} onChange={(event) => setBody(event.target.value)} placeholder={BODY_HINT[kind]} className={clsx(inputClass, "py-3 font-mono text-[13px] leading-6")} /></Field>

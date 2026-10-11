@@ -11,6 +11,7 @@ import { jsonValue } from "../json.js";
 import { loadVenture, ventureScope } from "./access.js";
 import { settingsFor, type SalesCtx } from "./ctx.js";
 import { OPEN_DRAFT_STATUSES, needsPersonApproval } from "./drafts.js";
+import { offerClause } from "./offers.js";
 import { whyFor } from "./present.js";
 import { OUTBOUND_KINDS, normalizeStage } from "./rules.js";
 import { calendarOf, type SalesSettings } from "./settings.js";
@@ -78,7 +79,7 @@ const LOST_LABEL: Record<string, string> = {
   price: "Price", no_budget: "No budget", no_need: "No need", timing: "Timing", chose_competitor: "Chose someone else", no_response: "Stopped answering", not_a_fit: "Not a fit", wrong_person: "Wrong person", other: "Other",
 };
 const DISQUALIFIED_LABEL: Record<string, string> = { opt_out: "Asked us to stop", hostile: "Hostile reply", verdict: "Not a fit (verdict)", ...LOST_LABEL };
-const SOURCE_LABEL: Record<string, string> = { engine: "Office PC engine", claude: "Claude", manual: "Added in the app", import: "Imported", other: "Other" };
+const SOURCE_LABEL: Record<string, string> = { engine: "Lead finder", claude: "Claude", manual: "Added in the app", import: "Imported", other: "Other" };
 
 /** A free-text exit reason in one of the lost-reason buckets (for leads closed before the reason categories existed). */
 export function bucketExitReason(text: unknown): string {
@@ -241,7 +242,7 @@ async function loadHistories(ctx: SalesCtx, scope: Document, leads: Map<string, 
 
 // ---- Report ----------------------------------------------------------------------------------------------------------------
 
-type ReportQuery = { ventureId?: string | undefined; from?: string | undefined; to?: string | undefined; owner: "me" | "all"; tz?: string | undefined };
+type ReportQuery = { ventureId?: string | undefined; offerId?: string | undefined; from?: string | undefined; to?: string | undefined; owner: "me" | "all"; tz?: string | undefined };
 type Row = { key: string; label: string; leads: number; contacted: number; replied: number; meetings: number; proposals: number; won: number; lostOrDisqualified: number };
 type Outcome = "replied" | "meeting" | "won" | "lost" | "disqualified" | "open";
 /** 0 for a spelling that starts with a capital ("Raipur"), so it wins a tie against "raipur". */
@@ -275,7 +276,8 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
   const { from, to } = reportRange(query, tz, now);
   const inRange = (at: Date | undefined) => !!at && at.getTime() >= from.getTime() && at.getTime() < to.getTime();
   const { db, workspaceId } = ctx;
-  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(query.owner === "me" ? { ownerId: ctx.actor.id } : {}) };
+  // One offer's leads (or the ones with none) when asked: everything below counts only the leads in `base`.
+  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(query.owner === "me" ? { ownerId: ctx.actor.id } : {}), ...offerClause(query.offerId) };
 
   const leadRows = await db.collection("opportunities").find(base, { projection: LEAD_FIELDS }).toArray();
   const leads = new Map(leadRows.map((lead) => [String(lead._id), lead]));
@@ -317,7 +319,7 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
   }
   const sourceOf = (lead: AppDocument) => {
     const system = str(lead.externalRef?.system);
-    if (system === "dealflow-engine") return "engine";
+    if (system === "dealflow-engine" || system === "builtin-finder") return "engine";
     if (system === "claude" || created.get(String(lead._id)) === "mcp") return "claude";
     if (system) return "import";
     const channel = created.get(String(lead._id));
@@ -513,7 +515,7 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
   };
 
   return jsonValue({
-    range: { from, to, days: Math.max(1, Math.round((to.getTime() - from.getTime()) / DAY_MS)), tz, owner: query.owner, ...(query.ventureId ? { ventureId: query.ventureId } : {}) },
+    range: { from, to, days: Math.max(1, Math.round((to.getTime() - from.getTime()) / DAY_MS)), tz, owner: query.owner, ...(query.ventureId ? { ventureId: query.ventureId } : {}), ...(query.offerId ? { offerId: query.offerId } : {}) },
     workRules,
     generatedAt: now,
     thresholds: { minN: REPORT_MIN_N, smallN: REPORT_SMALL_N },
@@ -542,10 +544,10 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
 
 // ---- Daybreak --------------------------------------------------------------------------------------------------------------
 
-type DaybreakQuery = { ventureId?: string | undefined; owner: "me" | "all"; tz?: string | undefined };
+type DaybreakQuery = { ventureId?: string | undefined; offerId?: string | undefined; owner: "me" | "all"; tz?: string | undefined };
 const LIST = 100;
 const brief = (lead: AppDocument) => ({
-  id: String(lead._id), ventureId: String(lead.ventureId), companyName: String(lead.companyName ?? ""), contactName: String(lead.contactName ?? ""),
+  id: String(lead._id), ventureId: String(lead.ventureId), ...(str(lead.offerId) ? { offerId: String(lead.offerId) } : {}), companyName: String(lead.companyName ?? ""), contactName: String(lead.contactName ?? ""),
   ...(str(lead.city) ? { city: String(lead.city) } : {}), stage: normalizeStage(lead.stage), ownerId: String(lead.ownerId),
 });
 const firstPerLead = <T extends AppDocument>(rows: T[]) => { const map = new Map<string, T>(); for (const row of rows) if (!map.has(String(row.leadId))) map.set(String(row.leadId), row); return map; };
@@ -563,7 +565,9 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
   const tz = query.tz ?? ventureSettings?.timezone ?? SALES_TZ;
   const endOfToday = endOfLocalDay(now, tz);
   const dayStart = startOfLocalDay(now, tz);
-  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(query.owner === "me" ? { ownerId: ctx.actor.id } : {}) };
+  const base: Document = { workspaceId, deletedAt: null, ...scope, ...(query.owner === "me" ? { ownerId: ctx.actor.id } : {}), ...offerClause(query.offerId) };
+  // The same narrowing for replies and drafts, joined to their lead.
+  const ofLead: Document = { "lead.deletedAt": null, ...(query.owner === "me" ? { "lead.ownerId": ctx.actor.id } : {}), ...offerClause(query.offerId, "lead.offerId") };
   const open: Document = { stage: { $nin: CLOSED_QUERY } };
   const leads = db.collection("opportunities");
   const drafts = db.collection("sales_drafts");
@@ -588,14 +592,14 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
     activities.aggregate<{ items: (AppDocument & { lead: AppDocument })[]; total: { n: number }[] }>([
       { $match: { workspaceId, direction: "in", handledAt: null, ...scope } },
       { $lookup: { from: "opportunities", localField: "leadId", foreignField: "_id", as: "lead" } }, { $unwind: "$lead" },
-      { $match: { "lead.deletedAt": null, ...(query.owner === "me" ? { "lead.ownerId": ctx.actor.id } : {}) } },
+      { $match: ofLead },
       { $sort: { at: 1, _id: 1 } },
       { $facet: { items: [{ $limit: 1_000 }], total: [{ $count: "n" }] } },
     ]).toArray(),
     drafts.aggregate<AppDocument & { lead: AppDocument }>([
       { $match: { workspaceId, status: "ready", $or: [{ personApproval: null }, { "personApproval.byHead": false }], channel: { $ne: "call_opener" }, ...scope } },
       { $lookup: { from: "opportunities", localField: "leadId", foreignField: "_id", as: "lead" } }, { $unwind: "$lead" },
-      { $match: { "lead.deletedAt": null, "lead.doNotContact": { $ne: true }, ...(query.owner === "me" ? { "lead.ownerId": ctx.actor.id } : {}) } },
+      { $match: { ...ofLead, "lead.doNotContact": { $ne: true } } },
       { $sort: { updatedAt: 1, _id: 1 } }, { $limit: 2_000 },
     ]).toArray(),
     leads.find({ ...base, needsYou: true }).sort({ updatedAt: -1, _id: 1 }).limit(LIST).toArray(), leads.countDocuments({ ...base, needsYou: true }),
@@ -756,7 +760,7 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
   const summary = parts.length ? parts.join(", ") : "Nothing waiting: a clear morning.";
 
   return jsonValue({
-    generatedAt: now, today: localDay(now, zoneCalendar(tz)), tz, owner: query.owner, ...(query.ventureId ? { ventureId: query.ventureId } : {}),
+    generatedAt: now, today: localDay(now, zoneCalendar(tz)), tz, owner: query.owner, ...(query.ventureId ? { ventureId: query.ventureId } : {}), ...(query.offerId ? { offerId: query.offerId } : {}),
     replySlaHours, workRules, counts, followUpsDue, staleVerdicts, needsContacts, callsToday, repliesWaiting, approvalsWaiting: { drafts: approvals, needsYou }, caps, summary,
   });
 }

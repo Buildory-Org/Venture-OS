@@ -1,8 +1,8 @@
 import { useSyncExternalStore } from "react";
-import type { BrainItem, Play } from "@venture-studio/contracts";
+import { offerIsUsable, type Offer, type Play } from "@venture-studio/contracts";
 import { listLiveMembers, listLivePats, listLivePipelines } from "@/lib/studio-api";
 import { describeError } from "@/lib/errors";
-import { listBrain, listPlays } from "@/lib/sales-api";
+import { listOffers, listPlays } from "@/lib/sales-api";
 import { loadSettingsOrNull, type SalesSettingsView } from "./setup-api";
 
 // What it takes to make a venture sales-ready, checked against the live data. Used by the setup screen and by SetupBanner.
@@ -18,7 +18,7 @@ export type SetupData = {
   ventureId: string;
   at: number;
   pipelines: Source<Pipeline[]>;
-  brain: Source<BrainItem[]>;
+  offers: Source<Offer[]>;
   plays: Source<Play[]>;
   members: Source<Member[]>;
   /** `data: null` without an error means this API has no settings route. */
@@ -26,9 +26,9 @@ export type SetupData = {
   keys: Source<Pat[]>;
 };
 
-export type SetupKey = "pipeline" | "offer" | "target_profile" | "message_rules" | "play" | "team" | "settings" | "connect";
+export type SetupKey = "pipeline" | "offer" | "play" | "team" | "settings" | "connect";
 export type SetupItem = { key: SetupKey; title: string; why: string; done: boolean; unknown: boolean; summary: string };
-export const SETUP_TOTAL = 8;
+export const SETUP_TOTAL = 6;
 
 async function source<T>(load: () => Promise<T>): Promise<Source<T>> {
   try { return { data: await load() }; } catch (cause) { return { data: null, error: describeError(cause, "Could not check this.") }; }
@@ -36,15 +36,15 @@ async function source<T>(load: () => Promise<T>): Promise<Source<T>> {
 
 /** Reads everything the checklist needs, in parallel. A source that fails does not stop the others. */
 export async function loadSetupData(ventureId: string): Promise<SetupData> {
-  const [pipelines, brain, plays, members, settings, keys] = await Promise.all([
+  const [pipelines, offers, plays, members, settings, keys] = await Promise.all([
     source(async () => (await listLivePipelines()).filter((pipeline) => pipeline.ventureId === ventureId)),
-    source(() => listBrain({ ventureId })),
+    source(() => listOffers({ ventureId })),
     source(() => listPlays({ ventureId })),
     source(async () => (await listLiveMembers({ ventureId, limit: 100 })).items),
     source(() => loadSettingsOrNull(ventureId)),
     source(() => listLivePats()),
   ]);
-  const data: SetupData = { ventureId, at: Date.now(), pipelines, brain, plays, members, settings, keys };
+  const data: SetupData = { ventureId, at: Date.now(), pipelines, offers, plays, members, settings, keys };
   remember(data);
   return data;
 }
@@ -68,8 +68,8 @@ export function useCachedSetup(ventureId: string): SetupData | null {
 // ---- The checks -----------------------------------------------------------------------------------------------------
 
 const isActiveKey = (pat: Pat, now: number) => !pat.revokedAt && (!pat.expiresAt || new Date(pat.expiresAt).getTime() > now) && pat.scopes.some((scope) => scope.startsWith("sales:"));
-export const approvedOf = (items: readonly BrainItem[] | null, kind: BrainItem["kind"]) => (items ?? []).filter((item) => item.kind === kind && item.status === "approved");
-export const proposalsOf = (items: readonly BrainItem[] | null, kind: BrainItem["kind"]) => (items ?? []).filter((item) => item.kind === kind && item.status === "draft");
+/** Offers new leads, verdicts and find runs can use: active, with an approved version. */
+export const usableOffersOf = (offers: readonly Offer[] | null) => (offers ?? []).filter(offerIsUsable);
 /** People who can write in the venture (everyone but learners). */
 export const sellersOf = (members: readonly Member[] | null) => (members ?? []).filter((member) => member.role !== "learner");
 
@@ -84,11 +84,19 @@ export function daysLabel(days: readonly number[]) {
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
-  const brainItem = (key: "offer" | "target_profile" | "message_rules", title: string, why: string): SetupItem => {
-    if (data.brain.error !== undefined) return { key, title, why, done: false, unknown: true, summary: "Could not check." };
-    const approved = approvedOf(data.brain.data, key);
-    const proposals = proposalsOf(data.brain.data, key);
-    return { key, title, why, done: approved.length > 0, unknown: false, summary: approved.length ? approved.map((item) => item.title).join(" · ") : proposals.length ? `None approved yet (${count(proposals.length, "proposal")} waiting)` : "Nothing written yet." };
+  const offerItem = (): SetupItem => {
+    const base = { key: "offer" as const, title: "An approved, active offer", why: "Claude judges every lead against its offer's approved packet (who it is for, the gates, the message rules) and the lead finder searches with it." };
+    if (data.offers.error !== undefined) return { ...base, done: false, unknown: true, summary: "Could not check." };
+    const offers = data.offers.data;
+    const usable = usableOffersOf(offers);
+    if (usable.length) return { ...base, done: true, unknown: false, summary: usable.map((offer) => {
+      const packet = offer.approved!.packet;
+      return [offer.name, `version ${offer.approved!.version}`, packet.gates.length ? count(packet.gates.length, "gate") : "no gates yet", packet.messages.trim() ? "" : "no message rules yet"].filter(Boolean).join(" · ");
+    }).join("; ") };
+    const paused = offers.filter((offer) => offer.approved && offer.state === "paused");
+    const waiting = offers.filter((offer) => offer.state !== "archived").flatMap((offer) => offer.proposals);
+    const summary = paused.length ? `${paused.map((offer) => offer.name).join(", ")} ${paused.length === 1 ? "is" : "are"} paused.` : waiting.length ? `None approved yet (${count(waiting.length, "proposal")} waiting).` : offers.length ? "Every offer is archived." : "No offer yet.";
+    return { ...base, done: false, unknown: false, summary };
   };
   // An archived pipeline no longer takes leads, so it does not count.
   const pipeline = data.pipelines.data?.find((entry) => entry.status !== "archived");
@@ -96,10 +104,8 @@ export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
   const teammates = sellers.filter((member) => member.role !== "admin");
   const key = data.keys.data?.find((pat) => isActiveKey(pat, now));
   return [
-    { key: "pipeline", title: "A pipeline", why: "Leads live in a pipeline: it holds the venture's offer and the stages deals move through.", done: Boolean(pipeline), unknown: data.pipelines.error !== undefined, summary: data.pipelines.error !== undefined ? "Could not check." : pipeline ? `${pipeline.name} · offer: ${pipeline.offerName}` : "No pipeline yet." },
-    brainItem("offer", "An approved offer", "Claude judges every lead's fit and writes every message from it."),
-    brainItem("target_profile", "An approved target profile", "Claude judges every lead against who we sell to, and against the hard no's."),
-    brainItem("message_rules", "Approved message rules", "Claude writes and checks every draft against how we write: length, tone, follow-up, replies."),
+    { key: "pipeline", title: "A pipeline", why: "Leads live in a pipeline: the stages deals move through, from first touch to delivery.", done: Boolean(pipeline), unknown: data.pipelines.error !== undefined, summary: data.pipelines.error !== undefined ? "Could not check." : pipeline ? pipeline.name : "No pipeline yet." },
+    offerItem(),
     { key: "play", title: "A first play", why: "A play is one short campaign: who, which steps, when to stop. Drafts and calls follow it.", done: (data.plays.data?.length ?? 0) > 0, unknown: data.plays.error !== undefined, summary: data.plays.error !== undefined ? "Could not check." : data.plays.data?.length ? data.plays.data.map((play) => play.name).slice(0, 3).join(" · ") : "No play yet." },
     { key: "team", title: "Teammates with access", why: "Leads need an owner who calls, reads replies and sends messages.", done: teammates.length > 0, unknown: data.members.error !== undefined, summary: data.members.error !== undefined ? "Could not check." : sellers.length ? `${count(sellers.length, "person", "people")} can sell here: ${sellers.map((member) => member.name).slice(0, 4).join(", ")}${sellers.length > 4 ? "…" : ""}` : "Nobody can sell here yet." },
     { key: "settings", title: "Working days and daily limits", why: "When follow-ups fall due, how fast a reply must be answered, and how many messages a person sends a day.", done: Boolean(data.settings.data?.updatedAt), unknown: data.settings.error !== undefined, summary: data.settings.error !== undefined ? "Could not check." : data.settings.data ? (data.settings.data.updatedAt ? `${daysLabel(data.settings.data.workingDays)}: follow up after ${count(data.settings.data.followUpAfterWorkingDays, "working day")}, reply within ${data.settings.data.replySlaHours}h, ${data.settings.data.dailyCaps.email} emails and ${data.settings.data.dailyCaps.whatsapp} WhatsApp a day.` : "Defaults in use: Mon–Sat, follow-up after 4 working days, 20 emails and 20 WhatsApp a day.") : "Defaults in use: Mon–Sat, follow-up after 4 working days, 20 emails and 20 WhatsApp a day." },
@@ -107,7 +113,7 @@ export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
   ];
 }
 
-/** A venture is sales-ready when leads have a pipeline and Claude has an approved offer to sell. */
+/** A venture is sales-ready when leads have a pipeline and Claude has an approved, active offer to sell. */
 export function readiness(data: SetupData) {
   const items = evaluateSetup(data);
   const get = (key: SetupKey) => items.find((item) => item.key === key)!;

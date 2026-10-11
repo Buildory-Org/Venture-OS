@@ -11,6 +11,7 @@ import { createLead } from "@/lib/sales-api";
 import { createLivePipeline, listLivePipelines } from "@/lib/studio-api";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { isDialable, isManager, isPlainEmail } from "@/components/sales/sales-ui";
+import { offerIsUsable, sortOffers, useVentureOffers } from "@/components/sales/offer-model";
 
 type Pipeline = Awaited<ReturnType<typeof listLivePipelines>>[number];
 
@@ -47,6 +48,7 @@ export function LeadCreate({ onClose, onCreated }: { onClose: () => void; onCrea
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [offerPick, setOfferPick] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -58,6 +60,10 @@ export function LeadCreate({ onClose, onCreated }: { onClose: () => void; onCrea
   const options = (pipelines ?? []).filter((pipeline) => pipeline.ventureId === destination && pipeline.status !== "archived");
   const chosen = options.find((pipeline) => pipeline.id === pipelineId) ?? options[0];
   const canMakePipeline = !!session && !!destination && isManager(session, destination);
+  // With several offers the person picks one (or decides later); with one usable offer the server gives the lead that one.
+  const offers = sortOffers((useVentureOffers(destination || undefined) ?? []).filter((offer) => offer.state !== "archived"));
+  const usable = offers.filter(offerIsUsable);
+  const offerId = offers.some((offer) => offer.id === offerPick) ? offerPick : "";
   const dirty = !!(company || contact || city || reach || reachMore || website || signal || source);
 
   async function addPipeline(event: React.FormEvent) {
@@ -78,7 +84,7 @@ export function LeadCreate({ onClose, onCreated }: { onClose: () => void; onCrea
       const lead = await createLead({
         pipelineId: chosen.id, companyName: company.trim(), contactName: contact.trim(), ownerId: session.user.id, stage: "identified",
         ...(city.trim() ? { city: city.trim() } : {}), ...(website.trim() ? { website: website.trim() } : {}), ...(source.trim() ? { source: source.trim() } : {}),
-        ...(signal.trim() ? { observedSignal: signal.trim() } : {}), contactRoutes: routes,
+        ...(signal.trim() ? { observedSignal: signal.trim() } : {}), ...(offerId ? { offerId } : {}), contactRoutes: routes,
       });
       toast(lead.doNotContact
         ? { tone: "info", title: "Lead added, but do not contact", body: `${lead.companyName} is on the do-not-contact list, so every contact route is off.` }
@@ -98,6 +104,8 @@ export function LeadCreate({ onClose, onCreated }: { onClose: () => void; onCrea
       {destination && pipelines && options.length === 0 && (canMakePipeline
         ? <div className="grid grid-cols-1 gap-3 rounded-xl border border-dashed border-neutral-300 p-3"><p className="text-sm font-semibold text-neutral-800">{ventureName(destination)} has no pipeline yet. Create the first one.</p><Field label="Pipeline name"><input maxLength={120} className={inputClass} value={pipelineName} onChange={(event) => setPipelineName(event.target.value)} placeholder="Dealer commerce" /></Field><Field label="What you sell"><input maxLength={200} className={inputClass} value={offerName} onChange={(event) => setOfferName(event.target.value)} placeholder="Dealer ordering setup" /></Field><button type="button" disabled={busy || !pipelineName.trim() || !offerName.trim()} onClick={addPipeline} className={primaryClass}><ActionLabel busy={busy} busyText="Creating…" idle="Create pipeline" /></button></div>
         : <p className="rounded-xl bg-warning-surface p-3 text-sm font-semibold text-warning-text">{ventureName(destination)} has no pipeline yet. A venture head or the owner can set one up.</p>)}
+
+      {destination && offers.length > 1 && <Field label="For which offer?"><Select aria-label="Offer" className={inputClass} value={offerId} onChange={(event) => setOfferPick(event.target.value)}><option value="">{usable.length === 1 ? `${usable[0]!.name} (the only active one)` : "Decide later"}</option>{offers.map((offer) => <option key={offer.id} value={offer.id}>{offer.name}{offerIsUsable(offer) ? "" : offer.approved ? " · paused" : " · draft"}</option>)}</Select></Field>}
 
       <Field label="Company"><input required maxLength={200} className={inputClass} value={company} onChange={(event) => setCompany(event.target.value)} autoFocus /></Field>
       <div className="grid gap-4 sm:grid-cols-2">

@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { LOST_REASONS, PRE_CONTACT_STAGES, STAGE_PROBABILITY, WON_STAGES, type CALL_OUTCOMES, type ContactRoute, type Lead, type LostReason, type REPLY_TYPES, type SalesStage } from "@venture-studio/contracts";
 import { Badge, filterControl } from "@/components/studio/primitives";
 import type { SalesSession } from "@/components/sales/sales-context";
+import { Package } from "@/components/sales/lead-icons";
 
 export { Phone, Trash2, Lock, NotebookPen, CalendarClock, Flag, Globe, ClipboardCheck } from "@/components/sales/lead-icons";
 
@@ -31,6 +32,11 @@ export function VerdictChip({ verdict }: { verdict?: { decision: "recommend" | "
   const tone: Tone = verdict.decision === "recommend" ? "green" : verdict.decision === "hold" ? "amber" : "red";
   const word = verdict.decision === "recommend" ? "Go" : verdict.decision === "hold" ? "Hold" : "No";
   return <Badge tone={tone}>{word} · {verdict.confidence}{verdict.overridden ? " · changed" : ""}</Badge>;
+}
+
+/** The offer a lead is pursued for, as a quiet chip (shown where a venture sells more than one). */
+export function OfferChip({ name }: { name: string }) {
+  return <span title={`Offer: ${name}`} className="inline-flex min-w-0 max-w-[14rem] items-center gap-1 rounded-md bg-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-600"><Package size={12} aria-hidden="true" className="shrink-0 text-neutral-400" /><span className="truncate">{name}</span></span>;
 }
 
 // ---- Stage groups: the seven Pipeline columns (spec §2). Also the stage filter on Leads and the funnel on Overview. ----

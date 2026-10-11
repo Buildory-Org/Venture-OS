@@ -14,7 +14,7 @@ const MAX = 100;
 const number = (value: number) => new Intl.NumberFormat("en-IN").format(value);
 const CLOSED = ["lost", "disqualified"];
 
-/** Fill in contacts: ask the office PC to read each lead's own website for a phone number or email, for the newest leads that have none. */
+/** Fill in contacts: ask the lead finder to read each lead's own website for a phone number or email, for the newest leads that have none. */
 export function FindEnrichCard({ runs, onQueued }: { runs: readonly FindRun[]; onQueued: () => void }) {
   const { session, ventureId, ventureName, refresh } = useSalesShell();
   const ventures = writableVentures(session);
@@ -59,9 +59,9 @@ export function FindEnrichCard({ runs, onQueued }: { runs: readonly FindRun[]; o
       }
       const queued = picked.length - skipped;
       const where = runIds.size === 1 ? "in one run" : `in ${runIds.size} runs`;
-      setResult(queued ? `Queued ${queued} ${queued === 1 ? "lead" : "leads"} ${where}.${skipped ? ` ${skipped} left out${firstProblem ? `: ${firstProblem}` : "."}` : ""} The office PC picks them up when it is online.` : "");
+      setResult(queued ? `Queued ${queued} ${queued === 1 ? "lead" : "leads"} ${where}.${skipped ? ` ${skipped} left out${firstProblem ? `: ${firstProblem}` : "."}` : ""} The lead finder picks them up shortly.` : "");
       if (!queued) setError(firstProblem || "None of the leads could be queued.");
-      else toast({ title: `Queued ${queued} ${queued === 1 ? "lead" : "leads"} ${where}`, body: skipped ? `${skipped} left out.` : "The office PC picks them up when it is online." });
+      else toast({ title: `Queued ${queued} ${queued === 1 ? "lead" : "leads"} ${where}`, body: skipped ? `${skipped} left out.` : "The lead finder picks them up shortly." });
       onQueued(); facets.reload(); refresh();
     } catch (cause) { setError(describeError(cause, "Could not queue the leads. Try again.")); }
     finally { dismissToast(progress); setBusy(false); }
@@ -70,7 +70,7 @@ export function FindEnrichCard({ runs, onQueued }: { runs: readonly FindRun[]; o
   const name = target ? ventureName(target) : "";
   return <Panel className="flex h-full flex-col p-4 sm:p-5">
     <h2 className="text-[15px] font-extrabold tracking-[-.01em] text-neutral-900">Fill in contacts</h2>
-    <p className="mt-1 text-xs leading-5 text-neutral-500">The office PC reads each lead&apos;s own website for a phone number or an email, and adds what it finds. It never logs in anywhere.</p>
+    <p className="mt-1 text-xs leading-5 text-neutral-500">The lead finder reads each lead&apos;s own website for a phone number or an email, and adds what it finds. It never logs in anywhere.</p>
     <form onSubmit={(event) => { event.preventDefault(); void queue(); }} className="mt-4 flex flex-1 flex-col gap-4">
       {!ventureId && <Field label="Venture"><Select className={inputClass} value={venturePick || (ventures.length === 1 ? ventures[0]!.id : "")} onChange={(event) => { setVenturePick(event.target.value); setResult(""); }}><option value="">Choose a venture</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select></Field>}
       <div className="rounded-2xl bg-neutral-50 p-4">

@@ -134,6 +134,13 @@ export async function cancelFindRun(runId: string) {
   return successEnvelope(findRunSchema).parse(await request(`/v1/sales/find-runs/${id(runId)}/cancel`, json({}))).data;
 }
 
+// The lead finder built into the API: on or off, whether company search has a key (never the key), the run it is on and how its last one ended.
+import { finderStatusSchema } from "@venture-studio/contracts";
+export type FinderStatus = z.infer<typeof finderStatusSchema>;
+export async function getFinderStatus() {
+  return successEnvelope(finderStatusSchema).parse(await request("/v1/sales/finder/status")).data;
+}
+
 export async function listBrain(input: { ventureId?: string; status?: string } = {}) {
   return successEnvelope(z.array(brainItemSchema)).parse(await request(`/v1/sales/brain${query(input)}`)).data;
 }
@@ -150,6 +157,66 @@ export async function approveBrainItem(itemId: string) {
 export async function archiveBrainItem(itemId: string) {
   return successEnvelope(brainItemSchema).parse(await request(`/v1/sales/brain/${id(itemId)}/archive`, json({}))).data;
 }
+
+// ---- Offers (docs/sales-offers.md): one packet per offer. Anyone who can open the venture reads; a writer (or Claude) proposes a draft
+// version; its proposer or a venture head edits or discards it; a venture head or admin approves it as a whole and changes the offer's state.
+import { offerProposalInputSchema, offerProposalUpdateSchema, offerSchema, offerStateInputSchema, offerVersionSchema, type Offer, type OfferVersion } from "@venture-studio/contracts";
+export type { Offer, OfferVersion };
+/** One offer with its history: archived versions, newest first (up to 20). */
+export type OfferDetail = Offer & { history: OfferVersion[] };
+const offerDetailSchema = z.union([
+  offerSchema.extend({ history: z.array(offerVersionSchema).default([]) }),
+  z.object({ offer: offerSchema, history: z.array(offerVersionSchema).default([]) }).transform(({ offer, history }) => ({ ...offer, history })),
+]);
+/** What approving answers with: the offer, the version, or both (the screens reload the offer either way). */
+const approvedSchema = z.union([
+  z.object({ offer: offerSchema, version: offerVersionSchema.optional() }).transform(({ offer, version }) => ({ offer, version: version ?? offer.approved ?? null })),
+  offerSchema.transform((offer) => ({ offer, version: offer.approved })),
+  offerVersionSchema.transform((version) => ({ offer: null, version })),
+]);
+
+/** The venture's offers: name, state, the approved version, the proposals waiting and the lead counts. */
+export async function listOffers(input: { ventureId: string }) {
+  return successEnvelope(z.array(offerSchema)).parse(await request(`/v1/sales/offers${query(input)}`)).data;
+}
+export async function getOffer(offerId: string): Promise<OfferDetail> {
+  return successEnvelope(offerDetailSchema).parse(await request(`/v1/sales/offers/${id(offerId)}`)).data;
+}
+/** A new offer (its draft v1), or with `offerId` a new draft version of that offer. Answers the draft version. */
+export async function proposeOffer(input: z.input<typeof offerProposalInputSchema>) {
+  return successEnvelope(offerVersionSchema).parse(await request("/v1/sales/offers", json(offerProposalInputSchema.parse(input)))).data;
+}
+/** Edits a draft version: its proposer or a venture head. */
+export async function updateOfferDraft(versionId: string, input: z.input<typeof offerProposalUpdateSchema>) {
+  return successEnvelope(offerVersionSchema).parse(await request(`/v1/sales/offers/versions/${id(versionId)}`, patch(offerProposalUpdateSchema.parse(input)))).data;
+}
+/** Approves a draft version as a whole (a venture head or admin, in the app): the version approved before is archived. */
+export async function approveOfferVersion(versionId: string) {
+  return successEnvelope(approvedSchema).parse(await request(`/v1/sales/offers/versions/${id(versionId)}/approve`, json({}))).data;
+}
+/** Archives a draft version: its proposer or a venture head. */
+export async function discardOfferVersion(versionId: string) {
+  return successEnvelope(offerVersionSchema).parse(await request(`/v1/sales/offers/versions/${id(versionId)}/discard`, json({}))).data;
+}
+/** Active, paused or archived: a venture head or admin, in the app. */
+export async function setOfferState(offerId: string, input: z.input<typeof offerStateInputSchema>) {
+  return successEnvelope(offerSchema).parse(await request(`/v1/sales/offers/${id(offerId)}/state`, json(offerStateInputSchema.parse(input)))).data;
+}
+
+/**
+ * The venture's offers, kept per venture for a minute so lists that show offer names (leads, plays, runs) share one read. A failed read is
+ * not kept. `forgetOffers` drops a venture's entry after a change.
+ */
+const OFFERS_TTL_MS = 60_000;
+const offersCache = new Map<string, { at: number; value: Promise<Offer[]> }>();
+export function getCachedOffers(ventureId: string): Promise<Offer[]> {
+  const hit = offersCache.get(ventureId);
+  if (hit && Date.now() - hit.at < OFFERS_TTL_MS) return hit.value;
+  const value = listOffers({ ventureId }).catch((cause: unknown) => { offersCache.delete(ventureId); throw cause; });
+  offersCache.set(ventureId, { at: Date.now(), value });
+  return value;
+}
+export const forgetOffers = (ventureId?: string) => { if (ventureId) offersCache.delete(ventureId); else offersCache.clear(); };
 
 export async function listSuppression() {
   return successEnvelope(z.array(suppressionSchema)).parse(await request("/v1/sales/suppression")).data;
@@ -191,7 +258,7 @@ export async function getDaybreak(input: Partial<z.input<typeof daybreakQuerySch
   return successEnvelope(daybreakSchema).parse(await request(`/v1/sales/daybreak${query(valid)}`)).data;
 }
 
-/** Asks the office PC to fill in a lead's contact details. The lead joins your queued enrich run in its venture (made on the first call, up to 100 leads): 201 for a new run, 200 for one joined. 409 for a do-not-contact lead. */
+/** Asks the lead finder to fill in a lead's contact details. The lead joins your queued enrich run in its venture (made on the first call, up to 100 leads): 201 for a new run, 200 for one joined. 409 for a do-not-contact lead. */
 export async function enrichLead(leadId: string) {
   return successEnvelope(findRunSchema).parse(await request(`/v1/sales/leads/${id(leadId)}/enrich`, json({}))).data;
 }
@@ -205,7 +272,7 @@ import { localDevUserId } from "@/lib/dev-identity";
 import { StudioApiError } from "@/lib/studio-api";
 export type { BulkResult, ImportPreview, ImportResult, SavedView };
 
-/** Assign, tag, untag, move to a stage, add to a play or delete up to 500 leads, named by id or by the list filters. Refused leads are skipped and listed. */
+/** Assign, tag, untag, move to a stage, add to a play, move to an offer or delete up to 500 leads, named by id or by the list filters. Refused leads are skipped and listed. */
 export async function bulkLeads(input: z.input<typeof bulkLeadsInputSchema>) {
   return successEnvelope(bulkResultSchema).parse(await request("/v1/sales/leads/bulk", json(bulkLeadsInputSchema.parse(input)))).data;
 }
@@ -293,4 +360,25 @@ export function getCachedSalesSettings(ventureId: string): Promise<SalesSettings
 /** After a save: the cache holds what was saved, so other screens see it at once. */
 export function rememberSalesSettings(settings: SalesSettingsView) {
   settingsCache.set(settings.ventureId, { at: Date.now(), value: Promise.resolve(settings) });
+}
+
+// ---- Company-search keys (TinyFish, Exa) for search_companies and the lead finder: admins only, for the whole workspace. The API never
+// sends a key back, only whether one is set, where from, and a saved key's last four characters.
+import { salesSearchKeyInputSchema, salesSearchKeysSchema, salesSearchKeyTestSchema, type SalesSearchEngine, type SalesSearchKeys, type SalesSearchKeyStatus, type SalesSearchKeyTest } from "@venture-studio/contracts";
+export type { SalesSearchEngine, SalesSearchKeys, SalesSearchKeyStatus, SalesSearchKeyTest };
+
+export async function getSearchKeys() {
+  return successEnvelope(salesSearchKeysSchema).parse(await request("/v1/sales/search-keys")).data;
+}
+/** Saves (or replaces) the engine's key, encrypted on the server; it wins over a key set on the server. Answers the new status. */
+export async function saveSearchKey(engine: SalesSearchEngine, key: string) {
+  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}`, { method: "PUT", body: JSON.stringify(salesSearchKeyInputSchema.parse({ key })) })).data;
+}
+/** Removes the key saved in the app; a key set on the server (if any) is used again. Answers the new status. */
+export async function removeSearchKey(engine: SalesSearchEngine) {
+  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}`, { method: "DELETE" })).data;
+}
+/** One small search with the key in use (it counts against the allowance): `{ ok: true }`, or `{ ok: false, message }`. */
+export async function testSearchKey(engine: SalesSearchEngine) {
+  return successEnvelope(salesSearchKeyTestSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}/test`, json({}))).data;
 }

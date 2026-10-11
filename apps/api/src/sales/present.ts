@@ -17,17 +17,17 @@ export function leadJson(lead: AppDocument): Record<string, unknown> {
   return present({ ...lead, stage: normalizeStage(lead.stage) });
 }
 
-/** The small lead summary shown beside drafts and inbox items. */
+/** The small lead summary shown beside drafts and inbox items, with the offer it is pursued for. */
 export function leadSummary(lead: AppDocument) {
   return present({
-    _id: lead._id, ventureId: lead.ventureId, companyName: lead.companyName ?? "", contactName: lead.contactName ?? "", city: lead.city, stage: normalizeStage(lead.stage), ownerId: lead.ownerId,
+    _id: lead._id, ventureId: lead.ventureId, offerId: lead.offerId, companyName: lead.companyName ?? "", contactName: lead.contactName ?? "", city: lead.city, stage: normalizeStage(lead.stage), ownerId: lead.ownerId,
     contactRoutes: lead.contactRoutes ?? [], observedSignal: lead.observedSignal ?? "", verdict: lead.verdict, whatsappOptIn: lead.whatsappOptIn, doNotContact: lead.doNotContact === true,
   });
 }
 
 export function leadCard(lead: AppDocument, why: string) {
   return present({
-    _id: lead._id, ventureId: lead.ventureId, companyName: lead.companyName ?? "", contactName: lead.contactName ?? "", city: lead.city, stage: normalizeStage(lead.stage), ownerId: lead.ownerId,
+    _id: lead._id, ventureId: lead.ventureId, offerId: lead.offerId, companyName: lead.companyName ?? "", contactName: lead.contactName ?? "", city: lead.city, stage: normalizeStage(lead.stage), ownerId: lead.ownerId,
     nextAction: lead.nextAction ?? "", nextActionAt: lead.nextActionAt, verdict: lead.verdict, whatsappOptIn: lead.whatsappOptIn, contactRoutes: lead.contactRoutes ?? [], doNotContact: lead.doNotContact === true, why,
   });
 }

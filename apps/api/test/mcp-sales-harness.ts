@@ -11,8 +11,8 @@ import { LocalObjectStore } from "../src/storage.js";
 
 // Shared by the Dealflow Sales connector tests (mcp-sales.test.ts, mcp-sales-guided.test.ts): a throwaway app, tokens, and MCP calls.
 
-export const READ_TOOLS = ["start_sales", "sales_overview", "inbox", "list_drafts", "find_leads", "get_lead", "list_plays", "list_find_runs", "get_brain", "search_companies", "weekly_report", "daybreak"];
-export const WRITE_TOOLS = ["save_verdict", "save_verdicts", "save_draft", "save_drafts", "review_draft", "revise_draft", "log_reply", "log_call", "update_lead", "add_leads", "enrich_lead", "propose_play", "plan_find_run", "propose_brain_change"];
+export const READ_TOOLS = ["start_sales", "sales_overview", "inbox", "list_drafts", "find_leads", "get_lead", "list_plays", "list_find_runs", "get_brain", "list_offers", "get_offer", "search_companies", "weekly_report", "daybreak"];
+export const WRITE_TOOLS = ["save_verdict", "save_verdicts", "save_draft", "save_drafts", "review_draft", "revise_draft", "log_reply", "log_call", "update_lead", "add_leads", "enrich_lead", "propose_play", "plan_find_run", "propose_brain_change", "propose_offer"];
 export const FULL = [...PAT_READ_SCOPES, ...PAT_WRITE_SCOPES];
 /** The two connectors: Venture Studio at /mcp and Dealflow Sales at /mcp/sales (this file's tools live on the second). */
 export const STUDIO = "/mcp";

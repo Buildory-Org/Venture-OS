@@ -7,7 +7,7 @@ import { describeError } from "@/lib/errors";
 import { deleteView, listViews, saveView, type SavedView } from "@/lib/sales-api";
 
 /** The Leads URL parameters a saved view is made of (`q` is the search box). */
-export const VIEW_KEYS = ["group", "stage", "verdict", "needsYou", "mine", "play", "state", "city", "category", "contact", "sort", "q"] as const;
+export const VIEW_KEYS = ["group", "stage", "verdict", "needsYou", "mine", "play", "offer", "state", "city", "category", "contact", "sort", "q"] as const;
 export type ViewFilters = Record<string, string>;
 
 const sameFilters = (a: ViewFilters, b: ViewFilters) => [...new Set([...Object.keys(a), ...Object.keys(b)])].every((key) => (a[key] ?? "") === (b[key] ?? ""));

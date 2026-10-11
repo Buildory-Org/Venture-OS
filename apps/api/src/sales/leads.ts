@@ -9,6 +9,7 @@ import { AppError } from "../errors.js";
 import { assertOwnerInVenture, canEditLead, canSeeVenture, canWriteIn, forbidden, isHeadOf, notFound } from "./access.js";
 import { auditSales, settingsFor, type SalesCtx } from "./ctx.js";
 import { NEXT_ACTION_REMINDER, cancelNextActionReminders, notifyReply, syncNextActionReminder } from "./notify.js";
+import { assertVentureOffer, defaultOfferId } from "./offers.js";
 import { assertClaudeMayMove, isExitStage, isWonStage, normalizeStage, planActivity, planStageChange, type DraftDiscard } from "./rules.js";
 import { calendarOf } from "./settings.js";
 import { SUPPRESS_KEYS_VERSION, leadSuppressKeys, normalizeValue, optOutEntries, suppressionKey, type SuppressionKind } from "./suppression.js";
@@ -157,7 +158,10 @@ export async function stageNote(ctx: SalesCtx, lead: AppDocument, stageFrom: str
 
 // ---- Create ---------------------------------------------------------------------------------------------------------------
 
-/** Creates a lead in a pipeline; an import that repeats an `externalRef` gets the existing lead back. */
+/**
+ * Creates a lead in a pipeline; an import that repeats an `externalRef` gets the existing lead back. The lead is pursued for the offer it
+ * names (one of its venture, not archived), else for the venture's only usable offer when there is exactly one (docs/sales-offers.md).
+ */
 export async function createLead(ctx: SalesCtx, input: z.infer<typeof opportunityInputSchema>): Promise<{ lead: AppDocument; created: boolean }> {
   const { actor, db, workspaceId } = ctx;
   const pipeline = await db.collection("pipelines").findOne({ _id: input.pipelineId, workspaceId });
@@ -167,6 +171,7 @@ export async function createLead(ctx: SalesCtx, input: z.infer<typeof opportunit
   await assertOwnerInVenture(db, workspaceId, input.ownerId, ventureId);
   if (!isHeadOf(actor, ventureId) && input.ownerId !== actor.id) throw forbidden("You can add leads for yourself; a venture head assigns leads to other people");
   await assertPlay(ctx, input.playId, ventureId);
+  if (input.offerId) await assertVentureOffer(ctx, ventureId, input.offerId);
   if (isExitStage(input.stage) && !input.exitReason?.trim()) throw new AppError(400, "BAD_REQUEST", "Say why: a lost or disqualified lead needs an exit reason");
   // A lost lead also carries a reason category the reports count; a person picks it (Claude's tools default to "other").
   if (input.lostReason && input.stage !== "lost") throw new AppError(400, "BAD_REQUEST", "A lost reason only applies to a lost lead");
@@ -182,10 +187,11 @@ export async function createLead(ctx: SalesCtx, input: z.infer<typeof opportunit
   };
   const prior = await existing();
   if (prior) return { lead: prior, created: false };
+  const offerId = input.offerId ?? await defaultOfferId(db, workspaceId, ventureId);
   const now = new Date();
   const keys = leadSuppressKeys(fields);
   const doc = defined({
-    _id: randomUUID(), workspaceId, ventureId, ...fields, ...(nextActionAt ? { nextActionAt: new Date(nextActionAt) } : {}), ...(expectedCloseAt ? { expectedCloseAt: new Date(expectedCloseAt) } : {}), ...(fields.stage === "lost" && !fields.lostReason ? { lostReason: "other" } : {}), ...(externalRef ? { externalRef } : {}),
+    _id: randomUUID(), workspaceId, ventureId, ...fields, ...(offerId ? { offerId } : {}), ...(nextActionAt ? { nextActionAt: new Date(nextActionAt) } : {}), ...(expectedCloseAt ? { expectedCloseAt: new Date(expectedCloseAt) } : {}), ...(fields.stage === "lost" && !fields.lostReason ? { lostReason: "other" } : {}), ...(externalRef ? { externalRef } : {}),
     suppressKeys: keys, suppressKeysV: SUPPRESS_KEYS_VERSION, ...(await suppressedBy(ctx, keys) ? { doNotContact: true } : {}), ...(isWonStage(fields.stage) ? { wonAt: now } : {}), createdAt: now, updatedAt: now,
   });
   try {
@@ -193,7 +199,7 @@ export async function createLead(ctx: SalesCtx, input: z.infer<typeof opportunit
       await db.collection("opportunities").insertOne(doc, { session });
       if (doc.nextActionAt) await syncNextActionReminder(ctx, String(doc._id), now, session);
       if (isWonStage(fields.stage)) await notifyWon(ctx, doc, now, session);
-      await auditSales(ctx, "sales.lead.create", "lead", doc._id, ventureId, { stage: fields.stage, ...(externalRef ? { importSystem: externalRef.system } : {}) }, session);
+      await auditSales(ctx, "sales.lead.create", "lead", doc._id, ventureId, { stage: fields.stage, ...(offerId ? { offerId } : {}), ...(externalRef ? { importSystem: externalRef.system } : {}) }, session);
     });
   } catch (error) {
     if ((error as { code?: number }).code === 11000) { const raced = await existing(); if (raced) return { lead: raced, created: false }; }
@@ -219,6 +225,8 @@ export async function updateLead(ctx: SalesCtx, lead: AppDocument, raw: z.infer<
     if (!pipeline) throw new AppError(400, "BAD_REQUEST", "That pipeline does not belong to this lead's venture");
   }
   await assertPlay(ctx, fields.playId, ventureId);
+  // Moving the lead to another offer: one of its venture that is not archived.
+  if (fields.offerId !== undefined && fields.offerId !== lead.offerId) await assertVentureOffer(ctx, ventureId, fields.offerId);
   const now = new Date();
   if (stage !== undefined && ctx.via === "claude") assertClaudeMayMove(normalizeStage(lead.stage), stage);
   // Why it was lost: a category, set when a lead is moved to lost (a person must pick it; Claude's updates default to "other") or changed while it stays lost.

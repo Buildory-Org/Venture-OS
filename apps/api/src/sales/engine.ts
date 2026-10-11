@@ -1,9 +1,10 @@
 // The office PC engine bridge (docs/sales-dealflow.md section 10): what a find-lead run's worker may do, and how a lead it found
 // becomes a Sales lead. Leads go through the same creation rules as every other lead (createLead); duplicates and do-not-contact
-// companies are checked with the same match keys as the do-not-contact list.
+// companies are checked with the same match keys as the do-not-contact list. The lead finder built into the API (sales/finder) works
+// runs with these same helpers.
 import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
-import { engineEnrichLeadInputSchema, engineLeadInputSchema, opportunityInputSchema } from "@venture-studio/contracts";
+import { engineEnrichLeadInputSchema, engineLeadInputSchema, finderEnrichLeadInputSchema, finderLeadInputSchema, opportunityInputSchema } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { canSeeVenture, canWriteIn, isHeadOf, notFound } from "./access.js";
@@ -13,6 +14,12 @@ import { SUPPRESS_KEYS_VERSION, isSharedDomain, leadSuppressKeys, normalizeCompa
 
 /** A claim with no heartbeat for this long can be taken over by another worker. */
 export const STALE_CLAIM_MS = 15 * 60_000;
+
+/** Who worked a run: the office PC engine over the bridge, or the lead finder built into the API (sales/finder). */
+export type RunWorker = "engine" | "finder";
+const WORKER_NAME: Record<RunWorker, string> = { engine: "the office PC engine", finder: "the built-in lead finder" };
+/** One line of evidence in a lead's note: the claim, the quote word for word, its page and (from the finder) the day it was read. */
+const evidenceLine = (item: { claim: string; quote: string; url: string; seenAt?: string | undefined }) => `- ${item.claim}: "${item.quote}" (${item.url}${item.seenAt ? `, seen ${item.seenAt.slice(0, 10)}` : ""})`;
 
 /** The token's owner may work a run in a venture they can write in, if they head it (or are an admin) or planned the run themselves. */
 export function canWorkRun(ctx: SalesCtx, run: AppDocument): boolean {
@@ -59,10 +66,14 @@ export async function findDuplicateLead(ctx: SalesCtx, ventureId: string, lead: 
 export type EngineSkip = { companyName: string; reason: "duplicate" | "do_not_contact" | "invalid"; id?: string; detail?: string };
 export type EngineOutcome = { added: { id: string; companyName: string } } | { skipped: EngineSkip };
 
-/** One lead from a run: checked on its own, then created for the run's creator in the run's venture, pipeline and play. */
-export async function ingestEngineLead(ctx: SalesCtx, run: AppDocument, pipelineId: string, raw: unknown): Promise<EngineOutcome> {
+/**
+ * One lead from a run: checked on its own, then created for the run's creator in the run's venture, pipeline, play and offer (a run with
+ * no offer names none, and createLead gives the lead the venture's only usable offer). The built-in finder (`worker` "finder") posts its
+ * own external reference system and dated evidence; everything else is the same.
+ */
+export async function ingestEngineLead(ctx: SalesCtx, run: AppDocument, pipelineId: string, raw: unknown, worker: RunWorker = "engine"): Promise<EngineOutcome> {
   const given = typeof raw === "object" && raw !== null && typeof (raw as { companyName?: unknown }).companyName === "string" ? (raw as { companyName: string }).companyName.trim().slice(0, 200) : "";
-  const parsed = engineLeadInputSchema.safeParse(raw);
+  const parsed = (worker === "finder" ? finderLeadInputSchema : engineLeadInputSchema).safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     return { skipped: { companyName: given, reason: "invalid", detail: issue ? `${issue.path.join(".") || "lead"}: ${issue.message}`.slice(0, 300) : "invalid lead" } };
@@ -80,7 +91,7 @@ export async function ingestEngineLead(ctx: SalesCtx, run: AppDocument, pipeline
     const input = opportunityInputSchema.parse({
       pipelineId, companyName: lead.companyName, source: lead.source, observedSignal: lead.observedSignal ?? "", stage: "identified", ownerId: String(run.createdBy),
       ...(lead.website ? { website: lead.website } : {}), ...(lead.city ? { city: lead.city } : {}), ...(lead.region ? { region: lead.region } : {}), ...(lead.country ? { country: lead.country } : {}), ...(lead.category ? { category: lead.category } : {}),
-      contactRoutes: lead.contactRoutes, ...(typeof run.playId === "string" ? { playId: run.playId } : {}), ...(lead.relevance !== undefined ? { relevance: lead.relevance } : {}), tags: [...new Set([...lead.tags, "engine"])], externalRef: lead.externalRef,
+      contactRoutes: lead.contactRoutes, ...(typeof run.playId === "string" ? { playId: run.playId } : {}), ...(typeof run.offerId === "string" ? { offerId: run.offerId } : {}), ...(lead.relevance !== undefined ? { relevance: lead.relevance } : {}), tags: [...new Set([...lead.tags, worker])], externalRef: lead.externalRef,
     });
     const result = await createLead(ctx, input);
     if (!result.created) return { skipped: { companyName: lead.companyName, reason: "duplicate", id: String(result.lead._id) } };
@@ -93,9 +104,9 @@ export async function ingestEngineLead(ctx: SalesCtx, run: AppDocument, pipeline
     throw error;
   }
   // What the engine found, with its quotes and links, as the first note on the lead.
-  const evidence = (lead.evidence ?? []).map((item) => `- ${item.claim}: "${item.quote}" (${item.url})`);
+  const evidence = (lead.evidence ?? []).map(evidenceLine);
   const now = new Date();
-  await ctx.db.collection("sales_activities").insertOne({ _id: randomUUID(), workspaceId: ctx.workspaceId, ventureId: created.ventureId, leadId: created._id, actorId: ctx.actor.id, via: "import", kind: "note", body: [`Found by the office PC engine (run ${String(run._id)}). Source: ${lead.source}`, ...evidence].join("\n").slice(0, 10_000), at: now, createdAt: now });
+  await ctx.db.collection("sales_activities").insertOne({ _id: randomUUID(), workspaceId: ctx.workspaceId, ventureId: created.ventureId, leadId: created._id, actorId: ctx.actor.id, via: "import", kind: "note", body: [`Found by ${WORKER_NAME[worker]} (run ${String(run._id)}). Source: ${lead.source}`, ...evidence].join("\n").slice(0, 10_000), at: now, createdAt: now });
   return { added: { id: String(created._id), companyName: String(created.companyName) } };
 }
 
@@ -127,8 +138,8 @@ export type EnrichOutcome = { updated: { id: string; companyName: string; routes
  * empty, and the evidence is added as a note. Nothing is created, nothing the people typed is overwritten, and a lead the do-not-contact
  * list matches (also by what was just found) is flagged and left alone.
  */
-export async function enrichEngineLead(ctx: SalesCtx, run: AppDocument, raw: unknown): Promise<EnrichOutcome> {
-  const parsed = engineEnrichLeadInputSchema.safeParse(raw);
+export async function enrichEngineLead(ctx: SalesCtx, run: AppDocument, raw: unknown, worker: RunWorker = "engine"): Promise<EnrichOutcome> {
+  const parsed = (worker === "finder" ? finderEnrichLeadInputSchema : engineEnrichLeadInputSchema).safeParse(raw);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     return { skipped: { companyName: "", reason: "invalid", detail: issue ? `${issue.path.join(".") || "lead"}: ${issue.message}`.slice(0, 300) : "invalid lead" } };
@@ -161,7 +172,7 @@ export async function enrichEngineLead(ctx: SalesCtx, run: AppDocument, raw: unk
   await ctx.db.collection("opportunities").updateOne({ _id: lead._id, workspaceId: ctx.workspaceId, deletedAt: null }, { $set: { ...fill, ...(routesAdded ? { contactRoutes: merged } : {}), suppressKeys: keys, suppressKeysV: SUPPRESS_KEYS_VERSION, ...(flagged ? { doNotContact: true } : {}), updatedAt: now } });
   // What was found matches the do-not-contact list: its unsent drafts and its next-action reminder stop too.
   if (flagged) await stopContactWork(ctx, [String(lead._id)], now);
-  const lines = [`Enriched by the office PC engine (run ${String(run._id)}).`, ...(routesAdded ? [`Added ${routesAdded} contact route${routesAdded > 1 ? "s" : ""}: ${merged.slice(existing.length).map((route) => `${route.kind} ${route.value}`).join(", ")}`] : []), ...(Object.keys(fill).length ? [`Filled in: ${Object.keys(fill).join(", ")}`] : []), ...(input.evidence ?? []).map((item) => `- ${item.claim}: "${item.quote}" (${item.url})`), ...(flagged ? ["It matches the do-not-contact list: marked do not contact."] : [])];
+  const lines = [`Enriched by ${WORKER_NAME[worker]} (run ${String(run._id)}).`, ...(routesAdded ? [`Added ${routesAdded} contact route${routesAdded > 1 ? "s" : ""}: ${merged.slice(existing.length).map((route) => `${route.kind} ${route.value}`).join(", ")}`] : []), ...(Object.keys(fill).length ? [`Filled in: ${Object.keys(fill).join(", ")}`] : []), ...(input.evidence ?? []).map(evidenceLine), ...(flagged ? ["It matches the do-not-contact list: marked do not contact."] : [])];
   await ctx.db.collection("sales_activities").insertOne({ _id: randomUUID(), workspaceId: ctx.workspaceId, ventureId: lead.ventureId, leadId: lead._id, actorId: ctx.actor.id, via: "import", kind: "note", body: lines.join("\n").slice(0, 10_000), at: now, createdAt: now });
   return { updated: { id: input.leadId, companyName, routesAdded, fieldsFilled: Object.keys(fill), evidenceAdded } };
 }

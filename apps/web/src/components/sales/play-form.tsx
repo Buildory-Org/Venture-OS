@@ -9,6 +9,7 @@ import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { createPlay, updatePlay } from "@/lib/sales-api";
 import { ChannelTile, kickerClass, writableVentures } from "./draft-shared";
+import { offerIsUsable, openOffers, useVentureOffers } from "./offer-model";
 import { useSalesShell } from "./sales-context";
 
 export type PlayStep = Play["steps"][number];
@@ -24,18 +25,24 @@ const STARTER_STEPS: PlayStep[] = [
 ];
 const STOP_HINT = "Stop the moment anyone at the company replies, or says no. After one follow-up and 4 more working days of silence, close it as no response.";
 
-type Draft = { name: string; ventureId: string; motion: Play["motion"]; offerName: string; audience: string; hypothesis: string; metric: string; stopRule: string; batchSize: string; steps: PlayStep[] };
+type Draft = { name: string; ventureId: string; motion: Play["motion"]; offerId: string; offerName: string; audience: string; hypothesis: string; metric: string; stopRule: string; batchSize: string; steps: PlayStep[] };
 const fromPlay = (play: Play | undefined, ventureId: string): Draft => ({
-  name: play?.name ?? "", ventureId: play?.ventureId ?? ventureId, motion: play?.motion ?? "high_touch", offerName: play?.offerName ?? "", audience: play?.audience ?? "", hypothesis: play?.hypothesis ?? "",
+  name: play?.name ?? "", ventureId: play?.ventureId ?? ventureId, motion: play?.motion ?? "high_touch", offerId: play?.offerId ?? "", offerName: play?.offerName ?? "", audience: play?.audience ?? "", hypothesis: play?.hypothesis ?? "",
   metric: play?.metric ?? "", stopRule: play?.stopRule ?? "", batchSize: String(play?.batchSize ?? 10), steps: play?.steps.map((step) => ({ ...step })) ?? [],
 });
 
 /** Drawer to propose a new play, or edit one. A new play waits for a venture head to approve it. */
 export function PlayForm({ play, onClose, onSaved }: { play?: Play; onClose: () => void; onSaved: (play: Play) => void }) {
-  const { session, ventureId, ventureName } = useSalesShell();
+  const { session, ventureId, ventureName, refreshKey } = useSalesShell();
   const ventures = writableVentures(session);
   const [initial] = useState(() => fromPlay(play, ventureId || (ventures.length === 1 ? ventures[0]!.id : "")));
   const [form, setForm] = useState(initial);
+  // The play sells one of the venture's offers (not archived; the play's own stays listed). A new play starts on the only usable one.
+  const offers = useVentureOffers(form.ventureId, refreshKey);
+  const offerChoices = offers ? openOffers(offers.filter((offer) => offer.state !== "archived" || offer.id === play?.offerId)) : [];
+  const usable = (offers ?? []).filter(offerIsUsable);
+  const offerId = form.offerId || (!play && usable.length === 1 ? usable[0]!.id : "");
+  const pickOffers = offers !== null && (offerChoices.length > 0 || !!form.offerId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const dirty = JSON.stringify(form) !== JSON.stringify(initial);
@@ -49,7 +56,8 @@ export function PlayForm({ play, onClose, onSaved }: { play?: Play; onClose: () 
     if (!form.ventureId) { setError("Choose which venture this play is for."); return; }
     if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 500) { setError("The batch size is a whole number from 1 to 500."); return; }
     if (form.steps.some((step) => !step.action.trim())) { setError("Every step needs a line saying what to do."); return; }
-    const fields = { name: form.name.trim(), motion: form.motion, offerName: form.offerName.trim(), audience: form.audience.trim(), hypothesis: form.hypothesis.trim(), metric: form.metric.trim(), stopRule: form.stopRule.trim(), batchSize, steps: form.steps.map((step) => ({ ...step, action: step.action.trim() })) };
+    const offer = offerId ? offers?.find((item) => item.id === offerId) : undefined;
+    const fields = { name: form.name.trim(), motion: form.motion, ...(offer ? { offerId: offer.id, offerName: offer.name } : { offerName: form.offerName.trim() }), audience: form.audience.trim(), hypothesis: form.hypothesis.trim(), metric: form.metric.trim(), stopRule: form.stopRule.trim(), batchSize, steps: form.steps.map((step) => ({ ...step, action: step.action.trim() })) };
     setBusy(true); setError("");
     try {
       const saved = play ? await updatePlay(play.id, fields) : await createPlay({ ventureId: form.ventureId, ...fields });
@@ -63,11 +71,13 @@ export function PlayForm({ play, onClose, onSaved }: { play?: Play; onClose: () 
     <form onSubmit={submit} className="space-y-5">
       {!play && (ventureId
         ? <div aria-label="Play destination" className="rounded-xl border border-neutral-200 bg-neutral-50 p-3"><span className="block text-xs font-semibold text-neutral-500">Venture · fixed to the venture you picked</span><span className="mt-1 block text-sm font-bold text-neutral-800">{ventureName(ventureId)}</span></div>
-        : <Field label="Venture"><Select required className={inputClass} value={form.ventureId} onChange={(event) => set("ventureId", event.target.value)}><option value="">Choose a venture</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select></Field>)}
+        : <Field label="Venture"><Select required className={inputClass} value={form.ventureId} onChange={(event) => setForm((current) => ({ ...current, ventureId: event.target.value, offerId: "" }))}><option value="">Choose a venture</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select></Field>)}
       <Field label="Name"><input required maxLength={120} value={form.name} onChange={(event) => set("name", event.target.value)} placeholder="Dealer growth, batch 1" className={inputClass} /></Field>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Style"><Select className={inputClass} value={form.motion} onChange={(event) => set("motion", event.target.value as Play["motion"])}><option value="high_touch">Personal touch</option><option value="volume">Volume</option></Select></Field>
-        <Field label="Offer"><input maxLength={200} value={form.offerName} onChange={(event) => set("offerName", event.target.value)} placeholder="Dealer catalogue and orders" className={inputClass} /></Field>
+        {pickOffers
+          ? <Field label="Offer"><Select className={inputClass} value={offerId} onChange={(event) => set("offerId", event.target.value)}>{!play?.offerId && <option value="">Choose an offer</option>}{offerChoices.map((offer) => <option key={offer.id} value={offer.id}>{offer.name}{offerIsUsable(offer) ? "" : offer.approved ? ` (${offer.state})` : " (draft)"}</option>)}</Select></Field>
+          : <Field label="Offer"><input maxLength={200} value={form.offerName} disabled={offers === null && !!form.ventureId} onChange={(event) => set("offerName", event.target.value)} placeholder={offers === null && form.ventureId ? "Loading the offers…" : "Dealer catalogue and orders"} className={inputClass} /></Field>}
       </div>
       <p className="-mt-2 text-xs leading-5 text-neutral-500">{MOTION_HELP[form.motion]}</p>
       <Field label="Who is it for?"><textarea maxLength={2000} rows={3} value={form.audience} onChange={(event) => set("audience", event.target.value)} placeholder="Pipe and pump distributors in Chhattisgarh and Madhya Pradesh that sell through dealers." className={clsx(inputClass, "py-3")} /></Field>

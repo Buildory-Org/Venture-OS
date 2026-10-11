@@ -1,41 +1,24 @@
 "use client";
-import { useId, useState } from "react";
+import { useState } from "react";
 import clsx from "clsx";
-import { Plus, X } from "@/components/ui/icons";
+import { Plus } from "@/components/ui/icons";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, Field, inputClass, Notice, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { createFindRun, listPlays, type FindRun } from "@/lib/sales-api";
+import { ChipsField } from "./chips-field";
 import { kickerClass, useSalesLoad, writableVentures } from "./draft-shared";
+import { offerHref, offerIsUsable, sortOffers, useVentureOffers } from "./offer-model";
 import { useSalesShell } from "./sales-context";
 
-export type FindTemplate = { request: string; places: string[]; categories: string[]; searches: string[]; limit: number; ventureId?: string; playId?: string };
-export const templateOf = (run: FindRun): FindTemplate => ({ request: run.request, places: run.plan.places, categories: run.plan.categories, searches: run.plan.searches, limit: run.plan.limit, ventureId: run.ventureId, ...(run.playId ? { playId: run.playId } : {}) });
+export type FindTemplate = { request: string; places: string[]; categories: string[]; searches: string[]; limit: number; ventureId?: string; playId?: string; offerId?: string };
+export const templateOf = (run: FindRun): FindTemplate => ({ request: run.request, places: run.plan.places, categories: run.plan.categories, searches: run.plan.searches, limit: run.plan.limit, ventureId: run.ventureId, ...(run.playId ? { playId: run.playId } : {}), ...(run.offerId ? { offerId: run.offerId } : {}) });
 
-/** A list of short items typed one at a time: Enter or a comma adds one, and pasted lines or comma lists are split. */
-function ChipsField({ label, hint, placeholder, items, onChange, max, maxLength }: { label: string; hint: string; placeholder: string; items: string[]; onChange: (items: string[]) => void; max: number; maxLength: number }) {
-  const id = useId();
-  const [text, setText] = useState("");
-  function add(raw: string) {
-    const parts = raw.split(/[,\n]/).map((part) => part.trim().slice(0, maxLength)).filter(Boolean);
-    if (!parts.length) return;
-    const next = [...items];
-    for (const part of parts) if (next.length < max && !next.some((item) => item.toLowerCase() === part.toLowerCase())) next.push(part);
-    onChange(next); setText("");
-  }
-  return <div>
-    <label htmlFor={id} className="mb-1.5 block text-xs font-semibold text-neutral-600">{label} <span className="font-normal text-neutral-400">· {hint}</span></label>
-    <div className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-xl border border-neutral-200 bg-white px-2.5 py-2 transition-[border-color,box-shadow] duration-150 focus-within:border-primary-400 focus-within:ring-2 focus-within:ring-primary-100">
-      {items.map((item) => <span key={item} className="inline-flex max-w-full items-center gap-1 rounded-lg bg-primary-50 py-1 pl-2.5 pr-1 text-xs font-semibold text-primary-800"><span className="truncate">{item}</span><button type="button" aria-label={`Remove ${item}`} onClick={() => onChange(items.filter((other) => other !== item))} className="grid h-5 w-5 place-items-center rounded-md transition-colors duration-150 hover:bg-primary-100"><X size={11} /></button></span>)}
-      <input id={id} value={text} disabled={items.length >= max} onChange={(event) => { const value = event.target.value; if (value.includes(",") || value.includes("\n")) add(value); else setText(value); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(text); } else if (event.key === "Backspace" && !text && items.length) onChange(items.slice(0, -1)); }} onBlur={() => add(text)} onPaste={(event) => { const pasted = event.clipboardData.getData("text"); if (/[,\n]/.test(pasted)) { event.preventDefault(); add(pasted); } }} placeholder={items.length ? "" : placeholder} className="min-w-[8rem] flex-1 bg-transparent py-0.5 text-sm font-medium text-neutral-800 outline-none placeholder:text-neutral-400" />
-    </div>
-  </div>;
-}
-
-/** Describe the audience, add optional places, categories and searches, then save the plan or queue it for the office PC. */
+/** Describe the audience, add optional places, categories and searches, then save the plan or queue it for the lead finder. */
 export function FindPlanForm({ template, onCreated }: { template?: FindTemplate | undefined; onCreated: (run: FindRun) => void }) {
-  const { session, ventureId, ventureName, refresh } = useSalesShell();
+  const { session, ventureId, ventureName, refresh, refreshKey } = useSalesShell();
   const ventures = writableVentures(session);
   const [request, setRequest] = useState(template?.request ?? "");
   const [places, setPlaces] = useState(template?.places ?? []);
@@ -44,6 +27,7 @@ export function FindPlanForm({ template, onCreated }: { template?: FindTemplate 
   const [limit, setLimit] = useState(String(template?.limit ?? 50));
   const [venturePick, setVenturePick] = useState(template?.ventureId ?? "");
   const [playPick, setPlayPick] = useState(template?.playId ?? "");
+  const [offerPick, setOfferPick] = useState(template?.offerId ?? "");
   const [more, setMore] = useState(Boolean(template && (template.places.length || template.categories.length || template.searches.length)));
   const [busy, setBusy] = useState<"" | "save" | "queue">("");
   const [error, setError] = useState("");
@@ -52,16 +36,23 @@ export function FindPlanForm({ template, onCreated }: { template?: FindTemplate 
   const plays = useSalesLoad(`find-plays|${targetVenture}`, () => targetVenture ? listPlays({ ventureId: targetVenture }) : Promise.resolve([]));
   const playOptions = (plays.data ?? []).filter((play) => play.status !== "done");
   const play = playPick && playOptions.some((item) => item.id === playPick) ? playPick : "";
+  // The run's offer drives the search. Only usable offers (active, approved) can be named: the one picked, else the play's, else the only one.
+  const offers = useVentureOffers(targetVenture, refreshKey);
+  const usable = sortOffers((offers ?? []).filter(offerIsUsable));
+  const playOffer = playOptions.find((item) => item.id === play)?.offerId;
+  const offerId = usable.some((item) => item.id === offerPick) ? offerPick : playOffer && usable.some((item) => item.id === playOffer) ? playOffer : usable.length === 1 ? usable[0]!.id : "";
+  const chosenOffer = usable.find((item) => item.id === offerId);
 
   async function submit(queue: boolean) {
     const count = Number(limit);
     if (request.trim().length < 3) { setError("Describe who you want to find, in a sentence."); return; }
     if (!targetVenture) { setError("Choose which venture this search is for."); return; }
+    if (usable.length > 1 && !offerId) { setError("Choose which offer this search is for."); return; }
     if (!Number.isInteger(count) || count < 1 || count > 500) { setError("The limit is a whole number from 1 to 500."); return; }
     setBusy(queue ? "queue" : "save"); setError("");
     try {
-      const run = await createFindRun({ ventureId: targetVenture, ...(play ? { playId: play } : {}), request: request.trim(), plan: { places, categories, searches, limit: count } }, { queue });
-      toast({ title: queue ? "Queued for the office PC" : "Plan saved", body: queue ? "It runs when the office PC is online." : "Queue it when you are happy with it." });
+      const run = await createFindRun({ ventureId: targetVenture, ...(play ? { playId: play } : {}), ...(offerId ? { offerId } : {}), request: request.trim(), plan: { places, categories, searches, limit: count } }, { queue });
+      toast({ title: queue ? "Queued for the lead finder" : "Plan saved", body: queue ? "The built-in finder picks it up shortly; results show under Runs." : "Queue it when you are happy with it." });
       setRequest(""); setPlaces([]); setCategories([]); setSearches([]); setMore(false);
       onCreated(run); refresh();
     } catch (cause) { setError(describeError(cause, "Could not save the search. Try again.")); }
@@ -70,7 +61,7 @@ export function FindPlanForm({ template, onCreated }: { template?: FindTemplate 
 
   return <Panel className="h-full p-4 sm:p-5">
     <h2 className="text-[15px] font-extrabold tracking-[-.01em] text-neutral-900">Find new leads</h2>
-    <p className="mt-1 text-xs leading-5 text-neutral-500">Describe the buyer. The office PC searches the public web, adds new companies, and Claude judges each one.</p>
+    <p className="mt-1 text-xs leading-5 text-neutral-500">Describe the buyer. The lead finder searches the public web, reads each company&apos;s own site, adds the new ones, and Claude judges each one.</p>
     <form onSubmit={(event) => { event.preventDefault(); void submit(true); }} className="mt-4 space-y-4">
       <div>
         <label htmlFor="find-request" className={clsx(kickerClass, "mb-2 block")}>Who do you want to find?</label>
@@ -81,7 +72,13 @@ export function FindPlanForm({ template, onCreated }: { template?: FindTemplate 
       <div className="grid gap-4 sm:grid-cols-2">
         {ventureId
           ? <div aria-label="Search destination" className="rounded-xl border border-neutral-200 bg-neutral-50 p-3"><span className="block text-xs font-semibold text-neutral-500">Venture · fixed to the one you picked</span><span className="mt-1 block text-sm font-bold text-neutral-800">{ventureName(ventureId)}</span></div>
-          : <Field label="Venture"><Select className={inputClass} value={venturePick || (ventures.length === 1 ? ventures[0]!.id : "")} onChange={(event) => { setVenturePick(event.target.value); setPlayPick(""); }}><option value="">Choose a venture</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select></Field>}
+          : <Field label="Venture"><Select className={inputClass} value={venturePick || (ventures.length === 1 ? ventures[0]!.id : "")} onChange={(event) => { setVenturePick(event.target.value); setPlayPick(""); setOfferPick(""); }}><option value="">Choose a venture</option>{ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}</Select></Field>}
+        {targetVenture && offers !== null && (usable.length > 1
+          ? <div><Field label="For which offer?"><Select required className={inputClass} value={offerId} onChange={(event) => setOfferPick(event.target.value)}><option value="">Choose an offer</option>{usable.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
+            <p className="mt-1.5 text-xs leading-5 text-neutral-500">{chosenOffer ? "The finder searches with its industries, places, search words and signals." : "The venture sells more than one offer: pick the one to find leads for."}</p></div>
+          : chosenOffer
+            ? <div aria-label="Offer" className="rounded-xl border border-neutral-200 bg-neutral-50 p-3"><span className="block text-xs font-semibold text-neutral-500">Offer · the venture&apos;s only active one</span><span className="mt-1 block text-sm font-bold text-neutral-800 [overflow-wrap:anywhere]">{chosenOffer.name}</span></div>
+            : <div className="rounded-xl border border-dashed border-neutral-200 p-3 text-xs leading-5 text-neutral-500">No approved offer yet, so the finder searches with your description and plan only. <WorkspaceLink href={offerHref(targetVenture)} className="font-semibold text-primary-700 hover:underline">Set one up in Offers</WorkspaceLink></div>)}
         <Field label="For which play? (optional)"><Select className={inputClass} value={play} onChange={(event) => setPlayPick(event.target.value)}><option value="">Not for a play yet</option>{playOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field>
       </div>
 
@@ -101,10 +98,10 @@ export function FindPlanForm({ template, onCreated }: { template?: FindTemplate 
 
       <Notice tone="error" message={error} onDismiss={() => setError("")} />
       <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={busy !== ""} className={primaryClass}><ActionLabel busy={busy === "queue"} busyText="Queuing…" idle="Queue for the office PC" /></button>
+        <button type="submit" disabled={busy !== ""} className={primaryClass}><ActionLabel busy={busy === "queue"} busyText="Queuing…" idle="Queue for the lead finder" /></button>
         <button type="button" disabled={busy !== ""} onClick={() => void submit(false)} className={secondaryClass}><ActionLabel busy={busy === "save"} idle="Save plan" /></button>
       </div>
-      <p className="text-xs leading-5 text-neutral-500">Save keeps it as a plan to come back to. Queue hands it to the office PC.</p>
+      <p className="text-xs leading-5 text-neutral-500">Save keeps it as a plan to come back to. Queue hands it to the lead finder.</p>
     </form>
   </Panel>;
 }

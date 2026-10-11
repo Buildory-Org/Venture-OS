@@ -12,11 +12,11 @@ import { useSalesShell } from "@/components/sales/sales-context";
 import { number, plural, when } from "@/components/sales/sales-ui";
 
 const FIELD_LABELS: Record<ImportField, string> = {
-  company: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", phone: "Phone", email: "Email", source: "Source", tags: "Tags", value: "Deal value",
+  company: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", phone: "Phone", email: "Email", source: "Source", tags: "Tags", value: "Deal value", offer: "Offer",
 };
 /** Shown first; the rest sit behind "More columns" unless the file already fills them. */
 const MAIN_FIELDS: ImportField[] = ["company", "phone", "email", "city", "website"];
-const OTHER_FIELDS: ImportField[] = ["contactName", "category", "region", "country", "source", "tags", "value"];
+const OTHER_FIELDS: ImportField[] = ["contactName", "category", "region", "country", "source", "tags", "value", "offer"];
 const STATUS: Record<string, { label: string; tone: "green" | "amber" | "red" | "neutral" }> = {
   ok: { label: "Ready", tone: "green" }, duplicate: { label: "Already here", tone: "amber" }, invalid: { label: "Needs fixing", tone: "red" }, do_not_contact: { label: "Do not contact", tone: "neutral" },
 };

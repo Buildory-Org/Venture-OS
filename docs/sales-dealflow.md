@@ -8,6 +8,16 @@ approve. Background and decisions: Prospector repo `docs/SALES_APP_PLAN.md`, `do
 
 Contracts: `packages/contracts/src/sales.ts`. Web client: `apps/web/src/lib/sales-api.ts`.
 
+### Offers
+
+A venture sells one or more **offers**, each one packet: who it is for, the gates a lead must pass, the signals the lead finder
+looks for, what we say, the message rules and the price boundary. Every lead belongs to an offer, and Claude judges it against
+that offer's approved packet; the lead finder searches with it. A packet is proposed as a draft version (by a person or Claude)
+and a venture head approves it as a whole, in the app. The brain keeps only what every offer shares: notes and venture settings.
+The spec (data, API, the connector's tools, the finder, the screens and the migration from the old brain kinds):
+**`docs/sales-offers.md`**; contracts `packages/contracts/src/sales-offers.ts`; server `apps/api/src/sales/offers.ts` and
+`apps/api/src/routes/sales-offers.ts`; migration `apps/api/scripts/migrate-offers.ts`.
+
 ## 1. Hard rules (never break)
 
 - **Nothing is sent to a real person by the app in v1.** "Mark sent" records what a person sent from their
@@ -19,7 +29,7 @@ Contracts: `packages/contracts/src/sales.ts`. Web client: `apps/web/src/lib/sale
 - **One do-not-contact list for every venture.** An opt-out or hostile reply suppresses the company's
   routes and blocks every outbound action on it.
 - **Stop on reply.** Any inbound reply on a lead discards its pending follow-up drafts.
-- **Claude never approves its own work.** Play approval, brain approval and first-batch person approval
+- **Claude never approves its own work.** Play approval, offer approval, brain approval and first-batch person approval
   are refused when the request comes through MCP (`via = "claude"`). A Claude review of a Claude draft must
   come from a different session (`sessionId`) than the one that wrote it.
 - Business contact data only (published by the company). No logged-in scraping.
@@ -42,8 +52,8 @@ disqualified. Older names are accepted and migrated: `conversation → replied`,
 | Role | Sales rights |
 |---|---|
 | admin (owner) | everything in every venture |
-| venture_head of the venture | everything in that venture: reassign, delete, approve plays and brain, override verdicts, first-batch approval, add to the do-not-contact list by hand |
-| contributor, reviewer | create leads; on leads they own: edit, log calls and replies, write and send drafts, override the verdict with a reason; review and veto drafts in their ventures; propose brain items and plays |
+| venture_head of the venture | everything in that venture: reassign, delete, approve plays, offers and brain notes, pause, activate or archive offers, override verdicts, first-batch approval, add to the do-not-contact list by hand |
+| contributor, reviewer | create leads; on leads they own: edit, log calls and replies, write and send drafts, override the verdict with a reason; review and veto drafts in their ventures; propose offers, brain notes and plays |
 | learner | read only |
 
 Leads are visible to members of the venture (archive rules as elsewhere). Claude acts with the
@@ -79,18 +89,19 @@ ventures and the ones they made themselves.
 | POST | `/drafts/:id/veto`, `/drafts/:id/discard` | |
 | GET | `/inbox?ventureId&handled&owner=me` | inbound activities with lead cards, unhandled first |
 | GET/POST | `/plays`, PATCH `/plays/:id`, POST `/plays/:id/approve` | approve: venture head/admin, app only |
-| GET/POST | `/find-runs?queue=true`, POST `/find-runs/:id/cancel` | plans for the office PC engine |
-| GET/POST | `/brain`, PATCH `/brain/:id`, POST `/brain/:id/approve` | approve archives the previous approved item with the same venture, kind and title |
+| GET/POST | `/find-runs?queue=true`, POST `/find-runs/:id/cancel` | plans for the lead finder (built in, §10a; an office PC engine can also work them, §10b) |
+| GET/POST | `/offers?ventureId`, GET `/offers/:id`, PATCH `/offers/versions/:versionId`, POST `/offers/versions/:versionId/approve` and `/discard`, POST `/offers/:id/state` | offers and their packet versions: see `docs/sales-offers.md` (approve and state: venture head or admin, app only) |
+| GET/POST | `/brain`, PATCH `/brain/:id`, POST `/brain/:id/approve` | the venture's shared notes and settings (kinds `notes`, `venture_settings`). New proposals of the old kinds `offer`, `target_profile` and `message_rules` are refused (400, pointing to offers), and so is approving an old draft of one. Approve archives the previous approved item with the same venture, kind and title. A proposal may also list `replaces` (up to 20 ids of APPROVED items of the same venture, any kind; else 400; duplicates dropped; a draft's PATCH can change it): approving it retires those still approved in the same transaction (`archivedBy`, `archivedAt`, `replacedBy`; one archived meanwhile is skipped), the answer and the audit carry `retired` (the same-title predecessor not counted), and every item shows `replacesItems` (`{ id, title, kind, version, status }`) |
 | GET/POST | `/suppression`, DELETE `/suppression/:id` | workspace-wide list; delete needs an admin and a JSON body `{ reason }` |
 | GET/PUT | `/settings?ventureId` | the venture's sales settings (§5); anyone who can open the venture reads (defaults when none are saved); a head or admin saves, in the app only; PUT replaces everything (what the body leaves out takes its default) |
-| POST | `/leads/:id/enrich` | asks the office PC engine to fill in the lead's contact details: joins the person's queued enrich run in the venture (made on the first request, up to 100 leads) and returns it; the lead's owner, a head or an admin (a person, or Claude as the token owner); refused when `doNotContact` (§10) |
+| POST | `/leads/:id/enrich` | asks the lead finder to fill in the lead's contact details: joins the person's queued enrich run in the venture (made on the first request, up to 100 leads) and returns it; the lead's owner, a head or an admin (a person, or Claude as the token owner); refused when `doNotContact` (§10) |
 | POST | `/leads/:id/whatsapp-opt-in` | a person records consent (`how`, optional `activityId`: the yes-on-call or the inbound WhatsApp); never Claude; refused when `doNotContact` |
 | PATCH | `/activities/:id` | sort an inbound reply into a reply type afterwards (same rules as logging it with the type) |
 | POST | `/brain/:id/archive` | head/admin any item; the proposer their own draft; never Claude for an approved item |
 | POST | `/leads/:id/delivery-work` | creates a Venture OS task in the venture's first group/channel, assigned to the lead owner (or `assigneeId`), sets `deliveryTaskId` |
-| POST | `/leads/bulk` | lists at scale (people only, never Claude): `{ ids }` (1 to 500) or `{ filter }` (the list filters: the 500 most recently updated leads NOT already in the target state, so the same call again reaches the next ones), never both, plus `action`: `assign` + `ownerId` (venture head or admin; the owner must be in the venture), `tag` / `untag` + `tag`, `stage` + `stage` (lost and not a fit need `exitReason`, lost a `lostReason`; won stages are refused in bulk, 400 "mark deals won one at a time"; a do-not-contact lead is skipped for a contact stage), `play` + `playId` (a play of the lead's venture), `delete` (the single delete's rule). Each lead is checked like a single edit, permission first, and skipped with a reason when refused. Answer: `{ action, matched, changed, unchanged, skippedCount, skipped (first 100: id, companyName, reason), truncated, remaining? }`; for a filter `unchanged` counts every matching lead already like that, and `remaining` (with `truncated`) the leads still to go. Audited once as `sales.lead.bulk`, plus the usual per-lead entries |
-| GET | `/leads/export.csv?<list filters>&sort` | the leads the list filters match as a CSV file (UTF-8 with a byte order mark, CRLF, at most 10,000 rows): business fields only (company, contact person, website, industry, city, state, country, phone, email, stage, owner, next action and date, deal value, currency, expected close, chance, source, tags, do not contact, added). Rows in the list's order (`sort`: updated, next with undated last, relevance, name). A do-not-contact lead goes out without its phone and email; cells a spreadsheet would run as a formula get a leading apostrophe (= + - @, phone numbers with + included, tab, CR, full-width ＝ ＋ － ＠, and a leading space, no-break or zero-width space). Headers `X-Exported-Rows`, `X-Matching-Rows`, `Content-Disposition: attachment; filename="leads-YYYY-MM-DD.csv"`. Not for learners or Claude; audited as `sales.lead.export` |
-| POST | `/leads/import/preview` | `{ ventureId, pipelineId?, csv, hasHeader (default true), mapping? }`: reads the file and says what an import would do, creating nothing. Without `mapping` the columns are guessed from the header. Answer: `{ columns, delimiter, mapping, guessed, missing, total, counts: { ok, duplicate, invalid, doNotContact }, sample (first 10 rows), issues (first 200 rows that are not ok or carry a note, with their problems and what they duplicate), issuesTruncated }`; echoed cell values are cut to 200 characters. At most 5 MB and 5,000 rows; a file with NUL characters is refused (400 "not a text file"); a mapped cell over 2,000 characters (320 for phone and email) is not read and its row is listed as too long |
+| POST | `/leads/bulk` | lists at scale (people only, never Claude): `{ ids }` (1 to 500) or `{ filter }` (the list filters: the 500 most recently updated leads NOT already in the target state, so the same call again reaches the next ones), never both, plus `action`: `assign` + `ownerId` (venture head or admin; the owner must be in the venture), `tag` / `untag` + `tag`, `stage` + `stage` (lost and not a fit need `exitReason`, lost a `lostReason`; won stages are refused in bulk, 400 "mark deals won one at a time"; a do-not-contact lead is skipped for a contact stage), `play` + `playId` (a play of the lead's venture), `offer` + `offerId` (an offer of the lead's venture, not archived), `delete` (the single delete's rule). Each lead is checked like a single edit, permission first, and skipped with a reason when refused. Answer: `{ action, matched, changed, unchanged, skippedCount, skipped (first 100: id, companyName, reason), truncated, remaining? }`; for a filter `unchanged` counts every matching lead already like that, and `remaining` (with `truncated`) the leads still to go. Audited once as `sales.lead.bulk`, plus the usual per-lead entries |
+| GET | `/leads/export.csv?<list filters>&sort` | the leads the list filters match as a CSV file (UTF-8 with a byte order mark, CRLF, at most 10,000 rows): business fields only (company, contact person, website, industry, city, state, country, phone, email, stage, offer (its name), owner, next action and date, deal value, currency, expected close, chance, source, tags, do not contact, added). Rows in the list's order (`sort`: updated, next with undated last, relevance, name). A do-not-contact lead goes out without its phone and email; cells a spreadsheet would run as a formula get a leading apostrophe (= + - @, phone numbers with + included, tab, CR, full-width ＝ ＋ － ＠, and a leading space, no-break or zero-width space). Headers `X-Exported-Rows`, `X-Matching-Rows`, `Content-Disposition: attachment; filename="leads-YYYY-MM-DD.csv"`. Not for learners or Claude; audited as `sales.lead.export` |
+| POST | `/leads/import/preview` | `{ ventureId, pipelineId?, csv, hasHeader (default true), mapping? }`: reads the file and says what an import would do, creating nothing. Without `mapping` the columns are guessed from the header. An `offer` column names one of the venture's offers (any case; an unknown or archived one keeps the row out); a row without one gets the venture's only usable offer, when there is one. Answer: `{ columns, delimiter, mapping, guessed, missing, total, counts: { ok, duplicate, invalid, doNotContact }, sample (first 10 rows), issues (first 200 rows that are not ok or carry a note, with their problems and what they duplicate), issuesTruncated }`; echoed cell values are cut to 200 characters. At most 5 MB and 5,000 rows; a file with NUL characters is refused (400 "not a text file"); a mapped cell over 2,000 characters (320 for phone and email) is not read and its row is listed as too long |
 | POST | `/leads/import/commit` | the same body with `mapping` required and `importDuplicates` (default false): creates the ok rows (and the duplicates when asked) as Identified leads owned by the importer, in the venture's first active pipeline unless `pipelineId` (an active pipeline of the venture) is given; each carries `importBatchId`. 201 `{ batchId, total, created, duplicates, doNotContact, invalid }`. One commit per venture at a time (a `sales_import_locks` row, released at the end, expiring after 10 minutes): 409 "an import is already running for this venture". A file that created leads is recorded in `sales_imports` by a hash of venture, columns and rows; the same file again creates nothing and answers 200 with `alreadyImported: { batchId, at, created }`. Writers of the venture only (not learners, not Claude); audited as `sales.lead.import`. This path takes bodies up to 12 MB (the rest of the API keeps 2 MB) |
 | GET/POST | `/views`, DELETE `/views/:id` | each person's saved Leads filters: `{ name (1 to 60), page: leads or pipeline, filters: { key: value } (the URL's filter parameters, at most 20) }`. The same name (any case) replaces the earlier view (200), a new one is 201, a 21st is 409; a unique index on person, page and name (any case) makes two saves of a new name at once one view and one 409 "a view with that name exists". Only the owner lists and deletes; Claude cannot save |
 
@@ -100,7 +111,7 @@ The older `/v1/pipelines` and `/v1/opportunities` routes keep working on the sam
 **Collections** (string `_id`s, `workspaceId` on every row, dates stored as `Date`): `opportunities` (leads;
 soft-deleted rows have `deletedAt` and are hidden everywhere, including the older routes and the calendar),
 `sales_activities`, `sales_verdicts`, `sales_drafts`, `sales_plays`, `sales_find_runs`,
-`sales_brain_items`, `sales_suppression`, `sales_views` (saved Leads filters, per person), `sales_imports` (CSV files that created leads, by content hash) and `sales_import_locks` (one running CSV import per venture). Imported rows carry `externalRef: { system, id }` (unique per
+`sales_brain_items`, `sales_offers` and `sales_offer_versions` (offers and every version of their packets), `sales_suppression`, `sales_views` (saved Leads filters, per person), `sales_imports` (CSV files that created leads, by content hash) and `sales_import_locks` (one running CSV import per venture). Imported rows carry `externalRef: { system, id }` (unique per
 workspace) so imports can be re-run.
 
 ## 5. Automatic rules (server side, one place)
@@ -269,8 +280,9 @@ Plays · Brain**, plus **Calls** (call mode) and **Find leads** reached from Ove
 - Calls: one lead at a time: opener script, contact route, outcome buttons (§5), next lead.
 - Find leads: describe the audience, see the plan (places, categories, searches), queue it for the office
   PC; past runs with results.
-- Brain: the venture card: Offer(s), Target profile, Message rules, Venture settings, Notes; approved
-  version, pending drafts with approve.
+- Offers (formerly Brain): one card per offer (state, summary, leads, proposals waiting) and "New offer"; the offer page shows the
+  packet as readable sections, proposals to compare and approve as a whole, and pause, activate or archive; "Shared for the
+  venture" holds the notes and settings (approved version, pending drafts with approve). See `docs/sales-offers.md`.
 - Won: notification + Overview card with **Create delivery work**.
 
 ## 7. Not in v1
@@ -369,21 +381,28 @@ no sales tool; a sales key sees only the sales tools and the two lookups).
 Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a company name instead of an id.
 
 - **Read:** `start_sales`, `sales_overview`, `inbox`, `list_drafts`, `find_leads`, `get_lead`, `list_plays`,
-  `list_find_runs`, `get_brain`, `search_companies`, `weekly_report`, `daybreak`.
+  `list_find_runs`, `get_brain`, `list_offers`, `get_offer`, `search_companies`, `weekly_report`, `daybreak`.
 - **Write:** `save_verdict`, `save_verdicts` (up to 25), `save_draft`, `save_drafts` (up to 25), `review_draft`,
   `revise_draft`, `log_reply`, `log_call`, `update_lead`, `add_leads` (up to 25), `enrich_lead`, `propose_play`,
-  `plan_find_run`, `propose_brain_change`.
+  `plan_find_run`, `propose_brain_change` (shared notes only), `propose_offer`.
+- **Offers.** Every lead belongs to one offer: Claude reads its approved packet with `get_offer` before judging or writing, and
+  proposes new rules for an offer with `propose_offer` (the whole packet; a venture head approves it in the app). Offers are named
+  by name (any case): `find_leads`, `add_leads`, `update_lead`, `plan_find_run`, `propose_play` and `save_verdict(s)` take `offer`;
+  a venture with several active offers must name one for `add_leads` and `plan_find_run`; a verdict's offer is the lead's own.
+  `start_sales` lists the offers and says which to work on; `get_lead`, `list_drafts` and `review_draft` show each lead's offer.
+  `docs/sales-offers.md` has the rest.
 - **Names, not ids.** Tools that take a lead accept `company`, drafts `company` (its latest draft waiting for review, or
   the one sent back), plays `play`. A lead is picked only when exactly one lead's COMPANY name matches (case, spacing,
   punctuation and Pvt/Ltd ignored) in the person's ventures; a name that only matches a contact person or a city comes back as
   candidates (`needsChoice`), never picked; several matches too (nothing is written); none is a clear message. An opt-out or
   hostile reply, a not-interested call and closing a lead pick only an exact company name. A reply draft answers the lead's latest
-  message without an id.
+  message without an id. `propose_brain_change` takes `replaces` as up to 20 exact titles of approved items in the venture
+  (`"Tone"` or `{ title, kind }` when a title is used in several kinds); an unknown title is an error listing the approved titles.
 - **Batches.** `save_verdicts` and `save_drafts` check every item exactly like the single tool; a failure on one never
   stops the others and the result says per lead what was saved and what was refused.
 - **`search_companies`.** Finds real companies on the web with TinyFish Search and Exa (category company), the same APIs
-  the office PC engine uses; the keys are the API's `TINYFISH_API_KEY` and `EXA_API_KEY` (blank means off: the tool then
-  says search isn't set up and points to `plan_find_run`). It leaves out companies already in the pipeline and anyone on
+  the lead finder uses; the keys are the ones an admin saved in Sales setup, else the API's `TINYFISH_API_KEY` and
+  `EXA_API_KEY` (§10a; none means off: the tool then says an admin can add a key in Sales setup). It leaves out companies already in the pipeline and anyone on
   the workspace's whole do-not-contact list (read directly, so entries a person can't see in the list still count), stores
   nothing, numbers its results (`result`), treats what pages say as data, and never returns or logs a key. Limits: 12
   searches a minute per token; per workspace 1,500 TinyFish calls a day and about 1,200 Exa calls a month.
@@ -391,7 +410,8 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
   compacted: funnel, top 5 sources, plays and cities, reply types, reply speed against the venture's promise, Claude's
   calibration grid with `n` and the small-sample flags, overrides, wins and losses, the leads stuck longest. Rates read
   "40% (4 of 10)" or "too few to tell (2 of 3)" (no share under 5 cases). `say` is the three sentences that matter and
-  `next` up to three changes put as questions for the owner; agreed ones become proposals (`propose_brain_change`).
+  `next` up to three changes put as questions for the owner; agreed ones become proposals (`propose_offer` for an offer's rules,
+  `propose_brain_change` for shared notes).
 - **`daybreak`** (`GET /v1/sales/daybreak`, owner `me` by default). The morning work list, at most 25 per list (only what is
   still to do: leads already queued for contacts and verdicts a person set are left out; work done since drops out; `offset`
   skips items left on purpose), plus
@@ -399,8 +419,8 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
   `enrich_lead` for leads without contacts, re-judge stale verdicts Claude may re-judge with `save_verdicts`, then list
   the calls and replies for the person. `say` is one line ("3 follow-ups to draft, 12 leads without contacts, 2 replies
   waiting over 2h."). Both tools are read only and draw a card where the chat app supports it.
-- **`enrich_lead`.** Queues an enrich run for the named leads (`POST /v1/sales/leads/:id/enrich`); the office PC fills in
-  published business contacts and evidence later. `list_find_runs` shows the run.
+- **`enrich_lead`.** Queues an enrich run for the named leads (`POST /v1/sales/leads/:id/enrich`); the lead finder fills in
+  published business contacts and evidence later (no search key needed). `list_find_runs` shows the run.
 - The older deal tools (`list_deals`, `add_deal`, `update_deal`) are retired: `find_leads`, `add_leads` and
   `update_lead` replace them, on the sales connector only.
 
@@ -427,11 +447,57 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
 Both endpoints are `POST` only (stateless Streamable HTTP, JSON responses, one message per request); `GET` answers
 405. `MCP_ENABLED=false` switches both off, `MCP_WRITES_ENABLED=false` leaves only the read tools.
 
-## 10. Office PC engine bridge (find-lead runs with TinyFish, Exa and SearXNG)
+## 10. Lead finding: the built-in finder, and the office PC engine bridge
 
-Bulk lead finding runs on the office PC with the existing Dealflow engine (Prospector `backend/dealflow_backend`:
-search APIs TinyFish/Exa/Brave/Google with keys in Windows Credential Manager, SearXNG, list import, polite crawler,
-extractors). Venture OS only plans, queues and shows runs; the PC worker does the work and posts leads back.
+### 10a. The built-in lead finder (`apps/api/src/sales/finder`)
+
+The API works queued find-leads and enrich runs itself; Venture OS needs no other program to find leads.
+- **Switch:** `SALES_FINDER=on` (the default) or `off`. It starts with the API (`server.ts`) and checks for runs every 30 s.
+- **Claiming:** one run at a time per API process, claimed atomically as `claimedBy: "builtin-finder"`. A run with no
+  heartbeat for 15 minutes can be taken over, by the finder or the office PC alike.
+- **Search keys:** a find run needs a TinyFish or Exa key, saved by an admin in Sales setup (see below) or in the API's
+  environment. Without one it stays queued with the note "Company search has no key: an admin adds one in Sales setup".
+  An enrich run needs no key: it only reads the leads' own websites.
+- **Find run:**
+  1. Builds searches from the plan (`searches` as given, else categories × places × "manufacturer", "distributor" and
+     "dealer enquiry", 40 at most). TinyFish (free) goes first; Exa only when TinyFish has no key, fails, is used up or
+     finds nothing new. Every call counts against the workspace caps.
+  2. Merges the hits by domain and drops directories, marketplaces, news, blog and market-research pages.
+  3. Skips any domain the venture already has, or that is on the do-not-contact list, without fetching it.
+  4. Reads at most 5 pages per company site: home, contact, about, dealer and product pages.
+  5. Adds each lead through `ingestEngineLead`, so the duplicate and do-not-contact checks are the same as for every lead.
+     A lead carries `externalRef {system: "builtin-finder", id: domain}`, the tag "finder", dated evidence quotes, its
+     contact routes, city, state and category, and a note "Found by the built-in lead finder".
+- **Enrich run:** reads each lead's own site the same way and merges what it finds through `enrichEngineLead`.
+- **Safety:** http and https only, ports 80 and 443 only. Every host and redirect hop (at most 3) is resolved first and
+  refused if any of its addresses is private, loopback, link-local, CGNAT, multicast or reserved, including mapped IPv6.
+  The connection is pinned to the address that was checked.
+- **Politeness:** robots.txt is read and obeyed for `User-agent: *` and `VentureStudioLeadFinder`, cached 24 h. A 5xx or
+  no answer means the host is not read. `Crawl-delay` is honoured up to 60 s. At least 5 s between requests to one host,
+  at most 3 hosts at once, 15 s timeout, 1.5 MB per page, HTML only. No cookies, logins, form posts or JavaScript; no
+  CAPTCHA handling, proxies or user-agent tricks: a challenge page, 403 or 429 means the site is skipped.
+- **Budgets:** about 20 minutes per run and 90 s per site. Runs are cancellable between sites.
+- **Data:** business fields only. Contact routes are those the company publishes on its own pages (`mailto:`, `tel:`,
+  WhatsApp links, visible business numbers and emails, an enquiry form), each with its page. A Dealer Login is flagged as
+  a tag for the verdict (G4). Lines with a GSTIN or PAN are never quoted. Website text is data, never instructions.
+- **Status:** `GET /v1/sales/finder/status` → `{ builtIn: { on, searchReady, engines, running?, lastRun? } }`, shown on
+  Find leads. It reports whether keys are present, never the keys.
+
+**Company-search keys in the app.** Admins save the TinyFish and Exa keys in Sales setup (`GET /v1/sales/search-keys`,
+`PUT`/`DELETE /v1/sales/search-keys/:engine`, `POST /v1/sales/search-keys/:engine/test`, 5 tests a minute).
+- **Storage:** the `sales_search_keys` collection, one document per workspace. Each key is encrypted with AES-256-GCM
+  under a key derived from `BETTER_AUTH_SECRET` (HKDF-SHA256), with a fresh IV and the workspace and engine bound in.
+- **Precedence:** a key saved in the app wins over `TINYFISH_API_KEY` / `EXA_API_KEY`. A key that no longer decrypts
+  (the secret changed) shows as "Unreadable, enter it again" and the environment's key is used.
+- **What people see:** whether a key is set, where from, its last four characters and who saved it. Claude can't change
+  keys, and the audit log records only which engine changed.
+
+### 10b. The office PC engine bridge (optional)
+
+The older Dealflow engine (Prospector `backend/dealflow_backend`: TinyFish, Exa, Brave and Google search APIs with keys in
+Windows Credential Manager, SearXNG, list import, polite crawler, extractors) can still work runs over this bridge, next
+to the built-in finder: whoever claims a run first works it. Venture OS plans, queues and shows the runs; this worker
+does the work and posts the leads back.
 
 Auth: a personal access token with scope `sales:engine` (plus `sales:read`), created by the owner on the Connect Claude
 page ("Office PC engine" preset). The worker stores it in Windows Credential Manager; it is never typed into a chat.

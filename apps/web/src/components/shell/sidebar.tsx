@@ -51,7 +51,7 @@ const salesSections: NavItem[] = [
   { label: "Plays", href: "/sales/live/plays", icon: Target },
   { label: "Find leads", href: "/sales/live/find", icon: Sparkles },
   { label: "Reports", href: "/sales/live/reports", icon: TrendingUp },
-  { label: "Sales knowledge", href: "/sales/live/brain", icon: BookOpenText },
+  { label: "Offers", href: "/sales/live/brain", icon: BookOpenText },
   { label: "Do not contact", href: "/sales/live/do-not-contact", icon: UserLock },
   { label: "Sales settings", href: "/sales/live/setup", icon: Settings },
 ];

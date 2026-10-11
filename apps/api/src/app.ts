@@ -20,6 +20,8 @@ import { notificationRoutes } from "./routes/notifications.js";
 import { salesRoutes } from "./routes/sales.js";
 import { salesEngineRoutes } from "./routes/sales-engine.js";
 import { salesReportsRoutes } from "./routes/sales-reports.js";
+import { salesFinderRoutes } from "./routes/sales-finder.js";
+import { salesSearchKeyRoutes } from "./routes/sales-search-keys.js";
 import { salesIoRoutes } from "./routes/sales-io.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
@@ -78,6 +80,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesIoRoutes(database));
   app.use("/v1", salesRoutes(database));
   app.use("/v1/sales", salesReportsRoutes(database));
+  app.use("/v1/sales", salesFinderRoutes(database, config));
+  app.use("/v1/sales", salesSearchKeyRoutes(database, config));
   app.use("/v1", searchRoutes(database.db));
   app.use("/v1", calendarRoutes(database));
   app.use("/v1", calendarFeedRoutes(database, config));

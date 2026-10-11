@@ -76,10 +76,11 @@ export function researchOption(total: number, cities: CityCount[] = []): string 
   return `Research ${batchOf(total, "new lead")}`;
 }
 
-type StartInput = { mode: "work" | "review"; counts: Record<string, number>; stageCounts?: Record<string, number>; cities?: CityCount[]; newLeads?: number };
+/** `noOffer`: the person's ventures have no offer set up yet (docs/sales-offers.md), so setting one up is offered once nothing more urgent waits. */
+type StartInput = { mode: "work" | "review"; counts: Record<string, number>; stageCounts?: Record<string, number>; cities?: CityCount[]; newLeads?: number; noOffer?: boolean };
 
 /** The session's three options, tied to what is really waiting. The first is the suggestion. */
-export function startNext({ mode, counts, cities, newLeads }: StartInput): string[] {
+export function startNext({ mode, counts, cities, newLeads, noOffer }: StartInput): string[] {
   if (mode === "review") {
     if (counts.toReview) return [`Review ${theBatch(counts.toReview, "draft")} waiting`, "Look at the first draft before I review it", "See which of them are for the first batch of a play"];
     return ["Nothing is waiting for review yet: write some drafts in a work chat first", "See what is ready to send", "Go back to today's overview"];
@@ -92,17 +93,26 @@ export function startNext({ mode, counts, cities, newLeads }: StartInput): strin
   if (newLeads) options.push(researchOption(newLeads, cities));
   if (counts.needsYou) options.push(`Go through ${theBatch(counts.needsYou, "verdict")} that need your decision`);
   if (counts.wonToHandOver) options.push(`Hand over ${batchOf(counts.wonToHandOver, "won deal")} to delivery`);
+  if (noOffer) options.push("Set up the first offer: tell me what you sell and who buys it");
   for (const fallback of ["Find new leads: tell me the area and the kind of business", "Plan the next play", "Look at what is working this week"]) if (options.length < 3) options.push(fallback);
   return options.slice(0, 3);
 }
 
-/** The welcome: greeting, then one line on what is waiting. In a review session it says what the chat is for. */
-export function startSay(input: { name: string | undefined; timeZone: string; mode: "work" | "review"; counts: Record<string, number>; now?: Date }): string {
+/** "Dealer Commerce", "Dealer Commerce and Startup Partner", "A, B and C". */
+const andList = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : (names[0] ?? ""));
+
+/**
+ * The welcome: greeting, then one line on what is waiting, and the offer being worked on (`offers`: the active, approved ones in scope;
+ * "Working on Dealer Commerce." for one, "Offers: A and B, say which to work on." for several). In a review session it says what the chat is for.
+ */
+export function startSay(input: { name: string | undefined; timeZone: string; mode: "work" | "review"; counts: Record<string, number>; offers?: string[]; now?: Date }): string {
   const hello = greeting(input.name, input.timeZone, input.now);
   if (input.mode === "review") {
     return `${hello} This chat is for reviewing drafts only: I check each one and pass it or send it back with the exact fixes, and I never rewrite them. ${input.counts.toReview ? `${plural(input.counts.toReview, "draft")} ${input.counts.toReview === 1 ? "is" : "are"} waiting for review.` : "Nothing is waiting for review right now."}`;
   }
-  return `${hello} Welcome to Dealflow Sales: I research and judge leads and write drafts, and you send and approve everything. ${waitingLine(input.counts)}`;
+  const offers = (input.offers ?? []).map((name) => optionLabel(name, 60)).filter(Boolean);
+  const working = offers.length === 1 ? ` Working on ${offers[0]}.` : offers.length > 1 ? ` Offers: ${andList(offers.slice(0, 4))}${offers.length > 4 ? " and more" : ""}; say which to work on.` : "";
+  return `${hello} Welcome to Dealflow Sales: I research and judge leads and write drafts, and you send and approve everything. ${waitingLine(input.counts)}${working}`;
 }
 
 /**

@@ -7,7 +7,7 @@ import { apiClient } from "../src/mcp/format.js";
 import { registerSalesServer, SALES_SERVER_INSTRUCTIONS } from "../src/mcp/sales-server.js";
 import { CARD_BUILDERS, CARD_MIME, CARD_SHOWN_NOTE, CARD_URI, UI_EXTENSION, chatDrawsCards, safeDomain, safeName, withCard, type Card } from "../src/mcp/sales-cards.js";
 import { CARD_HTML } from "../src/mcp/sales-card-view.js";
-import { BATCH, greeting, refusalGuide, researchOption, startNext } from "../src/mcp/sales-guided.js";
+import { BATCH, greeting, refusalGuide, researchOption, startNext, startSay } from "../src/mcp/sales-guided.js";
 import { guessCompany } from "../src/mcp/tools-search.js";
 import { daybreakPlan, daybreakSay, daybreakWork, rateText, reportFrom, reportNext, reportSay } from "../src/mcp/tools-sales-reports.js";
 import { FULL, mcpCall, mcpTool, withSalesApp } from "./mcp-sales-harness.js";
@@ -17,7 +17,7 @@ import { FULL, mcpCall, mcpTool, withSalesApp } from "./mcp-sales-harness.js";
  * sessions call through this: a session write without one gets a work session of the key's person, made once per key (the session
  * rules have their own test).
  */
-const SESSION_WRITES = new Set(["log_reply", "log_call", "update_lead", "add_leads", "enrich_lead", "propose_play", "propose_brain_change"]);
+const SESSION_WRITES = new Set(["log_reply", "log_call", "update_lead", "add_leads", "enrich_lead", "propose_play", "propose_brain_change", "propose_offer"]);
 function workSessions(origin: string) {
   const sessions = new Map<string, Promise<string>>();
   const sessionOf = (token: string) => {
@@ -51,6 +51,13 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
   // Options: first is the suggestion; never more than three; review sessions only review.
   assert.deepEqual(startNext({ mode: "review", counts: { toReview: 3 } }).slice(0, 1), ["Review the 3 drafts waiting"]);
   assert.equal(startNext({ mode: "work", counts: { replies: 1, callsDue: 2, toReview: 3, followUpsDue: 4, needsYou: 5 }, newLeads: 6 }).length, 3);
+  // Offers: with none set up, setting one up is offered once nothing more urgent waits; the welcome names the offer being worked on.
+  assert.deepEqual(startNext({ mode: "work", counts: {}, noOffer: true }), ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
+  assert.equal(startNext({ mode: "work", counts: { replies: 1, callsDue: 2, toReview: 3 }, noOffer: true }).includes("Set up the first offer: tell me what you sell and who buys it"), false);
+  const at = new Date("2026-10-10T03:00:00Z");
+  assert.equal(startSay({ name: "Asha", timeZone: "Asia/Kolkata", mode: "work", counts: {}, offers: ["Dealer Commerce"], now: at }), "Good morning, Asha. Welcome to Dealflow Sales: I research and judge leads and write drafts, and you send and approve everything. Nothing urgent is waiting. Working on Dealer Commerce.");
+  assert.match(startSay({ name: "Asha", timeZone: "Asia/Kolkata", mode: "work", counts: {}, offers: ["Dealer Commerce", "Startup Partner"], now: at }), /Nothing urgent is waiting\. Offers: Dealer Commerce and Startup Partner; say which to work on\.$/);
+  assert.match(startSay({ name: "Asha", timeZone: "Asia/Kolkata", mode: "work", counts: {}, offers: [], now: at }), /Nothing urgent is waiting\.$/);
 
   await withSalesApp(async ({ ok: okRaw, api, db, origin, tokenFor }) => {
     const withSession = workSessions(origin);
@@ -58,7 +65,8 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
     const writer = await tokenFor("member"); const reviewer = await tokenFor("member");
     const empty = await ok(writer, "start_sales", {});
     assert.match(empty.say, /^Good (morning|afternoon|evening), Person\. Welcome to Dealflow Sales: .*Nothing urgent is waiting\.$/);
-    assert.deepEqual(empty.next, ["Find new leads: tell me the area and the kind of business", "Plan the next play", "Look at what is working this week"]);
+    // The venture has no offer yet: setting one up comes first.
+    assert.deepEqual(empty.next, ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
     assert.equal(empty.steps.length, 8);
     // How to show it: this connection can't tell which chat app it is, so the instructions decide between an artifact and a table.
     assert.deepEqual(empty.view, { present: "artifact_or_table", title: "Dealflow Sales: today" });
@@ -145,7 +153,7 @@ test("research suggestions name the busiest cities of ALL new leads and offer on
     assert.equal((await ok(writer, "start_sales", {})).next[0], "Research the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
     // Everyone's leads (scope all) count the same way; someone else's new leads are not in "mine".
     const other = await tokenFor("member2");
-    assert.deepEqual((await ok(other, "start_sales", {})).next, ["Find new leads: tell me the area and the kind of business", "Plan the next play", "Look at what is working this week"]);
+    assert.deepEqual((await ok(other, "start_sales", {})).next, ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
     assert.equal((await ok(other, "start_sales", { scope: "all" })).next[0], "Research the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
   }, "mcp_sales_cities");
 });
@@ -621,7 +629,7 @@ test("names instead of ids: one match proceeds, several come back as candidates,
     // Enrich: ask the office PC to fill in contacts and evidence; the leads join one queued run, which list_find_runs shows.
     const enrich = await ok(writer, "enrich_lead", { leads: [{ company: "Sharma Foods" }, { leadId: idOf("Rao Metals") }, { company: "Jain" }] });
     assert.equal(enrich.queued, 2);
-    assert.match(enrich.say, /^Queued 2 leads for the office PC to fill in contacts and evidence; 1 could not be queued\./);
+    assert.match(enrich.say, /^Queued 2 leads for the lead finder to fill in contacts and evidence; 1 could not be queued\./);
     assert.match(enrich.then, /list_find_runs/);
     assert.equal(typeof enrich.runId, "string");
     assert.equal(enrich.results.find((row: any) => row.company === "Jain").ok, false);

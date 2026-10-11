@@ -49,7 +49,9 @@ export const opportunityInputSchema = z.object({
   observedSignal: z.string().trim().max(2_000).default(""), fitReason: z.string().trim().max(2_000).default(""), evidenceConfidence: confidenceSchema.default("low"), stage: stageInput.default("identified"), ownerId: idSchema,
   nextAction: z.string().trim().max(1_000).default(""), nextActionAt: isoDateSchema.optional(), valueEstimateMinor: z.number().int().nonnegative().optional(), currency: currencyCodeSchema.optional(),
   city: z.string().trim().max(120).optional(), region: z.string().trim().max(120).optional(), country: z.string().trim().max(80).optional(), website: websiteSchema.optional(), category: z.string().trim().max(200).optional(),
-  contactRoutes: z.array(contactRouteSchema).max(20).default([]), playId: idSchema.optional(), relevance: z.number().int().min(0).max(100).optional(), fitBand: z.enum(["A", "B", "C"]).optional(),
+  contactRoutes: z.array(contactRouteSchema).max(20).default([]), playId: idSchema.optional(),
+  /** The offer this lead is pursued for (sales-offers.ts); its approved packet is what Claude judges and writes against. */
+  offerId: idSchema.optional(), relevance: z.number().int().min(0).max(100).optional(), fitBand: z.enum(["A", "B", "C"]).optional(),
   exitReason: z.string().trim().max(500).optional(), tags: z.array(z.string().trim().min(1).max(40)).max(20).default([]),
   // The deal: value (valueEstimateMinor + currency), when it should close, how likely (overrides the stage default, see STAGE_PROBABILITY) and, once lost, why.
   expectedCloseAt: isoDateSchema.optional(), probability: z.number().int().min(0).max(100).optional(), lostReason: lostReasonSchema.optional(),
@@ -72,7 +74,7 @@ export type Lead = z.infer<typeof opportunitySchema>;
 
 export const leadListQuerySchema = z.object({
   ventureId: idSchema.optional(), pipelineId: idSchema.optional(), stage: z.string().max(400).optional(), q: z.string().trim().max(200).optional(), owner: z.union([z.literal("me"), idSchema]).optional(),
-  needsYou: z.enum(["true", "false"]).optional(), playId: idSchema.optional(), verdict: z.enum(["recommend", "hold", "reject", "none"]).optional(),
+  needsYou: z.enum(["true", "false"]).optional(), playId: idSchema.optional(), offerId: z.union([idSchema, z.literal("none")]).optional(), verdict: z.enum(["recommend", "hold", "reject", "none"]).optional(),
   // Where and what they are: exact (case-insensitive) values picked from the facets; "none" means not set. Free text goes in `q`.
   city: z.string().trim().max(120).optional(), region: z.string().trim().max(120).optional(), category: z.string().trim().max(200).optional(),
   // How we can reach them: a phone or WhatsApp number, an email address, WhatsApp consent recorded, or no phone/WhatsApp/email route yet.
@@ -91,7 +93,9 @@ const facetCountSchema = z.object({ value: z.string(), count: z.number().int().n
 export const leadFacetsSchema = z.object({
   total: z.number().int().nonnegative(),
   regions: z.array(facetCountSchema), cities: z.array(facetCountSchema.extend({ region: z.string().optional() })), categories: z.array(facetCountSchema),
-  notSet: z.object({ regions: z.number().int().nonnegative(), cities: z.number().int().nonnegative(), categories: z.number().int().nonnegative() }),
+  /** Leads per offer (value = the offer id, name = its name); `notSet.offers` counts leads with no offer. */
+  offers: z.array(facetCountSchema.extend({ name: z.string() })).default([]),
+  notSet: z.object({ regions: z.number().int().nonnegative(), cities: z.number().int().nonnegative(), categories: z.number().int().nonnegative(), offers: z.number().int().nonnegative().default(0) }),
   contact: z.object({ phone: z.number().int().nonnegative(), email: z.number().int().nonnegative(), whatsappOptIn: z.number().int().nonnegative(), none: z.number().int().nonnegative() }),
 });
 export type LeadFacets = z.infer<typeof leadFacetsSchema>;
@@ -126,7 +130,7 @@ export const verdictEvidenceSchema = z.object({ claim: z.string().trim().min(1).
 export const verdictGateSchema = z.object({ gate: z.string().trim().min(1).max(80), result: z.enum(["pass", "fail", "unknown"]), note: z.string().trim().max(500).default("") });
 const score = z.number().int().min(1).max(3);
 export const verdictInputSchema = z.object({
-  decision: z.enum(["recommend", "hold", "reject"]), confidence: confidenceSchema, offer: z.string().trim().min(1).max(200), offerFit: z.string().trim().min(1).max(2_000),
+  decision: z.enum(["recommend", "hold", "reject"]), confidence: confidenceSchema, offer: z.string().trim().min(1).max(200), /** The offer judged against (defaults to the lead's offer). */ offerId: idSchema.optional(), offerFit: z.string().trim().min(1).max(2_000),
   evidence: z.array(verdictEvidenceSchema).min(1).max(20), gates: z.array(verdictGateSchema).max(12).default([]),
   scores: z.object({ fit: score, need: score, access: score, ability: score, timing: score }).partial().default({}),
   against: z.string().trim().min(1).max(2_000), openQuestion: z.string().trim().max(1_000).default(""), contactRoute: z.string().trim().max(500).default(""),
@@ -168,7 +172,7 @@ export const draftSchema = z.object({
 });
 export type Draft = z.infer<typeof draftSchema>;
 export const draftWithLeadSchema = draftSchema.extend({
-  lead: opportunitySchema.pick({ id: true, companyName: true, contactName: true, city: true, stage: true, ownerId: true, ventureId: true, contactRoutes: true, observedSignal: true, verdict: true, whatsappOptIn: true, doNotContact: true }),
+  lead: opportunitySchema.pick({ id: true, companyName: true, contactName: true, city: true, stage: true, ownerId: true, ventureId: true, offerId: true, contactRoutes: true, observedSignal: true, verdict: true, whatsappOptIn: true, doNotContact: true }),
   needsPersonApproval: z.boolean(), approvalReason: z.enum(["first_batch", "every_message"]).nullable(),
 });
 
@@ -176,7 +180,7 @@ export const draftWithLeadSchema = draftSchema.extend({
 export const playStepSchema = z.object({ day: z.number().int().min(0).max(60), channel: z.enum(["call", "email", "whatsapp", "linkedin"]), action: z.string().trim().min(1).max(300) });
 export const playInputSchema = z.object({
   ventureId: idSchema, pipelineId: idSchema.optional(), name: z.string().trim().min(1).max(120), motion: z.enum(["high_touch", "volume"]).default("high_touch"),
-  audience: z.string().trim().max(2_000).default(""), offerName: z.string().trim().max(200).default(""), hypothesis: z.string().trim().max(1_000).default(""), metric: z.string().trim().max(300).default(""),
+  audience: z.string().trim().max(2_000).default(""), offerName: z.string().trim().max(200).default(""), /** The offer this play sells (its name fills offerName). */ offerId: idSchema.optional(), hypothesis: z.string().trim().max(1_000).default(""), metric: z.string().trim().max(300).default(""),
   stopRule: z.string().trim().max(500).default(""), batchSize: z.number().int().min(1).max(500).default(10), steps: z.array(playStepSchema).max(10).default([]),
 });
 export const PLAY_STATUSES = ["draft", "approved", "running", "paused", "done"] as const;
@@ -188,9 +192,9 @@ export const playSchema = playInputSchema.extend({
 });
 export type Play = z.infer<typeof playSchema>;
 
-// Find-leads runs: a plan the office PC's engine picks up. The web app only plans, queues and shows results.
+// Find-leads runs: a plan the lead finder works (the one built into the API, or an office PC engine over the bridge). The web app plans, queues and shows results.
 export const findRunInputSchema = z.object({
-  ventureId: idSchema, playId: idSchema.optional(), request: z.string().trim().min(3).max(2_000),
+  ventureId: idSchema, playId: idSchema.optional(), /** The offer to search for: the finder uses its packet (places, industries, search words, signals, negatives) and new leads get it. */ offerId: idSchema.optional(), request: z.string().trim().min(3).max(2_000),
   // "find" looks for new leads; "enrich" (made by POST /sales/leads/:id/enrich) fills in contact details of the named leads.
   kind: z.enum(["find", "enrich"]).default("find"), leadIds: z.array(idSchema).min(1).max(100).optional(),
   plan: z.object({ places: z.array(z.string().trim().min(1).max(120)).max(30).default([]), categories: z.array(z.string().trim().min(1).max(120)).max(30).default([]), searches: z.array(z.string().trim().min(1).max(300)).max(50).default([]), limit: z.number().int().min(1).max(500).default(50) }).default({ places: [], categories: [], searches: [], limit: 50 }),
@@ -205,11 +209,21 @@ export const findRunSchema = findRunInputSchema.extend({
 
 // The venture's sales brain: fixed kinds of items. Claude and the team propose drafts; the owner or a venture head approves.
 export const BRAIN_KINDS = ["offer", "target_profile", "message_rules", "venture_settings", "notes"] as const;
-export const brainItemInputSchema = z.object({ ventureId: idSchema, kind: z.enum(BRAIN_KINDS), title: z.string().trim().min(1).max(160), body: z.string().trim().min(1).max(20_000) });
+export const brainItemInputSchema = z.object({
+  ventureId: idSchema, kind: z.enum(BRAIN_KINDS), title: z.string().trim().min(1).max(160), body: z.string().trim().min(1).max(20_000),
+  // Approved items of the same venture (any kind) this proposal consolidates: approving it retires them too. Its same-title predecessor is replaced anyway.
+  replaces: z.array(idSchema).max(20).optional(),
+});
 export const brainItemUpdateSchema = brainItemInputSchema.omit({ ventureId: true, kind: true }).partial().refine((value) => Object.keys(value).length > 0);
+const BRAIN_STATUSES = ["draft", "approved", "archived"] as const;
 export const brainItemSchema = brainItemInputSchema.extend({
-  id: idSchema, workspaceId: idSchema, status: z.enum(["draft", "approved", "archived"]), version: z.number().int().positive(), proposedBy: idSchema, via: z.enum(["app", "claude", "import"]),
+  id: idSchema, workspaceId: idSchema, status: z.enum(BRAIN_STATUSES), version: z.number().int().positive(), proposedBy: idSchema, via: z.enum(["app", "claude", "import"]),
   approvedBy: idSchema.optional(), approvedAt: isoDateSchema.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
+  // The items in `replaces`, named (their status now: approved ones are what approving would retire); on a retired item, the approval that replaced it.
+  replacesItems: z.array(z.object({ id: idSchema, title: z.string(), kind: z.enum(BRAIN_KINDS), version: z.number().int().positive(), status: z.enum(BRAIN_STATUSES) })).optional(),
+  replacedBy: idSchema.optional(), archivedBy: idSchema.optional(), archivedAt: isoDateSchema.optional(),
+  // Only on the approve answer: how many of `replaces` this approval retired.
+  retired: z.number().int().nonnegative().optional(),
 });
 export type BrainItem = z.infer<typeof brainItemSchema>;
 
@@ -219,7 +233,7 @@ export const suppressionSchema = suppressionInputSchema.extend({ id: idSchema, w
 
 // Lead detail and Today (Overview).
 export const leadDetailSchema = z.object({ lead: opportunitySchema, activities: z.array(activitySchema), drafts: z.array(draftSchema), verdicts: z.array(verdictSchema) });
-export const leadCardSchema = opportunitySchema.pick({ id: true, ventureId: true, companyName: true, contactName: true, city: true, stage: true, ownerId: true, nextAction: true, nextActionAt: true, verdict: true, whatsappOptIn: true, contactRoutes: true, doNotContact: true }).extend({ why: z.string() });
+export const leadCardSchema = opportunitySchema.pick({ id: true, ventureId: true, offerId: true, companyName: true, contactName: true, city: true, stage: true, ownerId: true, nextAction: true, nextActionAt: true, verdict: true, whatsappOptIn: true, contactRoutes: true, doNotContact: true }).extend({ why: z.string() });
 export const inboxItemSchema = z.object({ activity: activitySchema, lead: leadCardSchema });
 export const salesOverviewSchema = z.object({
   counts: z.object({ replies: z.number().int(), callsDue: z.number().int(), followUpsDue: z.number().int(), toReview: z.number().int(), readyToSend: z.number().int(), needsYou: z.number().int(), wonToHandOver: z.number().int(), openLeads: z.number().int(), totalLeads: z.number().int() }),
@@ -332,12 +346,14 @@ export const reportStatSchema = z.object({ value: z.number().nullable(), n: repo
 export type ReportRate = z.infer<typeof reportRateSchema>;
 export type ReportStat = z.infer<typeof reportStatSchema>;
 /** `from` and `to` are days (YYYY-MM-DD, whole days in the time zone) or ISO times; the default is the last 30 days, the most one year. */
+/** Only the leads of one offer (its id), or `none` for the leads that have no offer. */
+const offerFilterSchema = z.union([idSchema, z.literal("none")]);
 export const salesReportQuerySchema = z.object({
-  ventureId: idSchema.optional(), from: z.string().trim().max(40).optional(), to: z.string().trim().max(40).optional(), owner: z.enum(["me", "all"]).default("all"), tz: timezoneSchema.optional(),
+  ventureId: idSchema.optional(), offerId: offerFilterSchema.optional(), from: z.string().trim().max(40).optional(), to: z.string().trim().max(40).optional(), owner: z.enum(["me", "all"]).default("all"), tz: timezoneSchema.optional(),
 });
 /** The funnel steps, in order (the Pipeline columns without Closed). */
 export const REPORT_STAGE_GROUPS = ["new", "contacted", "talking", "meeting", "proposal", "won"] as const;
-/** Where a lead came from: the office PC engine, Claude (connector), a person in the app, an import, or unknown. */
+/** Where a lead came from: a lead finder (the one built into Venture OS, or the office PC engine), Claude (connector), a person in the app, an import, or unknown. */
 export const REPORT_SOURCES = ["engine", "claude", "manual", "import", "other"] as const;
 const reportHistogramSchema = z.array(z.object({ key: z.string(), label: z.string(), count: reportCount }));
 /** One row of "where leads come from": the leads that moved in the period, and how many reached each step (or further). */
@@ -362,7 +378,7 @@ export const salesWorkRulesSchema = z.object({
 });
 export type SalesWorkRules = z.infer<typeof salesWorkRulesSchema>;
 export const salesReportSchema = z.object({
-  range: z.object({ from: isoDateSchema, to: isoDateSchema, days: reportCount, tz: z.string(), owner: z.enum(["me", "all"]), ventureId: idSchema.optional() }),
+  range: z.object({ from: isoDateSchema, to: isoDateSchema, days: reportCount, tz: z.string(), owner: z.enum(["me", "all"]), ventureId: idSchema.optional(), offerId: offerFilterSchema.optional() }),
   /** Each venture's working rules the speed and reply-time numbers were measured with (one row per venture in the report). */
   workRules: z.array(salesWorkRulesSchema),
   generatedAt: isoDateSchema,
@@ -413,10 +429,10 @@ export const salesReportSchema = z.object({
 export type SalesReport = z.infer<typeof salesReportSchema>;
 
 /** The morning work list (GET /sales/daybreak): what a scheduled Claude Code run, or a person, works through first. Read only. */
-export const daybreakQuerySchema = z.object({ ventureId: idSchema.optional(), owner: z.enum(["me", "all"]).default("me"), tz: timezoneSchema.optional() });
-const daybreakLeadSchema = z.object({ id: idSchema, ventureId: idSchema, companyName: z.string(), contactName: z.string(), city: z.string().optional(), stage: salesStageSchema, ownerId: idSchema });
+export const daybreakQuerySchema = z.object({ ventureId: idSchema.optional(), offerId: offerFilterSchema.optional(), owner: z.enum(["me", "all"]).default("me"), tz: timezoneSchema.optional() });
+const daybreakLeadSchema = z.object({ id: idSchema, ventureId: idSchema, offerId: idSchema.optional(), companyName: z.string(), contactName: z.string(), city: z.string().optional(), stage: salesStageSchema, ownerId: idSchema });
 export const daybreakSchema = z.object({
-  generatedAt: isoDateSchema, today: z.string(), tz: z.string(), owner: z.enum(["me", "all"]), ventureId: idSchema.optional(),
+  generatedAt: isoDateSchema, today: z.string(), tz: z.string(), owner: z.enum(["me", "all"]), ventureId: idSchema.optional(), offerId: offerFilterSchema.optional(),
   /**
    * The warm-reply time (working hours) the summary speaks of: the venture's, or the one every venture in the list shares; null when they differ.
    * `overSla` on each reply uses its own venture's rules (`workRules`). Only warm replies (interested, send_details, price_first) are ever over it.
@@ -456,7 +472,7 @@ export type Daybreak = z.infer<typeof daybreakSchema>;
 // ---- Lists at scale: bulk edits, CSV export and import, saved views (docs/sales-dealflow.md, "Lists at scale") ----
 
 /** What a person can do to many leads at once. Each lead is checked on its own, exactly like a single edit; leads that refuse are reported. */
-export const BULK_ACTIONS = ["assign", "tag", "untag", "stage", "play", "delete"] as const;
+export const BULK_ACTIONS = ["assign", "tag", "untag", "stage", "play", "offer", "delete"] as const;
 export type BulkAction = (typeof BULK_ACTIONS)[number];
 /** At most this many leads per bulk call, whether they are named by id or by the filters that match them. */
 export const BULK_MAX = 500;
@@ -467,6 +483,7 @@ export const bulkLeadsInputSchema = z.discriminatedUnion("action", [
   z.object({ ...bulkTargets, action: z.literal("untag"), tag: z.string().trim().min(1).max(40) }),
   z.object({ ...bulkTargets, action: z.literal("stage"), stage: salesStageSchema, exitReason: z.string().trim().max(500).optional(), lostReason: lostReasonSchema.optional() }),
   z.object({ ...bulkTargets, action: z.literal("play"), playId: idSchema }),
+  z.object({ ...bulkTargets, action: z.literal("offer"), offerId: idSchema }),
   z.object({ ...bulkTargets, action: z.literal("delete") }),
 ]).refine((value) => (value.ids ? 1 : 0) + (value.filter ? 1 : 0) === 1, { message: "Send either ids or a filter", path: ["ids"] });
 export type BulkLeadsInput = z.infer<typeof bulkLeadsInputSchema>;
@@ -489,7 +506,8 @@ export const bulkResultSchema = z.object({
 export type BulkResult = z.infer<typeof bulkResultSchema>;
 
 /** The columns an import understands. A CSV column is mapped to each field by its index (null: not in the file). */
-export const IMPORT_FIELDS = ["company", "contactName", "website", "category", "city", "region", "country", "phone", "email", "source", "tags", "value"] as const;
+/** `offer` names one of the venture's offers (any case); a row without one gets the venture's only usable offer, when there is one. */
+export const IMPORT_FIELDS = ["company", "contactName", "website", "category", "city", "region", "country", "phone", "email", "source", "tags", "value", "offer"] as const;
 export type ImportField = (typeof IMPORT_FIELDS)[number];
 export const importFieldSchema = z.enum(IMPORT_FIELDS);
 export const importMappingSchema = z.partialRecord(importFieldSchema, z.number().int().min(0).max(255).nullable());

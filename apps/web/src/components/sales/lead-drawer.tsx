@@ -18,8 +18,9 @@ import { LeadGlance } from "@/components/sales/lead-glance";
 import { LeadLog, LeadLogBar, type LogMode } from "@/components/sales/lead-log";
 import { LeadNextAction } from "@/components/sales/lead-manage";
 import { LeadTimeline } from "@/components/sales/lead-timeline";
+import { useVentureOffers } from "@/components/sales/offer-model";
 import {
-  callablePhone, canDeleteLead, canEditLead, CHANNEL_LABELS, DRAFT_STATUS_LABELS, hostOf, isManager, isWonStage, PersonChip, Phone, safeUrl, snippet, StageChip, telHref, timeAgo, useUrlParams, VerdictChip,
+  callablePhone, canDeleteLead, canEditLead, CHANNEL_LABELS, DRAFT_STATUS_LABELS, hostOf, isManager, isWonStage, OfferChip, PersonChip, Phone, safeUrl, snippet, StageChip, telHref, timeAgo, useUrlParams, VerdictChip,
 } from "@/components/sales/sales-ui";
 
 type LeadTab = "activity" | "claude" | "drafts" | "details";
@@ -43,7 +44,7 @@ function Drafts({ drafts }: { drafts: Draft[] }) {
  * questions at a glance, then Activity, Claude, Drafts and Details. A bar under it logs a call, a reply or a note.
  */
 export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () => void }) {
-  const { session, ventureId, ventureName, personName, refresh } = useSalesShell();
+  const { session, ventureId, ventureName, personName, refresh, refreshKey } = useSalesShell();
   const { members } = useSalesOverview();
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [error, setError] = useState("");
@@ -70,6 +71,8 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
   const { create: createDelivery, busyId } = useDeliveryWork(changed);
 
   const lead = detail?.lead;
+  const offers = useVentureOffers(lead?.offerId ? lead.ventureId : undefined, refreshKey);
+  const offerName = lead?.offerId ? offers?.find((offer) => offer.id === lead.offerId)?.name : undefined;
   const editable = !!session && !!lead && canEditLead(session, lead);
   const rawWebsite = lead?.website?.trim();
   const website = rawWebsite ? safeUrl(/^https?:\/\//i.test(rawWebsite) ? rawWebsite : `https://${rawWebsite}`) : undefined;
@@ -95,7 +98,7 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
     {!detail && error && <EmptyState variant="error" title="Could not open this lead" body={error} action={{ label: "Try again", onClick: () => setRevision((value) => value + 1) }} />}
     {detail && lead && session && <div className="grid grid-cols-1 gap-5 text-sm text-neutral-600">
       <div className="grid gap-2.5">
-        <div className="flex flex-wrap items-center gap-2"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} />{lead.needsYou && <Badge tone="amber">Needs you</Badge>}{lead.doNotContact && <Badge tone="red">Do not contact</Badge>}{!ventureId && <Badge>{ventureName(lead.ventureId)}</Badge>}</div>
+        <div className="flex flex-wrap items-center gap-2"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} />{lead.needsYou && <Badge tone="amber">Needs you</Badge>}{lead.doNotContact && <Badge tone="red">Do not contact</Badge>}{offerName && <OfferChip name={offerName} />}{!ventureId && <Badge>{ventureName(lead.ventureId)}</Badge>}</div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="inline-flex items-center gap-1.5"><span className="text-xs font-medium text-neutral-400">Owner</span><PersonChip name={personName(lead.ownerId)} /></span>{lead.contactName && <span className="text-xs font-medium text-neutral-500">Contact: <strong className="font-semibold text-neutral-700">{lead.contactName}</strong></span>}</div>
         <LeadNextAction lead={lead} canEdit={editable} onSaved={changed} onDirty={setDirty} />
       </div>

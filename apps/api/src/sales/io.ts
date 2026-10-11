@@ -14,6 +14,7 @@ import { assertOwnerInVenture, canSeeVenture, canWriteIn, forbidden, forbidClaud
 import { CSV_BOM, csvRow, detectDelimiter, parseCsv } from "./csv.js";
 import { auditSales, type SalesCtx } from "./ctx.js";
 import { defined, discardOpenDrafts, requireLeadEditor, updateLead } from "./leads.js";
+import { OFFERS, assertVentureOffer, defaultOfferId, offerNames } from "./offers.js";
 import { leadMatchFilter } from "./queries.js";
 import { isExitStage, isPreContactStage, isWonStage, normalizeStage } from "./rules.js";
 import { SUPPRESS_KEYS_VERSION, extractEmails, extractPhones, leadSuppressKeys, normalizePhone } from "./suppression.js";
@@ -57,6 +58,8 @@ async function applyOne(ctx: SalesCtx, lead: AppDocument, input: BulkLeadsInput)
   switch (input.action) {
     case "assign": return lead.ownerId === input.ownerId ? "unchanged" : edit({ ownerId: input.ownerId });
     case "play": return lead.playId === input.playId ? "unchanged" : edit({ playId: input.playId });
+    // Moving to another offer: one of the lead's own venture, not archived (updateLead checks it).
+    case "offer": return lead.offerId === input.offerId ? "unchanged" : edit({ offerId: input.offerId });
     case "stage": {
       if (normalizeStage(lead.stage) === input.stage) return "unchanged";
       if (lead.doNotContact === true && CONTACT_STAGES.has(input.stage)) throw new AppError(409, "CONFLICT", DNC_REASON);
@@ -82,6 +85,7 @@ function notYetDone(input: BulkLeadsInput): Document | null {
   switch (input.action) {
     case "assign": return { ownerId: { $ne: input.ownerId } };
     case "play": return { playId: { $ne: input.playId } };
+    case "offer": return { offerId: { $ne: input.offerId } };
     // Rows not migrated yet may still carry an older name of the same stage.
     case "stage": return { stage: { $nin: [input.stage, ...Object.entries(LEGACY_STAGE_MAP).filter(([, stage]) => stage === input.stage).map(([legacy]) => legacy)] } };
     case "tag": return { tags: { $not: new RegExp(`^${escapeRegExp(input.tag)}$`, "i") } };
@@ -119,7 +123,7 @@ async function bulkTargets(ctx: SalesCtx, input: BulkLeadsInput): Promise<Target
 }
 
 /**
- * Assign, tag, untag, move to a stage, add to a play or delete many leads. One audit entry for the call, plus the usual one per lead edited.
+ * Assign, tag, untag, move to a stage, add to a play, move to an offer or delete many leads. One audit entry for the call, plus the usual one per lead edited.
  * A filter call that matched more than BULK_MAX leads also says how many are still to go (run it again for the next ones).
  */
 export async function bulkLeads(ctx: SalesCtx, input: BulkLeadsInput): Promise<BulkResult> {
@@ -130,6 +134,12 @@ export async function bulkLeads(ctx: SalesCtx, input: BulkLeadsInput): Promise<B
     if (isExitStage(input.stage) && !input.exitReason?.trim()) throw new AppError(400, "BAD_REQUEST", "Say why: a lost or not-a-fit lead needs a reason");
     if (input.stage === "lost" && !input.lostReason) throw new AppError(400, "BAD_REQUEST", "Pick why it was lost: a lost lead needs a reason category");
     if (input.lostReason && input.stage !== "lost") throw new AppError(400, "BAD_REQUEST", "A lost reason only applies to a lost lead");
+  }
+  if (input.action === "offer") {
+    // The offer must exist and be open to leads; each lead is then checked to be of the offer's venture.
+    const offer = await ctx.db.collection(OFFERS).findOne({ _id: input.offerId, workspaceId: ctx.workspaceId }, { projection: { ventureId: 1 } });
+    if (!offer || !canSeeVenture(ctx.actor, offer.ventureId)) throw new AppError(400, "BAD_REQUEST", "That offer does not exist");
+    await assertVentureOffer(ctx, offer.ventureId, input.offerId);
   }
   const targets = await bulkTargets(ctx, input);
   const { leads, missing, truncated } = targets;
@@ -166,7 +176,7 @@ const STAGE_NAMES: Record<string, string> = {
   identified: "Identified", researched: "Researched", approved_for_contact: "Ready to contact", contacted: "Contacted", replied: "Replied", discovery_booked: "Call booked", qualified: "Qualified", proposal: "Proposal",
   invoice_contract: "Won - invoice", cash_collected: "Won - paid", delivery: "In delivery", retained_referred: "Retained", thinking: "Thinking", lost: "Lost", disqualified: "Not a fit",
 };
-const EXPORT_COLUMNS = ["Company", "Contact person", "Website", "Industry", "City", "State", "Country", "Phone", "Email", "Stage", "Owner", "Next action", "Next action date", "Deal value", "Currency", "Expected close", "Chance (%)", "Source", "Tags", "Do not contact", "Added"];
+const EXPORT_COLUMNS = ["Company", "Contact person", "Website", "Industry", "City", "State", "Country", "Phone", "Email", "Stage", "Offer", "Owner", "Next action", "Next action date", "Deal value", "Currency", "Expected close", "Chance (%)", "Source", "Tags", "Do not contact", "Added"];
 
 const dayIn = (value: unknown) => value instanceof Date ? new Intl.DateTimeFormat("en-CA", { timeZone: SALES_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(value) : "";
 function dateTimeIn(value: unknown): string {
@@ -208,6 +218,7 @@ export async function exportLeads(ctx: SalesCtx, query: ExportQuery): Promise<{ 
     }
     const people = await ctx.db.collection("users").find({ _id: { $in: [...new Set(found.map((lead) => String(lead.ownerId)))] } }, { projection: { name: 1 } }).toArray();
     const names = new Map(people.map((person) => [String(person._id), String(person.name ?? "")]));
+    const offers = await offerNames(ctx.db, ctx.workspaceId, found.map((lead) => lead.offerId));
     for (const lead of found) {
       const routes: { kind: string; value: string }[] = Array.isArray(lead.contactRoutes) ? lead.contactRoutes : [];
       const blocked = lead.doNotContact === true;
@@ -215,7 +226,7 @@ export async function exportLeads(ctx: SalesCtx, query: ExportQuery): Promise<{ 
       lines.push(csvRow([
         lead.companyName, lead.contactName, lead.website, lead.category, lead.city, lead.region, lead.country,
         blocked ? "" : routes.find((route) => route.kind === "phone")?.value, blocked ? "" : routes.find((route) => route.kind === "email")?.value,
-        STAGE_NAMES[stage] ?? stage, names.get(String(lead.ownerId)) ?? "", lead.nextAction, dateTimeIn(lead.nextActionAt), amount(lead.valueEstimateMinor), amount(lead.valueEstimateMinor) ? String(lead.currency ?? "INR").toUpperCase() : "",
+        STAGE_NAMES[stage] ?? stage, offers.get(String(lead.offerId)) ?? "", names.get(String(lead.ownerId)) ?? "", lead.nextAction, dateTimeIn(lead.nextActionAt), amount(lead.valueEstimateMinor), amount(lead.valueEstimateMinor) ? String(lead.currency ?? "INR").toUpperCase() : "",
         dayIn(lead.expectedCloseAt), typeof lead.probability === "number" ? lead.probability : STAGE_PROBABILITY[stage], lead.source, Array.isArray(lead.tags) ? lead.tags.join("; ") : "", blocked ? "Yes" : "", dayIn(lead.createdAt),
       ]));
       rows++;
@@ -249,7 +260,7 @@ export function cleanCell(value: string): string {
   return value.replace(LEADING_INVISIBLE, "").trim().replace(SAFETY_APOSTROPHE, "").replace(LEADING_INVISIBLE, "").trim();
 }
 
-const FIELD_LABELS: Record<string, string> = { companyName: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", contactRoutes: "Phone or email", tags: "Tags", valueEstimateMinor: "Value", source: "Source" };
+const FIELD_LABELS: Record<string, string> = { companyName: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", contactRoutes: "Phone or email", tags: "Tags", valueEstimateMinor: "Value", source: "Source", offerId: "Offer" };
 /** Header names a column is recognised by, best first. */
 const SYNONYMS: Record<ImportField, string[]> = {
   company: ["company", "company name", "business name", "business", "organisation", "organization", "firm", "firm name", "name"],
@@ -264,11 +275,12 @@ const SYNONYMS: Record<ImportField, string[]> = {
   source: ["source", "lead source", "origin", "found at"],
   tags: ["tags", "tag", "labels", "label"],
   value: ["value", "deal value", "amount", "budget", "deal size"],
+  offer: ["offer", "offer name"],
 };
 /** Second pass: a header that contains one of these. The contact person needs "contact" with "name" or "person" ("Contacted?" is a yes/no column). */
 const CONTAINS: Partial<Record<ImportField, (string | ((name: string) => boolean))[]>> = {
   company: ["company", "business", "firm", "organi"], contactName: [(name) => name.includes("contact") && (name.includes("name") || name.includes("person"))], website: ["website", "url", "site"],
-  category: ["industry", "category", "sector"], city: ["city", "town"], region: ["state", "region"], phone: ["phone", "mobile", "tel"], email: ["mail"], source: ["source"], tags: ["tag", "label"], value: ["value", "amount"],
+  category: ["industry", "category", "sector"], city: ["city", "town"], region: ["state", "region"], phone: ["phone", "mobile", "tel"], email: ["mail"], source: ["source"], tags: ["tag", "label"], value: ["value", "amount"], offer: ["offer"],
 };
 const norm = (header: string) => header.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -290,7 +302,18 @@ export function guessMapping(columns: string[]): ImportMapping {
 
 const WEB_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const AMOUNT = /^\d+(\.\d{1,2})?$/;
-const IMPORT_LABELS: Record<ImportField, string> = { company: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", phone: "Phone", email: "Email", source: "Source", tags: "Tags", value: "Value" };
+const IMPORT_LABELS: Record<ImportField, string> = { company: "Company", contactName: "Contact person", website: "Website", category: "Industry", city: "City", region: "State", country: "Country", phone: "Phone", email: "Email", source: "Source", tags: "Tags", value: "Value", offer: "Offer" };
+
+/** The venture's offers by name (any case, spaces folded) for the Offer column, and the offer a row without one gets. */
+type ImportOffers = { byName: Map<string, { id: string; name: string; archived: boolean }>; names: string[]; fallback?: string | undefined };
+const offerKey = (name: string) => name.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+async function importOffers(ctx: SalesCtx, ventureId: string): Promise<ImportOffers> {
+  const rows = await ctx.db.collection(OFFERS).find({ workspaceId: ctx.workspaceId, ventureId }, { projection: { name: 1, state: 1 } }).toArray();
+  return {
+    byName: new Map(rows.map((row) => [offerKey(String(row.name)), { id: String(row._id), name: String(row.name), archived: row.state === "archived" }])),
+    names: rows.filter((row) => row.state !== "archived").map((row) => String(row.name)).sort(), fallback: await defaultOfferId(ctx.db, ctx.workspaceId, ventureId),
+  };
+}
 
 /** A whole cell that is one number written with digits, spaces, brackets, dashes and a plus ("/" and "." separate numbers: "0771-2345678 / 79"). */
 const ONE_NUMBER = /^[+()\d\s-]{6,40}$/;
@@ -317,7 +340,7 @@ export function readEmailCell(text: string): string[] {
   return extractEmails(text.replace(/^mailto:/i, "").split("?")[0]!).slice(0, 1);
 }
 
-function buildRow(rowNumber: number, cells: string[], mapping: ImportMapping, pipelineId: string, ownerId: string): ImportRow {
+function buildRow(rowNumber: number, cells: string[], mapping: ImportMapping, pipelineId: string, ownerId: string, offers: ImportOffers): ImportRow {
   const raw: Partial<Record<ImportField, string>> = {};
   for (const field of IMPORT_FIELDS) { const index = mapping[field]; if (index !== null && index !== undefined && cells[index]) raw[field] = cells[index]; }
   // Long cells are refused before anything looks inside them: hunting for addresses in a huge cell is slow.
@@ -361,12 +384,18 @@ function buildRow(rowNumber: number, cells: string[], mapping: ImportMapping, pi
   const website = cell("website");
   if (website && WEB_SCHEME.test(website) && !/^https?:\/\//i.test(website)) problems.push("Website must be a web address, like example.com");
   if (!cell("company")) problems.push("Company name is missing");
+  // The Offer column names one of the venture's offers; an empty cell takes the venture's only usable offer, when there is one.
+  const offerText = cell("offer");
+  const offer = offerText ? offers.byName.get(offerKey(offerText)) : undefined;
+  if (offerText && !offer) problems.push(`Offer not found: ${offerText.slice(0, 60)} (${offers.names.length ? `this venture's offers: ${offers.names.slice(0, 5).join(", ")}` : "this venture has no offers yet"})`);
+  if (offer?.archived) problems.push(`Offer ${offer.name} is archived`);
+  const offerId = offerText ? offer?.id : offers.fallback;
 
   const parsed = opportunityInputSchema.safeParse({
     pipelineId, companyName: cell("company"), contactName: cell("contactName"), source: cell("source") || "CSV import", ownerId, stage: "identified",
     ...(website && !problems.some((problem) => problem.startsWith("Website")) ? { website } : {}), ...(cell("category") ? { category: cell("category") } : {}), ...(cell("city") ? { city: cell("city") } : {}),
     ...(cell("region") ? { region: cell("region") } : {}), ...(cell("country") ? { country: cell("country") } : {}), contactRoutes: routes, tags: tags.slice(0, 20).filter((tag) => tag.length <= 40),
-    ...(valueMinor !== undefined ? { valueEstimateMinor: valueMinor, currency: "INR" } : {}),
+    ...(valueMinor !== undefined ? { valueEstimateMinor: valueMinor, currency: "INR" } : {}), ...(offerId ? { offerId } : {}),
   });
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -445,6 +474,7 @@ async function readImport(ctx: SalesCtx, input: ImportInput, chosen?: ImportMapp
   // NUL characters only appear in binary files (a workbook saved as .xlsx, a UTF-16 file read as UTF-8 ...).
   if (input.csv.includes("\u0000")) throw new AppError(400, "BAD_REQUEST", "This is not a text file: in your spreadsheet choose File > Download (or Save as) > CSV, then import that file");
   const { pipelineId } = await importTarget(ctx, input);
+  const offers = await importOffers(ctx, input.ventureId);
   const delimiter = detectDelimiter(input.csv);
   const grid = parseCsv(input.csv, delimiter);
   if (!grid.length) throw new AppError(400, "BAD_REQUEST", "The file is empty");
@@ -457,7 +487,7 @@ async function readImport(ctx: SalesCtx, input: ImportInput, chosen?: ImportMapp
   for (const field of IMPORT_FIELDS) if (mapping[field] === undefined) mapping[field] = null;
   const missing: ImportField[] = mapping.company === null || mapping.company === undefined || mapping.company >= width ? ["company"] : [];
   const first = input.hasHeader ? 2 : 1;
-  const rows = data.map((cells, index) => buildRow(first + index, cells, mapping, pipelineId, ctx.actor.id));
+  const rows = data.map((cells, index) => buildRow(first + index, cells, mapping, pipelineId, ctx.actor.id, offers));
   return { pipelineId, delimiter, columns, mapping, guessed, missing, rows, data };
 }
 
@@ -495,7 +525,8 @@ async function lockImports(ctx: SalesCtx, ventureId: string): Promise<() => Prom
 
 /** The same rows read with the same columns into the same venture: line ends, quoting and the byte order mark do not change it. */
 function importHash(ventureId: string, data: string[][], mapping: ImportMapping): string {
-  const columns = IMPORT_FIELDS.map((field) => mapping[field] ?? null);
+  // An unmapped Offer column leaves the hash as it was before offers existed, so a file imported then is still recognised.
+  const columns = IMPORT_FIELDS.filter((field) => field !== "offer" || (mapping.offer ?? null) !== null).map((field) => mapping[field] ?? null);
   return createHash("sha256").update(JSON.stringify([ventureId, columns, data])).digest("hex");
 }
 

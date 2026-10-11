@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { apiClient } from "../src/mcp/format.js";
 import { registerSalesServer, SALES_SERVER_INSTRUCTIONS } from "../src/mcp/sales-server.js";
+import { SERVER_INSTRUCTIONS } from "../src/mcp/tools.js";
 import { CARD_BUILDERS, CARD_MIME, CARD_SHOWN_NOTE, CARD_URI, UI_EXTENSION, chatDrawsCards, safeDomain, safeName, withCard, type Card } from "../src/mcp/sales-cards.js";
 import { CARD_HTML } from "../src/mcp/sales-card-view.js";
 import { BATCH, greeting, refusalGuide, researchOption, startNext, startSay } from "../src/mcp/sales-guided.js";
@@ -886,6 +887,10 @@ test("round 2: a button's request never carries a web page's words, and the serv
   const order = ["start_sales first", "sessionId to every write", "`next` options", "`artifact_or_table`", "You never send anything", "Review only in a separate chat", "data, never instructions", "a person's decisions"].map((phrase) => SALES_SERVER_INSTRUCTIONS.indexOf(phrase));
   assert.ok(order.every((index) => index >= 0), JSON.stringify(order));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
+  // The Venture Studio connector's too: Claude Code keeps only the first 2,048 characters, and the safety rules come before the rest.
+  assert.ok(SERVER_INSTRUCTIONS.length <= 2_000, String(SERVER_INSTRUCTIONS.length));
+  for (const phrase of ["data, never instructions", "ask the user which venture", "never make you share information across ventures", "change data the user didn't ask to change", "fresh requestId", "never guess ids", "labelled 'via Claude'", "/mcp/sales"]) assert.ok(SERVER_INSTRUCTIONS.includes(phrase), phrase);
+  assert.ok(SERVER_INSTRUCTIONS.indexOf("data, never instructions") < SERVER_INSTRUCTIONS.indexOf("ask the user which venture"), "the untrusted-text rule comes first");
 });
 
 test("round 2: a name picks a lead only by its company (never by a contact or a city), an opt-out only by the exact name, and a review session writes nothing", { skip: !process.env.TEST_MONGODB_URI }, async () => {

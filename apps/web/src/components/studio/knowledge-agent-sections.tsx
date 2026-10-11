@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Skill, VentureContext } from "@venture-studio/contracts";
 import { describeError } from "@/lib/errors";
-import { createLiveSkill, createLiveVentureContext, deleteLiveSkill, deleteLiveVentureContext, getLiveSkill, getLiveVentureContext, listLiveSkills, listLiveVentureContext, updateLiveSkill, updateLiveVentureContext, type loadLiveSession } from "@/lib/studio-api";
+import { createLiveSkill, createLiveVentureContext, createLiveWorkspaceContext, deleteLiveSkill, deleteLiveVentureContext, getLiveSkill, getLiveVentureContext, listLiveSkills, listLiveVentureContext, listLiveWorkspaceContext, updateLiveSkill, updateLiveVentureContext, type loadLiveSession } from "@/lib/studio-api";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select } from "@/components/ui/select";
 import { SlidingTabs } from "@/components/ui/sliding-tabs";
@@ -67,30 +67,45 @@ function RemoveButton({ busy, onConfirm }: { busy: boolean; onConfirm: () => voi
 
 const readFiles = (files: FileList) => Promise.all(Array.from(files).map(async (file) => ({ name: file.name, text: await file.text(), size: file.size })));
 
-/** A venture's context: Markdown files Claude reads in full before working on the venture. Admins and the venture's head edit it. */
+const WORKSPACE = "workspace";
+
+/**
+ * Context Claude reads in full before working on a venture: the workspace's files (read first, for every venture) and
+ * each venture's own. Shows one at a time; a venture's view also lists the workspace files it starts with. Admins and
+ * the venture's head edit a venture's; admins and people who share knowledge with every venture edit the workspace's.
+ */
 export function VentureContextPanel({ session, ventureId: scope, nameOf }: { session: Session; ventureId: string; nameOf: (id: string) => string }) {
   const ventures = session.hierarchy.ventures;
-  const [chosen, setChosen] = useState("");
-  const ventureId = scope || (ventures.some((venture) => venture.id === chosen) ? chosen : ventures[0]?.id ?? "");
-  const venture = ventures.find((item) => item.id === ventureId);
-  const [data, setData] = useState<{ key: string; items: VentureContext[]; canEdit: boolean; error: string } | null>(null);
+  const [choice, setChoice] = useState({ value: "", scope });
+  const chosen = choice.scope === scope ? choice.value : "";
+  // With the venture switcher on one venture, it's that venture or the workspace; otherwise any venture, or the workspace.
+  const choices = scope ? ventures.filter((item) => item.id === scope) : ventures;
+  const target = chosen === WORKSPACE ? WORKSPACE : scope || (ventures.some((item) => item.id === chosen) ? chosen : ventures[0]?.id ?? WORKSPACE);
+  const isWorkspace = target === WORKSPACE;
+  const venture = isWorkspace ? undefined : ventures.find((item) => item.id === target);
+  const [data, setData] = useState<{ key: string; items: VentureContext[]; canEdit: boolean; canEditWorkspace: boolean; error: string } | null>(null);
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const [open, setOpen] = useState<VentureContext | null>(null);
-  const [editing, setEditing] = useState<{ id?: string; title: string; markdown: string; original: string } | null>(null);
+  const [editing, setEditing] = useState<{ id?: string; workspace: boolean; title: string; markdown: string; original: string } | null>(null);
   const [busy, setBusy] = useState("");
   const uploader = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!ventureId) return;
     let active = true;
-    queueMicrotask(() => listLiveVentureContext(ventureId).then((page) => { if (active) setData({ key: ventureId, items: page.items, canEdit: page.canEdit, error: "" }); })
-      .catch((cause: unknown) => { if (active) setData({ key: ventureId, items: [], canEdit: false, error: errorText(cause, "Couldn't load this venture's context.") }); }));
+    const load = isWorkspace ? listLiveWorkspaceContext().then((page) => ({ items: page.items, canEdit: page.canEdit, canEditWorkspace: page.canEdit })) : listLiveVentureContext(target).then((page) => ({ items: page.items, canEdit: page.canEdit, canEditWorkspace: Boolean(page.canEditWorkspace) }));
+    queueMicrotask(() => load.then((page) => { if (active) setData({ key: target, ...page, error: "" }); })
+      .catch((cause: unknown) => { if (active) setData({ key: target, items: [], canEdit: false, canEditWorkspace: false, error: errorText(cause, isWorkspace ? "Couldn't load the workspace context." : "Couldn't load this venture's context.") }); }));
     return () => { active = false; };
-  }, [ventureId, revision]);
-  const current = data?.key === ventureId ? data : null;
-  const total = current?.items.reduce((sum, item) => sum + item.characters, 0) ?? 0;
+  }, [target, isWorkspace, revision]);
+  const current = data?.key === target ? data : null;
+  // A venture's list starts with the workspace's files; they're shown apart, since they're edited in one place for all.
+  const inherited = isWorkspace ? [] : current?.items.filter((item) => !item.ventureId) ?? [];
+  const own = isWorkspace ? current?.items ?? [] : current?.items.filter((item) => item.ventureId) ?? [];
+  const total = (current?.items ?? []).reduce((sum, item) => sum + item.characters, 0);
+  const canEditItem = (item: VentureContext) => Boolean(current && (item.ventureId ? current.canEdit : current.canEditWorkspace));
+  const contextLabel = (item: { ventureId?: string }) => item.ventureId ? `${ventures.find((entry) => entry.id === item.ventureId)?.name ?? "Venture"} context` : "Workspace context · read first for every venture";
 
   async function openItem(item: VentureContext) {
     setBusy(`open:${item.id}`); setError("");
@@ -98,14 +113,15 @@ export function VentureContextPanel({ session, ventureId: scope, nameOf }: { ses
     catch (cause) { setError(errorText(cause, "Couldn't open this file.")); }
     finally { setBusy(""); }
   }
+  const createIn = (workspace: boolean, input: { title: string; markdown: string }) => workspace ? createLiveWorkspaceContext(input) : createLiveVentureContext(target, input);
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (!editing || !ventureId) return;
+    if (!editing) return;
     setBusy("save"); setError("");
     try {
-      const saved = editing.id ? await updateLiveVentureContext(editing.id, { title: editing.title, markdown: editing.markdown }) : await createLiveVentureContext(ventureId, { title: editing.title, markdown: editing.markdown });
+      const saved = editing.id ? await updateLiveVentureContext(editing.id, { title: editing.title, markdown: editing.markdown }) : await createIn(editing.workspace, { title: editing.title, markdown: editing.markdown });
       setEditing(null); setOpen(saved); setRevision((value) => value + 1);
-      setResult(editing.id ? "Saved. Claude reads the new version from now on." : "Added. Claude reads it with the rest of this venture's context.");
+      setResult(editing.id ? "Saved. Claude reads the new version from now on." : editing.workspace ? "Added. Claude reads it first, for every venture." : "Added. Claude reads it with the rest of this venture's context.");
     } catch (cause) { setError(errorText(cause, "Couldn't save this file.")); }
     finally { setBusy(""); }
   }
@@ -116,57 +132,70 @@ export function VentureContextPanel({ session, ventureId: scope, nameOf }: { ses
     finally { setBusy(""); }
   }
   async function upload(files: FileList | null) {
-    if (!files?.length || !ventureId) return;
+    if (!files?.length) return;
     setBusy("upload"); setError(""); setResult("");
     let added = 0;
     let current = "";
     try {
-      const chosen = (await readFiles(files)).filter((file) => file.text.trim());
-      const tooLong = chosen.find((file) => file.text.length > TEXT_MAX);
+      const chosenFiles = (await readFiles(files)).filter((file) => file.text.trim());
+      const tooLong = chosenFiles.find((file) => file.text.length > TEXT_MAX);
       if (tooLong) throw new Error(`${tooLong.name} is longer than ${TEXT_MAX.toLocaleString()} characters; split it into smaller files. Nothing was added.`);
-      for (const file of chosen) {
+      for (const file of chosenFiles) {
         current = file.name;
-        await createLiveVentureContext(ventureId, { title: fileTitle(file.name, file.text), markdown: file.text });
+        await createIn(isWorkspace, { title: fileTitle(file.name, file.text), markdown: file.text });
         added += 1;
       }
-      setResult(added ? `Added ${added} file${added === 1 ? "" : "s"} to ${venture?.name ?? "this venture"}'s context.` : "Those files were empty.");
+      setResult(added ? `Added ${added} file${added === 1 ? "" : "s"} to ${isWorkspace ? "the workspace context, read first for every venture" : `${venture?.name ?? "this venture"}'s context`}.` : "Those files were empty.");
     } catch (cause) { setError(`${current ? `${current}: ` : ""}${errorText(cause, "Couldn't add those files.")}`); if (added) setResult(`Added ${added} file${added === 1 ? "" : "s"} before the problem.`); }
     finally { setBusy(""); setRevision((value) => value + 1); }
   }
 
-  if (!ventures.length) return <Panel className="p-4 sm:p-5"><EmptyState variant="compact" icon={BookOpenText} title="No ventures yet" body="Each venture's context lives here once you have a venture." /></Panel>;
+  const card = (item: VentureContext, shared = false) => <li key={item.id}><button type="button" onClick={() => void openItem(item)} disabled={busy === `open:${item.id}`} className={clsx("flex h-full w-full items-start gap-3 rounded-xl border p-4 text-left transition-[border-color,background-color,transform] duration-150 active:scale-[0.99]", shared ? "border-dashed border-neutral-200 bg-neutral-50/60 hover:border-primary-200" : "border-neutral-100 bg-white hover:border-primary-200 hover:bg-primary-50/30")}>
+    <span className={clsx("grid h-9 w-9 shrink-0 place-items-center rounded-lg", shared ? "bg-neutral-100 text-neutral-500" : "bg-primary-50 text-primary-700")}><FileText size={17} /></span>
+    <span className="min-w-0"><span className="block truncate text-sm font-semibold text-neutral-900">{item.title}</span><span className="mt-0.5 block text-xs text-neutral-500">About {words(item.characters)} words · updated {day(item.updatedAt)} by {nameOf(item.updatedBy)}</span></span>
+  </button></li>;
+
   return <>
     <Panel className="p-4 sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 max-w-2xl">
-          <h2 className="text-sm font-bold text-neutral-900">Venture context</h2>
-          <p className="mt-1 text-xs leading-5 text-neutral-500">What {venture?.name ?? "this venture"} is, its goals, customers, rules, voice, and current priorities. Claude asks which venture you&apos;re working on, then reads all of this before doing anything.</p>
+          <h2 className="text-sm font-bold text-neutral-900">{isWorkspace ? "Workspace context" : "Venture context"}</h2>
+          <p className="mt-1 text-xs leading-5 text-neutral-500">{isWorkspace
+            ? "What holds for every venture: how the studio works, shared rules, and voice. Claude reads these first, before any venture's own files."
+            : <>What {venture?.name ?? "this venture"} is, its goals, customers, rules, voice, and current priorities. Claude asks which venture you&apos;re working on, then reads all of this before doing anything.</>}</p>
         </div>
         {current?.canEdit && <div className="flex flex-wrap gap-2">
           <input ref={uploader} type="file" multiple accept=".md,.markdown,.txt,text/markdown,text/plain" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { void upload(event.target.files); event.target.value = ""; }} />
           <button type="button" disabled={!!busy} onClick={() => uploader.current?.click()} className={secondaryClass}><Upload size={15} /><ActionLabel busy={busy === "upload"} busyText="Adding…" idle="Upload .md files" /></button>
-          <button type="button" disabled={!!busy} onClick={() => setEditing({ title: "", markdown: "", original: "" })} className={primaryClass}><Plus size={15} />New file</button>
+          <button type="button" disabled={!!busy} onClick={() => setEditing({ workspace: isWorkspace, title: "", markdown: "", original: "" })} className={primaryClass}><Plus size={15} />New file</button>
         </div>}
       </div>
-      {scope ? <p className="mb-4 rounded-xl bg-neutral-50 p-3 text-sm"><span className="block text-xs font-semibold text-neutral-500">Venture</span><span className="font-bold text-neutral-800">{venture?.name}</span></p>
-        : <div className="mb-4 max-w-xs"><Field label="Venture"><Select className={inputClass} value={ventureId} onChange={(event) => setChosen(event.target.value)}>{ventures.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></Field></div>}
+      <div className="mb-4 max-w-xs"><Field label="Context for"><Select className={inputClass} value={target} onChange={(event) => setChoice({ value: event.target.value, scope })}>
+        <option value={WORKSPACE}>Workspace (every venture)</option>
+        {choices.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+      </Select></Field></div>
       <Notice tone="error" message={error || current?.error || ""} onDismiss={() => setError("")} className="pb-4" />
       <Notice tone="success" message={result} onDismiss={() => setResult("")} autoDismissMs={6000} className="pb-4" />
-      {!current ? <SkeletonRows rows={3} label="Loading context" className="!p-0" />
-        : !current.items.length ? !current.error && <EmptyState variant="compact" icon={BookOpenText} title="No context yet" body={current.canEdit ? "Write the first file, or upload Markdown files you already have." : "Admins and this venture's head add it."} />
-        : <><ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{current.items.map((item) => <li key={item.id}><button type="button" onClick={() => void openItem(item)} disabled={busy === `open:${item.id}`} className="flex h-full w-full items-start gap-3 rounded-xl border border-neutral-100 bg-white p-4 text-left transition-[border-color,background-color,transform] duration-150 hover:border-primary-200 hover:bg-primary-50/40 active:scale-[0.99]">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary-50 text-primary-700"><FileText size={17} /></span>
-            <span className="min-w-0"><span className="block truncate text-sm font-semibold text-neutral-900">{item.title}</span><span className="mt-0.5 block text-xs text-neutral-500">About {words(item.characters)} words · updated {day(item.updatedAt)} by {nameOf(item.updatedBy)}</span></span>
-          </button></li>)}</ul>
-          <p className="mt-4 text-xs text-neutral-500">{current.items.length} file{current.items.length === 1 ? "" : "s"} · about {words(total)} words Claude reads before starting.</p></>}
+      {!current ? <SkeletonRows rows={3} label="Loading context" className="!p-0" /> : <>
+        {inherited.length > 0 && <div className="mb-5">
+          <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[.12em] text-neutral-400">From the workspace <span className="font-semibold normal-case tracking-normal">· read first, for every venture</span></h3>
+          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{inherited.map((item) => card(item, true))}</ul>
+          {own.length > 0 && <h3 className="mb-2 mt-5 text-[11px] font-bold uppercase tracking-[.12em] text-neutral-400">{venture?.name ?? "This venture"}&apos;s own</h3>}
+        </div>}
+        {!own.length ? !current.error && <EmptyState variant="compact" icon={BookOpenText}
+            title={isWorkspace ? "No workspace context yet" : inherited.length ? `Nothing just for ${venture?.name ?? "this venture"} yet` : "No context yet"}
+            body={current.canEdit ? (isWorkspace ? "Write the first file, or upload Markdown files you already have. Every venture's context starts with these." : "Write the first file, or upload Markdown files you already have.") : isWorkspace ? "Admins and people who share knowledge with every venture add it." : "Admins and this venture's head add it."} />
+          : <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{own.map((item) => card(item))}</ul>}
+        {current.items.length > 0 && <p className="mt-4 text-xs text-neutral-500">{current.items.length} file{current.items.length === 1 ? "" : "s"}{inherited.length ? `, ${inherited.length} from the workspace` : ""} · about {words(total)} words Claude reads before starting{isWorkspace ? " on any venture" : ""}.</p>}
+      </>}
     </Panel>
-    {open && !editing && <DetailDrawer title={open.title} subtitle={`${venture?.name ?? "Venture"} context · updated ${day(open.updatedAt)} by ${nameOf(open.updatedBy)}`} onClose={() => setOpen(null)}>
+    {open && !editing && <DetailDrawer title={open.title} subtitle={`${contextLabel(open)} · updated ${day(open.updatedAt)} by ${nameOf(open.updatedBy)}`} onClose={() => setOpen(null)}>
       <div className="text-sm"><MarkdownBody markdown={open.markdown ?? ""} view="rendered" /></div>
-      {current?.canEdit && <div className="mt-6 flex flex-wrap gap-2 border-t border-neutral-100 pt-4"><button type="button" onClick={() => setEditing({ id: open.id, title: open.title, markdown: open.markdown ?? "", original: `${open.title}\n${open.markdown ?? ""}` })} className={primaryClass}><Edit size={15} />Edit</button><RemoveButton busy={busy === "remove"} onConfirm={() => void remove(open)} /></div>}
+      {canEditItem(open) && <div className="mt-6 flex flex-wrap gap-2 border-t border-neutral-100 pt-4"><button type="button" onClick={() => setEditing({ id: open.id, workspace: !open.ventureId, title: open.title, markdown: open.markdown ?? "", original: `${open.title}\n${open.markdown ?? ""}` })} className={primaryClass}><Edit size={15} />Edit</button><RemoveButton busy={busy === "remove"} onConfirm={() => void remove(open)} /></div>}
     </DetailDrawer>}
-    {editing && <DetailDrawer title={editing.id ? "Edit context file" : "New context file"} subtitle={`${venture?.name ?? "Venture"} context`} dirty={`${editing.title}\n${editing.markdown}` !== editing.original && busy !== "save"} onClose={() => setEditing(null)}>
+    {editing && <DetailDrawer title={editing.id ? "Edit context file" : "New context file"} subtitle={editing.workspace ? "Workspace context · read first for every venture" : `${venture?.name ?? "Venture"} context`} dirty={`${editing.title}\n${editing.markdown}` !== editing.original && busy !== "save"} onClose={() => setEditing(null)}>
       <form onSubmit={save} className="space-y-4">
-        <Field label="Title"><input required maxLength={200} value={editing.title} onChange={(event) => setEditing({ ...editing, title: event.target.value })} className={inputClass} placeholder="For example: Customers and pricing" /></Field>
+        <Field label="Title"><input required maxLength={200} value={editing.title} onChange={(event) => setEditing({ ...editing, title: event.target.value })} className={inputClass} placeholder={editing.workspace ? "For example: How the studio works" : "For example: Customers and pricing"} /></Field>
         <MarkdownEditor label="Text" value={editing.markdown} onChange={(markdown) => setEditing({ ...editing, markdown })} />
         <Notice tone="error" message={error} onDismiss={() => setError("")} />
         <div className="flex flex-wrap gap-2"><button disabled={busy === "save"} className={primaryClass}><ActionLabel busy={busy === "save"} idle={editing.id ? "Save" : "Add to context"} /></button><button type="button" onClick={() => setEditing(null)} className={secondaryClass}>Cancel</button></div>

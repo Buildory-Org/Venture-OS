@@ -120,6 +120,12 @@
 .knowledge-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 1.7em 0 .55em; color: var(--color-neutral-900); font-weight: 750; line-height: 1.3; }
 .knowledge-markdown h1 { font-size: 2rem; letter-spacing: -.035em; }
 .knowledge-markdown h2 { padding-bottom: .35em; border-bottom: 1px solid var(--color-neutral-200); font-size: 1.5rem; letter-spacing: -.025em; }
+/* In a drawer (task details), headings stay close to the body size. */
+.knowledge-markdown-compact { font-size: .875rem; line-height: 1.7; }
+.knowledge-markdown-compact :is(h1, h2, h3, h4, h5, h6) { margin: 1.2em 0 .4em; letter-spacing: -.01em; }
+.knowledge-markdown-compact h1 { font-size: 1.15rem; }
+.knowledge-markdown-compact h2 { font-size: 1.05rem; padding-bottom: .25em; }
+.knowledge-markdown-compact :is(h3, h4, h5, h6) { font-size: .95rem; }
 .knowledge-markdown h3 { font-size: 1.2rem; }
 .knowledge-markdown :is(h4, h5, h6) { font-size: 1rem; }
 .knowledge-markdown :is(p, ul, ol, blockquote, pre, table, hr) { margin: 0 0 1.2em; }
@@ -245,7 +251,8 @@
 .vso-enter-right { animation: vso-enter-right 220ms var(--ease-drawer) both; }
 .vso-enter-left { animation: vso-enter-left 220ms var(--ease-drawer) both; }
 .vso-enter-bottom { animation: vso-enter-bottom 440ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-.vso-enter-modal { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+/* "backwards": once in, nothing is left transformed, so menus fixed inside (a dropdown's options) are placed against the screen. */
+.vso-enter-modal { animation: vso-enter-modal 180ms var(--ease-snappy) backwards; }
 .vso-enter-popover { animation: vso-enter-popover 150ms var(--ease-snappy) both; transform-origin: top right; }
 .vso-enter-popover[data-align="left"] { transform-origin: top left; }
 .vso-stagger > * { animation: vso-enter-card 170ms var(--ease-snappy) both; }
@@ -312,6 +319,28 @@
 .vso-stagger-in > :nth-child(6) { animation-delay: 175ms; }
 .vso-stagger-in > :nth-child(7) { animation-delay: 210ms; }
 .vso-stagger-in > :nth-child(n+8) { animation-delay: 245ms; }
+
+/* Leaderboard. The daily podium sits on a soft wash of the brand green (it follows the theme); the Saturday edition is a
+   poster: deep green with gold, the same in both themes. Medal finishes are fixed metals, not theme colours. */
+.vso-podium { background: radial-gradient(110% 80% at 50% 0%, var(--color-primary-100) 0%, transparent 72%), var(--color-primary-50); }
+.vso-podium-step { background: linear-gradient(180deg, var(--color-primary-200) 0%, var(--color-primary-100) 100%); }
+.vso-weekly { color: #fff; background: radial-gradient(80% 55% at 50% 0%, rgba(46, 160, 93, .55) 0%, transparent 75%), linear-gradient(180deg, #0d3a23 0%, #08170f 62%, #050b07 100%); }
+.vso-weekly-title { background: linear-gradient(180deg, #fff5c7 0%, #f6cb52 52%, #df9420 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.vso-weekly-row { background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.vso-medal-gold { color: #3a2604; background: linear-gradient(155deg, #fbe39a 0%, #eab443 48%, #c27c18 100%); }
+.vso-medal-silver { color: #1d2228; background: linear-gradient(155deg, #f4f6f8 0%, #c5ccd3 50%, #8f98a2 100%); }
+.vso-medal-bronze { color: #3b1d0b; background: linear-gradient(155deg, #f6c4a0 0%, #cf8550 50%, #96532b 100%); }
+/* Full-bleed pages (the leaderboards) fill the whole content area, edge to edge, however short their content. */
+.vso-route-content:has(> .vso-fullbleed) { min-height: 100%; display: flex; flex-direction: column; }
+.vso-fullbleed { flex: 1 0 auto; }
+/* The everyday leaderboard: a bright green stage with frosted podium steps, the list on a sheet below (theme-aware). */
+.vso-board { color: #fff; background: radial-gradient(70% 45% at 50% 0%, rgba(110, 231, 160, .28) 0%, transparent 72%), linear-gradient(180deg, #158a47 0%, #0f6e38 45%, #0a552a 100%); }
+:root[data-theme="dark"] .vso-board { background: radial-gradient(70% 45% at 50% 0%, rgba(74, 222, 128, .18) 0%, transparent 72%), linear-gradient(180deg, #0f5a30 0%, #0a4123 50%, #062b17 100%); }
+.vso-board-step { background: linear-gradient(180deg, rgba(255, 255, 255, .55) 0%, rgba(255, 255, 255, .24) 55%, rgba(255, 255, 255, .1) 100%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), inset 0 0 0 1px rgba(255, 255, 255, .18); }
+:root[data-theme="dark"] .vso-board-step { background: linear-gradient(180deg, rgba(255, 255, 255, .22) 0%, rgba(255, 255, 255, .1) 55%, rgba(255, 255, 255, .04) 100%); }
+/* The podium and the weekly cards rise in one after another: shown rarely, so they can take their time (still under half a second). */
+@keyframes vso-podium-rise { from { opacity: 0; transform: translateY(18px) scale(.97); } }
+.vso-podium-rise { animation: vso-podium-rise 460ms var(--ease-snappy) backwards; animation-delay: var(--rise-delay, 0ms); }
 .vso-row-enter { animation: vso-rise-in 220ms var(--ease-snappy) backwards; }
 .vso-stagger-in > .vso-flash, .vso-row-enter.vso-flash { animation: vso-flash 1300ms ease-out; }
 /* Button text that changes state (Saving…, Saved) blurs in instead of snapping. */
@@ -326,7 +355,7 @@
 .vso-shake { animation: vso-shake 360ms ease-in-out; }
 
 /* Native <dialog> modals grow from the centre with a fading backdrop, and shrink away on close. */
-.vso-dialog[open] { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+.vso-dialog[open] { animation: vso-enter-modal 180ms var(--ease-snappy) backwards; }
 .vso-dialog[open]::backdrop { animation: vso-fade-in 200ms ease-out both; }
 .vso-dialog[data-state="closing"] { animation: vso-exit-modal 130ms var(--ease-snappy) forwards; }
 .vso-dialog[data-state="closing"]::backdrop { animation: vso-fade-out 150ms ease-out forwards; }
@@ -563,6 +592,7 @@ button {
   .vso-backdrop,
   .vso-fade-enter,
   .vso-flash,
+  .vso-podium-rise,
   .vso-skeleton,
   .vso-spin,
   .vso-toast-row,

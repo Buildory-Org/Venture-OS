@@ -92,6 +92,10 @@ import {
   Video01Icon,
   RepeatIcon,
   Link01Icon,
+  ChampionIcon,
+  CrownIcon,
+  ArrowUp01Icon,
+  ArrowDown01Icon,
 } from "@hugeicons/core-free-icons";
 
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -180,6 +184,10 @@ export const TimerReset = icon(TimerResetSvg);
 export const TrendingUp = icon(TrendingUpSvg);
 export const UserPlus = icon(UserPlusSvg);
 export const Users = icon(UsersSvg);
+export const Trophy = icon(ChampionIcon);
+export const Crown = icon(CrownIcon);
+export const TrendUp = icon(ArrowUp01Icon);
+export const TrendDown = icon(ArrowDown01Icon);
 export const Volume2 = icon(Volume2Svg);
 export const VolumeX = icon(VolumeXSvg);
 export const X = icon(XSvg);

@@ -60,6 +60,14 @@ import {
   channelNotificationLevelSchema,
   type ChannelNotificationLevel,
   outcomeSchema,
+  leaderboardPersonSchema,
+  leaderboardSchema,
+  leaderboardWeeklySchema,
+  leaderboardWeeklyStatusSchema,
+  type LeaderboardPeriod,
+  celebrationFeedSchema,
+  celebrationPauseResultSchema,
+  pagedDataSchema,
   pagedSuccessEnvelope,
   reminderSchema,
   documentListQuerySchema,
@@ -77,7 +85,10 @@ import {
   successEnvelope,
   patListItemSchema,
   patCreatedSchema,
+  taskListCountsSchema,
   taskListQuerySchema,
+  type taskSortSchema,
+  type taskViewSchema,
   taskSchema,
   taskUpdateSchema,
   updateTaskSchema,
@@ -207,13 +218,48 @@ export async function createLiveInvitation(input: { email: string; role: AppRole
   throw new StudioApiError("The invitation was created, but the API did not confirm email delivery or provide a manual link.");
 }
 
-type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string };
+export type TaskView = ReturnType<typeof taskViewSchema.parse>;
+export type TaskSort = ReturnType<typeof taskSortSchema.parse>;
+export type TaskListCounts = ReturnType<typeof taskListCountsSchema.parse>;
+type TaskFilters = Partial<Pick<Task, "ventureId" | "groupId" | "assigneeId" | "status" | "priority">> & { tag?: string; view?: TaskView; sort?: TaskSort; q?: string; dueFrom?: string; dueTo?: string; counts?: boolean };
 
-export async function listLiveTasks(cursor?: string, filters: TaskFilters = {}) {
-  const query = taskListQuerySchema.parse({ limit: 100, cursor, ...filters });
+export async function listLiveTasks(cursor?: string, { counts, ...filters }: TaskFilters = {}) {
+  const query = taskListQuerySchema.parse({ limit: 100, cursor, ...filters, ...(counts ? { counts: "true" } : {}) });
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
-  return pagedSuccessEnvelope(taskSchema).parse(await request(`/v1/tasks?${params}`)).data;
+  return successEnvelope(pagedDataSchema(taskSchema).extend({ counts: taskListCountsSchema.optional() })).parse(await request(`/v1/tasks?${params}`)).data;
+}
+
+/** The leaderboard: everyone's fair score for a period (see contracts/leaderboard.ts for how it's worked out). */
+export async function getLeaderboard(options: { period: LeaderboardPeriod; ventureId?: string; learners?: boolean }) {
+  const params = new URLSearchParams({ period: options.period, ...(options.ventureId ? { ventureId: options.ventureId } : {}), ...(options.learners ? { learners: "true" } : {}) });
+  return successEnvelope(leaderboardSchema).parse(await request(`/v1/leaderboard?${params}`)).data;
+}
+export async function getLeaderboardPerson(userId: string, options: { period: LeaderboardPeriod; ventureId?: string; learners?: boolean; week?: string }) {
+  const params = new URLSearchParams({ period: options.period, ...(options.ventureId ? { ventureId: options.ventureId } : {}), ...(options.learners ? { learners: "true" } : {}), ...(options.week ? { week: options.week } : {}) });
+  return successEnvelope(leaderboardPersonSchema).parse(await request(`/v1/leaderboard/people/${encodeURIComponent(userId)}?${params}`)).data;
+}
+/** Last week's edition, made on Saturday; `seen` says whether this person has opened it. */
+export async function getWeeklyLeaderboard(learners = false) {
+  return successEnvelope(leaderboardWeeklySchema).parse(await request(`/v1/leaderboard/weekly${learners ? "?learners=true" : ""}`)).data;
+}
+export async function getWeeklyLeaderboardStatus() {
+  return successEnvelope(leaderboardWeeklyStatusSchema).parse(await request("/v1/leaderboard/weekly/status")).data;
+}
+export async function markWeeklyLeaderboardSeen(week: string) {
+  await request(`/v1/leaderboard/weekly/${encodeURIComponent(week)}/seen`, { method: "POST", body: "{}" });
+}
+
+/** My finished tasks waiting to be celebrated (none while I've paused celebrations), with what the film shows. */
+export async function getCelebrations() {
+  return successEnvelope(celebrationFeedSchema).parse(await request("/v1/celebrations")).data;
+}
+export async function markCelebrationsSeen(ids: string[]) {
+  await request("/v1/celebrations/seen", { method: "POST", body: JSON.stringify({ ids }) });
+}
+/** Pause celebrations for 1, 3, or 24 hours (0 resumes them). */
+export async function pauseCelebrations(hours: 0 | 1 | 3 | 24) {
+  return successEnvelope(celebrationPauseResultSchema).parse(await request("/v1/celebrations/pause", { method: "PUT", body: JSON.stringify({ hours }) })).data;
 }
 
 export async function getLiveTask(id: string) {
@@ -354,6 +400,17 @@ export async function searchLiveGroupContent(q: string, groupId: string): Promis
 export async function createLiveTask(input: unknown) {
   const valid = createTaskSchema.parse(input);
   return successEnvelope(taskSchema).parse(await request("/v1/tasks", { method: "POST", body: JSON.stringify(valid) })).data;
+}
+
+/** Deletes a task (with its comments, evidence, and files); the returned id undoes it with restoreLiveTask. */
+export async function deleteLiveTask(id: string): Promise<{ deletionId: string }> {
+  const body = await request(`/v1/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const data = body && typeof body === "object" && "data" in body ? (body as { data: unknown }).data : null;
+  if (!data || typeof data !== "object" || !("deletionId" in data) || typeof data.deletionId !== "string") throw new StudioApiError("The delete response was invalid.");
+  return { deletionId: data.deletionId };
+}
+export async function restoreLiveTask(deletionId: string) {
+  return successEnvelope(taskSchema).parse(await request(`/v1/tasks/deletions/${encodeURIComponent(deletionId)}/restore`, { method: "POST" })).data;
 }
 
 export async function updateLiveTask(id: string, input: unknown) {
@@ -822,6 +879,14 @@ export async function updateLiveVentureContext(id: string, input: unknown) {
 }
 export async function deleteLiveVentureContext(id: string) {
   await request(`/v1/context/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+/** The workspace's context: read first for every venture. Admins and people who share knowledge with every venture write it. */
+export async function listLiveWorkspaceContext() {
+  return successEnvelope(ventureContextListSchema).parse(await request("/v1/workspace/context")).data;
+}
+export async function createLiveWorkspaceContext(input: unknown) {
+  const valid = createVentureContextSchema.parse(input);
+  return successEnvelope(ventureContextSchema).parse(await request("/v1/workspace/context", { method: "POST", body: JSON.stringify(valid) })).data;
 }
 
 // Skills: the workspace's (every venture) and each venture's own.

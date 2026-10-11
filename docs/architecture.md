@@ -71,6 +71,7 @@
   - **Files:** PDF and Word files stay per venture for now.
 - Venture context and skills for agents (decided 2026-10-09):
   - **Venture context:** each venture has Markdown context files (`venture_context`) written by admins and that venture's head.
+    - Files with no venture are the workspace's context (2026-10-11): read first for every venture, by everyone in the workspace; written by those with the knowledge-sharing permission (as for workspace skills). Their text counts toward every venture's 500,000-character limit (archived ventures aside).
   - **Skills:** skills (`skills`) are workspace-wide or venture-scoped. Workspace ones need the knowledge-sharing permission; venture ones need the venture's head or an admin. Moving a skill needs both ends.
   - **How Claude uses them:**
     - The MCP instructions make Claude ask which venture and read its whole context first.

@@ -43,6 +43,7 @@ function NewTaskDialog({ session, activeVentureId, onClose, onCreated }: { sessi
   const [minutes, setMinutes] = useState(60);
   const [definition, setDefinition] = useState("");
   const [evidenceRequirement, setEvidenceRequirement] = useState("");
+  const [details, setDetails] = useState("");
   const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -55,7 +56,7 @@ function NewTaskDialog({ session, activeVentureId, onClose, onCreated }: { sessi
   const groups = session?.hierarchy.ventures.find((item) => item.id === ventureId)?.groups ?? [];
   const dueAt = dueDate ? new Date(`${dueDate}T17:00:00`) : null;
   const tight = !!dueAt && !Number.isNaN(dueAt.getTime()) && minutes > 0 && dueAt.getTime() - openedAt <= minutes * 60_000;
-  const dirty = Boolean(title.trim() || outcome.trim() || definition.trim() || evidenceRequirement.trim() || tags.trim() || assigneeId);
+  const dirty = Boolean(title.trim() || outcome.trim() || definition.trim() || evidenceRequirement.trim() || details.trim() || tags.trim() || assigneeId);
 
   const requestClose = useCallback(() => {
     if (busy) return;
@@ -69,7 +70,7 @@ function NewTaskDialog({ session, activeVentureId, onClose, onCreated }: { sessi
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const task = await createLiveTask({ ventureId, groupId, title, outcome, assigneeId, ...(reviewerId ? { reviewerId } : {}), priority, dueAt: new Date(`${dueDate}T17:00:00`).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", estimatedMinutes: minutes, definitionOfDone: definition, evidenceRequirement, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), dependencies: [], evidenceLinks: [] });
+      const task = await createLiveTask({ ventureId, groupId, title, outcome, assigneeId, ...(details.trim() ? { details: details.trim() } : {}), ...(reviewerId ? { reviewerId } : {}), priority, dueAt: new Date(`${dueDate}T17:00:00`).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", estimatedMinutes: minutes, definitionOfDone: definition, evidenceRequirement, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), dependencies: [], evidenceLinks: [] });
       onCreated(task);
     } catch (cause) { setError(describeError(cause, "The task could not be created. Please try again.")); }
     finally { setBusy(false); }
@@ -116,6 +117,7 @@ function NewTaskDialog({ session, activeVentureId, onClose, onCreated }: { sessi
           <div data-open={tight} className="vso-collapse sm:col-span-2"><div><p role="status" className="rounded-xl bg-warning-surface p-3 text-xs font-semibold text-warning-text">Deadline risk: {minutes} estimated minutes is more than the time left before 5 PM on the due date. You can still create it; the assignee will be warned.</p></div></div>
           <div className="sm:col-span-2"><Field label="Definition of done"><textarea required className={`${inputClass} min-h-20 py-3`} value={definition} onChange={(event) => setDefinition(event.target.value)} /></Field></div>
           <div className="sm:col-span-2"><Field label="Evidence requirement"><textarea required className={`${inputClass} min-h-20 py-3`} value={evidenceRequirement} onChange={(event) => setEvidenceRequirement(event.target.value)} /></Field></div>
+          <div className="sm:col-span-2"><Field label="Details: background, specs, links, plans (optional)"><textarea maxLength={20000} className={`${inputClass} min-h-24 py-3`} value={details} onChange={(event) => setDetails(event.target.value)} placeholder="Markdown works: - lists, ## headings, links" /></Field></div>
           <div className="sm:col-span-2"><Notice tone="error" message={error} onDismiss={() => setError("")} /></div>
         </div>
         <footer className="flex justify-end gap-2 border-t border-neutral-100 px-5 py-4 sm:px-6"><button type="button" onClick={requestClose} className={secondaryClass}>Cancel</button><button disabled={busy || !groupId || !assigneeId} className={primaryClass}>{busy ? "Creating…" : "Create task"}</button></footer>

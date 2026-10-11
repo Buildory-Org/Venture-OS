@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prefersReducedMotion } from "@/lib/motion";
-import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, UserLock, Users, X, type Icon } from "@/components/ui/icons";
+import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, Trophy, UserLock, Users, X, type Icon } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { Select } from "@/components/ui/select";
@@ -25,6 +25,7 @@ const sections = [
   { label: "Ventures", href: "/ventures", icon: Layers3 },
   { label: "Tasks", href: "/tasks", icon: ListTodo },
   { label: "Board", href: "/board", icon: Columns3 },
+  { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
   { label: "Channels", href: "/channels", icon: Hash },
   { label: "Messages", href: "/messages", icon: MessageSquareText },
   { label: "Notifications", href: "/notifications", icon: Bell },
@@ -39,7 +40,7 @@ type NavItem = { label: string; href: string; icon: Icon };
 const byHref = new Map<string, NavItem>(sections.map((item) => [item.href, item]));
 const pick = (...hrefs: string[]) => hrefs.map((href) => byHref.get(href)!);
 // Connected mode has two modes: Studio (today's tasks and communication) and Sales, with a Shared group in both.
-const studioSections = pick("/dashboard", "/today", "/ventures", "/tasks", "/board", "/channels", "/decisions", "/classes", "/timeline", "/requests");
+const studioSections = pick("/dashboard", "/today", "/ventures", "/tasks", "/board", "/leaderboard", "/channels", "/decisions", "/classes", "/timeline", "/requests");
 const sharedSections = pick("/calendar", "/knowledge", "/messages", "/notifications");
 const salesSections: NavItem[] = [
   { label: "Today", href: "/sales/live", icon: Home },
@@ -108,7 +109,8 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
   const unread = data.notices.filter((notice) => !notice.read).length;
   const router = useRouter();
   const salesCounts = useSalesNavCounts(salesMode, activeVentureId);
-  const mainItems = mode === "demo" ? sections : salesMode ? salesSections : studioSections;
+  // The leaderboard needs live data: the demo leaves it out.
+  const mainItems = mode === "demo" ? sections.filter(({ href }) => href !== "/leaderboard") : salesMode ? salesSections : studioSections;
   const sharedItems = mode === "demo" ? [] : sharedSections;
   const badgeFor = (href: string): number => {
     if (href === "/notifications") return unread;
@@ -195,7 +197,8 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
     queueMicrotask(() => setPendingScope(null));
   }, [activeVentureId, data.ventures, pendingScope, setActiveVentureId]);
   const renderItem = ({ label, href, icon: Icon }: NavItem) => {
-    const active = activePath === href;
+    // The weekly edition belongs to the leaderboard.
+    const active = activePath === href || (href === "/leaderboard" && activePath.startsWith("/leaderboard/"));
     const current = navPath === href;
     const badge = badgeFor(href);
     if (href === "/ventures") return <div key={href}>

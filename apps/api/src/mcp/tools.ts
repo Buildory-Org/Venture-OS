@@ -10,6 +10,7 @@ import { registerCalendarTools } from "./tools-calendar.js";
 import { registerLookupTools } from "./tools-lookup.js";
 import { CARD_TOOL_META, chatDrawsCards, withCard, type CardBuilder } from "./sales-cards.js";
 import { CONTEXT_REMINDER, readContextRecently, registerContextTools } from "./tools-context.js";
+import { lines, markupField } from "./format.js";
 
 export type { ToolContext } from "./kit.js";
 
@@ -33,6 +34,9 @@ export function makeRegister(server: McpServer, ctx: ToolContext, options: { con
     const card = options.cards && Object.hasOwn(options.cards.builders, name) ? options.cards.builders[name] : undefined;
     server.registerTool(name, (card ? { ...config, _meta: CARD_TOOL_META } : config) as never, (async (input: any) => {
       try {
+        // A field holding leftover tool-call markup means this call was cut wrong; nothing is saved and Claude resends it.
+        const garbled = markupField(input);
+        if (garbled) throw new ToolError(`The ${garbled} field contains leftover tool-call markup (like </definitionOfDone> or <parameter name="…">), so nothing was done. If this call was cut wrong, send it again with every field as its own argument. If the text came from something already saved garbled (get_task warns about those), delete the leftover markup and everything after it that belonged to another field, then send it again. If you meant to include such text, put it in a code block or inline code.`);
         if (isWrite) await ctx.writeBudget();
         let value = await handler(input);
         // Until Claude has read a venture's context, other tools remind it to ask which venture and read it first.
@@ -124,16 +128,19 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   tool("list_tasks", "tasks:read", {
     title: "List tasks", annotations: read,
-    description: "Find tasks I can see, filtered by venture, status, assignee, or blocked. Use list_ventures for venture ids. Returns up to `limit` rows and a cursor for the next page.",
+    description: "Find tasks I can see, soonest due first: a ready-made list (open, needs_my_review, overdue, done, or all), narrowed by venture, status, assignee, words in the title, outcome, or tags, or blocked. Use list_ventures for venture ids. Returns up to `limit` rows and a cursor for the next page (pass the same filters with it).",
     inputSchema: z.object({
+      view: z.enum(["open", "needs_my_review", "overdue", "done", "all"]).default("all").describe("open: not done, cancelled, or parked. needs_my_review: evidence waiting for me to accept or reject. overdue: open and past due. done: finished. all: everything (the default)."),
       ventureId: id.optional(), status: z.enum(["draft", "proposed", "accepted", "backlog", "todo", "in_progress", "blocked", "review", "done", "cancelled", "parked"]).optional(),
-      assignee: z.union([z.literal("me"), id]).optional().describe('"me" or a person id'), blockedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(50).default(20), cursor: id.optional(),
+      assignee: z.union([z.literal("me"), id]).optional().describe('"me" or a person id'), search: z.string().trim().min(1).max(100).optional().describe("Words in the title, outcome, or tags"),
+      sort: z.enum(["due", "priority", "updated", "newest"]).default("due").describe("due: soonest first (the default). priority: most urgent first. updated: most recently changed first. newest: most recently created first."),
+      blockedOnly: z.boolean().optional(), limit: z.number().int().min(1).max(50).default(20), cursor: id.optional(),
       timezone: timezoneField,
     }),
-  }, async ({ ventureId, status, assignee, blockedOnly, limit, cursor, timezone }) => {
+  }, async ({ view, ventureId, status, assignee, search, sort, blockedOnly, limit, cursor, timezone }) => {
     const timeZone = validTimeZone(timezone);
-    const params = new URLSearchParams({ limit: String(blockedOnly ? 100 : limit) });
-    if (ventureId) params.set("ventureId", ventureId); if (status) params.set("status", status); if (cursor) params.set("cursor", cursor);
+    const params = new URLSearchParams({ limit: String(blockedOnly ? 100 : limit), sort, view: view === "needs_my_review" ? "review" : view });
+    if (ventureId) params.set("ventureId", ventureId); if (status) params.set("status", status); if (cursor) params.set("cursor", cursor); if (search) params.set("q", search);
     if (assignee) params.set("assigneeId", assignee === "me" ? ctx.userId : assignee);
     const page = await ctx.api<{ items: any[]; nextCursor?: string }>("GET", `/tasks?${params}`);
     const rows = page.items.filter((task) => !blockedOnly || (task.blocker && OPEN(task.status))).slice(0, limit);
@@ -142,14 +149,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   tool("get_task", "tasks:read", {
     title: "Get task", annotations: read,
-    description: "One task with its outcome, definition of done, people, evidence, and the latest comments and status changes.",
+    description: "One task with its outcome, definition of done, details (background and plans), tags, people, evidence, and the latest comments and status changes.",
     inputSchema: z.object({ taskId: id, timezone: timezoneField }),
   }, async ({ taskId, timezone }) => {
     const timeZone = validTimeZone(timezone);
     const task = await ctx.api<any>("GET", `/tasks/${encodeURIComponent(taskId)}`);
     const updates = (task.updates as any[]).slice(-8);
     return compact({
-      ...await taskRow(ctx, look, task, timeZone), outcome: clip(task.outcome, 400), definitionOfDone: clip(task.definitionOfDone, 400), evidenceRequired: clip(task.evidenceRequirement, 300),
+      ...await taskRow(ctx, look, task, timeZone), outcome: lines(task.outcome, 2000), definitionOfDone: lines(task.definitionOfDone, 5000), evidenceRequired: lines(task.evidenceRequirement, 2000), tags: task.tags,
+      details: typeof task.details === "string" && task.details.length > 8000 ? `${task.details.slice(0, 8000)}… (${task.details.length.toLocaleString("en")} characters in all; open the task for the rest)` : task.details,
+      // A field saved garbled by an earlier cut call: say so, so a fix leaves the markup out instead of being refused.
+      warning: ((field) => field ? `The saved ${field} holds leftover tool-call markup from an earlier call that was cut wrong (text like </definitionOfDone> or <parameter name="tags">). When you update the task, leave that markup out; anything after it (such as tags) belongs in its own field.` : undefined)(markupField({ title: task.title, outcome: task.outcome, definitionOfDone: task.definitionOfDone, evidenceRequirement: task.evidenceRequirement, details: task.details, tags: task.tags })),
       assignee: await look.person(task.assigneeId), reviewer: await look.person(task.reviewerId), estimatedMinutes: task.estimatedMinutes,
       evidence: (task.evidence as any[]).slice(-10).map((item) => compact({ id: item.id, title: clip(item.title, 120), link: item.uri, note: clip(item.description, 300), status: item.reviewStatus })),
       activity: await Promise.all(updates.map(async (item) => compact({ by: await look.person(item.authorId), type: item.type, change: item.toStatus && item.fromStatus !== item.toStatus ? `${item.fromStatus ?? "new"} -> ${item.toStatus}` : undefined, text: item.type === "status" && item.body === "Task updated" ? undefined : clip(item.body, 300), at: localTime(item.createdAt, timeZone) }))),
@@ -340,7 +350,7 @@ export function registerPrompts(server: McpServer, scopes: Set<string>): void {
   };
   const zone = "Pass my IANA time zone if you know it.";
   prompt("today", ["tasks:read", "notifications:read"], "Today", "What needs my attention today", `Use my_plate with scope=today, then whats_new. ${zone} Give me a short list: what's overdue, what's due today, and anything new. Link each task.`);
-  prompt("standup", ["tasks:read", "notifications:read"], "Standup", "Draft my standup update", `Use list_tasks with assignee=me and status=done for what I finished, my_plate (scope=week) for what's next, and whats_new. ${zone} Draft a three-part standup: done recently, doing today, blockers. Keep it under 120 words and link tasks.`);
+  prompt("standup", ["tasks:read", "notifications:read"], "Standup", "Draft my standup update", `Use list_tasks with assignee=me, view=done, and sort=updated for what I finished, my_plate (scope=week) for what's next, and whats_new. ${zone} Draft a three-part standup: done recently, doing today, blockers. Keep it under 120 words and link tasks.`);
   prompt("triage", ["notifications:read"], "Triage", "Sort new items and suggest next steps", "Use whats_new, then for each new item say whether it needs action from me, a reply, or nothing. Suggest at most three next steps; don't change anything without asking me.");
 }
 
@@ -349,7 +359,8 @@ const CONTEXT_EXEMPT = new Set(["read_venture_context", "list_ventures", "list_s
 
 export const SERVER_INSTRUCTIONS = [
   "Venture Studio OS: the team's ventures, tasks, reviews, knowledge, decisions, channels, and reminders, as the signed-in person sees them in the app.",
-  "First, at the start of every new conversation and before anything else: ask the user which venture they want to work on (list_ventures shows the choices; don't ask again if they already said), then call read_venture_context for it and read every part completely, so you understand the venture before acting. In an unattended or recurring check, with nobody to ask, skip this.",
+  "First, at the start of every new conversation and before anything else: ask the user which venture they want to work on (list_ventures shows the choices; don't ask again if they already said, and if they belong to only one venture, use it without asking), then call read_venture_context for it and read every part completely, so you understand the venture before acting. In an unattended or recurring check, with nobody to ask, skip this.",
+  "If the conversation moves to a different venture, read that venture's context with read_venture_context before working on it, and keep each venture's details to that venture.",
   "When a task matches one of the skills (list_skills, with that venture's id), read it with get_skill and follow it.",
   "Start with my_plate for 'what should I do', whats_new for anything new (keep its cursor between calls; changed:false means nothing happened), and search for knowledge.",
   "For a recurring check, call whats_new with the last cursor and stay silent when changed is false.",

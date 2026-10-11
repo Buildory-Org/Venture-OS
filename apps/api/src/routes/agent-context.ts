@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Document } from "mongodb";
 import { createSkillSchema, createVentureContextSchema, groupAttachmentQuerySchema, idSchema, skillListQuerySchema, taskAttachmentQuerySchema, updateSkillSchema, updateVentureContextSchema, type AttachmentKind } from "@venture-studio/contracts";
 import { can, sharesKnowledge } from "@venture-studio/core";
@@ -22,10 +22,15 @@ const KIND: Record<AttachmentKind, RegExp> = { image: /^image\//, video: /^video
 
 /** Can this person open the venture (its context, its skills, its files)? Archived ventures are hidden from everyone. */
 const readsVenture = (actor: Actor, ventureId: string) => !inArchivedVenture(actor.membership, ventureId) && (actor.membership.role === "admin" || actor.membership.ventureIds.includes(ventureId));
+/** Workspace context (no venture) is for everyone in the workspace; a venture's is for those who can open the venture. */
+const readsContext = (actor: Actor, item: Document) => !item.ventureId || readsVenture(actor, String(item.ventureId));
 /** Admins and the venture's head write its context and its skills. */
 const leadsVenture = (actor: Actor, ventureId: string) => (actor.membership.role === "admin" || actor.membership.role === "venture_head") && can(actor.membership, "knowledge:write", { ventureId });
 /** A workspace-wide skill needs the permission to share knowledge with all ventures; a venture's skill needs its lead. */
 const writesSkill = (actor: Actor, ventureId?: string) => ventureId ? leadsVenture(actor, ventureId) : sharesKnowledge(actor.membership);
+/** The same goes for context: the workspace's needs the share permission, a venture's its lead. */
+const writesContext = (actor: Actor, ventureId?: string) => ventureId ? leadsVenture(actor, ventureId) : sharesKnowledge(actor.membership);
+const noWriteMessage = (ventureId?: string) => ventureId ? "Only admins and this venture's head can change its context" : "Only admins and people who share knowledge with every venture can change the workspace context";
 
 async function openVenture(db: AppDb, actor: Actor, ventureId: string) {
   const venture = readsVenture(actor, ventureId) ? await db.collection("ventures").findOne({ _id: ventureId, workspaceId: actor.membership.workspaceId }) : null;
@@ -40,51 +45,70 @@ export function agentContextRoutes(database: Database): Router {
   const db = database.db;
   const router = Router();
 
-  // A venture's context: several Markdown files, oldest first, that an agent reads before working on the venture.
+  /** Context files, oldest first: a venture's own, or (with no venture) the workspace's. */
+  const contextFiles = (actor: Actor, ventureId: string | null, full: boolean) => db.collection("venture_context").aggregate([{ $match: { workspaceId: actor.membership.workspaceId, ventureId, ...live } }, { $sort: { createdAt: 1, _id: 1 } }, { $limit: CONTEXT_FILES_PER_VENTURE }, ...(full ? [] : WITHOUT_TEXT)]).toArray();
+
+  // A venture's context: several Markdown files, oldest first, that an agent reads before working on the venture. The
+  // workspace's files come first: they apply to every venture.
   router.get("/ventures/:ventureId/context", async (req, res) => {
     const actor = req.actor!;
     const ventureId = idSchema.parse(req.params.ventureId);
     await openVenture(db, actor, ventureId);
     const full = req.query.full === "true";
-    const items = await db.collection("venture_context").aggregate([{ $match: { workspaceId: actor.membership.workspaceId, ventureId, ...live } }, { $sort: { createdAt: 1, _id: 1 } }, { $limit: CONTEXT_FILES_PER_VENTURE }, ...(full ? [] : WITHOUT_TEXT)]).toArray();
+    const [shared, own] = await Promise.all([contextFiles(actor, null, full), contextFiles(actor, ventureId, full)]);
     if (full) await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.read", objectType: "venture", objectId: ventureId, ventureId, result: "success" });
-    res.json({ ok: true, data: { items: items.map((item) => contextJson(item, full)), canEdit: leadsVenture(actor, ventureId) } });
+    res.json({ ok: true, data: { items: [...shared, ...own].map((item) => contextJson(item, full)), canEdit: leadsVenture(actor, ventureId), canEditWorkspace: writesContext(actor) } });
+  });
+
+  // The workspace's context on its own: everyone in the workspace reads it.
+  router.get("/workspace/context", async (req, res) => {
+    const actor = req.actor!;
+    const items = await contextFiles(actor, null, false);
+    res.json({ ok: true, data: { items: items.map((item) => contextJson(item, false)), canEdit: writesContext(actor) } });
   });
 
   router.get("/context/:id", async (req, res) => {
     const actor = req.actor!;
     const item = await db.collection("venture_context").findOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, ...live });
-    if (!item || !readsVenture(actor, String(item.ventureId))) throw new AppError(404, "NOT_FOUND", "Context file not found");
+    if (!item || !readsContext(actor, item)) throw new AppError(404, "NOT_FOUND", "Context file not found");
     res.json({ ok: true, data: contextJson(item, true) });
   });
 
-  router.post("/ventures/:ventureId/context", async (req, res) => {
+  async function createContext(req: Request, res: Response, ventureId?: string) {
     const actor = req.actor!;
-    const ventureId = idSchema.parse(req.params.ventureId);
-    await openVenture(db, actor, ventureId);
-    if (!leadsVenture(actor, ventureId)) throw new AppError(403, "FORBIDDEN", "Only admins and this venture's head can change its context");
+    if (!writesContext(actor, ventureId)) throw new AppError(403, "FORBIDDEN", noWriteMessage(ventureId));
     const input = createVentureContextSchema.parse(req.body);
-    if (await db.collection("venture_context").countDocuments({ workspaceId: actor.membership.workspaceId, ventureId, ...live }) >= CONTEXT_FILES_PER_VENTURE) throw new AppError(409, "CONFLICT", `A venture can have up to ${CONTEXT_FILES_PER_VENTURE} context files; combine or remove some first`);
+    if (await db.collection("venture_context").countDocuments({ workspaceId: actor.membership.workspaceId, ventureId: ventureId ?? null, ...live }) >= CONTEXT_FILES_PER_VENTURE) throw new AppError(409, "CONFLICT", `${ventureId ? "A venture" : "The workspace"} can have up to ${CONTEXT_FILES_PER_VENTURE} context files; combine or remove some first`);
     await assertContextRoom(actor, ventureId, input.markdown.length);
     const now = new Date();
-    const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ventureId, title: input.title, markdown: input.markdown, characters: input.markdown.length, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
+    // The workspace's files carry no venture at all.
+    const item = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, ...(ventureId ? { ventureId } : {}), title: input.title, markdown: input.markdown, characters: input.markdown.length, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await db.collection("venture_context").insertOne(item);
-    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.create", objectType: "venture_context", objectId: item._id, ventureId, result: "success" });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.create", objectType: "venture_context", objectId: item._id, ...(ventureId ? { ventureId } : {}), result: "success" });
     res.status(201).json({ ok: true, data: contextJson(item, true) });
+  }
+
+  router.post("/ventures/:ventureId/context", async (req, res) => {
+    const ventureId = idSchema.parse(req.params.ventureId);
+    await openVenture(db, req.actor!, ventureId);
+    await createContext(req, res, ventureId);
   });
+
+  router.post("/workspace/context", async (req, res) => { await createContext(req, res); });
 
   router.put("/context/:id", async (req, res) => {
     const actor = req.actor!;
     const id = idSchema.parse(req.params.id);
     const input = updateVentureContextSchema.parse(req.body);
     const item = await db.collection("venture_context").findOne({ _id: id, workspaceId: actor.membership.workspaceId, ...live });
-    if (!item || !readsVenture(actor, String(item.ventureId))) throw new AppError(404, "NOT_FOUND", "Context file not found");
-    if (!leadsVenture(actor, String(item.ventureId))) throw new AppError(403, "FORBIDDEN", "Only admins and this venture's head can change its context");
-    if (input.markdown !== undefined) await assertContextRoom(actor, String(item.ventureId), input.markdown.length, id);
+    if (!item || !readsContext(actor, item)) throw new AppError(404, "NOT_FOUND", "Context file not found");
+    const ventureId = item.ventureId ? String(item.ventureId) : undefined;
+    if (!writesContext(actor, ventureId)) throw new AppError(403, "FORBIDDEN", noWriteMessage(ventureId));
+    if (input.markdown !== undefined) await assertContextRoom(actor, ventureId, input.markdown.length, id);
     const now = new Date();
     const changed = await db.collection("venture_context").updateOne({ _id: id, ...live }, { $set: { ...input, ...(input.markdown !== undefined ? { characters: input.markdown.length } : {}), updatedBy: actor.id, updatedAt: now } });
     if (!changed.matchedCount) throw new AppError(404, "NOT_FOUND", "Context file not found");
-    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.update", objectType: "venture_context", objectId: id, ventureId: String(item.ventureId), result: "success" });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.update", objectType: "venture_context", objectId: id, ...(ventureId ? { ventureId } : {}), result: "success" });
     res.json({ ok: true, data: contextJson((await db.collection("venture_context").findOne({ _id: id, ...live }))!, true) });
   });
 
@@ -92,22 +116,37 @@ export function agentContextRoutes(database: Database): Router {
     const actor = req.actor!;
     const id = idSchema.parse(req.params.id);
     const item = await db.collection("venture_context").findOne({ _id: id, workspaceId: actor.membership.workspaceId, ...live });
-    if (!item || !readsVenture(actor, String(item.ventureId))) throw new AppError(404, "NOT_FOUND", "Context file not found");
-    if (!leadsVenture(actor, String(item.ventureId))) throw new AppError(403, "FORBIDDEN", "Only admins and this venture's head can change its context");
+    if (!item || !readsContext(actor, item)) throw new AppError(404, "NOT_FOUND", "Context file not found");
+    const ventureId = item.ventureId ? String(item.ventureId) : undefined;
+    if (!writesContext(actor, ventureId)) throw new AppError(403, "FORBIDDEN", noWriteMessage(ventureId));
     // Kept, hidden, so a mistaken removal can be recovered from the database.
     if (!(await db.collection("venture_context").updateOne({ _id: id, ...live }, { $set: { deletedAt: new Date(), deletedBy: actor.id } })).matchedCount) throw new AppError(404, "NOT_FOUND", "Context file not found");
-    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.delete", objectType: "venture_context", objectId: id, ventureId: String(item.ventureId), result: "success" });
+    await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "venture_context.delete", objectType: "venture_context", objectId: id, ...(ventureId ? { ventureId } : {}), result: "success" });
     res.json({ ok: true, data: { id } });
   });
 
-  /** Keeps a venture's whole context within what Claude can read before starting. */
-  async function assertContextRoom(actor: Actor, ventureId: string, adding: number, replacing?: string) {
-    const [sum] = await db.collection("venture_context").aggregate([
-      { $match: { workspaceId: actor.membership.workspaceId, ventureId, ...live, ...(replacing ? { _id: { $ne: replacing } } : {}) } },
-      { $group: { _id: null, characters: { $sum: { $ifNull: ["$characters", { $strLenCP: "$markdown" }] } } } },
+  /**
+   * Keeps what Claude reads for each venture (the workspace's files and the venture's own) within what it can read before
+   * starting. A workspace file counts against every venture, so it's checked against the venture with the most (archived
+   * ventures aside: they're frozen, and nobody reads them).
+   */
+  async function assertContextRoom(actor: Actor, ventureId: string | undefined, adding: number, replacing?: string) {
+    const sums = await db.collection("venture_context").aggregate([
+      { $match: { workspaceId: actor.membership.workspaceId, ...live, ...(ventureId ? { $or: [{ ventureId }, { ventureId: null }] } : notArchived(actor.membership)), ...(replacing ? { _id: { $ne: replacing } } : {}) } },
+      { $group: { _id: "$ventureId", characters: { $sum: { $ifNull: ["$characters", { $strLenCP: "$markdown" }] } } } },
     ]).toArray();
-    const total = Number(sum?.characters ?? 0) + adding;
-    if (total > CONTEXT_CHARACTERS_PER_VENTURE) throw new AppError(409, "CONFLICT", `A venture's context can hold up to ${CONTEXT_CHARACTERS_PER_VENTURE.toLocaleString("en")} characters in all (this would make ${total.toLocaleString("en")}); shorten or remove some files first`);
+    const shared = Number(sums.find((sum) => !sum._id)?.characters ?? 0);
+    const largest = sums.filter((sum) => sum._id).sort((a, b) => Number(b.characters) - Number(a.characters))[0];
+    const total = shared + adding + Number((ventureId ? sums.find((sum) => sum._id === ventureId) : largest)?.characters ?? 0);
+    const limit = CONTEXT_CHARACTERS_PER_VENTURE.toLocaleString("en");
+    if (!ventureId && largest && total > CONTEXT_CHARACTERS_PER_VENTURE) {
+      // Only an admin, who can open every venture, is told which one and how much; others aren't shown a venture they may not see.
+      if (actor.membership.role !== "admin") throw new AppError(409, "CONFLICT", `Workspace context counts toward every venture's, and this would take a venture's whole context past ${limit} characters; shorten it, or ask an admin which venture is full`);
+      const venture = await db.collection("ventures").findOne({ _id: String(largest._id), workspaceId: actor.membership.workspaceId }, { projection: { name: 1 } });
+      throw new AppError(409, "CONFLICT", `Workspace context counts toward every venture's, and with ${String(venture?.name ?? "one venture")}'s own this would make ${total.toLocaleString("en")} characters; a venture's whole context can hold up to ${limit}`);
+    }
+    // A venture's head can't shorten the workspace's files, so its share is named.
+    if (total > CONTEXT_CHARACTERS_PER_VENTURE) throw new AppError(409, "CONFLICT", `A venture's context can hold up to ${limit} characters in all (this would make ${total.toLocaleString("en")}${shared ? `, ${shared.toLocaleString("en")} of them from the workspace context` : ""}); shorten or remove some files first`);
   }
 
   // Skills: the workspace's (every venture uses them) and each venture's own.

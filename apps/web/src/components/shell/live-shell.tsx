@@ -1,7 +1,7 @@
 "use client";
 import { describeError } from "@/lib/errors";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Layers3 } from "@/components/ui/icons";
@@ -9,9 +9,10 @@ import { AppShell } from "./app-shell";
 import { StudioProvider } from "@/lib/studio-store";
 import { connectedNotices, connectedShellData } from "@/lib/live-shell-data";
 import { notificationSnapshotEvent } from "@/lib/notification-events";
-import { StudioApiError, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
+import { StudioApiError, getWeeklyLeaderboardStatus, hasLiveAuthSession, listLiveMembers, listLiveNotifications, listLiveTasks, loadLiveSession, signOutLive } from "@/lib/studio-api";
 import { demoEnabled } from "@/lib/demo";
 import { NewTaskHost } from "@/components/studio/new-task-dialog";
+import { CelebrationHost } from "./celebration-host";
 
 type Session = Awaited<ReturnType<typeof loadLiveSession>>;
 type Snapshot = { session: Session; data: ReturnType<typeof connectedShellData> };
@@ -25,6 +26,7 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState("");
   const [hierarchyRevision, setHierarchyRevision] = useState(0);
+  const weeklyChecked = useRef(false);
 
   useEffect(() => {
     const refresh = () => setHierarchyRevision((value) => value + 1);
@@ -49,6 +51,18 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
         if (!active) return;
         setSnapshot({ session, data: connectedShellData(session) });
         setError(""); setNoAccess(false);
+        // On the first open after Saturday's edition is out, show it once (then carry on to where they were going).
+        if (!weeklyChecked.current) {
+          weeklyChecked.current = true;
+          // Marked while it's decided, and kept until Saturday's film has played if it opens, so a celebration waits.
+          document.documentElement.dataset.vsoWeekly = "pending";
+          void getWeeklyLeaderboardStatus().then((status) => {
+            if (status.seen || !status.ranked || window.location.pathname.startsWith("/leaderboard/weekly")) { delete document.documentElement.dataset.vsoWeekly; return; }
+            router.replace(`/leaderboard/weekly/live?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`);
+            // If the film never starts (reduced motion, or the page left), don't hold celebrations for long.
+            window.setTimeout(() => { if (!document.documentElement.dataset.vsoFilm) delete document.documentElement.dataset.vsoWeekly; }, 8000);
+          }, () => { delete document.documentElement.dataset.vsoWeekly; });
+        }
         const [tasks, notifications, members] = await Promise.allSettled([
           listLiveTasks(), listLiveNotifications(), listLiveMembers({ limit: 100 }),
         ]);
@@ -85,5 +99,5 @@ export function LiveShell({ children }: { children: React.ReactNode }) {
     <div aria-hidden="true" className="flex min-w-0 flex-1 flex-col"><div className="flex h-14 shrink-0 items-center gap-3 px-4"><span className="vso-skeleton h-10 w-10 rounded-xl" /><span className="vso-skeleton mx-auto h-10 w-full max-w-[520px] rounded-xl" /><span className="vso-skeleton h-10 w-10 rounded-xl" /><span className="vso-skeleton h-10 w-10 rounded-xl" /></div><div className="flex-1 rounded-tl-[22px] bg-canvas px-4 py-5 sm:px-6 lg:px-7 lg:py-6"><span className="vso-skeleton h-8 w-56" /><span className="vso-skeleton mt-2 h-4 w-80 max-w-full" /><div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((index) => <span key={index} className="vso-skeleton h-28 rounded-2xl" />)}</div><span className="vso-skeleton mt-4 h-64 rounded-2xl" /></div></div>
   </main>;
 
-  return <StudioProvider mode="connected" initialData={snapshot.data} initialUserId={snapshot.session.user.id} workspaceName={snapshot.session.hierarchy.workspace.name} role={snapshot.session.membership.role.replaceAll("_", " ")}><AppShell connected>{children}<NewTaskHost /></AppShell></StudioProvider>;
+  return <StudioProvider mode="connected" initialData={snapshot.data} initialUserId={snapshot.session.user.id} workspaceName={snapshot.session.hierarchy.workspace.name} role={snapshot.session.membership.role.replaceAll("_", " ")}><AppShell connected>{children}<NewTaskHost /><CelebrationHost /></AppShell></StudioProvider>;
 }

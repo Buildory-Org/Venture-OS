@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Filter } from "mongodb";
-import { createEvidenceSchema, createOutcomeSchema, createReminderSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskDetailFields, taskListQuerySchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
+import { createEvidenceSchema, createOutcomeSchema, createReminderSchema, createTaskSchema, cursorQuerySchema, idSchema, snoozeSchema, startFocusSchema, taskDetailFields, taskListQuerySchema, type taskSortSchema, updateOutcomeSchema, updateTaskSchema } from "@venture-studio/contracts";
 import { can, hasDeadlineRisk, snoozeReminder } from "@venture-studio/core";
 import type { AppDb, AppDocument, Database } from "../db.js";
 import { atomic } from "../db.js";
@@ -11,24 +11,77 @@ import { assignableMembership } from "../assignable.js";
 import { inArchivedVenture, notArchived } from "../archive-scope.js";
 import { jsonValue, omitNullFields, withDates } from "../json.js";
 import { assertNotBlank, assertOrderedDates } from "../validation.js";
+import { deleteTaskCascade, restoreTaskDeletion } from "../task-deletion.js";
+import { recordCelebration } from "../celebrations.js";
 import { z } from "zod";
+
+type TaskSortKey = { value: unknown; order: 1 | -1; date: boolean };
+type TaskSort = z.infer<typeof taskSortSchema>;
+/** What each task sort orders by (the id breaks ties). Missing dates sort as the epoch rather than breaking the paging. */
+const taskSortKeys: Record<TaskSort, TaskSortKey[]> = {
+  due: [{ value: { $ifNull: ["$dueAt", new Date(0)] }, order: 1, date: true }],
+  priority: [{ value: { $indexOfArray: [["low", "medium", "high", "urgent"], "$priority"] }, order: -1, date: false }, { value: { $ifNull: ["$dueAt", new Date(0)] }, order: 1, date: true }],
+  updated: [{ value: { $ifNull: ["$updatedAt", "$createdAt", new Date(0)] }, order: -1, date: true }],
+  newest: [{ value: { $ifNull: ["$createdAt", new Date(0)] }, order: -1, date: true }],
+};
+/** A page cursor: the sort, the last task's sort values, and its id, as base64url JSON (it fits the opaque-id format). */
+function encodeTaskCursor(sort: TaskSort, row: Record<string, unknown>, keys: TaskSortKey[]) {
+  const values = keys.map((key, index) => { const value = row[`_s${index}`]; return key.date ? (value instanceof Date ? value.getTime() : 0) : Number(value); });
+  return Buffer.from(JSON.stringify([sort, ...values, String(row._id)])).toString("base64url");
+}
+function decodeTaskCursor(sort: TaskSort, cursor: string, keys: TaskSortKey[]) {
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); } catch { parsed = undefined; }
+  const values = Array.isArray(parsed) ? parsed.slice(1, -1) : [];
+  if (!Array.isArray(parsed) || parsed[0] !== sort || values.length !== keys.length || typeof parsed[parsed.length - 1] !== "string" || values.some((value) => typeof value !== "number" || !Number.isFinite(value))) throw new AppError(400, "BAD_REQUEST", "That page cursor doesn't fit this sort; start again from the first page");
+  return { values: keys.map((key, index) => key.date ? new Date(values[index] as number) : values[index] as number), id: parsed[parsed.length - 1] as string };
+}
+/** Rows after the cursor in sort order: a later first key, or the same first key and a later second, …, or all the same and a later id. */
+function afterTaskCursor(keys: TaskSortKey[], after: { values: unknown[]; id: string }) {
+  const same = (count: number) => Object.fromEntries(keys.slice(0, count).map((_, index) => [`_s${index}`, after.values[index]]));
+  return { $or: [...keys.map((key, index) => ({ ...same(index), [`_s${index}`]: { [key.order === 1 ? "$gt" : "$lt"]: after.values[index] } })), { ...same(keys.length), _id: { $gt: after.id } }] };
+}
 
 export function workRoutes(database: Database): Router {
   const db = database.db;
   const router = Router();
 
+  /** Re-reads the actor's membership inside a transaction (and fences it), so a member removed or demoted meanwhile can't act; returns it. */
+  async function fenceActor(actor: NonNullable<Express.Request["actor"]>, ventureId: string, groupId: string, session?: import("mongodb").ClientSession) {
+    const membership = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
+    if (!membership || (membership.role !== "admin" && (!membership.ventureIds.includes(ventureId) || !membership.groupIds.includes(groupId)))) throw new AppError(404, "NOT_FOUND", "Task not found");
+    if (!can(membership as unknown as Parameters<typeof can>[0], "task:update", { ventureId, groupId })) throw new AppError(403, "FORBIDDEN", "Current role cannot change tasks");
+    return membership;
+  }
+  /** Writes to the task inside the caller's transaction, so it conflicts with a delete running at the same time. */
+  async function touchTask(id: string, session?: import("mongodb").ClientSession) {
+    return (await db.collection("tasks").updateOne({ _id: id }, { $set: { lastActivityAt: new Date() } }, { session })).matchedCount > 0;
+  }
+
+  /** Open tasks with evidence waiting that this person may review (the same rules as reviewing it; through Claude, never their own). */
+  async function needsReviewBy(actor: NonNullable<Express.Request["actor"]>, viaClaude: boolean): Promise<Filter<AppDocument>> {
+    const role = actor.membership.role;
+    const anyone = role === "admin" && !viaClaude;
+    const pending = await db.collection("evidence_items").find({ workspaceId: actor.membership.workspaceId, reviewStatus: "pending", ...(anyone ? {} : { submittedBy: { $ne: actor.id } }) }, { projection: { taskId: 1 } }).toArray();
+    const reviewer = anyone ? {} : role === "admin" || role === "venture_head" ? { assigneeId: { $ne: actor.id } } : { reviewerId: actor.id, assigneeId: { $ne: actor.id } };
+    return { _id: { $in: [...new Set(pending.map((item) => String(item.taskId)))] }, status: { $nin: ["done", "cancelled"] }, ...reviewer };
+  }
+
   router.get("/tasks", async (req, res) => {
     const query = taskListQuerySchema.parse(req.query);
     const actor = req.actor!;
+    // Who can see what, and the venture, people, priority, tag, and search asked for: the lists (and their counts) share these.
     const filter: Filter<AppDocument> = { workspaceId: actor.membership.workspaceId };
     if (query.ventureId) filter.ventureId = query.ventureId;
     if (query.groupId) filter.groupId = query.groupId;
     if (query.assigneeId) filter.assigneeId = query.assigneeId;
     if (query.reviewerId) filter.reviewerId = query.reviewerId;
-    if (query.status) filter.status = query.status;
     if (query.priority) filter.priority = query.priority;
     if (query.tag) filter.tags = query.tag;
-    if (query.cursor) filter._id = { $gt: query.cursor };
+    if (query.q) {
+      const words = new RegExp(query.q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      filter.$or = [{ title: words }, { outcome: words }, { tags: words }];
+    }
     if (actor.membership.role === "admin") {
       if (query.ventureId && inArchivedVenture(actor.membership, query.ventureId)) filter.ventureId = { $in: [] };
       else if (!query.ventureId) Object.assign(filter, notArchived(actor.membership));
@@ -36,8 +89,41 @@ export function workRoutes(database: Database): Router {
       filter.ventureId = query.ventureId && actor.membership.ventureIds.includes(query.ventureId) ? query.ventureId : query.ventureId ? { $in: [] } : { $in: actor.membership.ventureIds };
       filter.groupId = query.groupId && actor.membership.groupIds.includes(query.groupId) ? query.groupId : query.groupId ? { $in: [] } : { $in: actor.membership.groupIds };
     }
-    const items = await db.collection("tasks").find(filter).sort({ _id: 1 }).limit(query.limit + 1).toArray();
-    res.json({ ok: true, data: { items: jsonValue(items.slice(0, query.limit)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined } });
+    const now = new Date();
+    const offList = ["done", "cancelled", "parked"];
+    const views = {
+      open: async () => ({ status: { $nin: offList } }),
+      review: () => needsReviewBy(actor, req.interfaceChannel === "mcp"),
+      overdue: async () => ({ status: { $nin: offList }, dueAt: { $lt: now } }),
+      done: async () => ({ status: "done" }),
+      all: async () => ({}),
+    } satisfies Record<string, () => Promise<Filter<AppDocument>>>;
+    const narrowed: Filter<AppDocument>[] = [await views[query.view ?? "all"]()];
+    if (query.status) narrowed.push({ status: query.status });
+    if (query.dueFrom || query.dueTo) narrowed.push({ dueAt: { ...(query.dueFrom ? { $gte: new Date(query.dueFrom) } : {}), ...(query.dueTo ? { $lt: new Date(query.dueTo) } : {}) } });
+    const counts = query.counts === "true" ? Object.fromEntries(await Promise.all((Object.keys(views) as (keyof typeof views)[]).map(async (view) => [view, await db.collection("tasks").countDocuments({ ...filter, $and: [await views[view]()] })]))) : undefined;
+    const listed = { ...filter, $and: narrowed };
+    // Lists leave the long details out; they come with the task itself.
+    if (!query.sort) {
+      const items = await db.collection("tasks").find({ ...listed, ...(query.cursor ? { _id: { $gt: query.cursor } } : {}) } as Filter<AppDocument>, { projection: { details: 0 } }).sort({ _id: 1 }).limit(query.limit + 1).toArray();
+      res.json({ ok: true, data: { items: jsonValue(items.slice(0, query.limit)), nextCursor: items.length > query.limit ? items[query.limit - 1]?._id : undefined, ...(counts ? { counts } : {}) } });
+      return;
+    }
+    // Sorted lists page by their sort values and id, so a page never repeats or skips a task.
+    const keys = taskSortKeys[query.sort];
+    const after = query.cursor ? decodeTaskCursor(query.sort, query.cursor, keys) : undefined;
+    const rows = await db.collection("tasks").aggregate([
+      { $match: listed },
+      { $project: { details: 0 } },
+      { $addFields: Object.fromEntries(keys.map((key, index) => [`_s${index}`, key.value])) },
+      ...(after ? [{ $match: afterTaskCursor(keys, after) }] : []),
+      { $sort: { ...Object.fromEntries(keys.map((key, index) => [`_s${index}`, key.order])), _id: 1 } },
+      { $limit: query.limit + 1 },
+    ]).toArray();
+    const page = rows.slice(0, query.limit);
+    const last = rows.length > query.limit ? page[page.length - 1] : undefined;
+    const items = page.map(({ _s0, _s1, ...task }) => task);
+    res.json({ ok: true, data: { items: jsonValue(items), nextCursor: last ? encodeTaskCursor(query.sort, last, keys) : undefined, ...(counts ? { counts } : {}) } });
   });
 
   router.get("/tasks/:id", async (req, res) => {
@@ -61,7 +147,9 @@ export function workRoutes(database: Database): Router {
     const now = new Date();
     const id = randomUUID();
     const deadlineRisk = hasDeadlineRisk(input.dueAt, input.estimatedMinutes, now);
-    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...withDates(input, ["dueAt", "reviewAt"]), creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
+    // Empty details are left out rather than stored empty.
+    const { details, ...fields } = input;
+    const task = { _id: id, workspaceId: actor.membership.workspaceId, ...withDates(fields, ["dueAt", "reviewAt"]), ...(details ? { details } : {}), creatorId: actor.id, status: "proposed", deadlineRisk, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       const currentActor = await db.collection("memberships").findOneAndUpdate({ workspaceId: actor.membership.workspaceId, userId: actor.id, status: "active" }, { $inc: { authorizationFence: 1 } }, { returnDocument: "after", session });
       if (!currentActor || !can(currentActor as unknown as Parameters<typeof can>[0], "task:create", { ventureId: input.ventureId, groupId: input.groupId })) throw new AppError(403, "FORBIDDEN", "You cannot create tasks in this scope");
@@ -84,6 +172,7 @@ export function workRoutes(database: Database): Router {
     const actor = req.actor!;
     const existing = await accessibleTask(db, actor, id);
     const now = new Date();
+    let finishedFor: string | undefined;
     await atomic(database, async (session) => {
       const current = await db.collection("tasks").findOne({ _id: id, workspaceId: actor.membership.workspaceId }, { session });
       if (!current) throw new AppError(404, "NOT_FOUND", "Task not found");
@@ -114,15 +203,22 @@ export function workRoutes(database: Database): Router {
       const planningChanged = assigneeChanged || nextDueAt.getTime() !== new Date(current.dueAt).getTime() || nextEstimate !== current.estimatedMinutes;
       const deadlineRisk = hasDeadlineRisk(nextDueAt, nextEstimate, now);
       const $set: Record<string, unknown> = { ...input, ...(input.dueAt ? { dueAt: nextDueAt } : {}), deadlineRisk, updatedAt: now };
-      if (input.blocker === null) delete $set.blocker;
+      // A cleared blocker or emptied details are removed, not stored empty.
+      const $unset: Record<string, ""> = { ...(input.blocker === null ? { blocker: "" } : {}), ...(input.details === null || input.details === "" ? { details: "" } : {}) };
+      for (const field of Object.keys($unset)) delete $set[field];
       if (input.status === "accepted") $set.acceptedAt = now;
       if (input.status === "in_progress" && !current.startedAt) $set.startedAt = now;
       if (input.status === "done") $set.completedAt = now;
-      await db.collection("tasks").updateOne({ _id: id }, input.blocker === null ? { $set, $unset: { blocker: "" } } : { $set }, { session });
-      const changedDetails = taskDetailFields.filter((field) => input[field] !== undefined && JSON.stringify(input[field]) !== JSON.stringify(current[field] ?? (field === "tags" ? [] : undefined)));
-      const detailNames = { title: "title", outcome: "outcome", definitionOfDone: "definition of done", evidenceRequirement: "evidence requirement", tags: "tags" } as const;
+      // Finishing it is the assignee's moment: their celebration, unless it already came when the evidence was accepted.
+      const owner = input.assigneeId ?? (typeof current.assigneeId === "string" ? current.assigneeId : undefined);
+      finishedFor = input.status === "done" && current.status !== "done" ? owner : undefined;
+      await db.collection("tasks").updateOne({ _id: id }, Object.keys($unset).length ? { $set, $unset } : { $set }, { session });
+      // Empty details and missing details are the same thing.
+      const comparable = (field: (typeof taskDetailFields)[number], value: unknown) => value === null || value === "" ? (field === "tags" ? [] : undefined) : value ?? (field === "tags" ? [] : undefined);
+      const changedDetails = taskDetailFields.filter((field) => input[field] !== undefined && JSON.stringify(comparable(field, input[field])) !== JSON.stringify(comparable(field, current[field])));
+      const detailNames = { title: "title", outcome: "outcome", definitionOfDone: "definition of done", evidenceRequirement: "evidence requirement", details: "details", tags: "tags" } as const;
       const detailSummary = changedDetails.length ? `Edited the ${changedDetails.map((field) => detailNames[field]).join(", ").replace(/, ([^,]*)$/, " and $1")}` : "";
-      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? (detailSummary || "Task updated"), ...(changedDetails.length ? { previous: Object.fromEntries(changedDetails.map((field) => [field, current[field] ?? null])) } : {}), fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
+      await db.collection("task_updates").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: input.status ? "status" : input.blocker !== undefined ? "blocker" : "comment", body: input.blocker ?? (detailSummary || "Task updated"), ...(changedDetails.length ? { previous: Object.fromEntries(changedDetails.map((field) => [field, typeof current[field] === "string" && current[field].length > 2000 ? `${current[field].slice(0, 2000)}…` : current[field] ?? null])) } : {}), fromStatus: current.status, ...(input.status ? { toStatus: input.status } : {}), createdAt: now }, { session });
       if (assigneeChanged) {
         await db.collection("notification_outbox").updateMany({ resourceType: "task", resourceId: id, userId: current.assigneeId, type: { $in: ["assignment", "deadline_warning", "reminder"] }, state: "pending" }, { $set: { state: "cancelled", updatedAt: now } }, { session });
         await db.collection("notification_outbox").insertOne({ _id: randomUUID(), workspaceId: actor.membership.workspaceId, userId: nextAssignee, type: "assignment", title: nextTitle, body: nextOutcome, resourceType: "task", resourceId: id, idempotencyKey: `task:${id}:reassigned:${randomUUID()}`, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now }, { session });
@@ -152,7 +248,53 @@ export function workRoutes(database: Database): Router {
       }
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.update", objectType: "task", objectId: id, ventureId: String(existing.ventureId), result: "success" }, session);
     });
+    if (finishedFor) await recordCelebration(db, { workspaceId: actor.membership.workspaceId, userId: finishedFor, taskId: id, trigger: "done", actorId: actor.id });
     res.json({ ok: true, data: jsonValue(await db.collection("tasks").findOne({ _id: id })) });
+  });
+
+  // Deleting is for mistakes and duplicates (cancelling keeps the history): the task's creator or an admin may do it.
+  router.delete("/tasks/:id", async (req, res) => {
+    const id = idSchema.parse(req.params.id);
+    const actor = req.actor!;
+    const task = await accessibleTask(db, actor, id);
+    if (actor.membership.role !== "admin" && task.creatorId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the task's creator or a workspace admin can delete it");
+    if (!can(actor.membership, "task:update", { ventureId: String(task.ventureId), groupId: String(task.groupId) })) throw new AppError(403, "FORBIDDEN", "Current role cannot delete tasks");
+    if (!database.transactions) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Deleting a task needs a MongoDB replica set");
+    const deletionId = randomUUID();
+    let removed: Record<string, number> = {};
+    await atomic(database, async (session) => {
+      const fenced = await fenceActor(actor, String(task.ventureId), String(task.groupId), session);
+      if (fenced.role !== "admin" && task.creatorId !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the task's creator or a workspace admin can delete it");
+      removed = await deleteTaskCascade(db, { workspaceId: actor.membership.workspaceId, taskId: id, deletionId, actorId: actor.id }, session);
+      await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "task.delete", objectType: "task", objectId: id, ventureId: String(task.ventureId), result: "success", metadata: { deletionId, title: String(task.title).slice(0, 200), removed: JSON.stringify(removed) } }, session);
+    });
+    res.json({ ok: true, data: { deletionId, removed } });
+  });
+
+  // Undo a delete: whoever deleted it, or an admin, while the recovery copy lasts.
+  router.post("/tasks/deletions/:deletionId/restore", async (req, res) => {
+    const deletionId = idSchema.parse(req.params.deletionId);
+    const actor = req.actor!;
+    const workspaceId = actor.membership.workspaceId;
+    const record = await db.collection("deleted_records").findOne({ workspaceId, deletionId, kind: "task", collection: "tasks", action: "removed" });
+    if (!record) throw new AppError(404, "NOT_FOUND", "That deleted task can no longer be restored");
+    if (actor.membership.role !== "admin" && record.deletedBy !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the person who deleted it or a workspace admin can restore it");
+    const ventureId = String(record.document.ventureId); const groupId = String(record.document.groupId);
+    const archived = actor.membership.archivedVentureIds?.includes(ventureId) || actor.membership.archivedGroupIds?.includes(groupId);
+    if (archived || !(await db.collection("groups").findOne({ _id: groupId, workspaceId, ventureId }))) throw new AppError(409, "CONFLICT", "Its venture or group is gone or archived, so the task can't come back there");
+    if (!can(actor.membership, "task:update", { ventureId, groupId })) throw new AppError(403, "FORBIDDEN", "You can no longer change tasks in its group");
+    if (!database.transactions) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Restoring a task needs a MongoDB replica set");
+    let task: Record<string, unknown> = {};
+    await atomic(database, async (session) => {
+      const fenced = await fenceActor(actor, ventureId, groupId, session);
+      if (fenced.role !== "admin" && record.deletedBy !== actor.id) throw new AppError(403, "FORBIDDEN", "Only the person who deleted it or a workspace admin can restore it");
+      // Its people must still be able to hold it.
+      await fenceAssignableMember(db, workspaceId, String(record.document.assigneeId), ventureId, groupId, "Assignee", session);
+      if (record.document.reviewerId) await fenceAssignableMember(db, workspaceId, String(record.document.reviewerId), ventureId, groupId, "Reviewer", session);
+      task = await restoreTaskDeletion(db, workspaceId, deletionId, session);
+      await audit(db, { workspaceId, actorId: actor.id, channel: req.interfaceChannel, action: "task.restore", objectType: "task", objectId: String(task._id), ventureId, result: "success", metadata: { deletionId } }, session);
+    });
+    res.json({ ok: true, data: jsonValue(task) });
   });
 
   router.post("/tasks/:id/evidence", async (req, res) => {
@@ -165,6 +307,7 @@ export function workRoutes(database: Database): Router {
     // Omit an absent URI: the driver would persist `undefined` as null, which the published contract rejects.
     const evidence = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, type: input.type, title: input.title, ...(input.uri ? { uri: input.uri } : {}), description: input.description, submittedBy: actor.id, submittedAt: new Date(), reviewStatus: "pending", ...(req.interfaceChannel === "mcp" ? { via: "claude" } : {}) };
     await atomic(database, async (session) => {
+      if (!(await touchTask(id, session))) throw new AppError(404, "NOT_FOUND", "Task not found");
       await db.collection("evidence_items").insertOne(evidence, { session });
       await audit(db, { workspaceId: actor.membership.workspaceId, actorId: actor.id, channel: "api", action: "task.evidence.add", objectType: "task", objectId: id, ventureId: String(task.ventureId), result: "success" }, session);
     });
@@ -177,7 +320,10 @@ export function workRoutes(database: Database): Router {
     await accessibleTask(db, actor, id);
     const { body } = z.object({ body: z.string().trim().min(1).max(5_000) }).parse(req.body);
     const comment = { _id: randomUUID(), workspaceId: actor.membership.workspaceId, taskId: id, authorId: actor.id, type: "comment", body, ...(req.interfaceChannel === "mcp" ? { via: "claude" } : {}), createdAt: new Date() };
-    await db.collection("task_updates").insertOne(comment);
+    await atomic(database, async (session) => {
+      if (!(await touchTask(id, session))) throw new AppError(404, "NOT_FOUND", "Task not found");
+      await db.collection("task_updates").insertOne(comment, { session });
+    });
     res.status(201).json({ ok: true, data: jsonValue(comment) });
   });
 
@@ -195,6 +341,8 @@ export function workRoutes(database: Database): Router {
     // A Claude connection never reviews its owner's own work, admins included: a person makes that call in the app.
     if (req.interfaceChannel === "mcp" && (evidence.submittedBy === actor.id || task.assigneeId === actor.id)) throw new AppError(403, "FORBIDDEN", "Claude can't review evidence you submitted or that is on your own task; review it yourself in the app");
     await db.collection("evidence_items").updateOne({ _id: id }, { $set: { reviewStatus: status, reviewedBy: actor.id, reviewedAt: new Date() } });
+    // Approval is the assignee's moment: their celebration plays (once per task, so marking it done later won't repeat it).
+    if (status !== "rejected" && typeof task.assigneeId === "string" && task.assigneeId && !["cancelled", "done"].includes(String(task.status))) await recordCelebration(db, { workspaceId: actor.membership.workspaceId, userId: task.assigneeId, taskId: String(task._id), trigger: "approved", actorId: actor.id });
     const reviewed = await db.collection("evidence_items").findOne({ _id: id });
     res.json({ ok: true, data: reviewed ? jsonValue(omitNullFields(reviewed, ["uri"])) : null });
   });
@@ -293,7 +441,7 @@ export function workRoutes(database: Database): Router {
   });
   router.put("/task-filters/:id", async (req, res) => {
     const actor = req.actor!; const id = idSchema.parse(req.params.id);
-    const input = z.object({ name: z.string().trim().min(1).max(100), filters: taskListQuerySchema.omit({ cursor: true, limit: true }) }).parse(req.body);
+    const input = z.object({ name: z.string().trim().min(1).max(100), filters: taskListQuerySchema.omit({ cursor: true, limit: true, counts: true }) }).parse(req.body);
     await db.collection("task_filters").updateOne({ _id: id, workspaceId: actor.membership.workspaceId, userId: actor.id }, { $set: { ...input, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
     res.json({ ok: true, data: jsonValue(await db.collection("task_filters").findOne({ _id: id })) });
   });

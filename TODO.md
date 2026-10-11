@@ -450,6 +450,154 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
     - API tests cover permissions, scope moves, limits, filters, cursors, Claude's tools and the reminder, and the splitting into parts. The backend smoke passes.
     - In the browser: uploading, editing, moving a skill, and the Tasks and Group chats tabs with filters. Web typecheck, lint, and the production build pass.
     - An independent review's findings are fixed. A permanently deleted venture takes its context and skills with it, with a recovery copy.
+- [x] Tasks written by Claude come out right (2026-10-10), built and tested locally, not yet live.
+  - **Why:**
+    - A task Claude made had its whole spec in the definition of done, ending in garbled tool-call text (`</definitionOfDone> <parameter name="tags">…`).
+    - Claude's call had been cut wrong, and the tool gave no guidance on what each field is for.
+  - **Details field:** tasks have Details (Markdown, up to 20,000 characters) for background, specs, links, and plans.
+    - It is shown in the task drawer (images as links, headings sized for the drawer, long text folded) and is part of task search and context packets.
+    - It is set when creating a task (in the app or by Claude) and edited by the creator and admins.
+  - **Claude's task tools:**
+    - Every field says what it is for; the definition of done is a short checklist (up to 1,500 characters when creating), and the real defaults are stated.
+    - Creating and updating reply with the task as saved, line breaks kept, so Claude can check it and fix it with update_task.
+    - get_task keeps line breaks too.
+  - **Guard:** any Claude tool refuses text holding leftover tool-call markup (or a closing tag named after one of the call's own fields), so nothing garbled is saved. Code blocks and inline code are exempt, so the syntax can be written on purpose.
+  - **App:** the outcome, definition of done, and evidence show their line breaks.
+  - **Also:**
+    - Claude's instructions now take the only venture without asking, and read the new venture's context when the conversation switches.
+    - post_message tells Claude to write @handles so mentions show names.
+  - **Verified:**
+    - API tests cover Details permissions and clearing, the guard's shapes and exemptions, the read-back, and line breaks. The backend smoke passes; the search index is replaced in place on an existing database.
+    - In the browser: the drawer and the edit form. Web typecheck, lint, and build pass.
+    - An independent review's findings are fixed.
+- [x] Task window, and deleting a task with Undo (2026-10-10), built and tested locally, not yet live.
+  - **Window:** a task opens in a centred window instead of the side panel, with tabs for Overview, Activity, Evidence, and Files.
+    - Status, blocker, people, and the plan sit in a side column. On phones the window is full screen and they move to a "Status & people" tab.
+    - A ⋯ menu holds Edit details, Copy link, and Delete task. Links can open a tab (`?task=…&tab=activity`).
+    - Escape, the focus trap, and the menu work from the keyboard. Closing with unsaved text asks first, and a refresh keeps unsaved status and people picks.
+    - The work flow and statuses are unchanged.
+  - **Deleting:** the creator (a contributor or venture head) or an admin deletes a task. Claude can't.
+    - Its comments, evidence, files, reminders, and notices go with it. Other tasks stop depending on it, and links to it elsewhere are cleared.
+    - Everything is kept for 30 days as a recovery copy. The toast's Undo (by whoever deleted it, or an admin) brings it all back, but not dependencies on tasks deleted since.
+    - Deleting and restoring run in one transaction, re-checking the person's membership. Comments and evidence touch the task in the same transaction, so a delete can't orphan them.
+  - **Claude's task updates:** get_task warns when saved text holds leftover tool-call markup. The guard's refusal explains how to fix text copied from it, so update_task can clean an old garbled task.
+  - **Verified:**
+    - API tests cover delete and restore permissions, the cleanup and its undo, dependencies, a second undo, an admin's delete, and the get_task warning and cleanup. All 20 API tests pass on a replica set, and the backend smoke passes.
+    - In the browser:
+      - tabs, comments, and the phone layout;
+      - delete, then Undo (once, even when clicked twice), then Open, then Back closing it;
+      - Escape and Tab from the page body, Tab inside a window above it, and the menu's keyboard and outside click;
+      - closing clears the link.
+    - Web typecheck, lint, and build pass.
+    - Two independent reviews' findings are fixed. The role check is repeated inside the transaction, so someone demoted meanwhile can't delete or restore.
+- [x] Task list: open work first, soonest due, with lists and filters (2026-10-10), built and tested locally, not yet live.
+  - **Lists:** Open (the default: not done, cancelled, or parked), Needs my review, Overdue, Done, and All, with counts on the tabs.
+    - Needs my review shows open tasks with evidence waiting that you may accept or reject, by the same rules as reviewing it.
+    - Done lists the most recently finished first and says when each was finished.
+  - **Order:** soonest due by default, under Overdue, Today, Next 7 days, and Later headings. Most urgent, recently updated, and newest are the other sorts.
+  - **Rows:** say "Overdue by 3 days" in red, "Due today, 5:00 PM", or "Due tomorrow", counting calendar days.
+  - **Filters:** Assigned to me, any assignee, status, priority, and due today or in the next 7 days. Picking a status a list can't hold moves to All.
+  - **Search:** titles, outcomes, and tags.
+  - **Link:** the list, sort, filters, and search live in the link, so it can be shared, and closing a task keeps them.
+  - **Server:** sorting, filtering, search, and counts run on the server, so they stay right past the first 100 tasks.
+    - Sorted lists page by their sort values and id, so a page never repeats or skips a task, and a cursor from another sort is refused.
+    - Without a sort, the list behaves as before, so the board, dashboard, and other callers are unchanged.
+    - Claude's list_tasks gains the same lists (open, needs_my_review, overdue, done, all), sorts (soonest due by default), and search.
+  - **Verified:**
+    - An API test covers each list, who sees Needs my review, paging across equal due dates and every sort, search with regex characters, counts, bad cursors, and the unsorted list. All 21 API tests pass on a replica set, and the backend smoke passes.
+    - In the browser: every list, the headings and counts, each filter, search, sort, the empty states, Clear, a shared link, opening a task and accepting its evidence from Needs my review, and the phone layout. Web typecheck, lint, and build pass.
+    - An independent review's findings are fixed:
+      - a search pause no longer brings back cleared filters;
+      - a late "Load more" can't mix old rows in;
+      - cursors are tied to their sort, and a null character in search is refused;
+      - switching lists reloads only the tasks;
+      - Needs my review through Claude leaves out the person's own work.
+- [x] Leaderboard, and a "Top performers of the week" edition every Saturday (2026-10-10), built and tested locally, not yet live.
+  - **Score:** fair whatever the workload.
+    - 70% on time: each task due earns full credit on time, 0.75 up to a day late, 0.5 up to three days, 0.25 later, and nothing if not delivered. Bigger tasks (by estimate, capped) count more.
+    - 30% right first time: evidence accepted without being sent back.
+    - Each rate is evened out toward the team's by five tasks' worth, and people are ranked from two tasks.
+    - A task counts in the period it settled: when it was handed in, if early, otherwise when it was due. Finishing early counts straight away.
+  - **Not their fault, not counted:**
+    - Work counts as delivered when the accepted evidence was sent, not when it was reviewed.
+    - Blocked time, and the shortfall when a task was given with less time than its estimate, move the due date back.
+    - Cancelled, parked, and draft tasks don't count.
+  - **Leaderboard page (sidebar):**
+    - A podium for the top three and a list below, with on time, right first time, delivered, and a trend against the period before.
+    - Lifetime standings (every task to date), with arrows for each person's move since Saturday, and a toggle to include learners. It follows the venture switcher.
+    - Side cards: Most delivered, Top reviewers, and how scores work.
+    - Clicking a person shows the tasks behind their score; tasks the viewer can't open are only counted.
+    - Everyone sees everyone's ranking.
+  - **Weekly edition:**
+    - Weeks run Saturday to Friday (LEADERBOARD_TIME_ZONE, default Asia/Kolkata). The first open after Saturday midnight makes the edition: the lifetime standings as of that midnight, with each person's move since the Saturday before, then kept as it was.
+    - Each person's first open of the app after that shows it once, then continues to where they were going.
+    - It has gold, silver, and bronze cards for the top three, ranks 4 to 10, and the week's most delivered and top reviewer, with or without learners.
+  - **Verified:**
+    - An API test covers each scoring rule with a fixed clock (slow review, blocked time, short deadline, redone evidence, missed work, evening out, ranking threshold, learners, reviewers) and the Saturday week boundary.
+    - It also covers who sees what (venture boards, hidden tasks in the breakdown), the edition being made once and kept, and seen per person. All 22 API tests pass on a replica set, and the backend smoke passes.
+    - In the browser: the redirect on a Saturday open, Continue, no second redirect, the daily page, the breakdown, learners, periods, the phone layout, and dark mode. Web typecheck, lint, and build pass.
+    - An independent review's findings are fixed:
+      - evidence waiting for review counts as handed in, not missed;
+      - the edition is as of Saturday midnight, whenever it's first opened, and its breakdown follows it;
+      - blocked time only pauses the clock for a block begun before the task was late, for a week at most;
+      - reviewing your own evidence isn't a review, and equal scores share a rank;
+      - "Continue" only goes to a page inside the app;
+      - the board says which venture it shows.
+  - **Follow-up (2026-10-10):**
+    - Both boards are lifetime (every task to date). The Saturday edition shows the standings as the week closed, with each person's move that week; an edition made under the old weekly rules is remade once.
+    - The everyday leaderboard is full screen in its own design (after the green podium reference): avatars on frosted podium steps 2-1-3, then the list on a sheet below. The Saturday page keeps the trophy cards.
+    - Both leaderboards fill the whole content area edge to edge (no card or margins), with a slowly moving dither in the background: white dots on the green stage, gold on the Saturday poster. It stays still with reduced motion and pauses while the tab is hidden.
+    - Early work counts when it's handed in, and the minimum is two tasks. The live workspace had 13 of its 15 tasks due later, so no one could be ranked yet.
+    - Lateness reads in minutes, hours, or days, and someone not ranked yet shows no score.
+    - Verified: the API test (early hand-ins, hand-ins before the period, ties sharing a rank, one task not enough) and the browser on a copy of the live situation, desktop and phone. All 22 API tests, lint, typecheck, and build pass.
+  - **Opening film (2026-10-10):** every time either leaderboard opens (and on Replay), a short film of about ten seconds builds the board before it appears.
+    - The story: a line of light opens onto the stage and the title slams in. Everyone pops on as the counts tick up. The board forms as a race, rows overtaking as their scores run up, then locks. The rest step down to a strip, 3rd and 2nd rise on their steps, a drumroll and spotlights fall on the empty top step, and the winner launches up with a flash, confetti, a fanfare, and a crown. It shows your place, then dissolves into the live board. The Saturday edition has its own gold version.
+    - Its own score, made in the browser with no audio files: A minor resolving to C major on the winner at 120 bpm, with whooshes, hits, pops, ticks, a drumroll, chimes, and sparkle, each timed to the picture. Sound is on by default, with a mute that's remembered. If the browser holds sound back until a click, the button says "Tap for sound".
+    - Skip or Escape at any time. It holds on the title while the board loads, gets out of the way if loading fails, waits until a background tab is seen, ends if the tab is hidden, and is left out for reduced motion.
+    - Verified in the browser frame by frame on a throwaway stack: nine ranked with a tie, two not ranked, you in 5th; one person; no one ranked; slow and failed loads; phone, upright and on its side; mute, Tab, Escape; reduced motion. The soundtrack was rendered offline (peak 0.91, no clipping). Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - focus goes back to where it was (or to Replay);
+      - a sound the browser starts a moment late still plays;
+      - the week is marked seen only once the poster is on screen;
+      - the race and podium fit short screens;
+      - the sound button has one clear name.
+- [x] Task celebrations (2026-10-11): when a task assigned to someone is finished, they get a short film on whatever page they have open.
+  - **When:** the first of its evidence being accepted (or an exception recorded) or it being marked done; once per task, whoever does it (in the app or through Claude).
+    - It plays the moment it happens: the server nudges that person's open tabs over the live connection.
+    - Otherwise it plays when the app opens, comes back into view, or within a few minutes. Anything from the last three days that hasn't been seen plays then.
+    - Several waiting at once share one film. It waits for a clear moment: the tab in view, no leaderboard film playing, and not while they're typing.
+  - **The film:** a ten-second montage cut to the beat of its own track.
+    - The opener is a stamp, a check that draws itself, or a word. Then come four quick cuts of hype words and what happened ("2 DAYS EARLY", "FIRST TRY", "5 IN A ROW", "#25").
+    - Next, the task on a card with a DONE badge, and two stats that count up (on time in a row, this week, how early, who approved it, total).
+    - Then their avatar and a line for them, word by word, and a sign-off with confetti.
+    - Each play picks its opener, colours, backgrounds, transitions, key, chords, and groove at random.
+    - The lines come from a library of over a hundred, grouped by what happened: early, on time, late but done, first time right, approved by someone, streaks, milestones, a big week, several at once, a big task, the time of day, and the day of the week. What this browser saw lately is left out.
+    - Big type fits any window.
+  - **Pause:** for an hour, 3 hours, or a day, from the film, with Undo. It's kept on the account, so it holds on every device. Anything finished meanwhile is skipped, not saved up. Sound has its own mute. Reduced motion gets a notice with the same line instead of the film.
+  - **Verified:**
+    - An API test: approval celebrates the assignee and nudges their open tab at once; marking it done later doesn't repeat it; marking another done does; sent-back evidence doesn't. It also checks the film's facts (venture, first time right, who approved, how early), the stats, that only the person sees or clears theirs, that cancelled tasks are dropped, and that a pause skips for good and Undo resumes. All 23 API tests pass.
+    - In the browser, on a throwaway stack: an approval by the reviewer played the film 0.17 s later on the Tasks page. Every shot fits a phone and an 800×450 window across several random edits. Pause with Undo, reduced motion, waiting while typing, and Escape all work. The soundtrack was rendered offline across six edits (peaks 0.83–0.88, no clipping). Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - the feed follows the same access rule as opening the task, and reading it changes nothing;
+      - it plays the newest five, and checks again just before playing (another tab may have played it), never replaying one in the same tab;
+      - it waits while the Saturday leaderboard is on its way or playing, and while there's unsent text in the box in focus;
+      - a film that can't play, fails, or never ends is taken down after 45 seconds;
+      - after a reconnect it looks again at once.
+- [x] Workspace context and Knowledge fixes (2026-10-11).
+  - **Workspace context:** context files can belong to the whole workspace as well as to one venture.
+    - Claude reads them first for every venture, before that venture's own; they're marked "Workspace:" in what it reads.
+    - Admins and people who share knowledge with every venture write them; everyone in the workspace reads them.
+    - In Knowledge → Venture context, "Context for" offers "Workspace (every venture)" next to the ventures. A venture's view lists the workspace files it starts with, then its own.
+    - The workspace's text counts toward every venture's 500,000-character limit, so Claude's reading stays within reach.
+  - **Dropdown in the upload popup:** the popup's opening animation left an invisible transform behind, which placed the dropdown's options relative to the popup instead of the screen, out of sight. It no longer does. (The New task and calendar popups place their dropdowns differently and weren't affected.)
+  - **Header buttons:** Knowledge's "Upload file" and "New record" add to the Library, so they only show on the Library tab.
+  - **Uploading several files:** "Upload .md files" already took several at once. It was checked with three.
+  - **Verified:** the API test covers who writes and reads workspace context, its place first in a venture's list and in Claude's read, and the shared limit (a file that fits only without the workspace's text). All 23 API tests pass. In the browser, on a throwaway stack: the upload popup's dropdown opens beside its field, the header buttons show only on Library, three files uploaded to the workspace at once, and a venture's view lists them. Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - only an admin is told which venture a too-big workspace file would overfill, and how full it is;
+      - archived ventures don't count toward the workspace's limit;
+      - a venture head refused for size is told how much of it is the workspace's;
+      - the panel follows the venture switcher.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

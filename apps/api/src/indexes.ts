@@ -62,6 +62,14 @@ export async function ensureSuppressionKeyIndex(collection: Collection<AppDocume
   await collection.createIndex({ workspaceId: 1, key: 1 }, { unique: true, partialFilterExpression: { key: { $type: "string" } } });
 }
 
+/** A collection has one text index: the task one now covers details too, so an older one without them is replaced. */
+async function ensureTaskTextIndex(db: AppDb): Promise<void> {
+  const tasks = db.collection("tasks");
+  const existing = (await tasks.listIndexes().toArray().catch(() => [])).find((index) => index.key?._fts === "text");
+  if (existing && !existing.weights?.details) await tasks.dropIndex(String(existing.name));
+  await tasks.createIndex({ title: "text", outcome: "text", definitionOfDone: "text", details: "text", tags: "text" });
+}
+
 export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensurePushEndpointIndex(db.collection("push_subscriptions"));
   await ensureSuppressionKeyIndex(db.collection("sales_suppression"));
@@ -84,7 +92,7 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("message_saves").createIndex({ userId: 1, createdAt: -1, _id: -1 }),
     db.collection("tasks").createIndex({ workspaceId: 1, assigneeId: 1, status: 1, dueAt: 1 }),
     db.collection("tasks").createIndex({ ventureId: 1, groupId: 1, status: 1 }),
-    db.collection("tasks").createIndex({ title: "text", outcome: "text", definitionOfDone: "text", tags: "text" }),
+    ensureTaskTextIndex(db),
     db.collection("command_executions").createIndex({ workspaceId: 1, actorId: 1, idempotencyKey: 1 }, { unique: true }),
     db.collection("reminders").createIndex({ state: 1, scheduledAt: 1, leaseUntil: 1 }),
     db.collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true }),
@@ -105,6 +113,32 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // The Knowledge screen's chat and task file browsers, newest first.
     db.collection("messages").createIndex({ workspaceId: 1, groupId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { "attachments.0": { $exists: true } } }),
     db.collection("files").createIndex({ workspaceId: 1, createdAt: -1, _id: -1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    // Finding everything about one task (its page, and deleting or restoring it).
+    db.collection("task_updates").createIndex({ taskId: 1, createdAt: 1 }),
+    db.collection("evidence_items").createIndex({ taskId: 1, submittedAt: 1 }),
+    // Evidence waiting for review, for the "Needs my review" task list.
+    db.collection("evidence_items").createIndex({ workspaceId: 1, reviewStatus: 1 }),
+    // Work handed in during a period (early work counts then), for the leaderboard.
+    db.collection("evidence_items").createIndex({ workspaceId: 1, submittedAt: 1 }),
+    // Reviews done in a period, for the leaderboard's reviewers.
+    db.collection("evidence_items").createIndex({ workspaceId: 1, reviewedAt: 1 }, { partialFilterExpression: { reviewedAt: { $exists: true } } }),
+    // Tasks due in a period, and open tasks past due, for the leaderboard.
+    db.collection("tasks").createIndex({ workspaceId: 1, dueAt: 1 }),
+    db.collection("tasks").createIndex({ workspaceId: 1, status: 1, dueAt: 1 }),
+    // One celebration per person per finished task, and each person's waiting ones.
+    db.collection("celebrations").createIndex({ workspaceId: 1, userId: 1, taskId: 1 }, { unique: true }),
+    db.collection("celebrations").createIndex({ workspaceId: 1, userId: 1, state: 1, createdAt: 1 }),
+    db.collection("reminders").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("notification_outbox").createIndex({ resourceId: 1 }, { partialFilterExpression: { resourceId: { $exists: true } } }),
+    db.collection("notification_outbox").createIndex({ reminderId: 1 }, { partialFilterExpression: { reminderId: { $exists: true } } }),
+    db.collection("notifications").createIndex({ resourceId: 1 }, { partialFilterExpression: { resourceId: { $exists: true } } }),
+    db.collection("notifications").createIndex({ reminderId: 1 }, { partialFilterExpression: { reminderId: { $exists: true } } }),
+    db.collection("files").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("focus_sessions").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("class_applications").createIndex({ taskId: 1 }, { partialFilterExpression: { taskId: { $exists: true } } }),
+    db.collection("tasks").createIndex({ parentTaskId: 1 }, { partialFilterExpression: { parentTaskId: { $exists: true } } }),
+    db.collection("tasks").createIndex({ dependencies: 1 }),
+    db.collection("command_executions").createIndex({ "result.task._id": 1 }, { partialFilterExpression: { "result.task._id": { $exists: true } } }),
     // Mentions in notices are looked up by handle.
     db.collection("users").createIndex({ workspaceId: 1, handle: 1 }),
     db.collection("document_suggestions").createIndex({ workspaceId: 1, state: 1, createdAt: 1 }),

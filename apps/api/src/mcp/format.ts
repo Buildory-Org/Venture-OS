@@ -32,6 +32,36 @@ export function apiClient(base: string, userId: string): Api {
 const HIDDEN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B\u2060\uFEFF]/g;
 
 /** Multi-line text written by people (document Markdown) without hidden characters. */
+// Claude's own tool-call syntax. Left in a text field, it means the call was cut wrong: one field swallowed the next.
+const TOOL_CALL_MARKUP = /<(?:antml:)?(?:parameter|invoke)\b[^>]{0,40}?\bname\s*=\s*\\?["']|<\/(?:antml:)?(?:parameter|invoke)\s*>|<\/?(?:antml:)?function_calls\s*>/i;
+const withoutCode = (text: string) => text.replace(/(```|~~~)[\s\S]*?(?:\1|$)/g, "").replace(/``[^\n]*?``/g, "").replace(/`[^`\n]*`/g, "");
+
+/**
+ * The first text field (by path) holding leftover tool-call markup, or null: Claude's tool-call tags, or a closing tag named
+ * after one of this call's own camelCase fields (as in "…</definitionOfDone> <tags>…"). Code (``` or ~~~ blocks, `inline`)
+ * is left out, so the syntax can still be written on purpose.
+ */
+export function markupField(value: unknown, path = "", fields?: RegExp | null): string | null {
+  if (fields === undefined && value && typeof value === "object" && !Array.isArray(value)) {
+    const names = Object.keys(value).filter((key) => /^[a-z]+[A-Z]\w*$/.test(key));
+    fields = names.length ? new RegExp(`</(?:${names.join("|")})\\s*>`) : null;
+  }
+  if (typeof value === "string") {
+    const text = withoutCode(value);
+    return TOOL_CALL_MARKUP.test(text) || fields?.test(text) ? path || "input" : null;
+  }
+  const entries: Array<[string, unknown]> = Array.isArray(value) ? value.map((item, index) => [`${path}[${index}]`, item]) : value && typeof value === "object" ? Object.entries(value).map(([key, item]) => [path ? `${path}.${key}` : key, item]) : [];
+  for (const [itemPath, item] of entries) { const found = markupField(item, itemPath, fields ?? null); if (found) return found; }
+  return null;
+}
+
+/** Text cleaned of hidden characters with its line breaks kept (unlike clip), cut at `max` with a marker. */
+export const lines = (value: unknown, max: number): string | undefined => {
+  const text = clean(value).trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max)}… (cut; ${text.length.toLocaleString("en")} characters in all)` : text;
+};
+
 export const clean = (value: unknown): string => typeof value === "string" ? value.replace(HIDDEN, "") : "";
 
 /** Text written by people, on one line and trimmed; undefined when empty so it drops out of the output. */

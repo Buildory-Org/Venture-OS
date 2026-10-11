@@ -23,6 +23,8 @@ import { salesReportsRoutes } from "./routes/sales-reports.js";
 import { salesFinderRoutes } from "./routes/sales-finder.js";
 import { salesSearchKeyRoutes } from "./routes/sales-search-keys.js";
 import { salesIoRoutes } from "./routes/sales-io.js";
+import { leaderboardRoutes } from "./routes/leaderboard.js";
+import { celebrationRoutes } from "./routes/celebrations.js";
 import { searchRoutes } from "./routes/search.js";
 import { firstAdminRoutes } from "./routes/first-admin.js";
 import { ventureLifecycleRoutes } from "./routes/venture-lifecycle.js";
@@ -82,6 +84,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesReportsRoutes(database));
   app.use("/v1/sales", salesFinderRoutes(database, config));
   app.use("/v1/sales", salesSearchKeyRoutes(database, config));
+  app.use("/v1", leaderboardRoutes(database, config));
+  app.use("/v1", celebrationRoutes(database, config));
   app.use("/v1", searchRoutes(database.db));
   app.use("/v1", calendarRoutes(database));
   app.use("/v1", calendarFeedRoutes(database, config));

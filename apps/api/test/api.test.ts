@@ -23,7 +23,9 @@ import { readFileSync } from "node:fs";
 import { eventReminderIdFor } from "@venture-studio/core";
 import { makePdf, makeZip } from "./fixtures.js";
 import { extractText, storedFileText, WORD_CONTENT_TYPE } from "../src/file-text.js";
+import { computeBoard, periodRange, previousRange, weekStartOf } from "../src/leaderboard.js";
 import { contextParts } from "../src/mcp/tools-context.js";
+import { markupField } from "../src/mcp/format.js";
 import type { Request, Response } from "express";
 
 /** One JSON-RPC call to the hosted MCP endpoint, as Claude Code would send it. */
@@ -3005,6 +3007,16 @@ test("task details: only the creator or an admin edits them, the assignee hears,
     const own = await json(await call("POST", "/tasks", "member", { ventureId: "venture-a", groupId: "group-a", title: "Mine", outcome: "Done", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "Done", evidenceRequirement: "Note" }));
     assert.equal((await call("PATCH", `/tasks/${own.id}`, "member", { outcome: "Done well" })).status, 200);
     assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: own.id, idempotencyKey: /:details:/ }), 0);
+    // Details hold the long background; emptying them removes them; only the creator or an admin changes them.
+    const withDetails = await json(await call("PATCH", path, "creator", { details: "## Current state\n\n- One number per venue" }));
+    assert.equal(withDetails.details, "## Current state\n\n- One number per venue");
+    assert.equal((await call("PATCH", path, "member", { details: "Mine" })).status, 403);
+    assert.equal((await json(await call("PATCH", path, "creator", { details: null }))).details, undefined);
+    assert.equal((await db.collection("tasks").findOne({ _id: created.id }))?.details, undefined, "removed, not stored empty");
+    const blank = await json(await call("POST", "/tasks", "creator", { ventureId: "venture-a", groupId: "group-a", title: "Blank details", outcome: "o", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", details: "  " }));
+    assert.equal((await db.collection("tasks").findOne({ _id: blank.id }))?.details, undefined, "blank details aren't stored on create either");
+    assert.equal((await json(await call("PATCH", path, "admin", { details: "Admin notes" }))).details, "Admin notes");
+    assert.ok((await json(await call("GET", "/tasks?limit=50", "creator"))).items.every((item: any) => item.details === undefined), "lists leave details out");
     // Details and work in one request: the creator (not the assignee here) can't slip a status change in.
     assert.equal((await call("PATCH", path, "creator", { title: "Sneaky", status: "in_progress" })).status, 403);
     // Reassigned and retitled at once: the new assignee's notice and start reminder use the new title.
@@ -3014,6 +3026,39 @@ test("task details: only the creator or an admin edits them, the assignee hears,
     assert.equal(await db.collection("reminders").countDocuments({ taskId: created.id, userId: "user-lead", state: "scheduled", message: "Start: Ship the launch page today" }), 1);
     // The activity entry keeps what each detail was before the edit.
     assert.equal((await db.collection("task_updates").findOne({ taskId: created.id, body: "Edited the title" }))?.previous?.title, "Ship the launch page");
+    // Deleting: only the creator or an admin; everything about the task goes to the recovery copy, and Undo brings it all back.
+    const taskBody = (title: string, extra: Record<string, unknown> = {}) => ({ ventureId: "venture-a", groupId: "group-a", title, outcome: "o", assigneeId: "user-member", dueAt: due, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", ...extra });
+    const doomed = await json(await call("POST", "/tasks", "creator", taskBody("Duplicate")));
+    assert.equal((await call("POST", `/tasks/${doomed.id}/comments`, "member", { body: "Looks like a duplicate" })).status, 201);
+    const dependent = await json(await call("POST", "/tasks", "creator", taskBody("Depends on it", { dependencies: [doomed.id] })));
+    assert.ok(await db.collection("reminders").countDocuments({ taskId: doomed.id }) > 0);
+    assert.equal((await call("DELETE", `/tasks/${doomed.id}`, "member")).status, 403, "the assignee can't delete it");
+    assert.equal((await call("DELETE", `/tasks/${doomed.id}`, "lead")).status, 403, "nor a venture lead who didn't create it");
+    const deleted = await call("DELETE", `/tasks/${doomed.id}`, "creator");
+    assert.equal(deleted.status, 200, await deleted.clone().text());
+    const { deletionId } = await json(deleted);
+    assert.equal((await call("GET", `/tasks/${doomed.id}`, "creator")).status, 404);
+    for (const collection of ["task_updates", "reminders"]) assert.equal(await db.collection(collection).countDocuments({ taskId: doomed.id }), 0, collection);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ resourceId: doomed.id }), 0);
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, [], "other tasks stop depending on it");
+    assert.ok(await db.collection("deleted_records").countDocuments({ deletionId, kind: "task" }) >= 4);
+    assert.equal((await call("POST", `/tasks/deletions/${deletionId}/restore`, "member")).status, 403, "only whoever deleted it, or an admin, restores it");
+    const restored = await call("POST", `/tasks/deletions/${deletionId}/restore`, "creator");
+    assert.equal(restored.status, 200, await restored.clone().text());
+    assert.ok((await json(await call("GET", `/tasks/${doomed.id}`, "member"))).updates.some((item: any) => item.body === "Looks like a duplicate"), "comments come back");
+    assert.ok(await db.collection("reminders").countDocuments({ taskId: doomed.id }) > 0, "reminders come back");
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, [doomed.id]);
+    assert.equal(await db.collection("deleted_records").countDocuments({ deletionId }), 0);
+    assert.equal((await call("POST", `/tasks/deletions/${deletionId}/restore`, "creator")).status, 404, "a delete is undone once");
+    // Restored after what it depended on was deleted, a task no longer depends on it.
+    const dependentDeletionId = (await json(await call("DELETE", `/tasks/${dependent.id}`, "creator"))).deletionId;
+    const byAdmin = await call("DELETE", `/tasks/${doomed.id}`, "admin");
+    assert.equal(byAdmin.status, 200, "an admin can delete anyone's task");
+    assert.deepEqual((await json(await call("POST", `/tasks/deletions/${dependentDeletionId}/restore`, "creator"))).dependencies, [], "the reply is the task as it now stands");
+    assert.deepEqual((await db.collection("tasks").findOne({ _id: dependent.id }))?.dependencies, []);
+    const adminDeletionId = (await json(byAdmin)).deletionId;
+    assert.equal((await call("POST", `/tasks/deletions/${adminDeletionId}/restore`, "creator")).status, 403, "the creator can't undo an admin's delete");
+    assert.equal((await call("POST", `/tasks/deletions/${adminDeletionId}/restore`, "admin")).status, 200);
     // A finished task's details stay as they were.
     await db.collection("tasks").updateOne({ _id: created.id }, { $set: { status: "done" } });
     assert.equal((await call("PATCH", path, "admin", { title: "Rewritten" })).status, 409);
@@ -3044,9 +3089,7 @@ test("venture context, skills, and shared files: who writes, who reads, and Clau
   const titles = (parts: ReturnType<typeof contextParts>) => parts.map((part) => part.map((piece) => piece.title));
   assert.deepEqual(titles(contextParts([{ title: "Short", markdown: "a".repeat(10) }, { title: "Big", markdown: "b".repeat(90_000) }], 10_000)), [["Short"], ["Big (1 of 3)"], ["Big (2 of 3)"], ["Big (3 of 3)"]]);
   assert.deepEqual(titles(contextParts([{ title: "Empty", markdown: "" }, { title: "Hindi", markdown: "क".repeat(15_000) }], 10_000)), [["Hindi (1 of 2)"], ["Hindi (2 of 2)"]]);
-  const paragraphs = contextParts([{ title: "Notes", markdown: `${"a".repeat(30_000)}
-
-${"b".repeat(30_000)}` }], 10_000);
+  const paragraphs = contextParts([{ title: "Notes", markdown: `${"a".repeat(30_000)}\r\n\r\n${"b".repeat(30_000)}` }], 10_000);
   assert.deepEqual(paragraphs.flat().map((piece) => piece.text.length), [30_000, 30_000], "cut at the paragraph break, Windows line endings too");
 
   const dbName = `venture_studio_test_${process.pid}_${Date.now()}_agent_context`;
@@ -3168,6 +3211,10 @@ ${"b".repeat(30_000)}` }], 10_000);
     assert.equal(tokenResponse.status, 201, await tokenResponse.clone().text());
     const token = (await json(tokenResponse)).token as string;
     const tool = async (name: string, args: Record<string, unknown> = {}) => { const result = await mcpTool(origin, token, name, args); assert.equal(result.isError, false, `${name}: ${result.text}`); return result.data; };
+    // On connecting, Claude is told to ask which venture (or take the only one), read its context first, and read again on switching.
+    const hello = await mcpCall(origin, token, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
+    const instructions = String(hello.body?.result?.instructions);
+    for (const phrase of [/ask the user which venture/, /only one venture, use it without asking/, /read_venture_context for it and read every part/, /moves to a different venture, read that venture's context/]) assert.match(instructions, phrase);
     assert.match(String((await tool("my_plate", { timezone: "UTC" })).contextReminder), /read_venture_context/);
     assert.equal((await tool("list_ventures")).contextReminder, undefined, "getting started isn't nagged");
     const context = await tool("read_venture_context", { ventureId: "venture-a" });
@@ -3176,12 +3223,446 @@ ${"b".repeat(30_000)}` }], 10_000);
     assert.equal(context.nextPart, undefined);
     assert.equal((await tool("my_plate", { timezone: "UTC" })).contextReminder, undefined);
     assert.equal((await mcpTool(origin, token, "read_venture_context", { ventureId: "venture-b" })).isError, true, "not their venture");
+    // Workspace context: read first for every venture. Admins and people who share knowledge with every venture write it; venture heads don't.
+    assert.equal((await call("POST", "/workspace/context", "lead", { title: "Nope", markdown: "x" })).status, 403);
+    assert.equal((await call("POST", "/workspace/context", "member", { title: "Nope", markdown: "x" })).status, 403);
+    const rules = await call("POST", "/workspace/context", "sharer", { title: "Studio rules", markdown: "Be kind and brief." });
+    assert.equal(rules.status, 201, await rules.clone().text());
+    const rulesBody = await json(rules);
+    assert.equal(rulesBody.ventureId, undefined);
+    // Everyone sees it, first in every venture's list; only the permission edits it.
+    const alpha = await json(await call("GET", "/ventures/venture-a/context", "member"));
+    assert.deepEqual(alpha.items.map((item: any) => [item.title, item.ventureId ?? "workspace"]), [["Studio rules", "workspace"], ["Overview", "venture-a"]]);
+    assert.equal(alpha.canEditWorkspace, false);
+    assert.equal((await json(await call("GET", "/ventures/venture-a/context", "sharer"))).canEditWorkspace, true);
+    assert.deepEqual((await json(await call("GET", "/workspace/context", "outsider"))).items.map((item: any) => item.title), ["Studio rules"]);
+    assert.deepEqual((await json(await call("GET", "/workspace/context", "learner"))).items.map((item: any) => item.title), ["Studio rules"]);
+    assert.equal((await call("GET", `/context/${rulesBody.id}`, "outsider")).status, 200);
+    assert.equal((await call("PUT", `/context/${rulesBody.id}`, "lead", { markdown: "Changed" })).status, 403);
+    assert.equal((await call("DELETE", `/context/${rulesBody.id}`, "member")).status, 403);
+    // Claude reads it first, marked as the workspace's.
+    assert.deepEqual((await tool("read_venture_context", { ventureId: "venture-a" })).files.map((file: any) => file.title), ["Workspace: Studio rules", "Overview"]);
+    // It counts toward every venture's limit: Beta holds 350,006 characters, so 149,985 more fits only without the 18 of the workspace's.
+    const tooMuch = await call("POST", "/workspace/context", "boss", { title: "Too much", markdown: "w".repeat(160_000) });
+    assert.equal(tooMuch.status, 409);
+    assert.match(await tooMuch.text(), /Beta/, "an admin is told which venture is full");
+    const tooMuchForSharer = await call("POST", "/workspace/context", "sharer", { title: "Too much", markdown: "w".repeat(160_000) });
+    assert.equal(tooMuchForSharer.status, 409);
+    assert.doesNotMatch(await tooMuchForSharer.text(), /Beta|350,0/, "someone outside Beta isn't told its name or size");
+    assert.equal((await call("PUT", `/context/${rulesBody.id}`, "boss", { markdown: "w".repeat(160_000) })).status, 409, "growing a file counts too");
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Almost", markdown: "v".repeat(149_985) })).status, 409, "the workspace's files count too");
+    assert.equal((await call("DELETE", `/context/${rulesBody.id}`, "boss")).status, 200);
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Fits now", markdown: "v".repeat(149_985) })).status, 201);
     const skills = await tool("list_skills", { ventureId: "venture-a" });
     assert.deepEqual(skills.skills.map((item: any) => [item.title, item.scope]), [["Pitch review (all)", "every venture"], ["Sales email", "every venture"]]);
+    // A call cut wrong (one field swallowing the next) is refused before anything is saved; the same text in code goes through.
+    assert.equal(markupField({ a: ["fine", { b: 'x </definitionOfDone> <parameter name="tags">["a"]' }] }), "a[1].b");
+    assert.equal(markupField({ details: 'Claude writes `<parameter name="tags">` and\n```\n</invoke>\n```' }), null);
+    // Other shapes of a cut call: a lone closing tag, other casing and quoting, or a close named after one of the call's own fields.
+    for (const garble of ["- Done</parameter>", '<Parameter  name=\'tags\'>["a"]', "- Done</definitionOfDone>\n<tags>[\"a\"]</tags>"]) assert.equal(markupField({ title: "T", definitionOfDone: garble }), "definitionOfDone", garble);
+    assert.equal(markupField({ details: "~~~\n</invoke>\n~~~ and ``<parameter name=\"x\">``" }), null, "code in ~~~ fences and double backticks is fine");
+    assert.equal(markupField({ details: "A <details> block and </title> in prose" }), null, "ordinary HTML-looking text is fine");
+    const due = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const garbled = await mcpTool(origin, token, "create_task", { title: "WhatsApp accounts", ventureId: "venture-a", assignee: "me", dueAt: due, definitionOfDone: '- One number per venue</definitionOfDone> <parameter name="tags">["whatsapp"]', requestId: "garbled-task-0001" });
+    assert.equal(garbled.isError, true);
+    assert.match(String(garbled.text), /definitionOfDone field contains leftover tool-call markup/);
+    assert.equal(await db.collection("tasks").countDocuments({ title: "WhatsApp accounts" }), 0, "nothing saved");
+    const checklist = "- Owners connect a number\n- Venues pick it";
+    const background = "## Current state\n\nRoutes look like `<parameter name=\"x\">` in the old docs.";
+    const made = await tool("create_task", { title: "WhatsApp accounts", ventureId: "venture-a", assignee: "me", dueAt: due, outcome: "Owners share one number across venues.", definitionOfDone: checklist, details: background, tags: ["whatsapp"], requestId: "clean-task-0001" });
+    assert.deepEqual(made.saved, { title: "WhatsApp accounts", outcome: "Owners share one number across venues.", definitionOfDone: checklist, evidenceRequirement: "Evidence link or reviewed exception", details: background, tags: ["whatsapp"], priority: "medium", estimatedMinutes: 60 });
+    assert.match(made.check, /fix it with update_task/);
+    const fixed = await tool("update_task", { taskId: made.id, definitionOfDone: `${checklist}\n- Webhooks fan out` });
+    assert.match(fixed.saved.definitionOfDone, /Webhooks fan out/);
+    const read = await tool("get_task", { taskId: made.id });
+    assert.equal(read.details, background);
+    assert.equal(read.definitionOfDone, `${checklist}\n- Webhooks fan out`, "line breaks reach Claude as written");
+    assert.equal((await tool("update_task", { taskId: made.id, details: null })).saved.details, undefined, "null clears the details");
+    // A task saved garbled earlier: get_task says so, copying the garble into an update is refused with a way out, and the cleaned text goes through.
+    await db.collection("tasks").updateOne({ _id: made.id }, { $set: { definitionOfDone: '- Owners connect a number</definitionOfDone> <parameter name="tags">["whatsapp"]' } });
+    assert.match(String((await tool("get_task", { taskId: made.id })).warning), /saved definitionOfDone holds leftover tool-call markup/);
+    const copied = await mcpTool(origin, token, "update_task", { taskId: made.id, details: '- Owners connect a number</definitionOfDone> <parameter name="tags">["whatsapp"]' });
+    assert.equal(copied.isError, true);
+    assert.match(String(copied.text), /already saved garbled/);
+    assert.equal((await tool("update_task", { taskId: made.id, definitionOfDone: "- Owners connect a number", tags: ["whatsapp"] })).saved.definitionOfDone, "- Owners connect a number");
+    assert.equal((await tool("get_task", { taskId: made.id })).warning, undefined);
     const skill = await tool("get_skill", { skillId: emailId });
     assert.equal(skill.instructions, "Be brief and specific.");
     assert.equal(skill.useWhen, "Writing to a new lead");
   } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("task lists: open, needs my review, overdue, and done views; sorted with stable paging; search; counts", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_task_lists`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  const people = [["admin", "admin"], ["lead", "venture_head"], ["creator", "contributor"], ["member", "contributor"], ["rev", "contributor"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: now, updatedAt: now })) as never);
+  const day = 86_400_000;
+  const at = (days: number) => new Date(now.getTime() + days * day);
+  const tie = at(20);
+  const task = (id: string, title: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title, outcome: "o", assigneeId: "user-member", creatorId: "user-creator", priority: "medium", status: "todo", dueAt, timezone: "UTC", estimatedMinutes: 30, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: at(-30), updatedAt: at(-30), ...extra });
+  await db.collection("tasks").insertMany([
+    task("t-late", "Late invoice", at(-2), { priority: "high" }),
+    task("t-soon", "Soon launch", at(1), { priority: "urgent", status: "in_progress", tags: ["launch"] }),
+    task("t-later", "Later plan", at(10), { priority: "low" }),
+    task("t-parked", "Parked idea", at(-5), { status: "parked" }),
+    task("t-done", "Finished work", at(-1), { status: "done", updatedAt: at(-0.1) }),
+    task("t-cancel", "Dropped work", at(2), { status: "cancelled" }),
+    task("t-review1", "Check the photos", at(3), { status: "review", reviewerId: "user-rev" }),
+    task("t-review2", "The lead's own work", at(4), { status: "review", assigneeId: "user-lead" }),
+    task("t-review-done", "Done with stray evidence", at(-3), { status: "done", updatedAt: at(-2) }),
+    task("t-tie-c", "Tie c", tie), task("t-tie-a", "Tie a", tie), task("t-tie-b", "Tie b", tie),
+  ] as never);
+  const evidence = (id: string, taskId: string, submittedBy: string, reviewStatus = "pending") => ({ _id: id, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy, submittedAt: now, reviewStatus });
+  await db.collection("evidence_items").insertMany([evidence("e-1", "t-review1", "user-member"), evidence("e-2", "t-review2", "user-lead"), evidence("e-3", "t-review-done", "user-member"), evidence("e-4", "t-late", "user-member", "accepted")] as never);
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (path: string, handle: string) => fetch(`${origin}/v1${path}`, { headers: { "x-dev-user-id": `user-${handle}` } });
+  const list = async (query: string, handle = "admin") => { const response = await call(`/tasks?${query}`, handle); assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  const ids = async (query: string, handle = "admin") => (await list(query, handle)).items.map((item: any) => item.id);
+  const walk = async (query: string) => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do { const page = await list(`${query}${cursor ? `&cursor=${cursor}` : ""}`); seen.push(...page.items.map((item: any) => item.id)); cursor = page.nextCursor; } while (cursor);
+    return seen;
+  };
+  try {
+    // Open: not done, cancelled, or parked; soonest due first, ties in id order.
+    const open = ["t-late", "t-soon", "t-review1", "t-review2", "t-later", "t-tie-a", "t-tie-b", "t-tie-c"];
+    assert.deepEqual(await ids("view=open&sort=due&limit=100"), open);
+    // Paging never repeats or skips, even across tasks due at the same moment.
+    assert.deepEqual(await walk("view=open&sort=due&limit=2"), open);
+    assert.deepEqual(await walk("view=open&sort=priority&limit=3"), ["t-soon", "t-late", "t-review1", "t-review2", "t-tie-a", "t-tie-b", "t-tie-c", "t-later"], "most urgent first, then soonest due");
+    assert.deepEqual(await walk("view=all&sort=updated&limit=4"), ["t-done", "t-review-done", "t-cancel", "t-late", "t-later", "t-parked", "t-review1", "t-review2", "t-soon", "t-tie-a", "t-tie-b", "t-tie-c"], "most recently changed first, ties in id order");
+    assert.deepEqual(await ids("view=overdue&sort=due"), ["t-late"], "parked and finished tasks aren't overdue");
+    assert.deepEqual(await ids("view=done&sort=updated"), ["t-done", "t-review-done"], "most recently finished first");
+    assert.deepEqual(await ids(`view=open&sort=due&dueFrom=${encodeURIComponent(now.toISOString())}&dueTo=${encodeURIComponent(at(5).toISOString())}`), ["t-soon", "t-review1", "t-review2"]);
+    // Needs my review: open tasks with evidence waiting, by the same rules as reviewing it.
+    assert.deepEqual(await ids("view=review&sort=due"), ["t-review1", "t-review2"], "an admin reviews anything");
+    assert.deepEqual(await ids("view=review&sort=due", "lead"), ["t-review1"], "a venture lead, but not their own task or evidence");
+    assert.deepEqual(await ids("view=review&sort=due", "rev"), ["t-review1"], "the assigned reviewer");
+    assert.deepEqual(await ids("view=review&sort=due", "member"), [], "not the assignee who submitted it");
+    assert.deepEqual(await ids("view=review&sort=due", "creator"), [], "not someone who can't review it");
+    // Search covers the title, outcome, and tags, and takes any characters.
+    assert.deepEqual(await ids("view=all&sort=due&q=LAUNCH"), ["t-soon"]);
+    assert.deepEqual(await ids(`view=all&sort=due&q=${encodeURIComponent("(*")}`), []);
+    // Counts follow the people and search, not the view.
+    assert.deepEqual((await list("view=open&sort=due&counts=true")).counts, { open: 8, review: 2, overdue: 1, done: 2, all: 12 });
+    assert.deepEqual((await list("view=open&sort=due&counts=true&assigneeId=user-lead")).counts, { open: 1, review: 1, overdue: 0, done: 0, all: 1 });
+    assert.equal((await list("view=open&sort=due")).counts, undefined);
+    // A cursor from another sort, or a made-up one, is refused rather than misread.
+    const dueCursor = (await list("view=open&sort=due&limit=2")).nextCursor;
+    assert.equal((await call(`/tasks?view=open&sort=priority&cursor=${dueCursor}`, "admin")).status, 400);
+    assert.equal((await call(`/tasks?view=open&sort=updated&cursor=${dueCursor}`, "admin")).status, 400, "even a sort with the same shape");
+    assert.equal((await call("/tasks?sort=due&cursor=nonsense", "admin")).status, 400);
+    assert.equal((await call("/tasks?sort=due&q=%00", "admin")).status, 400, "a null character is refused, not a server error");
+    // Without a sort, the list is as before: every task in id order.
+    assert.equal((await ids("limit=100")).length, 12);
+    assert.deepEqual(await ids("status=parked"), ["t-parked"]);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("leaderboard: fair scores (rates evened out, slow reviews, blocked time, short deadlines), ranks, learners, reviewers, and the Saturday edition", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_leaderboard`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const created = new Date("2026-01-01T00:00:00Z");
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: created } as never);
+  await db.collection("ventures").insertMany([
+    { _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: created },
+    { _id: "venture-b", workspaceId: "workspace-a", name: "Beta", status: "active", goal30Day: "", createdAt: created },
+  ] as never);
+  await db.collection("groups").insertMany([
+    { _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: created },
+    { _id: "group-b", workspaceId: "workspace-a", ventureId: "venture-b", name: "Core", createdAt: created },
+  ] as never);
+  const people = [["admin", "admin"], ["asha", "contributor"], ["ravi", "contributor"], ["meera", "contributor"], ["bob", "contributor"], ["pat", "contributor"], ["eve", "contributor"], ["uma", "contributor"], ["lee", "learner"], ["rev", "reviewer"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: created, updatedAt: created })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: created, updatedAt: created })) as never);
+
+  // A fixed clock for the scoring rules, well away from the real one: Saturday 13 June 2026, noon UTC.
+  const now = new Date("2026-06-13T12:00:00Z");
+  const hour = 3_600_000; const day = 24 * hour;
+  const at = (ms: number) => new Date(now.getTime() + ms);
+  const task = (id: string, assignee: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: id, outcome: "o", assigneeId: `user-${assignee}`, creatorId: "user-admin", priority: "medium", status: "done", dueAt, timezone: "UTC", estimatedMinutes: 60, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: new Date(dueAt.getTime() - 5 * day), updatedAt: now, ...extra });
+  let evidenceCount = 0;
+  const proof = (taskId: string, submittedAt: Date, reviewStatus = "accepted", reviewedAt?: Date, reviewedBy = "user-rev") => ({ _id: `e-${++evidenceCount}`, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy: "someone", submittedAt, reviewStatus, ...(reviewedAt ? { reviewedAt, reviewedBy } : {}) });
+  const tasks: Record<string, unknown>[] = []; const evidence: Record<string, unknown>[] = [];
+  // Asha: six tasks, all in on time; one was reviewed two days after it was due, which mustn't count against her.
+  for (let index = 0; index < 6; index++) { const due = at(-(index + 2) * day); tasks.push(task(`asha-${index}`, "asha", due)); evidence.push(proof(`asha-${index}`, new Date(due.getTime() - hour), "accepted", new Date(due.getTime() + (index === 0 ? 2 * day : hour)))); }
+  // Ravi: one on time, one half a day late (0.75), one never delivered (0).
+  tasks.push(task("ravi-on", "ravi", at(-3 * day)), task("ravi-late", "ravi", at(-4 * day)), task("ravi-missed", "ravi", at(-2 * day), { status: "todo" }));
+  evidence.push(proof("ravi-on", at(-3 * day - hour)), proof("ravi-late", at(-4 * day + 12 * hour)));
+  // Meera: two on time, so not ranked yet.
+  tasks.push(task("meera-1", "meera", at(-2 * day)), task("meera-2", "meera", at(-3 * day)));
+  evidence.push(proof("meera-1", at(-2 * day - hour)), proof("meera-2", at(-3 * day - hour)));
+  // Bob: blocked for two days (delivered a day and a half after the due date: on time); given an hour for four hours' work
+  // (delivered two hours after the due date: on time); evidence rejected once before the accepted one (on time, not first time right).
+  tasks.push(task("bob-blocked", "bob", at(-6 * day)), task("bob-short", "bob", at(-5 * day), { estimatedMinutes: 240, createdAt: at(-5 * day - hour) }), task("bob-redo", "bob", at(-4 * day)));
+  evidence.push(proof("bob-blocked", at(-6 * day + 36 * hour)), proof("bob-short", at(-5 * day + 2 * hour)), proof("bob-redo", at(-4 * day - 2 * hour), "rejected", at(-4 * day - 90 * 60_000)), proof("bob-redo", at(-4 * day - hour)));
+  // Pat: evidence still waiting for review counts (a slow reviewer mustn't make it missed); a task left blocked from before
+  // its due date gets a week at most, then it's missed.
+  tasks.push(task("pat-pending", "pat", at(-2 * day), { status: "review" }), task("pat-stuck", "pat", at(-10 * day), { status: "blocked" }));
+  evidence.push(proof("pat-pending", at(-2 * day - hour), "pending"));
+  // An admin accepting their own evidence isn't a review.
+  evidence.push({ ...proof("lee-0", at(-9 * day), "accepted", at(-9 * day + hour), "user-admin"), submittedBy: "user-admin" });
+  await db.collection("task_updates").insertMany([
+    { _id: "u-1", workspaceId: "workspace-a", taskId: "bob-blocked", authorId: "user-bob", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-7 * day) },
+    { _id: "u-2", workspaceId: "workspace-a", taskId: "bob-blocked", authorId: "user-bob", type: "status", body: "Unblocked", fromStatus: "blocked", toStatus: "in_progress", createdAt: at(-5 * day) },
+    // Marked blocked only after it was already late: no help.
+    { _id: "u-3", workspaceId: "workspace-a", taskId: "ravi-late", authorId: "user-ravi", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-4 * day + 2 * hour) },
+    { _id: "u-4", workspaceId: "workspace-a", taskId: "ravi-late", authorId: "user-ravi", type: "status", body: "Unblocked", fromStatus: "blocked", toStatus: "in_progress", createdAt: at(-4 * day + 10 * hour) },
+    { _id: "u-5", workspaceId: "workspace-a", taskId: "pat-stuck", authorId: "user-pat", type: "status", body: "Blocked", fromStatus: "in_progress", toStatus: "blocked", createdAt: at(-11 * day) },
+  ] as never);
+  // Eve: work handed in early counts in the period it was handed in, not when it falls due; work handed in before the
+  // period counts in that earlier one, wherever its due date falls.
+  tasks.push(task("eve-early", "eve", at(5 * day)), task("eve-early-2", "eve", at(10 * day)), task("eve-long-ago", "eve", at(3 * day)), task("eve-before", "eve", at(-5 * day)));
+  evidence.push(proof("eve-early", at(-day), "pending"), proof("eve-early-2", at(-2 * day)), proof("eve-long-ago", at(-40 * day)), proof("eve-before", at(-35 * day)));
+  // Uma: one task, so not ranked yet.
+  tasks.push(task("uma-1", "uma", at(-3 * day)));
+  evidence.push(proof("uma-1", at(-3 * day - hour)));
+  // Lee (a learner): three on time. Cancelled, parked, and not-yet-due work never counts.
+  for (let index = 0; index < 3; index++) { tasks.push(task(`lee-${index}`, "lee", at(-(index + 2) * day))); evidence.push(proof(`lee-${index}`, at(-(index + 2) * day - hour))); }
+  tasks.push(task("asha-cancelled", "asha", at(-2 * day), { status: "cancelled" }), task("asha-parked", "asha", at(-2 * day), { status: "parked" }), task("ravi-future", "ravi", at(2 * day), { status: "todo" }));
+  await db.collection("tasks").insertMany(tasks as never);
+  await db.collection("evidence_items").insertMany(evidence as never);
+
+  const range = { from: at(-30 * day), to: now };
+  const board = await computeBoard(db, { workspaceId: "workspace-a", ...range, now, includeLearners: false });
+  const person = (handle: string) => board.people.find((entry) => entry.userId === `user-${handle}`)!;
+  const result = (id: string) => [...board.tasks.values()].flat().find((item) => item.id === id)!;
+  // Each rule, task by task.
+  assert.equal(result("asha-0").outcome, "on_time", "delivered when the evidence was sent, not when it was reviewed");
+  assert.deepEqual([result("ravi-late").outcome, result("ravi-late").credit, result("ravi-late").blockedMs], ["late", 0.75, 0], "a block that starts once it's late doesn't help");
+  assert.equal(result("pat-pending").outcome, "on_time", "evidence waiting for review counts as handed in");
+  assert.deepEqual([result("pat-stuck").outcome, result("pat-stuck").blockedMs], ["missed", 7 * day], "blocked time moves the due date back a week at most");
+  assert.equal(person("pat").overdueNow, 1, "only the stuck task is overdue; the one waiting for review isn't");
+  assert.deepEqual([result("ravi-missed").outcome, result("ravi-missed").credit], ["missed", 0]);
+  assert.deepEqual([result("bob-blocked").outcome, result("bob-blocked").blockedMs], ["on_time", 2 * day], "blocked time moves the due date back");
+  assert.deepEqual([result("bob-short").outcome, result("bob-short").allowanceMs, result("bob-short").weight], ["on_time", 3 * hour, 4], "an impossible deadline gets the shortfall");
+  assert.deepEqual([result("bob-redo").outcome, result("bob-redo").firstTimeRight], ["on_time", false]);
+  assert.equal(board.tasks.get("user-ravi")!.some((item) => item.id === "ravi-future"), false, "not due yet");
+  assert.equal(board.tasks.get("user-asha")!.length, 6, "cancelled and parked tasks don't count");
+  // Rates are evened out toward the team's, so small numbers neither win nor lose by much.
+  const ravi = person("ravi");
+  const raviRaw = (1 + 0.75 + 0) / 3;
+  assert.ok(Math.abs(ravi.reliability - (3 * raviRaw + 5 * board.team.reliability) / 8) < 1e-3);
+  assert.deepEqual([ravi.tasksDue, ravi.delivered, ravi.onTime, ravi.late, ravi.missed, ravi.averageMinutesLate, ravi.overdueNow], [3, 2, 1, 1, 1, 720, 1]);
+  assert.deepEqual(board.tasks.get("user-eve")!.map((item) => [item.id, item.outcome]), [["eve-early", "on_time"], ["eve-early-2", "on_time"]], "early work counts when handed in, and only in that period");
+  assert.equal(person("bob").firstTimeRight, 2);
+  assert.ok(person("asha").score > person("bob").score && person("bob").score > ravi.score, "all on time and right first time ranks highest");
+  const ranked = board.people.filter((entry) => entry.rank);
+  assert.equal(ranked[0]!.userId, "user-asha");
+  assert.deepEqual([person("eve").rank, person("meera").rank, person("bob").rank], [2, 2, 4], "equal scores share a rank (1, 2, 2, 4)");
+  assert.equal(person("eve").score, person("meera").score);
+  assert.ok(person("meera").rank && person("eve").rank, "two tasks are enough to rank");
+  assert.equal(person("uma").rank, undefined, "one task isn't");
+  assert.equal(board.people.some((entry) => entry.userId === "user-lee"), false, "learners are left out unless asked for");
+  assert.deepEqual(board.mostDelivered, { userId: "user-asha", name: "Person asha", delivered: 6 });
+  assert.equal(board.reviewers[0]?.userId, "user-rev");
+  assert.equal(board.reviewers.some((item) => item.userId === "user-admin"), false, "reviewing your own evidence isn't a review");
+  const withLearners = await computeBoard(db, { workspaceId: "workspace-a", ...range, now, includeLearners: true });
+  assert.equal(withLearners.people.find((entry) => entry.userId === "user-lee")?.rank !== undefined, true);
+  // Weeks start on Saturday midnight in the leaderboard's time zone.
+  assert.equal(weekStartOf(now, "Asia/Kolkata").toISOString(), "2026-06-12T18:30:00.000Z");
+  assert.equal(weekStartOf(new Date("2026-06-12T18:29:00Z"), "Asia/Kolkata").toISOString(), "2026-06-05T18:30:00.000Z", "Friday 23:59 is still last week");
+  assert.deepEqual(periodRange("last_week", now, "Asia/Kolkata"), { from: new Date("2026-06-05T18:30:00.000Z"), to: new Date("2026-06-12T18:30:00.000Z") });
+  // Trends compare this week with the whole of last week, and this month with the whole of last month.
+  assert.deepEqual(previousRange("week", periodRange("week", now, "Asia/Kolkata"), "Asia/Kolkata"), periodRange("last_week", now, "Asia/Kolkata"));
+  assert.deepEqual(previousRange("month", periodRange("month", now, "Asia/Kolkata"), "Asia/Kolkata"), { from: new Date("2026-04-30T18:30:00.000Z"), to: new Date("2026-05-31T18:30:00.000Z") });
+
+  // Through the API, as people see it.
+  const { app } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const call = (method: string, path: string, handle: string) => fetch(`${origin}/v1${path}`, { method, headers: { "x-dev-user-id": `user-${handle}` } });
+  const json = async (response: globalThis.Response) => { assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  try {
+    // Work due last week (by the real clock) for the weekly edition; one task in venture B the members can't open.
+    const lastWeek = periodRange("last_week", new Date(), "Asia/Kolkata");
+    const inWeek = (hours: number) => new Date(lastWeek.from.getTime() + hours * hour);
+    await db.collection("tasks").insertMany([0, 1, 2].map((index) => task(`week-${index}`, "meera", inWeek(24 + index * 24))).concat([task("week-beta", "meera", inWeek(100), { ventureId: "venture-b", groupId: "group-b" }), task("week-friday", "meera", inWeek(160))]) as never);
+    await db.collection("evidence_items").insertMany([0, 1, 2].map((index) => proof(`week-${index}`, inWeek(20 + index * 24))).concat([proof("week-beta", inWeek(90)), proof("week-friday", inWeek(169))]) as never);
+    // The board the app shows is the lifetime one, with moves since Saturday.
+    const lifetime = await json(await call("GET", "/leaderboard", "ravi"));
+    assert.deepEqual([lifetime.period.key, lifetime.period.from], ["all", new Date(0).toISOString()]);
+    assert.ok(lifetime.people.find((entry: any) => entry.userId === "user-asha")?.previousRank, "ranked before this week, so it has a move");
+    const everyone = await json(await call("GET", "/leaderboard?period=last_week", "ravi"));
+    assert.equal(everyone.people.find((entry: any) => entry.userId === "user-meera")?.rank, 1, "everyone sees everyone's ranking");
+    assert.equal(everyone.minimumTasks, 2);
+    assert.equal((await call("GET", "/leaderboard?period=last_week&ventureId=venture-b", "ravi")).status, 404, "a venture's board is for those who can open it");
+    assert.equal((await call("GET", "/leaderboard?period=forever", "ravi")).status, 400);
+    const meera = await json(await call("GET", "/leaderboard/people/user-meera?period=last_week", "ravi"));
+    assert.deepEqual([meera.tasks.length, meera.hidden], [4, 1], "tasks the viewer can't open are only counted");
+    assert.equal(meera.tasks.find((item: any) => item.id === "week-friday").outcome, "late", "sent on Saturday, nine hours late");
+    assert.equal((await json(await call("GET", "/leaderboard/people/user-meera?period=last_week", "admin"))).hidden, 0);
+    // The Saturday edition: made once, the same for everyone, and shown to each person once.
+    const status = await json(await call("GET", "/leaderboard/weekly/status", "ravi"));
+    assert.deepEqual([status.seen, status.ranked >= 1, status.weekStart], [false, true, lastWeek.from.toISOString()]);
+    const edition = await json(await call("GET", "/leaderboard/weekly", "asha"));
+    assert.equal(edition.id, status.id);
+    // The edition is the lifetime board as of Saturday midnight: everyone's earlier work counts, Saturday's evidence doesn't yet.
+    const meeraThen = edition.board.people.find((entry: any) => entry.userId === "user-meera");
+    assert.equal(meeraThen.missed, 1, "the edition is as of Saturday midnight: Saturday's evidence came after it");
+    assert.ok(edition.board.people.some((entry: any) => entry.userId === "user-asha" && entry.rank && entry.previousRank), "earlier work counts, with each person's move that week");
+    const asEdition = await json(await call("GET", `/leaderboard/people/user-meera?week=${status.id}`, "ravi"));
+    assert.equal(asEdition.tasks.find((item: any) => item.id === "week-friday").outcome, "missed", "the breakdown can follow the edition");
+    assert.equal((await call("GET", "/leaderboard/people/user-meera?week=2001-01-06", "ravi")).status, 404);
+    await db.collection("tasks").insertOne(task("week-late-addition", "asha", inWeek(30)) as never);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly", "admin"))).generatedAt, edition.generatedAt, "kept as it was first made");
+    assert.equal((await call("POST", `/leaderboard/weekly/${status.id}/seen`, "ravi")).status, 200);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly/status", "ravi"))).seen, true);
+    assert.equal((await json(await call("GET", "/leaderboard/weekly/status", "asha"))).seen, false, "seen is per person");
+    assert.equal((await call("POST", "/leaderboard/weekly/2001-01-06/seen", "ravi")).status, 404);
+    assert.equal((await call("POST", "/leaderboard/weekly/not-a-week/seen", "ravi")).status, 400);
+  } finally {
+    server.close();
+    await once(server, "close");
+    await database.native.dropDatabase();
+    await database.client.close();
+  }
+});
+
+test("celebrations: approval or done celebrates the assignee once, with the film's facts, a live nudge, seen, and pause", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const dbName = `venture_studio_test_${process.pid}_${Date.now()}_celebrations`;
+  assert.match(dbName, /^venture_studio_test_/);
+  const config = loadConfig({
+    NODE_ENV: "test", APP_MODE: "local", ALLOW_DEV_AUTH: "true", PORT: "4000",
+    APP_ORIGIN: "http://localhost:3000", API_ORIGIN: "http://127.0.0.1:4000",
+    MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, BETTER_AUTH_SECRET: "test-secret-that-is-at-least-32-characters",
+  });
+  const database = await connectDatabase(config);
+  const db = database.db;
+  await ensureIndexes(db);
+  const now = new Date();
+  const day = 86_400_000;
+  const at = (days: number) => new Date(now.getTime() + days * day);
+  await db.collection("workspaces").insertOne({ _id: "workspace-a", name: "A", slug: "a", createdAt: now } as never);
+  await db.collection("ventures").insertOne({ _id: "venture-a", workspaceId: "workspace-a", name: "Alpha", status: "active", goal30Day: "", createdAt: now } as never);
+  await db.collection("groups").insertOne({ _id: "group-a", workspaceId: "workspace-a", ventureId: "venture-a", name: "Core", createdAt: now } as never);
+  const people = [["admin", "admin"], ["lead", "venture_head"], ["member", "contributor"], ["rev", "contributor"]] as const;
+  await db.collection("users").insertMany(people.map(([handle]) => ({ _id: `user-${handle}`, workspaceId: "workspace-a", email: `${handle}@example.invalid`, name: `Person ${handle}`, handle, status: "active", createdAt: now, updatedAt: now })) as never);
+  await db.collection("memberships").insertMany(people.map(([handle, role]) => ({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, ventureIds: role === "admin" ? [] : ["venture-a"], groupIds: role === "admin" ? [] : ["group-a"], status: "active", createdAt: now, updatedAt: now })) as never);
+  const task = (id: string, dueAt: Date, extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", groupId: "group-a", title: `Task ${id}`, outcome: "o", assigneeId: "user-member", reviewerId: "user-rev", creatorId: "user-lead", priority: "high", status: "review", dueAt, timezone: "UTC", estimatedMinutes: 120, definitionOfDone: "d", evidenceRequirement: "e", dependencies: [], evidenceLinks: [], tags: [], deadlineRisk: false, createdAt: at(-30), updatedAt: at(-30), ...extra });
+  await db.collection("tasks").insertMany([
+    task("t-approve", at(2)), task("t-done", at(1), { status: "in_progress" }), task("t-reject", at(3)), task("t-paused", at(3)), task("t-after", at(3)), task("t-cancel", at(3)),
+    // History: one finished on time ten days ago, one late before that.
+    task("t-old-on-time", at(-9), { status: "done", completedAt: at(-10) }), task("t-old-late", at(-20), { status: "done", completedAt: at(-17) }),
+  ] as never);
+  const evidence = (id: string, taskId: string, submittedAt: Date, reviewStatus = "pending", extra: Record<string, unknown> = {}) => ({ _id: id, workspaceId: "workspace-a", taskId, type: "note", title: "Proof", description: "Proof", submittedBy: "user-member", submittedAt, reviewStatus, ...extra });
+  await db.collection("evidence_items").insertMany([
+    evidence("e-sent-back", "t-approve", at(-3), "rejected", { reviewedBy: "user-rev", reviewedAt: at(-2.5) }), evidence("e-approve", "t-approve", at(-1)),
+    evidence("e-done", "t-done", at(-0.002), "accepted", { reviewedBy: "user-lead", reviewedAt: at(-0.001) }),
+    evidence("e-reject", "t-reject", at(-1)), evidence("e-paused", "t-paused", at(-1)), evidence("e-after", "t-after", at(-1)), evidence("e-cancel", "t-cancel", at(-1)),
+    evidence("e-old-on-time", "t-old-on-time", at(-10), "accepted", { reviewedBy: "user-rev", reviewedAt: at(-10) }), evidence("e-old-late", "t-old-late", at(-18), "accepted", { reviewedBy: "user-rev", reviewedAt: at(-17) }),
+  ] as never);
+  const { app, resolveActor } = createApp(database, config, createAuth(database.native, config), new LocalObjectStore(config));
+  const server = createServer(app).listen(0);
+  const ioServer = attachRealtime(server, database, resolveActor, config.APP_ORIGIN, true);
+  await once(server, "listening");
+  const address = server.address();
+  const origin = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  const as = (handle: string) => ({ "content-type": "application/json", "x-dev-user-id": `user-${handle}` });
+  const send = (method: string, path: string, handle: string, body?: unknown) => fetch(`${origin}/v1${path}`, { method, headers: as(handle), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const review = async (evidenceId: string, status: string, handle = "rev") => { const response = await send("POST", `/evidence/${evidenceId}/review`, handle, { status }); assert.equal(response.status, 200, await response.clone().text()); };
+  const feed = async (handle = "member") => { const response = await send("GET", "/celebrations", handle); assert.equal(response.status, 200, await response.clone().text()); return ((await response.json()) as any).data; };
+  let socket: ReturnType<typeof socketClient> | undefined;
+  try {
+    socket = socketClient(origin, { extraHeaders: { "x-dev-user-id": "user-member" }, transports: ["websocket"], reconnection: false });
+    await new Promise<void>((resolve, reject) => { socket!.once("connect", resolve); socket!.once("connect_error", reject); });
+    const nudge = new Promise<any>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("no celebration nudge")), 5000); socket!.once("celebration", (value: unknown) => { clearTimeout(timer); resolve(value); }); });
+
+    // The reviewer approves: the assignee's celebration, nudged to their open tabs at once.
+    await review("e-approve", "accepted");
+    const nudged = await nudge;
+    // Marking it done later doesn't celebrate the same task again; marking another one done does.
+    assert.equal((await send("PATCH", "/tasks/t-approve", "member", { status: "done" })).status, 200);
+    assert.equal((await send("PATCH", "/tasks/t-done", "member", { status: "done" })).status, 200);
+    // Sent back is not a celebration.
+    await review("e-reject", "rejected");
+
+    const mine = await feed();
+    assert.equal(mine.name, "Person member");
+    assert.deepEqual(mine.items.map((item: any) => [item.taskId, item.trigger]), [["t-approve", "approved"], ["t-done", "done"]]);
+    assert.deepEqual(nudged, { id: mine.items[0].id });
+    const [approved, done] = mine.items;
+    assert.equal(approved.ventureName, "Alpha");
+    assert.equal(approved.firstTimeRight, false, "it was sent back once before");
+    assert.deepEqual(approved.approvedBy, { userId: "user-rev", name: "Person rev" });
+    assert.equal(approved.minutesEarly, 3 * 24 * 60, "handed in a day before, due in two");
+    assert.equal(approved.estimatedMinutes, 120);
+    assert.equal(approved.priority, "high");
+    assert.equal(done.firstTimeRight, true);
+    assert.deepEqual(done.approvedBy, { userId: "user-lead", name: "Person lead" });
+    // Four finished, the two this week, three on time in a row (the late one ends the streak).
+    assert.equal(mine.stats.finished, 4);
+    assert.equal(mine.stats.thisWeek, 2);
+    assert.equal(mine.stats.onTimeStreak, 3);
+    assert.equal(mine.pausedUntil, undefined);
+    // Only the person themselves sees or clears theirs.
+    assert.deepEqual((await feed("rev")).items, []);
+    assert.equal(((await (await send("POST", "/celebrations/seen", "rev", { ids: [approved.id] })).json()) as any).data.updated, 0);
+    assert.equal(((await (await send("POST", "/celebrations/seen", "member", { ids: [approved.id, done.id] })).json()) as any).data.updated, 2);
+    assert.deepEqual((await feed()).items, []);
+
+    // A cancelled task's celebration is left out rather than played, and so is one for a task out of reach.
+    await review("e-cancel", "accepted");
+    assert.equal((await send("PATCH", "/tasks/t-cancel", "lead", { status: "cancelled" })).status, 200);
+    await db.collection("tasks").insertOne({ ...task("t-hidden", at(3)), groupId: "group-b", status: "done" } as never);
+    await db.collection("celebrations").insertOne({ _id: "c-hidden", workspaceId: "workspace-a", userId: "user-member", taskId: "t-hidden", trigger: "done", actorId: "user-lead", createdAt: new Date(), state: "pending" } as never);
+    assert.deepEqual((await feed()).items, []);
+
+    // Paused: nothing shows, and what's finished meanwhile is skipped for good; resuming doesn't bring it back.
+    assert.equal((await send("PUT", "/celebrations/pause", "member", { hours: 2 })).status, 400, "only 1, 3, or 24 hours");
+    const paused = ((await (await send("PUT", "/celebrations/pause", "member", { hours: 1 })).json()) as any).data;
+    assert.ok(new Date(paused.pausedUntil).getTime() > now.getTime() + 0.9 * 3_600_000);
+    await review("e-paused", "accepted");
+    const whilePaused = await feed();
+    assert.equal(whilePaused.pausedUntil, paused.pausedUntil);
+    assert.deepEqual(whilePaused.items, []);
+    assert.equal((await db.collection("celebrations").findOne({ taskId: "t-paused" }))?.state, "skipped");
+    assert.equal(((await (await send("PUT", "/celebrations/pause", "member", { hours: 0 })).json()) as any).data.pausedUntil, null);
+    assert.deepEqual((await feed()).items, []);
+    await review("e-after", "accepted");
+    assert.deepEqual((await feed()).items.map((item: any) => item.taskId), ["t-after"]);
+  } finally {
+    socket?.close();
+    await ioServer.close();
     server.close();
     await once(server, "close");
     await database.native.dropDatabase();

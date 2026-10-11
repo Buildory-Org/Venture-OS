@@ -31,6 +31,8 @@ const schema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().min(1).optional(),
   LOCAL_UPLOAD_DIR: z.string().default(".data/uploads"),
+  // The leaderboard's weeks start at Saturday midnight here, and the weekly edition appears then for everyone.
+  LEADERBOARD_TIME_ZONE: z.string().default("Asia/Kolkata").refine((value) => { try { new Intl.DateTimeFormat("en-US", { timeZone: value }); return true; } catch { return false; } }, "LEADERBOARD_TIME_ZONE must be an IANA time zone"),
   // Express "trust proxy" (e.g. "loopback" behind nginx/Caddy on the same host). Unset trusts no forwarding headers.
   TRUST_PROXY: z.string().trim().min(1).optional(),
   // A header that the edge always overwrites with the visitor's address (Cloudflare: cf-connecting-ip). Only set it when

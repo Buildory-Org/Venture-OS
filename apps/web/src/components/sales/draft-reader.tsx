@@ -1,15 +1,19 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Draft, Play } from "@venture-studio/contracts";
+import type { ChannelAccount, Draft, Play } from "@venture-studio/contracts";
 import { ArrowLeft, ArrowUpRight, Check, CircleAlert, CircleCheck, Clock3, Copy, Edit, Info, Mail, ShieldCheck, Sparkles, X, type Icon } from "@/components/ui/icons";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { ActionLabel, Badge, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { approveDraft, discardDraft, markDraftSent, updateDraft, vetoDraft, type ReviewDraft, type SalesSettingsView } from "@/lib/sales-api";
-import { Phone, Trash, UserX, Whatsapp } from "./draft-icons";
-import { approvalOf, canApprove, canEditLead, canWriteIn, ChannelTile, copyText, CHANNEL_LABEL, kickerClass, linkedinHref, mailtoHref, OPT_IN_LABEL, PURPOSE_LABEL, routeOf, shortSession, stamp, telHref, waDigits, waHref, wordCount } from "./draft-shared";
+import { approveDraft, discardDraft, getLead, markDraftSent, updateDraft, vetoDraft, type ReviewDraft, type SalesSettingsView } from "@/lib/sales-api";
+import type { SendResult } from "@/lib/sales-channels-api";
+import { Instagram, Phone, Trash, UserX, Whatsapp } from "./draft-icons";
+import { approvalOf, canApprove, canEditLead, canWriteIn, ChannelTile, copyText, CHANNEL_LABEL, instagramHref, kickerClass, linkedinHref, mailtoHref, OPT_IN_LABEL, PURPOSE_LABEL, routeOf, shortSession, stamp, telHref, useSalesLoad, waDigits, waHref, wordCount } from "./draft-shared";
+import { accountLabel, usableAccounts, useChannelAccounts } from "./channel-model";
+import { DeliveryReconcile, replyWindow, SendBox, SentFromPicker } from "./channel-send";
+import { DeliveryChip, DeliveryTicks } from "./channel-delivery";
 import { useSalesShell } from "./sales-context";
 import { StageChip, VerdictChip, when } from "./sales-ui";
 
@@ -19,7 +23,11 @@ export const DRAFT_STATUS: Record<Draft["status"], { label: string; tone: Tone }
   needs_changes: { label: "Needs changes", tone: "amber" }, sent: { label: "Sent", tone: "purple" }, vetoed: { label: "Vetoed", tone: "red" }, discarded: { label: "Discarded", tone: "neutral" },
 };
 
-export type DraftChange = { kind: "edited" | "approved" | "sent" | "closed"; draft: Draft };
+/** "delivery": the draft stays open with a new delivery state (a send that could not be confirmed, or one a person said didn't go). */
+export type DraftChange = { kind: "edited" | "approved" | "sent" | "closed" | "delivery"; draft: Draft };
+/** Where a hand-sent message went from, in the confirm and the Sent note. */
+const OWN_APP: Record<string, string> = { email: "mail app", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram" };
+const LINKEDIN_NOTE_LIMIT = 300;
 
 /** The right-hand pane of Review: one draft, Claude's review of it, and what a person can do next. */
 export function DraftReader({ draft, play, settings, editNonce, onBack, onChanged }: { draft: ReviewDraft; play?: Play; settings?: SalesSettingsView; editNonce: number; onBack: () => void; onChanged: (change: DraftChange) => void }) {
@@ -58,8 +66,32 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
   const linkedinLink = linkedinRoute ? linkedinHref(linkedinRoute.value) : "";
   const digits = phoneRoute ? waDigits(phoneRoute.value) : "";
   const fullText = isEmail && draft.subject ? `Subject: ${draft.subject}\n\n${draft.body}` : draft.body;
-  const toLine = isEmail ? emailRoute?.value : draft.channel === "whatsapp" ? phoneRoute?.value : draft.channel === "linkedin" ? linkedinRoute?.value : phoneRoute?.value;
+  const instagramRoute = routeOf(lead.contactRoutes, "instagram");
+  const instagramLink = instagramRoute ? instagramHref(instagramRoute.value) : "";
+  const toLine = isEmail ? emailRoute?.value : draft.channel === "whatsapp" ? phoneRoute?.value : draft.channel === "linkedin" ? linkedinRoute?.value : draft.channel === "instagram" ? instagramRoute?.value : phoneRoute?.value;
   const status: { label: string; tone: Tone } = approval.needed ? { label: "To approve", tone: "blue" } : DRAFT_STATUS[draft.status];
+
+  // Connected accounts (Sales > Channels): a ready email, WhatsApp or Instagram draft goes out through one with Send; a hand-sent email or
+  // LinkedIn message can say which mailbox or profile it went from. Without channels on the server, everything works as before.
+  const delivery = draft.delivery;
+  const uncertain = draft.status === "ready" && delivery?.state === "uncertain";
+  // A send in flight (from another tab or person) or one waiting for an answer holds the draft: no second send, no edits.
+  const inFlight = draft.status === "ready" && delivery?.state === "sending";
+  const held = uncertain || inFlight;
+  const sendChannel = draft.channel === "email" || draft.channel === "whatsapp" || draft.channel === "instagram";
+  const { accounts: channelAccounts } = useChannelAccounts(editor || draft.status === "sent");
+  const sendAccounts = sendChannel ? usableAccounts(channelAccounts, draft.ventureId, draft.channel, session?.user.id) : [];
+  const handAccounts = isEmail || draft.channel === "linkedin" ? usableAccounts(channelAccounts, draft.ventureId, draft.channel, session?.user.id) : [];
+  const [sentFrom, setSentFrom] = useState<string | null>(null);
+  const sentFromId = sentFrom ?? handAccounts[0]?.id ?? "";
+  // WhatsApp and Instagram only allow free text within 24 hours of the lead's last message: their messages say whether that window is open.
+  const windowChannel = draft.channel === "whatsapp" || draft.channel === "instagram" ? draft.channel : null;
+  const needWindow = Boolean(windowChannel) && editor && sendable && sendAccounts.length > 0;
+  const leadDetail = useSalesLoad(`draft-window|${lead.id}|${needWindow}`, () => needWindow ? getLead(lead.id) : Promise.resolve(null));
+  const replyOpen = windowChannel ? replyWindow(needWindow ? leadDetail.data?.activities : [], windowChannel, sendAccounts[0]?.id) : "open";
+  const instagramClosed = draft.channel === "instagram" && replyOpen === "closed";
+  const showSendBox = editor && sendable && !whatsappLocked && sendAccounts.length > 0 && !held && !instagramClosed;
+  const sentThroughLabel = draft.sentAccountId ? accountLabel(channelAccounts, draft.sentAccountId) : "";
 
   const startEdit = useCallback(() => { setSubject(draft.subject ?? ""); setBody(draft.body); setConfirm(null); setError(""); setEditing(true); }, [draft.subject, draft.body]);
   const seenNonce = useRef(editNonce);
@@ -71,6 +103,9 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
   // One request id for marking this draft sent, made when the confirm opens and kept for retries, so a retry after a lost answer
   // repeats the first one instead of logging the message twice.
   const sentRequestId = useRef("");
+  // The confirm opens under the buttons: bring it into view (on a phone it would sit below the fold).
+  const confirmBox = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (confirm === "sent") confirmBox.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); }, [confirm]);
 
   async function run<T>(name: string, action: () => Promise<T>, done: (result: T) => void) {
     setBusy(name); setError("");
@@ -97,7 +132,7 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
     if (!sentRequestId.current) sentRequestId.current = crypto.randomUUID();
     setConfirm("sent"); setError("");
   }
-  const markSent = () => void run("sent", () => markDraftSent(draft.id, { sentVia: "manual", requestId: sentRequestId.current || (sentRequestId.current = crypto.randomUUID()) }), (result) => {
+  const markSent = () => void run("sent", () => markDraftSent(draft.id, { sentVia: "manual", requestId: sentRequestId.current || (sentRequestId.current = crypto.randomUUID()), ...(sentFromId && handAccounts.some((account) => account.id === sentFromId) ? { accountId: sentFromId } : {}) }), (result) => {
     setConfirm(null);
     toast({ title: "Marked as sent", body: result.lead.followUpDueAt ? `${lead.companyName}. Follow-up due ${when(result.lead.followUpDueAt)}.` : lead.companyName });
     onChanged({ kind: "sent", draft: result.draft }); refresh();
@@ -106,9 +141,23 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
     if (reason.trim().length < 3) { setError("Say why in a few words, so Claude and the team learn from it."); return; }
     void run("veto", () => vetoDraft(draft.id, { reason: reason.trim() }), (updated) => { setConfirm(null); setReason(""); toast({ title: "Vetoed", body: lead.companyName }); onChanged({ kind: "closed", draft: updated }); refresh(); });
   }
+  function sentThrough(result: SendResult, account: ChannelAccount) {
+    if (result.outcome === "sent") {
+      toast({ title: `Sent from ${account.label}`, body: result.lead?.followUpDueAt ? `${lead.companyName}. Follow-up due ${when(result.lead.followUpDueAt)}.` : lead.companyName });
+      onChanged({ kind: "sent", draft: result.draft });
+    } else {
+      toast({ tone: "info", title: "Couldn't confirm it went out", body: `${account.label} didn't answer in time. Check it, then say what happened.` });
+      onChanged({ kind: "delivery", draft: result.draft });
+    }
+    refresh();
+  }
+  function reconciled(outcome: "sent" | "not_sent", updated: Draft) {
+    toast(outcome === "sent" ? { title: "Recorded as sent", body: lead.companyName } : { tone: "info", title: "Recorded as not sent", body: `${lead.companyName}. You can send it again.` });
+    onChanged({ kind: outcome === "sent" ? "sent" : "delivery", draft: updated }); refresh();
+  }
   const discard = () => void run("discard", () => discardDraft(draft.id), (updated) => { setConfirm(null); toast({ title: "Discarded", body: lead.companyName }); onChanged({ kind: "closed", draft: updated }); refresh(); });
 
-  const openButton = !sendable || !editor ? null
+  const openButton = !sendable || !editor || showSendBox || held ? null
     : isEmail ? (emailLink
       ? <a href={emailLink} onClick={() => void copyText(fullText, "Copied. Your mail app is opening.")} className={primaryClass}><Mail size={16} />Copy and open mail app</a>
       : <button type="button" disabled className={primaryClass}><Mail size={16} />{emailRoute ? "Email address is not usable" : "No email on file"}</button>)
@@ -118,7 +167,10 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
         : draft.channel === "linkedin" ? (linkedinLink
           ? <a href={linkedinLink} target="_blank" rel="noopener noreferrer" onClick={() => void copyText(fullText, "Copied. Paste it into LinkedIn.")} className={primaryClass}><ArrowUpRight size={16} />Copy and open LinkedIn</a>
           : <button type="button" onClick={() => void copyText(fullText)} className={primaryClass}><Copy size={16} />Copy text</button>)
-          : null;
+          : draft.channel === "instagram" ? (instagramLink
+            ? <a href={instagramLink} target="_blank" rel="noopener noreferrer" onClick={() => void copyText(fullText, "Copied. Paste it into Instagram.")} className={primaryClass}><Instagram size={16} />Copy and open Instagram</a>
+            : <button type="button" onClick={() => void copyText(fullText)} className={primaryClass}><Copy size={16} />Copy text</button>)
+            : null;
 
   return <article className="vso-fade-enter min-w-0">
     <div className="flex flex-wrap items-start gap-3 border-b border-neutral-100 px-4 py-4 sm:px-5">
@@ -128,7 +180,7 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
         <h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900 [overflow-wrap:anywhere]">{lead.companyName}{lead.city ? <span className="font-semibold text-neutral-400"> · {lead.city}</span> : null}</h2>
         <p className="mt-0.5 text-xs font-medium text-neutral-500">{PURPOSE_LABEL[draft.purpose]} by {CHANNEL_LABEL[draft.channel].toLowerCase()}{lead.contactName ? ` · for ${lead.contactName}` : ""}</p>
       </div>
-      <Badge tone={status.tone}>{status.label}</Badge>
+      <span className="flex flex-wrap items-center justify-end gap-1.5">{delivery && !(draft.status === "sent" && delivery.state === "sent") && <DeliveryChip delivery={delivery} />}<Badge tone={status.tone}>{status.label}</Badge></span>
     </div>
 
     <div className="grid gap-5 p-4 sm:p-5 xl:grid-cols-[minmax(0,1fr)_280px]">
@@ -149,28 +201,36 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
         <Notice tone="error" message={error} onDismiss={() => setError("")} />
 
 
-        {draft.status === "sent" && <Callout tone="green" icon={CircleCheck} title="Sent">{draft.sentBy ? `${personName(draft.sentBy)} sent this` : "Sent"}{draft.sentAt ? ` on ${stamp(draft.sentAt)}` : ""} from their own {isEmail ? "mail app" : "phone"}. Dealflow only records it.</Callout>}
+        {draft.status === "sent" && <Callout tone="green" icon={CircleCheck} title="Sent">{draft.sentBy ? `${personName(draft.sentBy)} sent this` : "Sent"}{draft.sentAt ? ` on ${stamp(draft.sentAt)}` : ""}{draft.sentVia && draft.sentVia !== "manual" ? ` from ${sentThroughLabel || "a connected account"}, through the app.` : ` from their own ${OWN_APP[draft.channel] ?? "phone"}. Dealflow only records it.`}{delivery && <span className="mt-1 block"><DeliveryTicks delivery={delivery} /></span>}</Callout>}
+        {draft.status === "sent" && delivery?.state === "bounced" && <Callout tone="red" icon={CircleAlert} title="It bounced">{delivery.error ? `${delivery.error}. ` : ""}The address didn&apos;t take it. Check the email address on the lead, or reach them another way.</Callout>}
         {draft.status === "vetoed" && <Callout tone="red" icon={X} title="Vetoed">{draft.veto ? `${personName(draft.veto.by)}: ${draft.veto.reason}` : "A person vetoed this draft."}</Callout>}
 
         {writer && open && !editing && <div className="space-y-3">
+          {inFlight && <Callout tone="blue" icon={Clock3} title="Being sent right now">{sentThroughLabel ? `Through ${sentThroughLabel}. ` : ""}Refresh in a moment to see whether it went out.</Callout>}
+          {uncertain && <Callout tone="amber" icon={CircleAlert} title="We couldn't confirm it went out">{delivery?.error ? `${delivery.error}. ` : ""}Check {isEmail ? "your Sent folder" : draft.channel === "whatsapp" ? "the venture's WhatsApp" : "the venture's Instagram"}{draft.sentAccountId && sentThroughLabel ? ` (${sentThroughLabel})` : ""}, then say what happened. It can&apos;t be sent again until you do.{editor && <span className="mt-2 block"><DeliveryReconcile draftId={draft.id} onDone={reconciled} /></span>}</Callout>}
+          {showSendBox && <SendBox draft={draft} accounts={sendAccounts} recipient={toLine} window={replyOpen} names={{ contact: lead.contactName, company: lead.companyName }} lastFailure={delivery?.state === "failed" ? delivery.error || "the last try failed." : undefined} onResult={sentThrough} onFailed={refresh} onSentMyself={confirmSent} />}
+          {!showSendBox && draft.status === "ready" && delivery?.state === "failed" && <Callout tone="red" icon={CircleAlert} title="The last try didn't send">{delivery.error ? `${delivery.error}. ` : ""}Nothing went out. Send it again, or send it yourself and mark it sent.</Callout>}
+          {instagramClosed && editor && sendable && <Callout tone="blue" icon={Instagram} title="Send this one from the Instagram app">Instagram only lets the app answer someone within 24 hours of their last message, and {lead.companyName} hasn&apos;t written in that time. Copy it, send it from the venture&apos;s Instagram, then mark it sent.</Callout>}
           <div className="flex flex-wrap items-center gap-2">
             {mayApprove && <button type="button" onClick={approve} disabled={busy === "approve"} className={primaryClass}><ActionLabel busy={busy === "approve"} busyText="Approving…" idle={<><Check size={16} />Approve this message</>} /></button>}
             {openButton}
-            {editor && draft.status === "ready" && !isCallOpener && <button type="button" disabled={!sendable || whatsappLocked} onClick={confirmSent} title={sendBlocked || undefined} aria-describedby={sendBlocked ? `send-blocked-${draft.id}` : undefined} className={secondaryClass}><Check size={16} />Mark sent</button>}
+            {editor && draft.status === "ready" && !isCallOpener && !showSendBox && !held && <button type="button" disabled={!sendable || whatsappLocked} onClick={confirmSent} title={sendBlocked || undefined} aria-describedby={sendBlocked ? `send-blocked-${draft.id}` : undefined} className={secondaryClass}><Check size={16} />Mark sent</button>}
             {editor && draft.status === "needs_changes" && <button type="button" onClick={startEdit} className={primaryClass}><Edit size={16} />Edit</button>}
-            {editor && draft.status !== "needs_changes" && <button type="button" onClick={startEdit} className={secondaryClass}><Edit size={16} />Edit<kbd className="ml-1 rounded border border-neutral-200 px-1 font-mono text-[10px] font-medium text-neutral-400 max-lg:hidden">e</kbd></button>}
+            {editor && draft.status !== "needs_changes" && !held && <button type="button" onClick={startEdit} className={secondaryClass}><Edit size={16} />Edit<kbd className="ml-1 rounded border border-neutral-200 px-1 font-mono text-[10px] font-medium text-neutral-400 max-lg:hidden">e</kbd></button>}
             <button type="button" onClick={() => void copyText(fullText)} className={secondaryClass}><Copy size={16} />Copy text</button>
-            <span className="ml-auto flex gap-2">
+            {/* While a send waits for a person to say whether it went out, the draft is neither changed nor closed. */}
+            {!held && <span className="ml-auto flex gap-2">
               <button type="button" onClick={() => { setConfirm(confirm === "veto" ? null : "veto"); setError(""); }} className={clsx(secondaryClass, "!text-danger-text")}><X size={16} />Veto</button>
               {mayDiscard && <button type="button" onClick={() => { setConfirm(confirm === "discard" ? null : "discard"); setError(""); }} aria-label="Discard" className={clsx(secondaryClass, "!px-3 !text-danger-text")}><Trash size={16} /><span className="max-sm:sr-only">Discard</span></button>}
-            </span>
+            </span>}
           </div>
           {editor && sendBlocked && !doNotContact && !whatsappLocked && <p id={`send-blocked-${draft.id}`} className="flex items-center gap-2 text-xs font-medium text-neutral-500"><ShieldCheck size={14} className="shrink-0 text-primary-600" aria-hidden="true" />Mark sent: {sendBlocked.charAt(0).toLowerCase() + sendBlocked.slice(1)}.</p>}
           {!editor && <p className="flex items-center gap-2 text-xs text-neutral-500"><Info size={14} className="shrink-0" aria-hidden="true" />Only the lead&apos;s owner or a venture head can {mayDiscard ? "edit or send" : "edit, send or discard"} this draft.</p>}
 
-          {confirm === "sent" && <div role="alertdialog" aria-label="Confirm sent" className="vso-fade-enter rounded-2xl border border-primary-200 bg-primary-50 p-4">
-            <p className="text-sm font-bold text-primary-900">Did you send it from your own {isEmail ? "mail app" : draft.channel === "whatsapp" ? "WhatsApp" : "account"}?</p>
-            <p className="mt-1 text-xs leading-5 text-primary-800">Dealflow does not send anything by itself. This only records that you did, moves {lead.companyName} to Contacted and starts the follow-up clock.</p>
+          {confirm === "sent" && <div ref={confirmBox} role="alertdialog" aria-label="Confirm sent" className="scroll-mt-4 vso-fade-enter rounded-2xl border border-primary-200 bg-primary-50 p-4">
+            <p className="text-sm font-bold text-primary-900">Did you send it from your own {OWN_APP[draft.channel] ?? "account"}?</p>
+            <p className="mt-1 text-xs leading-5 text-primary-800">This only records that you did, moves {lead.companyName} to Contacted and starts the follow-up clock.{draft.channel === "linkedin" ? " It counts toward today's LinkedIn limit." : ""}</p>
+            <SentFromPicker accounts={handAccounts} value={sentFromId} onChange={setSentFrom} />
             <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={markSent} disabled={busy === "sent"} className={primaryClass}><ActionLabel busy={busy === "sent"} idle="Yes, I sent it" /></button><button type="button" onClick={() => setConfirm(null)} className={secondaryClass}>Not yet</button></div>
           </div>}
           {confirm === "veto" && <form onSubmit={(event) => { event.preventDefault(); veto(); }} className="vso-fade-enter rounded-2xl border border-danger-surface bg-danger-surface p-4">
@@ -218,7 +278,9 @@ export function DraftReader({ draft, play, settings, editNonce, onBack, onChange
 function DraftMessage({ draft }: { draft: ReviewDraft }) {
   const words = wordCount(draft.body);
   const text = <p className="whitespace-pre-wrap text-sm leading-7 text-neutral-800 [overflow-wrap:anywhere]">{draft.body}</p>;
-  const foot = <p className="text-[11px] font-medium text-neutral-400">{words} words · {CHANNEL_LABEL[draft.channel]} · {PURPOSE_LABEL[draft.purpose]}</p>;
+  const chars = draft.body.length;
+  const longNote = draft.channel === "linkedin" && chars > LINKEDIN_NOTE_LIMIT;
+  const foot = <div><p className="text-[11px] font-medium text-neutral-400">{words} words{draft.channel === "linkedin" ? ` · ${chars} characters` : ""} · {CHANNEL_LABEL[draft.channel]} · {PURPOSE_LABEL[draft.purpose]}</p>{longNote && <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-warning-text"><CircleAlert size={13} aria-hidden="true" className="shrink-0" />Over {LINKEDIN_NOTE_LIMIT} characters: too long for a connection note. Fine as a message once you are connected.</p>}</div>;
   if (draft.channel === "whatsapp") return <div className="space-y-2 rounded-2xl bg-neutral-50 p-3 sm:p-4"><div className="ml-auto w-fit max-w-[92%] rounded-2xl rounded-br-md border border-primary-200 bg-primary-100 px-4 py-3 sm:max-w-[85%]">{text}</div><div className="text-right">{foot}</div></div>;
   if (draft.channel === "call_opener") return <div className="space-y-2 rounded-2xl border border-primary-200 bg-primary-50 p-4"><span className="flex items-center gap-2 text-xs font-bold text-primary-800"><Sparkles size={14} />Say this on the call</span>{text}{foot}</div>;
   return <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white">

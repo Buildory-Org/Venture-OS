@@ -14,7 +14,7 @@ import { signOutLive } from "@/lib/studio-api";
 import { describeError } from "@/lib/errors";
 import { toast } from "@/components/ui/toast";
 import { lastStudioPath, rememberAppMode, useAppMode, type AppMode } from "@/lib/app-mode";
-import { Phone } from "@/components/sales/lead-icons";
+import { Phone, Plug } from "@/components/sales/lead-icons";
 import { ModeSwitch } from "./mode-switch";
 import { useSalesNavCounts } from "./use-sales-nav-counts";
 
@@ -53,6 +53,7 @@ const salesSections: NavItem[] = [
   { label: "Find leads", href: "/sales/live/find", icon: Sparkles },
   { label: "Reports", href: "/sales/live/reports", icon: TrendingUp },
   { label: "Offers", href: "/sales/live/brain", icon: BookOpenText },
+  { label: "Channels", href: "/sales/live/channels", icon: Plug },
   { label: "Do not contact", href: "/sales/live/do-not-contact", icon: UserLock },
   { label: "Sales settings", href: "/sales/live/setup", icon: Settings },
 ];

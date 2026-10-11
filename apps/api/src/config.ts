@@ -25,6 +25,10 @@ const schema = z.object({
   EXA_API_KEY: z.string().trim().min(1).optional(),
   // The built-in lead finder (sales/finder): works queued find-leads and enrich runs in this API process. It waits while a workspace has no search key.
   SALES_FINDER: z.enum(["on", "off"]).default("on"),
+  // Reads connected mailboxes (IMAP) every few minutes in this API process and files replies from leads (sales/channels/email). Never under tests.
+  SALES_MAIL_SYNC: z.enum(["on", "off"]).default("on"),
+  // The Meta Graph API version the WhatsApp and Instagram connections call.
+  META_GRAPH_VERSION: z.string().trim().regex(/^v\d+\.\d+$/, "META_GRAPH_VERSION looks like v25.0").default("v25.0"),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),
   R2_ENDPOINT: z.url().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),

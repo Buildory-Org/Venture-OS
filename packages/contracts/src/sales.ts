@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { idSchema, isoDateSchema, timezoneSchema } from "./common.js";
+import { deliverySchema, whatsappTemplateRefSchema } from "./sales-channels.js";
 
 // Sales (Dealflow). One lead record ("opportunity") moves through the founders' SLS-01 stages; see docs/sales-dealflow.md.
 
@@ -26,10 +27,12 @@ export const confidenceSchema = z.enum(["low", "medium", "high"]);
 export const webUrlSchema = z.url({ protocol: /^https?$/, error: "must be an http or https link" }).max(2_000);
 /** A website as people type it: "acme.in", "www.acme.in" or an http(s) link, never another scheme. */
 const websiteSchema = z.string().trim().max(500).refine((value) => !/^[a-z][a-z0-9+.-]*:/i.test(value) || /^https?:\/\//i.test(value), "must be a web address");
-export const contactRouteSchema = z.object({ kind: z.enum(["email", "phone", "whatsapp", "linkedin", "website_form", "other"]), value: z.string().trim().min(1).max(320), label: z.string().trim().max(80).optional(), sourceUrl: webUrlSchema.optional(), publishedByCompany: z.boolean().default(true) })
-  // An email route is one plain address (no extra recipients or mailto parameters); a phone or WhatsApp route is a number.
+export const contactRouteSchema = z.object({ kind: z.enum(["email", "phone", "whatsapp", "linkedin", "instagram", "website_form", "other"]), value: z.string().trim().min(1).max(320), label: z.string().trim().max(80).optional(), sourceUrl: webUrlSchema.optional(), publishedByCompany: z.boolean().default(true) })
+  // An email route is one plain address (no extra recipients or mailto parameters); a phone or WhatsApp route is a number; an Instagram
+  // route is the business's @handle or its instagram.com profile link.
   .refine((route) => route.kind !== "email" || z.email().safeParse(route.value).success, { message: "must be one plain email address", path: ["value"] })
-  .refine((route) => (route.kind !== "phone" && route.kind !== "whatsapp") || /^[+()\d\s./-]{6,40}$/.test(route.value), { message: "must be a phone number", path: ["value"] });
+  .refine((route) => (route.kind !== "phone" && route.kind !== "whatsapp") || /^[+()\d\s./-]{6,40}$/.test(route.value), { message: "must be a phone number", path: ["value"] })
+  .refine((route) => route.kind !== "instagram" || /^@?[A-Za-z0-9._]{1,30}$/.test(route.value) || /^https:\/\/(www\.)?instagram\.com\/[A-Za-z0-9._]{1,30}\/?$/i.test(route.value), { message: "must be an Instagram @handle or instagram.com profile link", path: ["value"] });
 export type ContactRoute = z.infer<typeof contactRouteSchema>;
 
 /** Zod keeps .default() inside .partial(), so an update parsed with defaults would silently reset every omitted field. Updates strip them. */
@@ -111,7 +114,7 @@ export const CALL_OUTCOMES = ["interested_book", "send_details", "call_back", "n
 export const REPLY_TYPES = ["interested", "send_details", "price_first", "not_now", "wrong_person", "has_system", "opt_out", "silence", "unclear", "hostile"] as const;
 export const callOutcomeSchema = z.enum(CALL_OUTCOMES);
 export const replyTypeSchema = z.enum(REPLY_TYPES);
-export const activityKindSchema = z.enum(["call", "email", "whatsapp", "linkedin", "meeting", "note"]);
+export const activityKindSchema = z.enum(["call", "email", "whatsapp", "linkedin", "instagram", "meeting", "note"]);
 export const activityInputSchema = z.object({
   kind: activityKindSchema, direction: z.enum(["out", "in"]).optional(), body: z.string().trim().max(10_000).default(""), at: isoDateSchema.optional(),
   callOutcome: callOutcomeSchema.optional(), replyType: replyTypeSchema.optional(), draftId: idSchema.optional(),
@@ -119,9 +122,19 @@ export const activityInputSchema = z.object({
 });
 /** Sets the reply type of an inbound item that was logged without one; the server applies that type's rules. */
 export const activityReplyTypeInputSchema = z.object({ replyType: replyTypeSchema });
+/**
+ * Set by the server on a message that went out or came in through a connected account (sales-channels.ts): which account, the provider's
+ * message id, the conversation it belongs to (an email's thread or a WhatsApp/Instagram chat), the email subject and addresses, and the
+ * delivery of an outbound one (WhatsApp ticks, a bounce). Never accepted from a client.
+ */
+export const activityMessageSchema = z.object({
+  accountId: idSchema, externalId: z.string().optional(), threadKey: z.string().optional(), subject: z.string().optional(), from: z.string().optional(), to: z.string().optional(),
+  delivery: deliverySchema.optional(),
+});
 export const activitySchema = activityInputSchema.extend({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, leadId: idSchema, actorId: idSchema, via: z.enum(["app", "claude", "import", "system"]), createdAt: isoDateSchema, at: isoDateSchema,
   handledAt: isoDateSchema.optional(), handledBy: idSchema.optional(), stageFrom: salesStageSchema.optional(), stageTo: salesStageSchema.optional(),
+  message: activityMessageSchema.optional(),
 });
 export type Activity = z.infer<typeof activitySchema>;
 
@@ -146,14 +159,26 @@ export type Verdict = z.infer<typeof verdictSchema>;
 // Drafts: written (usually by Claude), reviewed in a separate pass, then sent by a person.
 export const DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes", "sent", "vetoed", "discarded"] as const;
 export const draftStatusSchema = z.enum(DRAFT_STATUSES);
-export const draftChannelSchema = z.enum(["email", "whatsapp", "call_opener", "linkedin"]);
+export const draftChannelSchema = z.enum(["email", "whatsapp", "call_opener", "linkedin", "instagram"]);
 export const draftInputSchema = z.object({
   channel: draftChannelSchema, purpose: z.enum(["first_touch", "follow_up", "reply", "proposal", "other"]).default("first_touch"), subject: z.string().trim().max(200).optional(),
   body: z.string().trim().min(1).max(5_000), playId: idSchema.optional(), inReplyTo: idSchema.optional(), sessionId: z.string().trim().max(128).optional(), submit: z.boolean().default(true),
 });
 export const draftUpdateSchema = z.object({ subject: z.string().trim().max(200), body: z.string().trim().min(1).max(5_000), sessionId: z.string().trim().max(128) }).partial().refine((value) => value.subject !== undefined || value.body !== undefined);
 export const draftReviewInputSchema = z.object({ result: z.enum(["pass", "fail"]), issues: z.array(z.string().trim().min(1).max(300)).max(20).default([]), notes: z.string().trim().max(2_000).default(""), sessionId: z.string().trim().max(128).optional() });
-export const draftSendInputSchema = z.object({ sentVia: z.enum(["manual", "smtp", "whatsapp_api"]).default("manual"), at: isoDateSchema.optional(), requestId: z.string().trim().min(8).max(128).optional() });
+/** Marks a draft sent by hand (from the person's own mail app, phone or LinkedIn). Sending through a connected account is POST .../send. */
+export const draftSendInputSchema = z.object({
+  sentVia: z.enum(["manual", "smtp", "whatsapp_api", "instagram_api"]).default("manual"), at: isoDateSchema.optional(), requestId: z.string().trim().min(8).max(128).optional(),
+  /** Optional: the person's mailbox or LinkedIn profile (or the venture's account) it went from, kept on the activity. */
+  accountId: idSchema.optional(),
+});
+/**
+ * A person sends a ready draft through one of their connected accounts (docs/sales-channels.md): an email through their mailbox (SMTP), a
+ * WhatsApp message through the venture's number, an Instagram reply through the venture's account. `accountId` defaults to the person's
+ * default account for the venture and channel. `template`: WhatsApp only, required outside the 24-hour window (the lead hasn't messaged in
+ * the last 24 hours): an approved template with the values to fill in.
+ */
+export const draftSendThroughInputSchema = z.object({ accountId: idSchema.optional(), template: whatsappTemplateRefSchema.optional(), requestId: z.string().trim().min(8).max(128) });
 export const draftVetoInputSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
 export const draftSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, leadId: idSchema, playId: idSchema.optional(), inReplyTo: idSchema.optional(),
@@ -163,6 +188,8 @@ export const draftSchema = z.object({
   /** `byHead`: the approver headed the venture (or was an admin); only those approvals count toward a play's first batch. */
   personApproval: z.object({ by: idSchema, at: isoDateSchema, byHead: z.boolean().optional() }).optional(), veto: draftVetoInputSchema.extend({ by: idSchema, at: isoDateSchema }).optional(),
   sentAt: isoDateSchema.optional(), sentBy: idSchema.optional(), sentVia: draftSendInputSchema.shape.sentVia.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
+  /** Sent through a connected account: which one, and the delivery (an "uncertain" one waits for a person to say whether it went out). */
+  sentAccountId: idSchema.optional(), delivery: deliverySchema.optional(),
   /**
    * Computed by the server: the draft passed review but waits for a person's approval before it can be sent. `approvalReason` says why:
    * "every_message" (the venture approves every message: the lead's owner or a head approves) or "first_batch" (a play's first batch nobody
@@ -177,7 +204,7 @@ export const draftWithLeadSchema = draftSchema.extend({
 });
 
 // Plays: one campaign with a hypothesis, a sequence and a stop rule. The owner or a venture head approves it.
-export const playStepSchema = z.object({ day: z.number().int().min(0).max(60), channel: z.enum(["call", "email", "whatsapp", "linkedin"]), action: z.string().trim().min(1).max(300) });
+export const playStepSchema = z.object({ day: z.number().int().min(0).max(60), channel: z.enum(["call", "email", "whatsapp", "linkedin", "instagram"]), action: z.string().trim().min(1).max(300) });
 export const playInputSchema = z.object({
   ventureId: idSchema, pipelineId: idSchema.optional(), name: z.string().trim().min(1).max(120), motion: z.enum(["high_touch", "volume"]).default("high_touch"),
   audience: z.string().trim().max(2_000).default(""), offerName: z.string().trim().max(200).default(""), /** The offer this play sells (its name fills offerName). */ offerId: idSchema.optional(), hypothesis: z.string().trim().max(1_000).default(""), metric: z.string().trim().max(300).default(""),
@@ -297,7 +324,9 @@ export const engineEnrichResultSchema = z.object({
 });
 
 // ---- Per-venture sales settings (docs/sales-dealflow.md section 5): working days, blackout dates, follow-up and reply timing, caps, channels and the approval mode.
-export const SALES_CHANNELS = ["call", "email", "whatsapp", "linkedin"] as const;
+export const SALES_CHANNELS = ["call", "email", "whatsapp", "linkedin", "instagram"] as const;
+/** The channels a venture uses until a head changes its settings: Instagram is switched on per venture (its API only answers people who wrote first). */
+export const DEFAULT_SALES_CHANNELS: readonly (typeof SALES_CHANNELS)[number][] = ["call", "email", "whatsapp", "linkedin"];
 /** The festival blackout days that applied before settings were per venture (2026-10-20 and 2026-11-06 to 2026-11-11). */
 export const DEFAULT_BLACKOUT_DATES: readonly string[] = ["2026-10-20", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10", "2026-11-11"];
 const calendarDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "use YYYY-MM-DD").refine((value) => { const date = new Date(`${value}T00:00:00Z`); return !Number.isNaN(date.getTime()) && date.toISOString().startsWith(value); }, "not a real date");
@@ -309,9 +338,10 @@ export const salesSettingsSchema = z.object({
   /** Working hours within which a warm reply is answered. */
   replySlaHours: z.number().int().min(1).max(72).default(2),
   /** Messages one person sends a day, per channel. */
-  dailyCaps: z.object({ email: z.number().int().min(0).max(1_000).default(20), whatsapp: z.number().int().min(0).max(1_000).default(20) }).default({ email: 20, whatsapp: 20 }),
+  /** LinkedIn (sent by hand, tracked) and Instagram default lower than LinkedIn's own weekly invitation limit; settings saved before they existed read the defaults. */
+  dailyCaps: z.object({ email: z.number().int().min(0).max(1_000).default(20), whatsapp: z.number().int().min(0).max(1_000).default(20), linkedin: z.number().int().min(0).max(1_000).default(15), instagram: z.number().int().min(0).max(1_000).default(20) }).default({ email: 20, whatsapp: 20, linkedin: 15, instagram: 20 }),
   approvalMode: z.enum(["claude_review_enough", "person_approves_every_message"]).default("claude_review_enough"),
-  allowedChannels: z.array(z.enum(SALES_CHANNELS)).min(1).default([...SALES_CHANNELS]).transform((channels) => [...new Set(channels)]),
+  allowedChannels: z.array(z.enum(SALES_CHANNELS)).min(1).default([...DEFAULT_SALES_CHANNELS]).transform((channels) => [...new Set(channels)]),
   timezone: timezoneSchema.default("Asia/Kolkata"),
 });
 export type SalesSettings = z.infer<typeof salesSettingsSchema>;
@@ -399,7 +429,7 @@ export const salesReportSchema = z.object({
   }),
   activity: z.object({
     /** Per day (in `range.tz`): outbound calls and messages per channel, and replies received. */
-    days: z.array(z.object({ day: z.string(), call: reportCount, email: reportCount, whatsapp: reportCount, linkedin: reportCount, replies: reportCount })),
+    days: z.array(z.object({ day: z.string(), call: reportCount, email: reportCount, whatsapp: reportCount, linkedin: reportCount, instagram: reportCount.default(0), replies: reportCount })),
     totals: z.object({ calls: reportCount, messages: reportCount, replies: reportCount }),
     callOutcomes: reportHistogramSchema, replyTypes: reportHistogramSchema,
     /** How long a reply waited for our next call or message (the first reply of a run of replies counts). */

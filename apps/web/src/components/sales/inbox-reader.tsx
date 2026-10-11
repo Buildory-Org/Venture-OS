@@ -15,6 +15,7 @@ import { DRAFT_STATUS } from "./draft-reader";
 import { SlaChip, useNow, useSlaCalendars } from "./inbox-sla";
 import { useSalesShell } from "./sales-context";
 import { StageChip, VerdictChip, when } from "./sales-ui";
+import { DeliveryTicks } from "./channel-delivery";
 
 /** What the team's rules do with each kind of reply (docs/sales-dealflow.md section 5), in plain words. */
 const NEXT_STEP: Record<string, string> = {
@@ -33,8 +34,10 @@ const NEXT_STEP: Record<string, string> = {
 /** "silence" is the absence of a reply, so it is not offered when sorting a message that arrived. */
 const SORTABLE_TYPES = REPLY_TYPES.filter((type) => type !== "silence");
 
-type DraftChannel = "email" | "whatsapp" | "linkedin";
-const replyChannel = (kind: string): DraftChannel => kind === "whatsapp" ? "whatsapp" : kind === "linkedin" ? "linkedin" : "email";
+type DraftChannel = "email" | "whatsapp" | "linkedin" | "instagram";
+const replyChannel = (kind: string): DraftChannel => kind === "whatsapp" ? "whatsapp" : kind === "linkedin" ? "linkedin" : kind === "instagram" ? "instagram" : "email";
+/** Message kinds shown as chat bubbles; calls, meetings and notes are one-line events. */
+const MESSAGE_KINDS = ["email", "whatsapp", "linkedin", "instagram"];
 
 /** The right-hand pane of the Inbox: the conversation, what the reply means, and a reply to draft. */
 export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBack: () => void; onChanged: (change: { kind: "handled" | "typed"; activity: Activity }) => void }) {
@@ -60,6 +63,8 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
   const history = [...(detail.data?.activities ?? [])].sort((a, b) => a.at.localeCompare(b.at));
   const shown = history.length ? history.slice(-8) : [activity];
   const replyDrafts = (detail.data?.drafts ?? []).filter((draft) => draft.purpose === "reply" && !["sent", "vetoed", "discarded"].includes(draft.status) && (!draft.inReplyTo || draft.inReplyTo === activity.id));
+  // Instagram is offered only where there is somewhere to send it: the lead's @handle, or a conversation with them on the venture's account.
+  const instagramReachable = Boolean(routeOf(lead.contactRoutes, "instagram")) || activity.kind === "instagram" || history.some((entry) => entry.kind === "instagram");
   const phone = routeOf(lead.contactRoutes, "phone", "whatsapp");
   const phoneLink = phone ? telHref(phone.value) : "";
   // Nobody calls or writes to someone on the do-not-contact list. The reply itself may also say so (opt out, hostile).
@@ -117,7 +122,7 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
 
         {composing && writer && <form onSubmit={(event) => { event.preventDefault(); saveReply(); }} className="vso-fade-enter space-y-3 rounded-2xl border border-primary-300 bg-white p-4 ring-2 ring-primary-100">
           <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-            <Field label="Send it by"><Select className={inputClass} value={channel} onChange={(event) => setChannel(event.target.value as DraftChannel)}><option value="email">Email</option><option value="whatsapp" disabled={!optedIn}>{optedIn ? "WhatsApp" : "WhatsApp (not opted in)"}</option><option value="linkedin">LinkedIn</option></Select></Field>
+            <Field label="Send it by"><Select className={inputClass} value={channel} onChange={(event) => setChannel(event.target.value as DraftChannel)}><option value="email">Email</option><option value="whatsapp" disabled={!optedIn}>{optedIn ? "WhatsApp" : "WhatsApp (not opted in)"}</option><option value="linkedin">LinkedIn</option>{instagramReachable && <option value="instagram">Instagram</option>}</Select></Field>
             <p className="self-end pb-1 text-xs leading-5 text-neutral-500">Write it in their language and keep it short. Claude checks it against the message rules before you send it.</p>
           </div>
           <Field label="Your reply"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setComposing(false); } }} maxLength={5000} rows={6} autoFocus className={clsx(inputClass, "py-3 leading-7")} /></Field>
@@ -166,12 +171,13 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
 
 function Bubble({ entry, selected, who, loggedByClaude }: { entry: Activity; selected: boolean; who: string; loggedByClaude: boolean }) {
   const mine = entry.direction === "out";
-  if (!["email", "whatsapp", "linkedin"].includes(entry.kind)) {
+  if (!MESSAGE_KINDS.includes(entry.kind)) {
     const label = entry.kind === "call" ? `${mine ? "Call" : "Called us"}${entry.callOutcome ? `: ${CALL_OUTCOME_LABEL[entry.callOutcome]}` : ""}` : CHANNEL_LABEL[entry.kind] ?? entry.kind;
     return <p className={clsx("rounded-xl px-3 py-1.5 text-center text-[11px] font-medium text-neutral-500", selected && "bg-primary-50 text-primary-800")}>{label} · {stamp(entry.at)}{loggedByClaude ? " · logged by Claude" : ""}{entry.body ? ` · ${entry.body}` : ""}</p>;
   }
   return <div className={clsx("flex flex-col gap-1", mine ? "items-end" : "items-start")}>
     <span className="px-1 text-[11px] text-neutral-400"><b className="font-semibold text-neutral-500">{who}</b> · {stamp(entry.at)}{loggedByClaude && <span className="ml-1.5 inline-flex rounded bg-ai-surface px-1.5 py-0.5 text-[10px] font-semibold text-ai-text">logged by Claude</span>}</span>
     <div className={clsx("max-w-[92%] rounded-2xl px-4 py-2.5 text-sm leading-6 [overflow-wrap:anywhere] sm:max-w-[85%]", mine ? "rounded-br-md border border-primary-200 bg-primary-100 text-neutral-900" : "rounded-bl-md border border-neutral-200 bg-white text-neutral-800", selected && "ring-2 ring-primary-400 ring-offset-2 ring-offset-neutral-50")}><p className="whitespace-pre-wrap">{entry.body || "(no text)"}</p></div>
+    {mine && entry.message?.delivery && <DeliveryTicks delivery={entry.message.delivery} className="px-1" />}
   </div>;
 }

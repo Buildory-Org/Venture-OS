@@ -9,6 +9,7 @@ export * from "./sales.js";
 export * from "./sales-offers.js";
 export * from "./sales-finder.js";
 export * from "./sales-search-keys.js";
+export * from "./sales-channels.js";
 export * from "./calendar.js";
 export * from "./agent-context.js";
 export * from "./leaderboard.js";

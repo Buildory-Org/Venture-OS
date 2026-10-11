@@ -11,6 +11,7 @@ import { jsonValue } from "../json.js";
 import { loadVenture, ventureScope } from "./access.js";
 import { settingsFor, type SalesCtx } from "./ctx.js";
 import { OPEN_DRAFT_STATUSES, needsPersonApproval } from "./drafts.js";
+import { isCappedChannel } from "./leads.js";
 import { offerClause } from "./offers.js";
 import { whyFor } from "./present.js";
 import { OUTBOUND_KINDS, normalizeStage } from "./rules.js";
@@ -368,9 +369,9 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
 
   // ---- Activity: calls and messages per day and channel, call outcomes, reply types, how fast replies were answered.
   const zone = zoneCalendar(tz);
-  const days = new Map<string, { day: string; call: number; email: number; whatsapp: number; linkedin: number; replies: number }>();
+  const days = new Map<string, { day: string; call: number; email: number; whatsapp: number; linkedin: number; instagram: number; replies: number }>();
   const lastDay = localDay(new Date(to.getTime() - 1), zone);
-  for (let day = localDay(from, zone), guard = 0; day <= lastDay && guard < 400; day = shiftDate(day, 1), guard++) days.set(day, { day, call: 0, email: 0, whatsapp: 0, linkedin: 0, replies: 0 });
+  for (let day = localDay(from, zone), guard = 0; day <= lastDay && guard < 400; day = shiftDate(day, 1), guard++) days.set(day, { day, call: 0, email: 0, whatsapp: 0, linkedin: 0, instagram: 0, replies: 0 });
   const callOutcomes = new Map<string, number>();
   const replyTypes = new Map<string, number>();
   const waits: number[] = [], workingWaits: number[] = [];
@@ -388,7 +389,7 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
         const type = touch.replyType && touch.replyType in REPLY_TYPE_LABEL ? touch.replyType : "unsorted";
         replyTypes.set(type, (replyTypes.get(type) ?? 0) + 1);
       } else {
-        if (bucket && (touch.kind === "call" || touch.kind === "email" || touch.kind === "whatsapp" || touch.kind === "linkedin")) bucket[touch.kind]++;
+        if (bucket && (touch.kind === "call" || touch.kind === "email" || touch.kind === "whatsapp" || touch.kind === "linkedin" || touch.kind === "instagram")) bucket[touch.kind]++;
         if (touch.kind === "call") { const outcome = touch.callOutcome ?? "not_logged"; callOutcomes.set(outcome, (callOutcomes.get(outcome) ?? 0) + 1); }
       }
     }
@@ -522,7 +523,7 @@ export async function buildReport(ctx: SalesCtx, query: ReportQuery, now = new D
     funnel: { active: active.length, stages, closed: { lost: active.filter((item) => item.facts.stage === "lost").length, disqualified: active.filter((item) => item.facts.stage === "disqualified").length }, by },
     activity: {
       days: dayRows,
-      totals: { calls: dayRows.reduce((sum, day) => sum + day.call, 0), messages: dayRows.reduce((sum, day) => sum + day.email + day.whatsapp + day.linkedin, 0), replies: dayRows.reduce((sum, day) => sum + day.replies, 0) },
+      totals: { calls: dayRows.reduce((sum, day) => sum + day.call, 0), messages: dayRows.reduce((sum, day) => sum + day.email + day.whatsapp + day.linkedin + day.instagram, 0), replies: dayRows.reduce((sum, day) => sum + day.replies, 0) },
       callOutcomes: histogram(callOutcomes, CALL_OUTCOMES, CALL_OUTCOME_LABEL),
       replyTypes: histogram(replyTypes, REPLY_TYPES.filter((type) => type !== "silence"), REPLY_TYPE_LABEL),
       firstResponse: { medianHours: statOf(waits, "median"), medianWorkingHours: statOf(workingWaits, "median"), unanswered },
@@ -737,7 +738,8 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
     const used = new Map(sentToday.map((row) => [String(row._id), row.n]));
     return {
       ventureId, channels: SALES_CHANNELS.map((channel) => {
-        const cap = channel === "email" || channel === "whatsapp" ? settings.dailyCaps[channel] : null;
+        // Every capped channel (email, WhatsApp, LinkedIn, Instagram) against its cap; calls have none.
+        const cap = isCappedChannel(channel) ? settings.dailyCaps[channel] : null;
         const count = used.get(channel) ?? 0;
         return { channel, used: count, cap, left: cap === null ? null : Math.max(0, cap - count) };
       }),

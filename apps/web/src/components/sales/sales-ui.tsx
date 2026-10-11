@@ -70,7 +70,7 @@ export const LOST_REASON_LABELS: Record<LostReason, string> = {
   no_response: "Stopped replying", not_a_fit: "Not a fit", wrong_person: "Wrong person", other: "Something else",
 };
 export { LOST_REASONS, STAGE_PROBABILITY };
-export const CHANNEL_LABELS: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", call: "Call", linkedin: "LinkedIn", meeting: "Meeting", note: "Note", call_opener: "Call script" };
+export const CHANNEL_LABELS: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", call: "Call", linkedin: "LinkedIn", instagram: "Instagram", meeting: "Meeting", note: "Note", call_opener: "Call script" };
 export const DRAFT_STATUS_LABELS: Record<string, string> = { draft: "Draft", in_review: "In review", ready: "Ready to send", needs_changes: "Needs changes", sent: "Sent", vetoed: "Vetoed", discarded: "Discarded" };
 
 // ---- Money (stored in minor units: paise, cents) ----

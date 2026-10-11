@@ -13,8 +13,8 @@ import { offerIsUsable, openOffers, useVentureOffers } from "./offer-model";
 import { useSalesShell } from "./sales-context";
 
 export type PlayStep = Play["steps"][number];
-const STEP_CHANNELS: PlayStep["channel"][] = ["call", "email", "whatsapp", "linkedin"];
-const STEP_LABEL: Record<PlayStep["channel"], string> = { call: "Call", email: "Email", whatsapp: "WhatsApp", linkedin: "LinkedIn" };
+const STEP_CHANNELS: PlayStep["channel"][] = ["call", "email", "whatsapp", "linkedin", "instagram"];
+const STEP_LABEL: Record<PlayStep["channel"], string> = { call: "Call", email: "Email", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram" };
 export const MOTION_LABEL: Record<Play["motion"], string> = { high_touch: "Personal touch", volume: "Volume" };
 const MOTION_HELP: Record<Play["motion"], string> = { high_touch: "Calls and messages written for each company. Fewer leads, more care.", volume: "Templates to many companies. Needs approved wording, and a person still reads the first batch." };
 

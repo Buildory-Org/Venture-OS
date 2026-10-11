@@ -28,6 +28,8 @@ it and Docker never copies it into an image.
 | `MCP_ENABLED` | `true` turns on Claude connections (`/mcp`, `/mcp/sales` and the Connect Claude page); off when unset. `MCP_WRITES_ENABLED=false` keeps them read-only. See `docs/mcp.md`. |
 | `TINYFISH_API_KEY`, `EXA_API_KEY` | Optional. Company search for the Dealflow Sales connector (`search_companies`) and the built-in lead finder. An admin can instead save the keys in the app (Sales → Setup), stored encrypted with a key derived from `BETTER_AUTH_SECRET`; a key saved in the app wins. Never shown to Claude. Changing `BETTER_AUTH_SECRET` makes saved keys unreadable, so enter them again. |
 | `SALES_FINDER` | `on` (default) or `off`. The lead finder built into the API works the queued find-leads and enrich runs itself: polite, robots.txt respected, public pages only. |
+| `SALES_MAIL_SYNC` | `on` (default) or `off`. The API reads the mailboxes people connected in Sales → Channels every few minutes (read-only) and files replies from leads. Mail that isn't from a lead is never stored. |
+| `META_GRAPH_VERSION` | Default `v25.0`. The Meta Graph API version the WhatsApp and Instagram connections call. Meta's webhook must reach `https://<your host>/v1/webhooks/meta` (see docs/sales-channels.md §9); the mailbox passwords and Meta tokens people save in the app are encrypted with a key derived from `BETTER_AUTH_SECRET`, so changing that secret means connecting them again. |
 
 The two MongoDB passwords take effect when the database is first created. Do not change them afterwards.
 

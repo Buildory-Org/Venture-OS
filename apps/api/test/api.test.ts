@@ -3229,6 +3229,36 @@ test("venture context, skills, and shared files: who writes, who reads, and Clau
     assert.equal(context.nextPart, undefined);
     assert.equal((await tool("my_plate", { timezone: "UTC" })).contextReminder, undefined);
     assert.equal((await mcpTool(origin, token, "read_venture_context", { ventureId: "venture-b" })).isError, true, "not their venture");
+    // Workspace context: read first for every venture. Admins and people who share knowledge with every venture write it; venture heads don't.
+    assert.equal((await call("POST", "/workspace/context", "lead", { title: "Nope", markdown: "x" })).status, 403);
+    assert.equal((await call("POST", "/workspace/context", "member", { title: "Nope", markdown: "x" })).status, 403);
+    const rules = await call("POST", "/workspace/context", "sharer", { title: "Studio rules", markdown: "Be kind and brief." });
+    assert.equal(rules.status, 201, await rules.clone().text());
+    const rulesBody = await json(rules);
+    assert.equal(rulesBody.ventureId, undefined);
+    // Everyone sees it, first in every venture's list; only the permission edits it.
+    const alpha = await json(await call("GET", "/ventures/venture-a/context", "member"));
+    assert.deepEqual(alpha.items.map((item: any) => [item.title, item.ventureId ?? "workspace"]), [["Studio rules", "workspace"], ["Overview", "venture-a"]]);
+    assert.equal(alpha.canEditWorkspace, false);
+    assert.equal((await json(await call("GET", "/ventures/venture-a/context", "sharer"))).canEditWorkspace, true);
+    assert.deepEqual((await json(await call("GET", "/workspace/context", "outsider"))).items.map((item: any) => item.title), ["Studio rules"]);
+    assert.deepEqual((await json(await call("GET", "/workspace/context", "learner"))).items.map((item: any) => item.title), ["Studio rules"]);
+    assert.equal((await call("GET", `/context/${rulesBody.id}`, "outsider")).status, 200);
+    assert.equal((await call("PUT", `/context/${rulesBody.id}`, "lead", { markdown: "Changed" })).status, 403);
+    assert.equal((await call("DELETE", `/context/${rulesBody.id}`, "member")).status, 403);
+    // Claude reads it first, marked as the workspace's.
+    assert.deepEqual((await tool("read_venture_context", { ventureId: "venture-a" })).files.map((file: any) => file.title), ["Workspace: Studio rules", "Overview"]);
+    // It counts toward every venture's limit: Beta holds 350,006 characters, so 149,985 more fits only without the 18 of the workspace's.
+    const tooMuch = await call("POST", "/workspace/context", "boss", { title: "Too much", markdown: "w".repeat(160_000) });
+    assert.equal(tooMuch.status, 409);
+    assert.match(await tooMuch.text(), /Beta/, "an admin is told which venture is full");
+    const tooMuchForSharer = await call("POST", "/workspace/context", "sharer", { title: "Too much", markdown: "w".repeat(160_000) });
+    assert.equal(tooMuchForSharer.status, 409);
+    assert.doesNotMatch(await tooMuchForSharer.text(), /Beta|350,0/, "someone outside Beta isn't told its name or size");
+    assert.equal((await call("PUT", `/context/${rulesBody.id}`, "boss", { markdown: "w".repeat(160_000) })).status, 409, "growing a file counts too");
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Almost", markdown: "v".repeat(149_985) })).status, 409, "the workspace's files count too");
+    assert.equal((await call("DELETE", `/context/${rulesBody.id}`, "boss")).status, 200);
+    assert.equal((await call("POST", "/ventures/venture-b/context", "boss", { title: "Fits now", markdown: "v".repeat(149_985) })).status, 201);
     const skills = await tool("list_skills", { ventureId: "venture-a" });
     assert.deepEqual(skills.skills.map((item: any) => [item.title, item.scope]), [["Pitch review (all)", "every venture"], ["Sales email", "every venture"]]);
     // A call cut wrong (one field swallowing the next) is refused before anything is saved; the same text in code goes through.

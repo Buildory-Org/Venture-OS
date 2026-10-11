@@ -251,7 +251,8 @@
 .vso-enter-right { animation: vso-enter-right 220ms var(--ease-drawer) both; }
 .vso-enter-left { animation: vso-enter-left 220ms var(--ease-drawer) both; }
 .vso-enter-bottom { animation: vso-enter-bottom 440ms cubic-bezier(0.16, 1, 0.3, 1) both; }
-.vso-enter-modal { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+/* "backwards": once in, nothing is left transformed, so menus fixed inside (a dropdown's options) are placed against the screen. */
+.vso-enter-modal { animation: vso-enter-modal 180ms var(--ease-snappy) backwards; }
 .vso-enter-popover { animation: vso-enter-popover 150ms var(--ease-snappy) both; transform-origin: top right; }
 .vso-enter-popover[data-align="left"] { transform-origin: top left; }
 .vso-stagger > * { animation: vso-enter-card 170ms var(--ease-snappy) both; }
@@ -354,7 +355,7 @@
 .vso-shake { animation: vso-shake 360ms ease-in-out; }
 
 /* Native <dialog> modals grow from the centre with a fading backdrop, and shrink away on close. */
-.vso-dialog[open] { animation: vso-enter-modal 180ms var(--ease-snappy) both; }
+.vso-dialog[open] { animation: vso-enter-modal 180ms var(--ease-snappy) backwards; }
 .vso-dialog[open]::backdrop { animation: vso-fade-in 200ms ease-out both; }
 .vso-dialog[data-state="closing"] { animation: vso-exit-modal 130ms var(--ease-snappy) forwards; }
 .vso-dialog[data-state="closing"]::backdrop { animation: vso-fade-out 150ms ease-out forwards; }

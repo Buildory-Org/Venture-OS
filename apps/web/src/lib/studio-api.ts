@@ -879,6 +879,14 @@ export async function updateLiveVentureContext(id: string, input: unknown) {
 export async function deleteLiveVentureContext(id: string) {
   await request(`/v1/context/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+/** The workspace's context: read first for every venture. Admins and people who share knowledge with every venture write it. */
+export async function listLiveWorkspaceContext() {
+  return successEnvelope(ventureContextListSchema).parse(await request("/v1/workspace/context")).data;
+}
+export async function createLiveWorkspaceContext(input: unknown) {
+  const valid = createVentureContextSchema.parse(input);
+  return successEnvelope(ventureContextSchema).parse(await request("/v1/workspace/context", { method: "POST", body: JSON.stringify(valid) })).data;
+}
 
 // Skills: the workspace's (every venture) and each venture's own.
 export async function listLiveSkills(ventureId?: string) {

@@ -583,6 +583,21 @@ Approved on 2026-09-23. The full interface is being built against shared demo re
       - it waits while the Saturday leaderboard is on its way or playing, and while there's unsent text in the box in focus;
       - a film that can't play, fails, or never ends is taken down after 45 seconds;
       - after a reconnect it looks again at once.
+- [x] Workspace context and Knowledge fixes (2026-10-11).
+  - **Workspace context:** context files can belong to the whole workspace as well as to one venture.
+    - Claude reads them first for every venture, before that venture's own; they're marked "Workspace:" in what it reads.
+    - Admins and people who share knowledge with every venture write them; everyone in the workspace reads them.
+    - In Knowledge → Venture context, "Context for" offers "Workspace (every venture)" next to the ventures. A venture's view lists the workspace files it starts with, then its own.
+    - The workspace's text counts toward every venture's 500,000-character limit, so Claude's reading stays within reach.
+  - **Dropdown in the upload popup:** the popup's opening animation left an invisible transform behind, which placed the dropdown's options relative to the popup instead of the screen, out of sight. It no longer does. (The New task and calendar popups place their dropdowns differently and weren't affected.)
+  - **Header buttons:** Knowledge's "Upload file" and "New record" add to the Library, so they only show on the Library tab.
+  - **Uploading several files:** "Upload .md files" already took several at once. It was checked with three.
+  - **Verified:** the API test covers who writes and reads workspace context, its place first in a venture's list and in Claude's read, and the shared limit (a file that fits only without the workspace's text). All 23 API tests pass. In the browser, on a throwaway stack: the upload popup's dropdown opens beside its field, the header buttons show only on Library, three files uploaded to the workspace at once, and a venture's view lists them. Lint, typecheck, and build pass.
+    - An independent review's findings are fixed:
+      - only an admin is told which venture a too-big workspace file would overfill, and how full it is;
+      - archived ventures don't count toward the workspace's limit;
+      - a venture head refused for size is told how much of it is the workspace's;
+      - the panel follows the venture switcher.
 - [ ] Go live on the PC: fill `deploy/.env` (domain, Resend, production R2 bucket with CORS and token, backup bucket, tunnel token), run `deploy\prod.cmd up`, then verify first-admin signup, invitations, chat, uploads, email, and push from another device on the public domain; run `verify-backup`; set Docker Desktop to start on sign-in and Windows to never sleep.
 - [ ] Observability dashboards and alerts
 - [ ] Backup/restore and disaster-recovery rehearsal

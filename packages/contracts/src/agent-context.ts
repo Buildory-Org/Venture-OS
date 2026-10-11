@@ -6,9 +6,12 @@ export const AGENT_TEXT_MAX = 200_000;
 const title = z.string().trim().min(1).max(200);
 const markdown = z.string().max(AGENT_TEXT_MAX).refine((value) => value.trim().length > 0, "Write something first");
 
-/** A venture's context: files an agent reads in full before working on that venture. */
+/**
+ * A venture's context: files an agent reads in full before working on that venture. Without a venture, a file is the
+ * workspace's context, read first for every venture.
+ */
 export const ventureContextSchema = z.object({
-  id: idSchema, ventureId: idSchema, title: z.string().min(1).max(200),
+  id: idSchema, ventureId: idSchema.optional(), title: z.string().min(1).max(200),
   /** Only when asked for (a single item, or a full read). */
   markdown: z.string().max(AGENT_TEXT_MAX).optional(),
   characters: z.number().int().min(0),
@@ -46,7 +49,8 @@ export const sharedAttachmentSchema = z.object({
 export const groupAttachmentQuerySchema = z.object({ channelId: idSchema.optional(), kind: attachmentKindSchema.optional(), cursor: idSchema.optional(), limit: z.coerce.number().int().min(1).max(100).default(40) });
 export const taskAttachmentQuerySchema = z.object({ ventureId: idSchema.optional(), kind: attachmentKindSchema.optional(), cursor: idSchema.optional(), limit: z.coerce.number().int().min(1).max(100).default(40) });
 
-export const ventureContextListSchema = z.object({ items: z.array(ventureContextSchema), canEdit: z.boolean() });
+/** For a venture: the workspace's files first, then its own. `canEdit` is for the list's own files; `canEditWorkspace` for the workspace's. */
+export const ventureContextListSchema = z.object({ items: z.array(ventureContextSchema), canEdit: z.boolean(), canEditWorkspace: z.boolean().optional() });
 export const skillListSchema = z.object({ items: z.array(skillSchema) });
 export const sharedAttachmentPageSchema = pagedDataSchema(sharedAttachmentSchema);
 

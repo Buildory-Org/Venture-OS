@@ -60,16 +60,18 @@ export function registerContextTools(tool: Register, ctx: ToolContext, look: Loo
     description: "What the team wrote for agents about one venture: what it is, its goals, customers, rules, voice, and current priorities. Read all of it before working on a venture (ask the user which venture first). Long contexts come in parts: call again with the next `part` until there is no nextPart. If `updated` changes between parts, start again at part 1.",
     inputSchema: z.object({ ventureId: id, part: z.number().int().min(1).max(500).default(1).describe("Which part to read; start at 1") }),
   }, async ({ ventureId, part }) => {
-    const data = await ctx.api<{ items: Array<{ title: string; markdown?: string; updatedAt: string; updatedBy: string }> }>("GET", `/ventures/${encodeURIComponent(ventureId)}/context?full=true`);
+    const data = await ctx.api<{ items: Array<{ title: string; ventureId?: string; markdown?: string; updatedAt: string; updatedBy: string }> }>("GET", `/ventures/${encodeURIComponent(ventureId)}/context?full=true`);
     const venture = (await look.ventures()).ventures.get(ventureId);
-    const parts = contextParts(data.items.map((item) => ({ title: clean(item.title), markdown: clean(item.markdown ?? "") })));
+    // The workspace's files come first and say so: they apply to every venture.
+    const titled = (item: { title: string; ventureId?: string }) => item.ventureId ? clean(item.title) : `Workspace: ${clean(item.title)}`;
+    const parts = contextParts(data.items.map((item) => ({ title: titled(item), markdown: clean(item.markdown ?? "") })));
     if (parts.length && part > parts.length) throw new ToolError(`This venture's context has ${parts.length} part${parts.length === 1 ? "" : "s"}.`);
     // Read means read to the end: the reminder stops only once the last part has been fetched.
     if (part >= parts.length) await ctx.db.collection("mcp_context_reads").updateOne({ patId: ctx.patId, ventureId }, { $set: { userId: ctx.userId, workspaceId: ctx.workspaceId, readAt: new Date() } }, { upsert: true });
     if (!parts.length) return { venture: venture?.name, files: [], note: "No context has been written for this venture yet. Tell the user, and suggest adding it in Knowledge → Venture context." };
     const updated = data.items.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, "");
     const files = new Set(parts[part - 1]!.map((piece) => piece.title.replace(/ \(\d+ of \d+\)$/, "")));
-    const authors = [...new Set(data.items.filter((item) => files.has(clean(item.title))).map((item) => item.updatedBy))];
+    const authors = [...new Set(data.items.filter((item) => files.has(titled(item))).map((item) => item.updatedBy))];
     return compact({
       venture: venture?.name, part, parts: parts.length, nextPart: part < parts.length ? part + 1 : undefined, updated,
       writtenBy: (await Promise.all(authors.map((author) => look.person(author)))).filter(Boolean).join(", ") || undefined,

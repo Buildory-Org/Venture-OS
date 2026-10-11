@@ -1,10 +1,10 @@
 "use client";
 import { describeError } from "@/lib/errors";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { PAT_DIRECT_MESSAGE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
+import { PAT_DIRECT_MESSAGE_SCOPES, PAT_ENGINE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
 import { BookOpenText, Check, Clock3, Copy, KeyRound, LockKeyhole, Plus, ShieldCheck, Sparkles, X } from "@/components/ui/icons";
 import { Dither } from "@/components/ui/dither";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -16,7 +16,20 @@ import { useExitTransition } from "@/lib/motion";
 
 type Pat = Awaited<ReturnType<typeof listLivePats>>[number];
 type Access = "update" | "read";
-const READ = [...PAT_READ_SCOPES]; const UPDATE = [...PAT_READ_SCOPES, ...PAT_WRITE_SCOPES];
+/** The two Claude connectors, and the third key preset: the office PC engine, which is a worker and not a Claude connection. */
+type ClaudeConnector = "studio" | "sales";
+type Connector = ClaudeConnector | "engine";
+const isSalesScope = (scope: string) => scope.startsWith("sales:");
+// One key model, two connectors. A Venture Studio key carries no sales scopes (sales has its own connector); a Dealflow Sales key is the sales set plus the venture lookup.
+const READ = PAT_READ_SCOPES.filter((scope) => !isSalesScope(scope)); const UPDATE = [...READ, ...PAT_WRITE_SCOPES.filter((scope) => !isSalesScope(scope))];
+const SALES_SCOPES = ["sales:read", "sales:write", "ventures:read"];
+const ENGINE_SCOPES = [...PAT_ENGINE_SCOPES];
+const CONNECTORS = {
+  studio: { title: "Venture Studio", path: "/mcp", server: "venture-studio", keyName: "My laptop", blurb: "Tasks, reviews, knowledge, decisions, channels, calendar and reminders." },
+  sales: { title: "Dealflow Sales", path: "/mcp/sales", server: "dealflow-sales", keyName: "Dealflow Sales", blurb: "Leads, verdicts, drafts, replies, plays and the sales brain. Claude never sends or approves anything." },
+  engine: { title: "Office PC engine", path: "", server: "", keyName: "Office PC engine", blurb: "The lead-finding worker on the office PC. It isn't a Claude connection: Claude can't use this key." },
+} as const;
+const connectorOf = (pat: { scopes: string[] }): Connector => pat.scopes.includes("sales:engine") ? "engine" : pat.scopes.some(isSalesScope) && !pat.scopes.includes("tasks:read") ? "sales" : "studio";
 // Direct messages are opt-in per key: reading only with Read only, reading and sending with Read and update.
 const directScopes = (access: Access) => access === "update" ? [...PAT_DIRECT_MESSAGE_SCOPES] : [PAT_DIRECT_MESSAGE_SCOPES[0]];
 const DAY = 86_400_000;
@@ -24,7 +37,7 @@ const accessOf = (pat: Pat): Access => pat.scopes.some((scope) => scope.endsWith
 const accessLabel = { update: "Read and update", read: "Read only" } as const;
 const shortDate = (value: string) => new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }).format(new Date(value));
 const tileOf = (id: string) => `vso-key-tile-${[...id].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 5}`;
-const mcpCommand = (origin: string, token: string) => `claude mcp add --transport http venture-studio ${origin}/mcp --header "Authorization: Bearer ${token}"`;
+const mcpCommand = (connector: ClaudeConnector, origin: string, token: string) => `claude mcp add --transport http ${CONNECTORS[connector].server} ${origin}${CONNECTORS[connector].path} --header "Authorization: Bearer ${token}"`;
 const LOOP_PROMPT = "/loop 1h Use the venture-studio whats_new tool with the cursor from last time. Tell me only if something changed.";
 
 function ago(value: string, now: number) {
@@ -86,6 +99,25 @@ function KeyTile({ seed, size = 44 }: { seed?: string; size?: number }) {
   </span>;
 }
 
+/** The two connectors: each with its address to copy and a key preset for it. */
+function Connectors({ origin, onCreate }: { origin: string; onCreate: (connector: Connector) => void }) {
+  const { copied, copy } = useCopy();
+  return <section aria-labelledby="connectors-heading" className="mb-6">
+    <h2 id="connectors-heading" className="mb-3 text-sm font-bold text-neutral-900">Connectors</h2>
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {(Object.keys(CONNECTORS) as Connector[]).map((key) => {
+        const item = CONNECTORS[key];
+        return <article key={key} className="vso-fade-enter flex min-w-0 flex-col rounded-2xl border border-neutral-100 bg-white p-4 shadow-card">
+          <h3 className="text-sm font-bold text-neutral-900">{item.title}</h3>
+          <p className="mt-1 text-xs leading-5 text-neutral-500">{item.blurb}</p>
+          {item.path && <div className="mt-3"><CodeWell label={`${item.title} address`} id={`address-${key}`} text={`${origin}${item.path}`} copy={copy} copied={copied} /></div>}
+          <button type="button" onClick={() => onCreate(key)} className={clsx(secondaryClass, "mt-3 self-start")}><KeyRound size={15} />New key for {item.title}</button>
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
 function EmptyKeys({ onCreate, onGuide }: { onCreate: () => void; onGuide: () => void }) {
   return <section className="vso-fade-enter relative overflow-hidden rounded-3xl border border-neutral-100 bg-white shadow-card">
     <div className="relative h-56 overflow-hidden sm:h-64">
@@ -137,6 +169,7 @@ function KeyCard({ pat, now, onRevoked }: { pat: Pat; now: number; onRevoked: ()
         <h3 className="truncate text-sm font-bold text-neutral-900">{pat.name}</h3>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <code className="rounded-md bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] text-neutral-600">{pat.prefix}…</code>
+          <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">{CONNECTORS[connectorOf(pat)].title}</span>
           <span className={clsx("vso-role inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold", access === "update" ? "vso-role-head" : "vso-role-review")}>{accessLabel[access]}</span>
           {pat.scopes.includes("direct_messages:read") && <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">+ direct messages</span>}
         </div>
@@ -161,15 +194,16 @@ function KeyCard({ pat, now, onRevoked }: { pat: Pat; now: number; onRevoked: ()
 }
 
 /** New key: a short form, then the key (shown once) with the ready-made command. */
-function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClose: () => void; onCreated: () => void }) {
-  const [name, setName] = useState("My laptop");
+function CreateKeyDialog({ origin, initial, onClose, onCreated }: { origin: string; initial: Connector; onClose: () => void; onCreated: () => void }) {
+  const [connector, setConnector] = useState<Connector>(initial);
+  const [name, setName] = useState<string>(CONNECTORS[initial].keyName);
   // Read only by default: text Claude reads (files, messages) is written by others, so changing data is opted into.
   const [access, setAccess] = useState<Access>("read");
   const [directMessages, setDirectMessages] = useState(false);
   const [days, setDays] = useState("90");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [created, setCreated] = useState<{ token: string; name: string } | null>(null);
+  const [created, setCreated] = useState<{ token: string; name: string; connector: Connector } | null>(null);
   const dialog = useRef<HTMLElement>(null);
   const firstField = useRef<HTMLInputElement>(null);
   const copyKeyButton = useRef<HTMLDivElement>(null);
@@ -179,6 +213,8 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
   const dismissable = !created && !busy;
 
   useEffect(() => { firstField.current?.select(); }, []);
+  // Picking the other connector renames the key, unless the name was changed by hand.
+  const pick = (next: Connector) => { if (name === CONNECTORS[connector].keyName) setName(CONNECTORS[next].keyName); setConnector(next); };
   useEffect(() => { if (created) copyKeyButton.current?.querySelector("button")?.focus(); }, [created]);
 
   async function submit(event: React.FormEvent) {
@@ -186,8 +222,9 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
     if (busy) return;
     setBusy(true); setError("");
     try {
-      const result = await createLivePat({ name: name.trim() || "Claude", scopes: [...(access === "update" ? UPDATE : READ), ...(directMessages ? directScopes(access) : [])], expiresInDays: Number(days) });
-      setCreated({ token: result.token, name: result.pat.name }); onCreated();
+      const scopes = connector === "engine" ? ENGINE_SCOPES : connector === "sales" ? SALES_SCOPES : [...(access === "update" ? UPDATE : READ), ...(directMessages ? directScopes(access) : [])];
+      const result = await createLivePat({ name: name.trim() || "Claude", scopes, expiresInDays: Number(days) });
+      setCreated({ token: result.token, name: result.pat.name, connector }); onCreated();
     } catch (cause) { setError(describeError(cause, "Could not create the key.")); }
     finally { setBusy(false); }
   }
@@ -214,8 +251,12 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
           <h2 className="text-center text-lg font-extrabold tracking-[-.02em] text-neutral-900">{created.name} is ready</h2>
           <p className="mx-auto mt-1 max-w-sm text-center text-sm leading-6 text-neutral-500">Copy the key now. For your safety it&apos;s shown only once, and anyone with it can act as you through Claude.</p>
           <div ref={copyKeyButton} className="mt-5 space-y-1.5"><p className="text-xs font-semibold text-neutral-600">Your key</p><CodeWell label="key" id="key" text={created.token} copy={copy} copied={copied} emphasis /></div>
-          <div className="mt-4 space-y-1.5"><p className="text-xs font-semibold text-neutral-600">Connect Claude Code: run this in a terminal</p><CodeWell label="command" id="command" text={mcpCommand(origin, created.token)} copy={copy} copied={copied} /></div>
-          <p className="mt-4 flex gap-2 rounded-xl bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Sparkles size={15} className="mt-0.5 shrink-0" /><span>Then ask Claude &ldquo;What&apos;s on my plate today?&rdquo;. The setup guide on this page has more prompts and an hourly check-in.</span></p>
+          {created.connector !== "engine" && <div className="mt-4 space-y-1.5"><p className="text-xs font-semibold text-neutral-600">Connect Claude Code: run this in a terminal</p><CodeWell label="command" id="command" text={mcpCommand(created.connector, origin, created.token)} copy={copy} copied={copied} /></div>}
+          <p className="mt-4 flex gap-2 rounded-xl bg-primary-50 p-3 text-xs leading-5 text-primary-800"><Sparkles size={15} className="mt-0.5 shrink-0" />{created.connector === "engine"
+            ? <span>Give this key to the engine on the office PC: it keeps it in Windows Credential Manager. Never paste it into a chat, and revoke it here if the PC is lost.</span>
+            : created.connector === "sales"
+            ? <span>Then ask Claude &ldquo;What needs me in sales today?&rdquo;, or run <code className="font-mono">/mcp__dealflow-sales__sales</code>. Claude researches leads and writes drafts; you send and approve.</span>
+            : <span>Then ask Claude &ldquo;What&apos;s on my plate today?&rdquo;. The setup guide on this page has more prompts and an hourly check-in.</span>}</p>
           <button type="button" onClick={exit.close} className={clsx(primaryClass, "mt-5 w-full")}>I&apos;ve copied my key</button>
         </div>
       </div> : <form key="form" onSubmit={submit} className="p-6">
@@ -224,9 +265,16 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
           <button type="button" aria-label="Close" onClick={exit.close} className="grid h-8 w-8 place-items-center rounded-full text-neutral-400 transition-[background-color,color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-700 active:scale-[0.96]"><X size={16} /></button>
         </div>
         <div className="mt-5 space-y-4">
+          <fieldset><legend className="mb-1.5 text-xs font-semibold text-neutral-600">Connector</legend><div className="grid gap-2 sm:grid-cols-3">
+            {(Object.keys(CONNECTORS) as Connector[]).map((value) => <label key={value} className={clsx("cursor-pointer rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-150", connector === value ? "border-primary-400 bg-primary-50 shadow-[0_0_0_3px_var(--color-primary-100)]" : "border-neutral-200 hover:bg-neutral-50")}>
+              <span className="flex items-center gap-2 text-sm font-semibold text-neutral-800"><input type="radio" name="connector" checked={connector === value} onChange={() => pick(value)} className="accent-[var(--color-primary-600)]" />{CONNECTORS[value].title}</span>
+              <span className="mt-1 block font-mono text-[11px] text-neutral-500">{CONNECTORS[value].path || "Not for Claude"}</span>
+            </label>)}
+          </div></fieldset>
           <Field label="Name"><input ref={firstField} value={name} maxLength={100} onChange={(event) => setName(event.target.value)} className={inputClass} placeholder="Work laptop" /></Field>
+          {connector === "engine" ? <p className="rounded-2xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">For the lead-finding worker on the office PC: it reads Sales and posts the leads it finds. It isn&apos;t a Claude connection (Claude can&apos;t use it) and it can&apos;t change anything else.</p> : connector === "sales" ? <p className="rounded-2xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">Claude can research and judge leads, write drafts, review drafts in another conversation, and log replies and calls. It can&apos;t send anything, and approvals stay with you. Only sales and the venture list are shared.</p> : <>
           <fieldset><legend className="mb-1.5 text-xs font-semibold text-neutral-600">Access</legend><div className="grid gap-2 sm:grid-cols-2">
-            {([["update", "Create and update tasks, review evidence, write draft documents, upload files, post in channels, schedule events, record decisions, and manage deals, plus everything in read only."], ["read", "Check tasks, reviews, knowledge, files, calendars, decisions, requests, deals, classes, and channels. Changes nothing."]] as const).map(([value, body]) => <label key={value} className={clsx("cursor-pointer rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-150", access === value ? "border-primary-400 bg-primary-50 shadow-[0_0_0_3px_var(--color-primary-100)]" : "border-neutral-200 hover:bg-neutral-50")}>
+            {([["update", "Create and update tasks, review evidence, write draft documents, upload files, post in channels, schedule events, and record decisions, plus everything in read only."], ["read", "Check tasks, reviews, knowledge, files, calendars, decisions, requests, classes, and channels. Changes nothing."]] as const).map(([value, body]) => <label key={value} className={clsx("cursor-pointer rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-150", access === value ? "border-primary-400 bg-primary-50 shadow-[0_0_0_3px_var(--color-primary-100)]" : "border-neutral-200 hover:bg-neutral-50")}>
               <span className="flex items-center gap-2 text-sm font-semibold text-neutral-800"><input type="radio" name="access" checked={access === value} onChange={() => setAccess(value)} className="accent-[var(--color-primary-600)]" />{accessLabel[value]}</span>
               <span className="mt-1 block text-xs leading-5 text-neutral-500">{body}</span>
             </label>)}
@@ -234,7 +282,7 @@ function CreateKeyDialog({ origin, onClose, onCreated }: { origin: string; onClo
           <label className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-neutral-200 p-3 transition-colors duration-150 hover:bg-neutral-50 has-[:checked]:border-primary-300 has-[:checked]:bg-primary-50">
             <input type="checkbox" checked={directMessages} onChange={(event) => setDirectMessages(event.target.checked)} className="mt-0.5 accent-[var(--color-primary-600)]" />
             <span><span className="block text-sm font-semibold text-neutral-800">Include my direct messages</span><span className="mt-0.5 block text-xs leading-5 text-neutral-500">{access === "update" ? "Claude can read your private conversations and send messages as you, labelled “via Claude”." : "Claude can read your private conversations."} Off unless you tick it.</span></span>
-          </label>
+          </label></>}
           <Field label="Expires after"><Select aria-label="Expires after" className={inputClass} value={days} onChange={(event) => setDays(event.target.value)}><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="366">1 year</option></Select></Field>
           <Notice tone="error" message={error} onDismiss={() => setError("")} />
         </div>
@@ -255,7 +303,7 @@ function GuideStep({ index, title, last = false, children }: { index: number; ti
   </li>;
 }
 
-function SetupGuide({ origin, onClose, onCreate }: { origin: string; onClose: () => void; onCreate: () => void }) {
+function SetupGuide({ origin, onClose, onCreate }: { origin: string; onClose: () => void; onCreate: (connector: Connector) => void }) {
   const { copied, copy } = useCopy();
   return <DetailDrawer title="Set up Claude Code" subtitle="About two minutes, once per computer" onClose={onClose}>
     <div className="relative -mx-5 -mt-5 mb-6 h-24 overflow-hidden">
@@ -264,16 +312,17 @@ function SetupGuide({ origin, onClose, onCreate }: { origin: string; onClose: ()
     </div>
     <ol>
       <GuideStep index={1} title="Create a key">
-        <p>Pick <strong className="font-semibold text-neutral-800">Read and update</strong> so Claude can move tasks, comment, add evidence, and set reminders, or <strong className="font-semibold text-neutral-800">Read only</strong> if it should change nothing.</p>
-        <button type="button" onClick={onCreate} className={secondaryClass}><Plus size={15} />New key</button>
+        <p>Pick a connector. <strong className="font-semibold text-neutral-800">Venture Studio</strong> is for tasks and communication: choose Read and update so Claude can move tasks, comment, add evidence, and set reminders, or Read only if it should change nothing. <strong className="font-semibold text-neutral-800">Dealflow Sales</strong> is for the sales workflow and has one ready-made preset.</p>
+        <div className="flex flex-wrap gap-2"><button type="button" onClick={() => onCreate("studio")} className={secondaryClass}><Plus size={15} />Venture Studio key</button><button type="button" onClick={() => onCreate("sales")} className={secondaryClass}><Plus size={15} />Dealflow Sales key</button></div>
       </GuideStep>
-      <GuideStep index={2} title="Add the server to Claude Code">
-        <p>Run this in a terminal with your key in place of <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">YOUR_KEY</code>. The new-key screen gives you this command with the key already filled in.</p>
-        <CodeWell label="command" id="command" text={mcpCommand(origin, "YOUR_KEY")} copy={copy} copied={copied} />
+      <GuideStep index={2} title="Add the connector to Claude Code">
+        <p>Run the one you need in a terminal with your key in place of <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">YOUR_KEY</code>. The new-key screen gives you this command with the key already filled in.</p>
+        <CodeWell label="Venture Studio command" id="command-studio" text={mcpCommand("studio", origin, "YOUR_KEY")} copy={copy} copied={copied} />
+        <CodeWell label="Dealflow Sales command" id="command-sales" text={mcpCommand("sales", origin, "YOUR_KEY")} copy={copy} copied={copied} />
       </GuideStep>
       <GuideStep index={3} title="Ask Claude">
         <ul className="flex flex-wrap gap-1.5">{["What's on my plate today?", "Anything new since this morning?", "Draft my standup", "Remind me at 5pm to send the invoice", "Move the pricing task to review"].map((prompt) => <li key={prompt}><button type="button" onClick={() => copy(prompt, prompt)} className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-50 active:scale-[0.97]">{copied === prompt ? "Copied" : prompt}</button></li>)}</ul>
-        <p>Or use the slash commands <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">/mcp__venture-studio__today</code>, <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">standup</code>, and <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">triage</code>.</p>
+        <p>Or use the slash commands <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">/mcp__venture-studio__today</code>, <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">standup</code>, and <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">triage</code>. For sales: <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">/mcp__dealflow-sales__sales</code> and <code className="rounded bg-neutral-100 px-1 font-mono text-[12px]">review_drafts</code>.</p>
       </GuideStep>
       <GuideStep index={4} title="Optional: an hourly check-in" last>
         <p>Keep a Claude Code session open with this, and Claude speaks up only when something changed. In Claude Desktop, a scheduled task with the same prompt shows a desktop notification.</p>
@@ -296,10 +345,11 @@ export function LiveConnectScreen() {
   const [items, setItems] = useState<Pat[] | null>(null);
   const [now, setNow] = useState(0);
   const [error, setError] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<Connector | null>(null);
   const [guide, setGuide] = useState(false);
   const [revision, setRevision] = useState(0);
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  // The address is only known in the browser: empty on the server, then the page's own origin (no hydration mismatch).
+  const origin = useSyncExternalStore(() => () => {}, () => window.location.origin, () => "");
 
   useEffect(() => {
     let active = true;
@@ -312,17 +362,18 @@ export function LiveConnectScreen() {
   }, [revision]);
 
   const refresh = () => setRevision((value) => value + 1);
-  const openCreate = () => { setGuide(false); setCreating(true); };
+  const openCreate = (connector: Connector = "studio") => { setGuide(false); setCreating(connector); };
 
   return <PageFrame>
-    <PageTitle title="Connect Claude" description="Use your workspace from Claude Code: ask what's on your plate, get new tasks as they land, and make quick updates." action={<div className="flex flex-wrap gap-2">
+    <PageTitle title="Connect Claude" description="Two connectors for Claude: Venture Studio for tasks and communication, and Dealflow Sales for the sales workflow. Each uses your own key and sees only what you see." action={<div className="flex flex-wrap gap-2">
       <button type="button" onClick={() => setGuide(true)} className={secondaryClass}><BookOpenText size={16} />Setup guide</button>
-      <button type="button" onClick={openCreate} className={primaryClass}><Plus size={16} />New key</button>
+      <button type="button" onClick={() => openCreate()} className={primaryClass}><Plus size={16} />New key</button>
     </div>} />
+    <Connectors origin={origin} onCreate={openCreate} />
     {items && <Notice tone="error" message={error} onDismiss={() => setError("")} className="pb-4" />}
     {!items && error ? <EmptyState variant="error" title="Couldn't load your keys" body={error} action={{ label: "Try again", onClick: refresh }} className="rounded-2xl border border-neutral-100 bg-white shadow-card" />
       : !items ? (<div role="status" aria-label="Loading keys" className="grid gap-3 md:grid-cols-2">{[0, 1].map((index) => <div key={index} className="rounded-2xl border border-neutral-100 bg-white p-4 shadow-card"><div className="flex gap-3"><span className="vso-skeleton h-11 w-11 rounded-xl" /><div className="flex-1 space-y-2 pt-1"><span className="vso-skeleton h-3 w-1/2" /><span className="vso-skeleton h-3 w-1/3" /></div></div><span className="vso-skeleton mt-4 h-12 w-full rounded-xl" /></div>)}</div>)
-      : !items.length ? <EmptyKeys onCreate={openCreate} onGuide={() => setGuide(true)} />
+      : !items.length ? <EmptyKeys onCreate={() => openCreate()} onGuide={() => setGuide(true)} />
       : <section aria-labelledby="keys-heading">
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
           <h2 id="keys-heading" className="text-sm font-bold text-neutral-900">Your keys <span className="font-semibold text-neutral-400">{items.length}</span></h2>
@@ -330,13 +381,13 @@ export function LiveConnectScreen() {
         </div>
         <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
           {items.map((pat) => <KeyCard key={pat.id} pat={pat} now={now} onRevoked={refresh} />)}
-          <button type="button" onClick={openCreate} className="group flex min-h-[148px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-neutral-200 p-4 text-neutral-500 transition-[border-color,background-color,color,transform] duration-150 hover:border-primary-300 hover:bg-primary-50/50 hover:text-primary-700 active:scale-[0.99]">
+          <button type="button" onClick={() => openCreate()} className="group flex min-h-[148px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-neutral-200 p-4 text-neutral-500 transition-[border-color,background-color,color,transform] duration-150 hover:border-primary-300 hover:bg-primary-50/50 hover:text-primary-700 active:scale-[0.99]">
             <span className="grid h-10 w-10 place-items-center rounded-xl bg-neutral-100 transition-colors duration-150 group-hover:bg-primary-100"><Plus size={18} /></span>
             <span className="text-sm font-semibold">Add another computer</span>
           </button>
         </div>
       </section>}
-    {creating && <CreateKeyDialog origin={origin} onClose={() => setCreating(false)} onCreated={refresh} />}
+    {creating && <CreateKeyDialog origin={origin} initial={creating} onClose={() => setCreating(null)} onCreated={refresh} />}
     {guide && <SetupGuide origin={origin} onClose={() => setGuide(false)} onCreate={openCreate} />}
   </PageFrame>;
 }

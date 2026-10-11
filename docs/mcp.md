@@ -3,9 +3,22 @@
 Team members connect Claude Code (and later Claude Desktop and claude.ai) to the workspace so Claude can read their work,
 check for new tasks every hour, and make small, safe updates. This document is the plan and the reference.
 
+## Two connectors (2026-10-09)
+
+Claude gets two separate connectors so each tool list stays short and they never conflict. Same token model, rate limits and
+loopback allowlist; a token's scopes still decide which tools it sees on either endpoint.
+
+| Connector | Address | Tools |
+|---|---|---|
+| **Venture Studio** | `POST /mcp` (server `venture-studio`) | everything below: tasks, reviews, knowledge, decisions, channels, calendar, reminders, `list_ventures`, `find_person`. No sales tools, and the older deal tools are retired. |
+| **Dealflow Sales** | `POST /mcp/sales` (server `dealflow-sales`) | the sales workflow (`start_sales`, `find_leads`, `get_lead`, `save_verdict`, `save_draft`, `review_draft`, ...) plus `list_ventures` and `find_person`. Prompts `sales` and `review_drafts`. See `docs/sales-dealflow.md` section 9. |
+
+Token presets on the Connect Claude page: Studio (read only, or read and update) and Dealflow Sales (`sales:read` +
+`sales:write` + `ventures:read`). The rest of this document describes the Venture Studio connector.
+
 ## Decisions
 
-- **One endpoint**: `POST /mcp` on the API, served at `https://os.buildory.dev/mcp` through the web app's existing proxy
+- **One endpoint per connector**: `POST /mcp` on the API, served at `https://os.buildory.dev/mcp` through the web app's existing proxy
   (the Cloudflare Tunnel already reaches the web app). Stateless Streamable HTTP with plain JSON responses: no sessions,
   no SSE, so tunnel and proxy timeouts do not matter. `GET`/`DELETE /mcp` return 405.
 - **Tools call the product API, never the database.** Each tool makes an in-process loopback request to `/v1/...` as the
@@ -62,7 +75,7 @@ check for new tasks every hour, and make small, safe updates. This document is t
 
 Prompts (slash commands in Claude Code): `today`, `standup`, `triage`.
 
-Not exposed: deleting or archiving anything, membership and admin changes, reviewing evidence, sales changes, DMs.
+Not exposed here: deleting or archiving anything, membership and admin changes, DMs without their scope, and anything sales (that is the Dealflow Sales connector).
 
 ## Supporting API changes
 
@@ -74,7 +87,10 @@ Not exposed: deleting or archiving anything, membership and admin changes, revie
 
 ```
 claude mcp add --transport http venture-studio https://os.buildory.dev/mcp --header "Authorization: Bearer <token>"
+claude mcp add --transport http dealflow-sales https://os.buildory.dev/mcp/sales --header "Authorization: Bearer <token>"
 ```
+
+The first is the Venture Studio connector, the second Dealflow Sales; add either or both.
 
 Hourly check in Claude Code: `/loop 1h use whats_new and tell me only if something changed`. In Claude Desktop, a
 scheduled task with the same prompt shows a desktop notification.

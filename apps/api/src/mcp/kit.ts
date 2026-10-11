@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { idSchema } from "@venture-studio/contracts";
 import type { AppDb } from "../db.js";
+import type { SearchKeys } from "../sales/search-engines.js";
 import { type Api, clip, compact, localTime, ToolError } from "./format.js";
 
 export type ToolContext = {
@@ -13,6 +14,8 @@ export type ToolContext = {
   toolBudget: (tool: string, perMinute: number) => Promise<void>;
   /** Counts bytes uploaded through Claude against the person's daily allowance; throws once it is used up. */
   uploadBudget: (bytes: number) => Promise<void>;
+  /** Keys for the company search of the Dealflow Sales connector, read per call: saved in the app by an admin, else the API's environment. A missing key switches that engine off; never logged or returned. */
+  searchKeys?: () => Promise<SearchKeys>;
 };
 
 export const OPEN = (status: unknown) => status !== "done" && status !== "cancelled";

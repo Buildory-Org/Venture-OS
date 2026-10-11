@@ -25,7 +25,9 @@ it and Docker never copies it into an image.
 | `TUNNEL_TOKEN` | Cloudflare Zero Trust, see below. The site goes public once this is set. |
 | `BACKUP_R2_*` | Optional separate backup bucket. Empty means backups stay on this PC only. |
 | `VAPID_SUBJECT` | `mailto:` plus an address you read. |
-| `MCP_ENABLED` | `true` turns on Claude connections (`/mcp` and the Connect Claude page); off when unset. `MCP_WRITES_ENABLED=false` keeps them read-only. See `docs/mcp.md`. |
+| `MCP_ENABLED` | `true` turns on Claude connections (`/mcp`, `/mcp/sales` and the Connect Claude page); off when unset. `MCP_WRITES_ENABLED=false` keeps them read-only. See `docs/mcp.md`. |
+| `TINYFISH_API_KEY`, `EXA_API_KEY` | Optional. Company search for the Dealflow Sales connector (`search_companies`) and the built-in lead finder. An admin can instead save the keys in the app (Sales → Setup), stored encrypted with a key derived from `BETTER_AUTH_SECRET`; a key saved in the app wins. Never shown to Claude. Changing `BETTER_AUTH_SECRET` makes saved keys unreadable, so enter them again. |
+| `SALES_FINDER` | `on` (default) or `off`. The lead finder built into the API works the queued find-leads and enrich runs itself: polite, robots.txt respected, public pages only. |
 
 The two MongoDB passwords take effect when the database is first created. Do not change them afterwards.
 

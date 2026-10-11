@@ -35,16 +35,20 @@ export const patScopeSchema = z.enum([
   "reminders:read", "notifications:read", "requests:read", "sales:read", "calendar:read", "direct_messages:read",
   "tasks:write", "reminders:write", "notifications:write", "knowledge:write", "files:write", "messages:write", "decisions:write",
   "requests:write", "sales:write", "classes:write", "calendar:write", "direct_messages:write",
+  // The office PC lead-finding worker (docs/sales-dealflow.md section 10): claims queued find-lead runs and posts leads back. Not part of the Claude presets.
+  "sales:engine",
 ]);
 export const PAT_READ_SCOPES = ["ventures:read", "tasks:read", "messages:read", "files:read", "knowledge:read", "classes:read", "decisions:read", "requests:read", "sales:read", "calendar:read", "reminders:read", "notifications:read"] as const;
 export const PAT_WRITE_SCOPES = ["tasks:write", "reminders:write", "notifications:write", "knowledge:write", "files:write", "messages:write", "decisions:write", "requests:write", "sales:write", "classes:write", "calendar:write"] as const;
+/** The "Office PC engine" preset: the worker reads Sales and talks to /v1/sales/engine. It carries no write scope, so Claude's connectors cannot use it. */
+export const PAT_ENGINE_SCOPES = ["sales:read", "sales:engine"] as const;
 /** Private conversations stay out of both presets: a key reaches them only when its owner ticks this separately. */
 export const PAT_DIRECT_MESSAGE_SCOPES = ["direct_messages:read", "direct_messages:write"] as const;
 // Tokens must expire: a lost laptop or pasted token stops working on its own. 1 to 366 days.
 export const patCreateSchema = z.object({
   name: z.string().trim().min(1).max(100),
   // A write scope only makes sense with its read scope (a tool must see what it changes).
-  scopes: z.array(patScopeSchema).min(1).max(30).refine((scopes) => scopes.every((scope) => !scope.endsWith(":write") || scopes.includes(scope.replace(/:write$/, ":read") as never)), "Each write scope needs its matching read scope"),
+  scopes: z.array(patScopeSchema).min(1).max(30).refine((scopes) => scopes.every((scope) => (!scope.endsWith(":write") || scopes.includes(scope.replace(/:write$/, ":read") as never)) && (scope !== "sales:engine" || scopes.includes("sales:read"))), "Each write scope needs its matching read scope (sales:engine needs sales:read)"),
   expiresInDays: z.number().int().min(1).max(366),
 });
 

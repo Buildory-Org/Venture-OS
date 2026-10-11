@@ -4,12 +4,12 @@ A collaboration and execution workspace organized as:
 
 `Workspace -> Ventures -> Groups -> Channels`
 
-The dashboard direction and whole-app implementation were approved on 2026-09-23. The repository now contains the UI plus an Express/Socket.IO API, MongoDB persistence, a durable reminder/outbox worker, shared contracts, local development adapters, and read-only MCP tools.
+The dashboard direction and whole-app implementation were approved on 2026-09-23. The repository now contains the UI plus an Express/Socket.IO API, MongoDB persistence, a durable reminder/outbox worker, shared contracts, local development adapters, and two hosted MCP connectors for Claude (Venture Studio at `/mcp`, Dealflow Sales at `/mcp/sales`).
 
 ## Repository layout
 
 - `apps/web` — Next.js web application
-- `apps/api` — Express HTTP API, Better Auth, Socket.IO gateway, uploads, search, and MCP server
+- `apps/api` — Express HTTP API, Better Auth, Socket.IO gateway, uploads, search, and the two hosted MCP connectors (`/mcp`, `/mcp/sales`)
 - `apps/worker` — durable reminders, notification outbox claims, retry, email, and Web Push
 - `packages/contracts` — shared schemas and API/event contracts
 - `packages/core` — framework-independent domain logic

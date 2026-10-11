@@ -10,6 +10,7 @@ import { createApp } from "./app.js";
 import { backfillFileTexts } from "./file-text.js";
 import { fileStoreFor } from "./routes/files.js";
 import { attachRealtime, stopRealtime } from "./collaboration.js";
+import { createFinder, finderEnabled } from "./sales/finder/runner.js";
 
 const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
 if (envFile) process.loadEnvFile(envFile);
@@ -27,6 +28,10 @@ attachRealtime(server, database, resolveActor, config.APP_ORIGIN, config.APP_MOD
 server.listen(config.PORT, () => console.info(JSON.stringify({ level: "info", event: "api.started", port: config.PORT, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind })));
 // Files uploaded before their text was read (or while reading was busy) are read once in the background after startup.
 setTimeout(() => void backfillFileTexts(database.db, (file) => fileStoreFor(file, store, localStore)).then((read) => { if (read) console.info(JSON.stringify({ level: "info", event: "file_text.backfill", read })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "file_text.backfill_failed", message: error instanceof Error ? error.message : String(error) }))), 5_000).unref();
-async function shutdown() { stopRealtime(database); server.close(); await database.client.close(); }
+// The built-in lead finder works queued find-leads and enrich runs in the background (SALES_FINDER=on, never under tests); a workspace
+// without a company-search key keeps its runs queued. On shutdown a run in progress goes back to the queue.
+const finder = finderEnabled(config) ? createFinder({ database, env: config }) : undefined;
+if (finder) setTimeout(() => finder.start(), 5_000).unref();
+async function shutdown() { await finder?.stop(); stopRealtime(database); server.close(); await database.client.close(); }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

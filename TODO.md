@@ -628,6 +628,30 @@ Spec: `docs/sales-dealflow.md`. Built 2026-10-09 on the local dev stack (standal
 - [x] Revenue layer (value, close date, probability, lost reasons, board totals, forecast card), lead drawer redesign (identity header, at-a-glance tiles, tabs, action bar), filters by state, city, industry and contact, bulk actions, CSV export and import, saved views, Do-not-contact page, Inbox reply clock, Reports with Claude calibration, Sales knowledge two-pane page
 - [x] Independent audits round 2 (engine, settings, notices, reports, connector, web) and round 3 (bulk, CSV, import, views): 1 high and 7 medium findings fixed in round 2, 1 high and 4 medium in round 3, plus lows; all with regression tests
     - 2026-10-10 final check: API suites 47 + 9 + 10 + 18 + 3 + 13 pass one at a time; `tooling/vso-qa/run-all.mjs` all ok (API flow 42/42, connector 16/16, click-through desktop and phone, consent 10/10, 56 screenshot views with no page errors); typecheck and lint clean for API, worker and web. Still uncommitted.
+- [x] Hardening after the merge into `main` (2026-10-11):
+  - **Finder safety:** the lead finder's page reader and bot-check scan in time linear in the page (a hostile 1.5 MB page took minutes and froze the API).
+  - **Saved plans:** Claude's saved find plans can be queued in the app (`POST /v1/sales/find-runs/:id/queue`, planner or head, never Claude).
+  - **Chat search:** company search from chat is refused for learners, uses at most 1,000 of each allowance (the rest stays for the finder), and no longer counts refused calls or misreports a race on the period's first call.
+  - **Duplicates:** references are unique per venture; a company-name match needs the same city (as `Indore, MP` = `Indore`) in the finder, the engine and `add_leads`.
+  - **Delete, import, startup:**
+    - Venture delete also removes sales settings and import records.
+    - A crashed CSV import never doubles leads on retry.
+    - The API brings older deal records to the Sales model at start.
+  - **Smaller fixes:**
+    - Missing indexes.
+    - The leaderboard stays a Studio page (and `/leaderboard` redirects).
+    - Overview reads shared while in flight.
+    - Reply-time text from each venture's hours.
+    - Delivery tasks in the venture's time zone.
+    - Owner names past 100 members.
+    - The Reports Speed section fits a phone.
+    - A bare "mark sent" is a manual send.
+    - The QA scripts never notify real people or hard-delete a real "QA …" company.
+  - **Verified:**
+    - API suites 164/164 on a replica set; typecheck and lint clean.
+    - An independent review (2 issues found and fixed).
+    - Three smoke agents on an isolated stack: Sales API about 300 checks, Studio regression and both connectors, and screens on desktop and phone as head, admin and learner. All passed.
+    - Close dates stay on India time end to end (the forecast and export count them there).
 - [ ] Owner walkthrough and refinements
 - [ ] Run against a MongoDB replica set (transactions) and repeat the live checks
 - [ ] Email lane: send from each person's own mailbox over SMTP (off until the owner switches it on per venture)

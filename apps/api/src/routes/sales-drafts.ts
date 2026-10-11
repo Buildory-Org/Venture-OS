@@ -146,7 +146,7 @@ export function salesDraftRoutes(database: Database): Router {
     const ctx = salesCtx(database, req);
     const { draft, lead } = await loadDraft(ctx, idSchema.parse(req.params.id));
     requireLeadEditor(ctx, lead, "mark this draft sent");
-    const input = draftSendInputSchema.parse(req.body);
+    const input = draftSendInputSchema.parse(req.body ?? {}); // sentVia defaults to manual, so a bare POST is a manual send
     if (input.sentVia !== "manual") throw new AppError(503, "INTEGRATION_UNAVAILABLE", "Sending from the app is not switched on yet: send it from your own mail app or phone, then mark it sent");
     const sentHash = payloadHash({ draftId: String(draft._id), sentVia: input.sentVia });
     const result = async () => {

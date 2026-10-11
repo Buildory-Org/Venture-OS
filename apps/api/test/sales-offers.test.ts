@@ -393,7 +393,7 @@ test("the brain keeps shared notes: offer, target profile and message rules prop
   assert.equal((await h.database.db.collection("sales_brain_items").findOne({ _id: legacyDraft }))?.status, "draft");
 });
 
-test("deleting a venture permanently removes its offers and their versions", skip, async (t) => {
+test("deleting a venture permanently removes its offers and their versions, its sales settings and its import records", skip, async (t) => {
   const h = await getHarness();
   const db = h.database.db;
   // The permanent delete needs a MongoDB replica set (transactions); a standalone server refuses it (409) and the test says it skipped.
@@ -404,11 +404,16 @@ test("deleting a venture permanently removes its offers and their versions", ski
   }
   const offer = (await db.collection("sales_offers").findOne({ ventureId: "venture-d" }))!;
   assert.ok(await db.collection("sales_offer_versions").countDocuments({ offerId: offer._id }) > 0);
+  const now = new Date();
+  await db.collection("sales_settings").insertOne({ _id: "venture-d" as never, workspaceId: offer.workspaceId, timezone: "Asia/Kolkata", updatedAt: now });
+  await db.collection("sales_imports").insertOne({ _id: `${String(offer.workspaceId)}:venture-d:hash` as never, workspaceId: offer.workspaceId, ventureId: "venture-d", hash: "hash", created: 1, createdAt: now });
   expectStatus(await h.call("admin", "POST", "/ventures/venture-d/archive", {}), 200);
   const deleted = expectStatus(await h.call("admin", "DELETE", "/ventures/venture-d", { confirmName: "Delta" }), 200).data;
   assert.ok(deleted.counts.sales_offers >= 1 && deleted.counts.sales_offer_versions >= 1, JSON.stringify(deleted.counts));
+  assert.deepEqual([deleted.counts.sales_settings, deleted.counts.sales_imports], [1, 1]);
   assert.equal(await db.collection("sales_offers").countDocuments({ ventureId: "venture-d" }), 0);
   assert.equal(await db.collection("sales_offer_versions").countDocuments({ ventureId: "venture-d" }), 0);
+  assert.equal(await db.collection("sales_settings").countDocuments({ _id: "venture-d" as never }), 0);
   assert.ok(await db.collection("deleted_records").findOne({ collection: "sales_offers", ventureId: "venture-d" }), "kept as a recovery copy");
 });
 

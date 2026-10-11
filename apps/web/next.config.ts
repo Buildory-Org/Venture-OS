@@ -11,7 +11,7 @@ const nextConfig: NextConfig = {
   ...(process.env.VSO_NEXT_OUTPUT === "standalone" ? { output: "standalone" as const, outputFileTracingRoot: resolve(process.cwd(), "../..") } : {}),
   images: { remotePatterns: [{ protocol: "https", hostname: "api.dicebear.com", pathname: "/10.x/adventurer/svg" }] },
   async redirects() {
-    const connected = ["dashboard", "today", "calendar", "tasks", "board", "channels", "messages", "knowledge", "sales", "notifications", "focus", "planning", "admin"];
+    const connected = ["dashboard", "today", "calendar", "tasks", "board", "channels", "messages", "knowledge", "sales", "notifications", "focus", "planning", "admin", "leaderboard"];
     const planning = ["classes", "decisions", "timeline", "requests"];
     const unavailable = ["ai/chat", "finance", "help", "hr", "inventory", "logout", "operations", "purchase", "settings"];
     return [

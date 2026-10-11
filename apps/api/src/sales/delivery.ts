@@ -9,7 +9,7 @@ import { AppError } from "../errors.js";
 import { assignableMembership } from "../assignable.js";
 import { withDates } from "../json.js";
 import { forbidden } from "./access.js";
-import { auditSales, type SalesCtx } from "./ctx.js";
+import { auditSales, settingsFor, type SalesCtx } from "./ctx.js";
 import { requireLeadEditor } from "./leads.js";
 import { isWonStage } from "./rules.js";
 
@@ -38,7 +38,7 @@ export async function createDeliveryWork(ctx: SalesCtx, lead: AppDocument, input
   const dueAt = input.dueAt ?? new Date(now.getTime() + WEEK_MS).toISOString();
   const parsed = createTaskSchema.parse({
     ventureId, groupId, ...(channel ? { channelId: String(channel._id) } : {}), title: input.title ?? `Deliver: ${company}`.slice(0, 200), outcome: `Deliver what was sold to ${company} and hand it over to the client.`,
-    assigneeId, priority: "high", dueAt, timezone: "Asia/Kolkata", estimatedMinutes: 120,
+    assigneeId, priority: "high", dueAt, timezone: (await settingsFor(ctx, ventureId)).timezone, estimatedMinutes: 120,
     definitionOfDone: "The work is delivered and the client has confirmed the handover.", evidenceRequirement: "A note or link showing what was delivered and the client's confirmation.", tags: ["sales", "delivery"],
   });
   const id = randomUUID();

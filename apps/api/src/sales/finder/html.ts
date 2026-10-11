@@ -32,8 +32,120 @@ export function decodeEntities(text: string): string {
   });
 }
 
+// Page HTML comes from any website, so every scan below runs in time linear in the page. A pattern like /<a\b[^>]*>[\s\S]*?<\/a>/g scans
+// to the end of the page from each tag it cannot close, and a page of unclosed tags then takes minutes in the API process. The helpers
+// below find the same tags as those patterns, but stop as soon as nothing later could match.
+
+/**
+ * Replaces each `pattern` match with `by`, where `pattern` is a tag ending in `[^>]*>`. Such a tag can only fail where no ">" follows,
+ * and then it rescans to the end from every "<": past the last ">" nothing is tried.
+ */
+export function replaceTags(html: string, pattern: RegExp, by: string): string {
+  const end = html.lastIndexOf(">") + 1;
+  return html.slice(0, end).replace(pattern, by) + html.slice(end);
+}
+
+/** Every `pattern` match (a tag ending in `[^>]*>`), searched only up to the last ">" for the same reason. */
+const matchTags = (html: string, pattern: RegExp) => [...html.slice(0, html.lastIndexOf(">") + 1).matchAll(pattern)];
+
+type Element = { attrs: string; inner: string; start: number; end: number };
+
+/**
+ * Each `<tag ...>inner</tag>`, in order, as /<tag\b([^>]*)>([\s\S]*?)<\/tag\s*>/gi finds them. When a tag has no ">" or no closing tag
+ * after it, no later one can have one either, so the search stops there instead of trying the rest of the page again.
+ */
+function* elements(html: string, tag: string, keep: (attrs: string) => boolean = () => true): Generator<Element> {
+  const open = new RegExp(`<${tag}\\b`, "gi");
+  const close = new RegExp(`<\\/${tag}\\s*>`, "gi");
+  for (let match = open.exec(html); match; match = open.exec(html)) {
+    const gt = html.indexOf(">", open.lastIndex);
+    if (gt < 0) return;
+    const attrs = html.slice(open.lastIndex, gt);
+    // A tag the caller skips: any tag that starts inside its attributes ends at the same ">", with a part of the same attributes.
+    if (!keep(attrs)) { open.lastIndex = gt + 1; continue; }
+    close.lastIndex = gt + 1;
+    const closing = close.exec(html);
+    if (!closing) return;
+    yield { attrs, inner: html.slice(gt + 1, closing.index), start: match.index, end: close.lastIndex };
+    open.lastIndex = close.lastIndex;
+  }
+}
+
+/** `html` without its comments, as html.replace(/<!--[\s\S]*?-->/g, " "): an unclosed comment means no later one closes either. */
+function withoutComments(html: string): string {
+  let out = "", from = 0;
+  for (let start = html.indexOf("<!--"); start >= 0; start = html.indexOf("<!--", from)) {
+    const end = html.indexOf("-->", start + 4);
+    if (end < 0) break;
+    out += `${html.slice(from, start)} `;
+    from = end + 3;
+  }
+  return out + html.slice(from);
+}
+
+/**
+ * `html` without each `<name ...>...</name>` of the given names (the closing tag must name the same one), each replaced by a space, as
+ * /<(script|style|...)\b[\s\S]*?<\/\1\s*>/gi does: a name with no closing tag left is not looked for again.
+ */
+export function withoutElements(html: string, names: readonly string[]): string {
+  const open = new RegExp(`<(${names.join("|")})\\b`, "gi");
+  const unclosed = new Set<string>();
+  let out = "", from = 0;
+  for (let match = open.exec(html); match; match = open.exec(html)) {
+    const name = match[1]!.toLowerCase();
+    if (unclosed.has(name)) continue;
+    const close = new RegExp(`<\\/${name}\\s*>`, "gi");
+    close.lastIndex = open.lastIndex;
+    const closing = close.exec(html);
+    if (!closing) { unclosed.add(name); continue; }
+    out += `${html.slice(from, match.index)} `;
+    from = open.lastIndex = close.lastIndex;
+  }
+  return out + html.slice(from);
+}
+
+/** `html` without its first `<title>...</title>`, as html.replace(/<title\b[\s\S]*?<\/title\s*>/i, " "). */
+function withoutFirstTitle(html: string): string {
+  const open = /<title\b/gi;
+  const match = open.exec(html);
+  if (!match) return html;
+  const close = /<\/title\s*>/gi;
+  close.lastIndex = open.lastIndex;
+  const closing = close.exec(html);
+  return closing ? `${html.slice(0, match.index)} ${html.slice(close.lastIndex)}` : html;
+}
+
+/** The attributes of each <input> tag, as the pattern `<input\b[^>]*` reads them (to the end when no ">" follows). */
+function inputTags(html: string): string[] {
+  const found: string[] = [];
+  const open = /<input\b/gi;
+  for (let match = open.exec(html); match; match = open.exec(html)) {
+    const gt = html.indexOf(">", open.lastIndex);
+    found.push(html.slice(open.lastIndex, gt < 0 ? html.length : gt));
+    if (gt < 0) break;
+    // An <input that starts inside these attributes reads a part of them: nothing new.
+    open.lastIndex = gt + 1;
+  }
+  return found;
+}
+
+const CONTACT_FIELD = /e-?mail|phone|mobile|contact|enquiry|inquiry|requirement|company/i;
+/** Does a name= in these attributes ask for contact details, as /name\s*=\s*["']?[^"'\s>]*(e-?mail|phone|...)/i would say, reading each value once? */
+function namesContactField(attrs: string): boolean {
+  const name = /name\s*=\s*["']?/gi;
+  const value = /[^"'\s>]*/y;
+  for (let match = name.exec(attrs); match; match = name.exec(attrs)) {
+    value.lastIndex = name.lastIndex;
+    const token = value.exec(attrs)![0];
+    if (CONTACT_FIELD.test(token)) return true;
+    // A "name=" inside this value has a part of it as its own value: already read.
+    name.lastIndex += token.length;
+  }
+  return false;
+}
+
 /** One line of text: entities decoded, hidden characters removed, white space collapsed. */
-const textOf = (html: string) => clean(decodeEntities(html.replace(/<[^>]*>/g, " "))).replace(/\s+/g, " ").trim();
+const textOf =(html: string) => clean(decodeEntities(replaceTags(html, /<[^>]*>/g, " "))).replace(/\s+/g, " ").trim();
 
 /** The attributes of one tag ("href", "content"...), lower-cased names, decoded values. */
 export function attributes(tag: string): Record<string, string> {
@@ -55,8 +167,8 @@ function jsonLdTypes(html: string): string[] {
     for (const type of [record["@type"]].flat()) if (typeof type === "string") types.add(type.slice(0, 60));
     if (record["@graph"]) visit(record["@graph"], depth + 1);
   };
-  for (const match of html.matchAll(/<script\b[^>]*type\s*=\s*["']?application\/ld\+json["']?[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
-    try { visit(JSON.parse(match[1]!.slice(0, 100_000)), 0); } catch { /* not JSON: ignored */ }
+  for (const script of elements(html, "script", (attrs) => /type\s*=\s*["']?application\/ld\+json/i.test(attrs))) {
+    try { visit(JSON.parse(script.inner.slice(0, 100_000)), 0); } catch { /* not JSON: ignored */ }
   }
   return [...types];
 }
@@ -78,7 +190,7 @@ function absolute(href: string, base: string): string | undefined {
 function visibleLines(html: string): string[] {
   const block = /<\/?(?:p|div|br|li|ul|ol|dl|dt|dd|h[1-6]|tr|td|th|table|thead|tbody|tfoot|section|article|header|footer|nav|aside|main|address|blockquote|figure|figcaption|pre|hr|form|fieldset|legend|label|option|select|button|summary|details|caption)\b[^>]*>/gi;
   const lines: string[] = [];
-  for (const raw of html.replace(block, "\n").split("\n")) {
+  for (const raw of replaceTags(html, block, "\n").split("\n")) {
     const line = textOf(raw);
     if (!line) continue;
     if (line.length <= LONG_LINE) { lines.push(line); continue; }
@@ -97,32 +209,32 @@ function visibleLines(html: string): string[] {
 export function parseHtml(html: string, pageUrl: string): ParsedPage {
   const types = jsonLdTypes(html);
   // Nothing that runs or hides is text: scripts, styles, noscript, templates, inline SVG, frames, and comments.
-  const stripped = html.replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|template|svg|iframe|object|canvas)\b[\s\S]*?<\/\1\s*>/gi, " ")
+  const stripped = withoutElements(withoutComments(html), ["script", "style", "noscript", "template", "svg", "iframe", "object", "canvas"])
     .replace(/<(script|style|noscript|template)\b[\s\S]*$/i, " ");
-  const metas = [...stripped.matchAll(/<meta\b([^>]*)>/gi)].map((match) => attributes(match[1]!));
+  const metas = matchTags(stripped, /<meta\b([^>]*)>/gi).map((match) => attributes(match[1]!));
   const meta = (key: string) => metas.find((item) => (item.property ?? item.name ?? "").toLowerCase() === key)?.content ?? "";
-  const baseHref = /<base\b([^>]*)>/i.exec(stripped);
+  const baseHref = matchTags(stripped, /<base\b([^>]*)>/gi)[0];
   const base = (baseHref && absolute(attributes(baseHref[1]!).href ?? "", pageUrl)) || pageUrl;
   const links: PageLink[] = [];
-  for (const match of stripped.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi)) {
+  for (const anchor of elements(stripped, "a")) {
     if (links.length >= MAX_LINKS) break;
-    const attrs = attributes(match[1]!);
+    const attrs = attributes(anchor.attrs);
     const href = absolute(attrs.href ?? "", base);
     if (!href) continue;
-    links.push({ href, text: (textOf(match[2]!) || clean(attrs["aria-label"] ?? attrs.title ?? "").replace(/\s+/g, " ").trim()).slice(0, 300) });
+    links.push({ href, text: (textOf(anchor.inner) || clean(attrs["aria-label"] ?? attrs.title ?? "").replace(/\s+/g, " ").trim()).slice(0, 300) });
   }
   let count = 0, enquiry = false, login = false;
-  for (const match of stripped.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form\s*>/gi)) {
+  for (const form of elements(stripped, "form")) {
     count++;
-    const inner = match[2]!;
-    const isLogin = /<input\b[^>]*type\s*=\s*["']?password/i.test(inner);
+    const inputs = inputTags(form.inner);
+    const isLogin = inputs.some((attrs) => /type\s*=\s*["']?password/i.test(attrs));
     login ||= isLogin;
     // An enquiry form asks for a message, or for contact details; a login form or a site search box is not one.
-    if (!isLogin && (/<textarea\b/i.test(inner) || /<input\b[^>]*name\s*=\s*["']?[^"'\s>]*(e-?mail|phone|mobile|contact|enquiry|inquiry|requirement|company)/i.test(inner))) enquiry = true;
+    if (!isLogin && (/<textarea\b/i.test(form.inner) || inputs.some(namesContactField))) enquiry = true;
   }
+  const title = elements(stripped, "title").next().value;
   return {
-    url: pageUrl, title: textOf(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(stripped)?.[1] ?? "").slice(0, 300), siteName: clean(meta("og:site_name") || meta("application-name")).replace(/\s+/g, " ").trim().slice(0, 200),
-    ogType: meta("og:type").toLowerCase().slice(0, 40), jsonLdTypes: types, lines: visibleLines(stripped.replace(/<title\b[\s\S]*?<\/title\s*>/i, " ")), links, forms: { count, enquiry, login },
+    url: pageUrl, title: textOf(title?.inner ?? "").slice(0, 300), siteName: clean(meta("og:site_name") || meta("application-name")).replace(/\s+/g, " ").trim().slice(0, 200),
+    ogType: meta("og:type").toLowerCase().slice(0, 40), jsonLdTypes: types, lines: visibleLines(withoutFirstTitle(stripped)), links, forms: { count, enquiry, login },
   };
 }

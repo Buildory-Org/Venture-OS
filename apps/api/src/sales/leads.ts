@@ -178,7 +178,8 @@ export async function createLead(ctx: SalesCtx, input: z.infer<typeof opportunit
   if (input.stage === "lost" && !input.lostReason && ctx.via !== "claude") throw new AppError(400, "BAD_REQUEST", "Pick why it was lost: a lost lead needs a reason category");
   if (ctx.via === "claude") assertClaudeMayMove("identified", input.stage);
   const { externalRef, nextActionAt, expectedCloseAt, ...fields } = input;
-  const existingFilter = externalRef ? { workspaceId, "externalRef.system": externalRef.system, "externalRef.id": externalRef.id } : undefined;
+  // References are unique per venture: the lead finder may find the same company for two ventures.
+  const existingFilter = externalRef ? { workspaceId, ventureId, "externalRef.system": externalRef.system, "externalRef.id": externalRef.id } : undefined;
   const existing = async () => {
     const row = existingFilter ? await db.collection("opportunities").findOne(existingFilter) : null;
     if (!row) return null;

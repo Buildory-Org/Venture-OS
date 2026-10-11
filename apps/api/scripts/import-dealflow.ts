@@ -501,7 +501,7 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 // ------------------------------------------------------------------------------------------------------ writing
 
 const REFRESH_FIELDS = ["companyName", "city", "region", "country", "category", "website", "contactRoutes", "observedSignal", "tags", "suppressKeys"] as const;
-/** Rows keyed by something other than `_id`, as the API does: leads by externalRef, suppression entries by key (both unique per workspace). */
+/** Rows keyed by something other than `_id`, as the API does: leads by externalRef (unique per venture; these ids name the venture), suppression entries by key (unique per workspace). */
 const FILTERS: Record<string, (doc: Doc) => Doc> = {
   opportunities: (doc) => ({ workspaceId: doc.workspaceId, "externalRef.system": doc.externalRef.system, "externalRef.id": doc.externalRef.id }),
   sales_suppression: (doc) => ({ workspaceId: doc.workspaceId, key: doc.key }),

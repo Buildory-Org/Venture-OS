@@ -89,7 +89,7 @@ ventures and the ones they made themselves.
 | POST | `/drafts/:id/veto`, `/drafts/:id/discard` | |
 | GET | `/inbox?ventureId&handled&owner=me` | inbound activities with lead cards, unhandled first |
 | GET/POST | `/plays`, PATCH `/plays/:id`, POST `/plays/:id/approve` | approve: venture head/admin, app only |
-| GET/POST | `/find-runs?queue=true`, POST `/find-runs/:id/cancel` | plans for the lead finder (built in, §10a; an office PC engine can also work them, §10b) |
+| GET/POST | `/find-runs?queue=true`, POST `/find-runs/:id/cancel`, POST `/find-runs/:id/queue` | plans for the lead finder (built in, §10a; an office PC engine can also work them, §10b). A saved plan (status `planned`, what Claude saves unless the person asked it to run) is queued in the app by its planner or a venture head, never by Claude; the offer must still be usable |
 | GET/POST | `/offers?ventureId`, GET `/offers/:id`, PATCH `/offers/versions/:versionId`, POST `/offers/versions/:versionId/approve` and `/discard`, POST `/offers/:id/state` | offers and their packet versions: see `docs/sales-offers.md` (approve and state: venture head or admin, app only) |
 | GET/POST | `/brain`, PATCH `/brain/:id`, POST `/brain/:id/approve` | the venture's shared notes and settings (kinds `notes`, `venture_settings`). New proposals of the old kinds `offer`, `target_profile` and `message_rules` are refused (400, pointing to offers), and so is approving an old draft of one. Approve archives the previous approved item with the same venture, kind and title. A proposal may also list `replaces` (up to 20 ids of APPROVED items of the same venture, any kind; else 400; duplicates dropped; a draft's PATCH can change it): approving it retires those still approved in the same transaction (`archivedBy`, `archivedAt`, `replacedBy`; one archived meanwhile is skipped), the answer and the audit carry `retired` (the same-title predecessor not counted), and every item shows `replacesItems` (`{ id, title, kind, version, status }`) |
 | GET/POST | `/suppression`, DELETE `/suppression/:id` | workspace-wide list; delete needs an admin and a JSON body `{ reason }` |
@@ -112,7 +112,7 @@ The older `/v1/pipelines` and `/v1/opportunities` routes keep working on the sam
 soft-deleted rows have `deletedAt` and are hidden everywhere, including the older routes and the calendar),
 `sales_activities`, `sales_verdicts`, `sales_drafts`, `sales_plays`, `sales_find_runs`,
 `sales_brain_items`, `sales_offers` and `sales_offer_versions` (offers and every version of their packets), `sales_suppression`, `sales_views` (saved Leads filters, per person), `sales_imports` (CSV files that created leads, by content hash) and `sales_import_locks` (one running CSV import per venture). Imported rows carry `externalRef: { system, id }` (unique per
-workspace) so imports can be re-run.
+venture, so the lead finder can find the same company for two ventures) so imports can be re-run.
 
 ## 5. Automatic rules (server side, one place)
 
@@ -287,15 +287,17 @@ Plays · Brain**, plus **Calls** (call mode) and **Find leads** reached from Ove
 
 ## 7. Not in v1
 
-Sending through SMTP or the WhatsApp Cloud API (designed, off), the office-PC engine bridge (find-runs
-are queued only), per-venture permission matrix editing, A/B variants, automatic LinkedIn/X.
+Sending through SMTP or the WhatsApp Cloud API (designed, off), per-venture permission matrix editing, A/B variants, automatic
+LinkedIn/X. (The office PC engine bridge, once listed here, is in: §10b.)
 
 ## 8. Run it locally (owner's PC, no Docker)
 
 - Database: the local MongoDB service on `127.0.0.1:27017`, database `vso_dealflow_dev` (root `.env`, gitignored;
   `ALLOW_DEV_AUTH=true`, local mode only). Other databases on that server belong to other projects.
 - First time: `npm run build:packages`, then `node --env-file=.env node_modules/tsx/dist/cli.mjs apps/api/src/seed.ts`
-  and `node --env-file=.env node_modules/tsx/dist/cli.mjs apps/api/src/migrate.ts`.
+  and `node --env-file=.env node_modules/tsx/dist/cli.mjs apps/api/src/migrate.ts`. The API also runs the Sales part of the
+  migration (older deal records get the Sales stage names and do-not-contact match keys) in the background a few seconds after
+  it starts, so a deployed server needs no manual step; it is safe to repeat and changes nothing the second time.
 - Real leads: `node --env-file=.env node_modules/tsx/dist/cli.mjs apps/api/scripts/import-dealflow.ts` (reads the
   Dealflow SQLite read-only; see `apps/api/scripts/README-import-dealflow.md`).
 - Run: API `node --env-file=.env node_modules/tsx/dist/cli.mjs watch apps/api/src/server.ts` (:4000), web
@@ -404,8 +406,10 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
   the lead finder uses; the keys are the ones an admin saved in Sales setup, else the API's `TINYFISH_API_KEY` and
   `EXA_API_KEY` (§10a; none means off: the tool then says an admin can add a key in Sales setup). It leaves out companies already in the pipeline and anyone on
   the workspace's whole do-not-contact list (read directly, so entries a person can't see in the list still count), stores
-  nothing, numbers its results (`result`), treats what pages say as data, and never returns or logs a key. Limits: 12
-  searches a minute per token; per workspace 1,500 TinyFish calls a day and about 1,200 Exa calls a month.
+  nothing, numbers its results (`result`), treats what pages say as data, and never returns or logs a key. It is for people who
+  add leads: a learner's key is refused before anything is spent. Limits: 12 searches a minute per token; per workspace 1,500
+  TinyFish calls a day and about 1,200 Exa calls a month, of which searches from chat use at most 1,000 of each (the rest stays
+  for the lead finder's queued runs). A search refused at a limit is not counted.
 - **`weekly_report`** (`GET /v1/sales/reports`, range `week` | `30d` | `quarter`, owner `all` by default). The report
   compacted: funnel, top 5 sources, plays and cities, reply types, reply speed against the venture's promise, Claude's
   calibration grid with `n` and the small-sample flags, overrides, wins and losses, the leads stuck longest. Rates read
@@ -465,11 +469,14 @@ The API works queued find-leads and enrich runs itself; Venture OS needs no othe
   2. Merges the hits by domain and drops directories, marketplaces, news, blog and market-research pages.
   3. Skips any domain the venture already has, or that is on the do-not-contact list, without fetching it.
   4. Reads at most 5 pages per company site: home, contact, about, dealer and product pages.
-  5. Adds each lead through `ingestEngineLead`, so the duplicate and do-not-contact checks are the same as for every lead.
+  5. Adds each lead through `ingestEngineLead`, so the duplicate and do-not-contact checks are the same as for every lead. A
+     duplicate is a lead of the same venture with the same website domain, or the same company name where the cities don't differ
+     (as the CSV import counts it); another venture may find the same company.
      A lead carries `externalRef {system: "builtin-finder", id: domain}`, the tag "finder", dated evidence quotes, its
      contact routes, city, state and category, and a note "Found by the built-in lead finder".
 - **Enrich run:** reads each lead's own site the same way and merges what it finds through `enrichEngineLead`.
-- **Safety:** http and https only, ports 80 and 443 only. Every host and redirect hop (at most 3) is resolved first and
+- **Safety:** pages are read in time in step with their size (no tag pattern rescans the page, so broken or hostile HTML never
+  stalls the API, which the finder runs in). http and https only, ports 80 and 443 only. Every host and redirect hop (at most 3) is resolved first and
   refused if any of its addresses is private, loopback, link-local, CGNAT, multicast or reserved, including mapped IPv6.
   The connection is pinned to the address that was checked.
 - **Politeness:** robots.txt is read and obeyed for `User-agent: *` and `VentureStudioLeadFinder`, cached 24 h. A 5xx or

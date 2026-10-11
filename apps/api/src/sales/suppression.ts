@@ -98,6 +98,11 @@ export function normalizeCompany(value: string): string | null {
   return name.length >= 2 ? name : null;
 }
 
+/** A city as people write it, down to its name: "Indore", "indore ", "Indore, MP" and "Indore (M.P.)" are one city. */
+export const cityKey = (value: unknown) => String(value ?? "").toLowerCase().split(/[,(]/)[0]!.replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+/** Two cities that don't tell two companies of the same name apart: either is not known, or they are the same city. */
+export const sameCity = (a: unknown, b: unknown) => { const left = cityKey(a); const right = cityKey(b); return !left || !right || left === right; };
+
 export function normalizeValue(kind: SuppressionKind, value: string): string | null {
   switch (kind) {
     case "email": return normalizeEmail(value);

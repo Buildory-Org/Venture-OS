@@ -46,6 +46,12 @@ export async function ensurePushEndpointIndex(collection: Collection<AppDocument
   await collection.createIndex({ endpoint: 1 }, { unique: true, partialFilterExpression: { endpoint: { $type: "string" } } });
 }
 
+/** Drops an index being replaced; another process starting at the same time may have dropped it first (IndexNotFound), which is fine. */
+async function dropIfThere(collection: Collection<AppDocument>, name: string): Promise<void> {
+  try { await collection.dropIndex(name); }
+  catch (error) { if ((error as { code?: number }).code !== 27) throw error; }
+}
+
 /**
  * The do-not-contact list holds one entry per normalised value. Entries written without a key (older imports) must not collide,
  * so the unique index covers only keyed entries; the first version of this index covered all of them and is replaced.
@@ -58,8 +64,23 @@ export async function ensureSuppressionKeyIndex(collection: Collection<AppDocume
     indexes = [];
   }
   const existing = indexes.find((index) => index.name === "workspaceId_1_key_1");
-  if (existing && !existing.partialFilterExpression) await collection.dropIndex("workspaceId_1_key_1");
+  if (existing && !existing.partialFilterExpression) await dropIfThere(collection, "workspaceId_1_key_1");
   await collection.createIndex({ workspaceId: 1, key: 1 }, { unique: true, partialFilterExpression: { key: { $type: "string" } } });
+}
+
+/**
+ * One lead per import reference in each venture, so the lead finder can find the same company for two ventures. The first version of this
+ * index made references unique across the whole workspace and is replaced (a reference unique per workspace is unique per venture too).
+ */
+export async function ensureLeadReferenceIndex(collection: Collection<AppDocument>): Promise<void> {
+  let indexes: Awaited<ReturnType<typeof collection.indexes>>;
+  try { indexes = await collection.indexes(); }
+  catch (error) {
+    if ((error as { code?: number }).code !== 26) throw error; // Collection does not exist yet.
+    indexes = [];
+  }
+  if (indexes.some((index) => index.name === "workspaceId_1_externalRef.system_1_externalRef.id_1")) await dropIfThere(collection, "workspaceId_1_externalRef.system_1_externalRef.id_1");
+  await collection.createIndex({ workspaceId: 1, ventureId: 1, "externalRef.system": 1, "externalRef.id": 1 }, { unique: true, partialFilterExpression: { "externalRef.id": { $type: "string" } } });
 }
 
 /** A collection has one text index: the task one now covers details too, so an older one without them is replaced. */
@@ -73,6 +94,7 @@ async function ensureTaskTextIndex(db: AppDb): Promise<void> {
 export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensurePushEndpointIndex(db.collection("push_subscriptions"));
   await ensureSuppressionKeyIndex(db.collection("sales_suppression"));
+  await ensureLeadReferenceIndex(db.collection("opportunities"));
   await Promise.all([
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
     // Recovery copies from permanent venture deletes expire on their own after 30 days.
@@ -179,14 +201,20 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // The leads of an offer: the Offer filter, its counts and the offer facet.
     db.collection("opportunities").createIndex({ workspaceId: 1, offerId: 1, stage: 1 }, { partialFilterExpression: { offerId: { $exists: true } } }),
     db.collection("opportunities").createIndex({ workspaceId: 1, suppressKeys: 1 }),
-    // Imports can be re-run: one lead per external reference.
-    db.collection("opportunities").createIndex({ workspaceId: 1, "externalRef.system": 1, "externalRef.id": 1 }, { unique: true, partialFilterExpression: { "externalRef.id": { $type: "string" } } }),
+    // Imports can be re-run: one lead per external reference in each venture (ensureLeadReferenceIndex, above).
     db.collection("sales_activities").createIndex({ leadId: 1, at: -1 }),
     db.collection("sales_activities").createIndex({ workspaceId: 1, ventureId: 1, direction: 1, handledAt: 1, at: -1 }),
     db.collection("sales_activities").createIndex({ workspaceId: 1, ventureId: 1, at: -1 }),
     // The same requestId repeats the first answer instead of logging an activity twice.
     db.collection("sales_activities").createIndex({ workspaceId: 1, leadId: 1, requestId: 1 }, { unique: true, partialFilterExpression: { requestId: { $type: "string" } } }),
     db.collection("sales_verdicts").createIndex({ leadId: 1, createdAt: -1 }),
+    // Reports and Daybreak read a venture's verdicts by date (Claude's calibration, stale signals).
+    db.collection("sales_verdicts").createIndex({ workspaceId: 1, ventureId: 1, createdAt: -1 }),
+    // A lead's next-action reminder is looked up on every lead edit; reports ask how leads without an import reference were made.
+    db.collection("reminders").createIndex({ workspaceId: 1, leadId: 1 }, { partialFilterExpression: { leadId: { $exists: true } } }),
+    db.collection("audit_events").createIndex({ workspaceId: 1, objectId: 1 }, { partialFilterExpression: { action: "sales.lead.create" } }),
+    // Company-search counters (one per workspace, engine and day or month) clear themselves two months on.
+    db.collection("mcp_search_usage").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("sales_drafts").createIndex({ leadId: 1, createdAt: -1 }),
     db.collection("sales_drafts").createIndex({ workspaceId: 1, ventureId: 1, status: 1, updatedAt: -1 }),
     db.collection("sales_plays").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),

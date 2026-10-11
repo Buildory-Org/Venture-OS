@@ -27,7 +27,11 @@ if ($busy.Count -eq 1) {
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'VSO API'; Set-Location '$root'; node --env-file=.env node_modules/tsx/dist/cli.mjs watch apps/api/src/server.ts"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'VSO web'; Set-Location '$root\apps\web'; node ../../node_modules/next/dist/bin/next dev -p 3000"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'VSO worker'; Set-Location '$root\apps\worker'; node ../../node_modules/tsx/dist/cli.mjs src/index.ts"
+# The worker reads the root .env, which may hold real email (Resend) and push (VAPID) keys. Blank ones are set first (a value already set
+# is never replaced by the .env file), so the worker uses its local adapters: test notices never reach anyone's inbox or phone.
+$quietEnv = Join-Path $env:TEMP "vso-qa-worker.env"
+Set-Content -Path $quietEnv -Encoding ascii -Value "RESEND_API_KEY=", "VAPID_PUBLIC_KEY=", "VAPID_PRIVATE_KEY="
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$host.UI.RawUI.WindowTitle = 'VSO worker'; Set-Location '$root\apps\worker'; node --env-file='$quietEnv' ../../node_modules/tsx/dist/cli.mjs src/index.ts"
 
 Write-Host "Starting... (the first page load compiles for about 20 seconds)"
 for ($i = 0; $i -lt 60; $i++) {

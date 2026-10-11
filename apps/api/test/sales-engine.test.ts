@@ -9,7 +9,7 @@ import { createApp } from "../src/app.js";
 import { createAuth } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import { connectDatabase, type Database } from "../src/db.js";
-import { ensureIndexes } from "../src/indexes.js";
+import { ensureIndexes, ensureLeadReferenceIndex } from "../src/indexes.js";
 import { internalHeaders } from "../src/internal-auth.js";
 import { isMcpRoute } from "../src/mcp/http.js";
 import { overLimit } from "../src/middleware.js";
@@ -341,6 +341,16 @@ test("leads: validated one by one, owned by the run's creator, deduplicated, and
   expectStatus(await e.app("head", "DELETE", `/sales/leads/${removedLead.id}`), 200);
   const refound = connected(site(), { companyName: removed.companyName });
   assert.equal((await post([refound])).data.skipped[0].reason, "duplicate");
+  // The same name in another city is another company; the same city written another way ("raipur (C.G.)") is the same one.
+  const otherCity = connected(site(), { companyName: a.companyName, website: undefined, city: "Indore" });
+  assert.equal((await post([otherCity])).data.added.length, 1);
+  const sameCitySpelled = connected(site(), { companyName: a.companyName, website: undefined, city: "raipur (C.G.)" });
+  assert.deepEqual((await post([sameCitySpelled])).data.skipped.map((item: any) => [item.reason, item.id]), [["duplicate", parsed.added[0]!.id]]);
+  // An engine id another venture already holds is no duplicate here: references are unique per venture.
+  const sharedRef = connected(site());
+  await db.collection("opportunities").insertOne({ _id: `ref-elsewhere-${suffix}`, workspaceId: "workspace-a", ventureId: "venture-b", pipelineId: "pipeline-b", companyName: "Somebody Else", ownerId: "user-outsider", stage: "identified", externalRef: sharedRef.externalRef, suppressKeys: [], createdAt: new Date(), updatedAt: new Date() });
+  assert.equal((await post([sharedRef])).data.added.length, 1);
+  assert.equal(await db.collection("opportunities").countDocuments({ "externalRef.id": sharedRef.externalRef.id }), 2);
   // Do-not-contact: a company, an email or a number on the list is skipped, not added.
   const dnc = site();
   expectStatus(await e.app("admin", "POST", "/sales/suppression", { kind: "company", value: `${dnc} Pumps Pvt Ltd`, reason: "Asked not to be contacted" }), 201);
@@ -602,4 +612,15 @@ test("round 2: an enrich run that hits the do-not-contact list stops the lead's 
   const overflow = await e.app("contrib2", "POST", `/sales/leads/${extra}/enrich`, {});
   assert.notEqual(overflow.data.id, full._id);
   assert.equal(((await db.collection("sales_find_runs").findOne({ _id: full._id }))?.leadIds as string[]).length, 100);
+});
+
+test("the lead reference index: the workspace-wide one from before becomes one per venture, also when two servers start at once", skip, async () => {
+  const e = await getEnv();
+  const leads = e.database.db.collection(`reference_index_check_${suffix}`);
+  await leads.createIndex({ workspaceId: 1, "externalRef.system": 1, "externalRef.id": 1 }, { unique: true, partialFilterExpression: { "externalRef.id": { $type: "string" } } });
+  await Promise.all([ensureLeadReferenceIndex(leads), ensureLeadReferenceIndex(leads)]);
+  const names = (await leads.indexes()).map((index) => index.name);
+  assert.ok(!names.includes("workspaceId_1_externalRef.system_1_externalRef.id_1"), names.join(", "));
+  assert.ok(names.includes("workspaceId_1_ventureId_1_externalRef.system_1_externalRef.id_1"), names.join(", "));
+  await leads.drop();
 });

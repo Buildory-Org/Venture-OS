@@ -3,6 +3,7 @@ import { BRAIN_KINDS, CALL_OUTCOMES, DRAFT_STATUSES, EXIT_STAGES, LEGACY_STAGE_M
 import { clean, clip, compact, localTime, ToolError, validTimeZone } from "./format.js";
 import { id, type Look, once, READ_ONLY, type Register, requestIdField, timezoneField, type ToolContext, writes } from "./kit.js";
 import { LEGACY_BRAIN_KINDS } from "../sales/offers.js";
+import { cityKey, sameCity } from "../sales/suppression.js";
 import { type CityCount, guided, settingsLine, startNext, startSay, theBatch, viewHint, waitingLine } from "./sales-guided.js";
 import { newSession, requireSession, salesApi, sessionField, sessionModeOf } from "./sales-session.js";
 import { offerBook, offerLine, offerNameField, usable, type OfferRow } from "./tools-offers.js";
@@ -907,13 +908,14 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     const seen = new Set<string>();
     for (const item of input.leads) {
       const name = baseName(item.companyName); const domain = domainOf(item.website);
-      const key = domain ?? name.replaceAll(" ", "-");
+      // Without a website, a company is its name in its city: "Sharma Traders" of Indore and of Raipur are two leads.
+      const key = domain ?? [name.replaceAll(" ", "-"), cityKey(item.city).replaceAll(" ", "-")].filter(Boolean).join("@");
       if (!name || seen.has(key)) { skipped.push({ company: item.companyName, reason: "listed twice in this request" }); continue; }
       seen.add(key);
       try {
-        // Already a lead in this venture, by name or website: skip it so nothing is added twice.
+        // Already a lead in this venture, by website, or by name where the cities don't differ: skip it so nothing is added twice.
         const near = await api<{ items: any[] }>("GET", `/leads?${new URLSearchParams({ ventureId: input.ventureId, q: name.split(" ").slice(0, 2).join(" "), limit: "25" })}`);
-        const known = near.items.find((lead) => baseName(String(lead.companyName)) === name || (domain && domainOf(lead.website) === domain));
+        const known = near.items.find((lead) => (domain && domainOf(lead.website) === domain) || (baseName(String(lead.companyName)) === name && sameCity(lead.city, item.city)));
         if (known) { skipped.push({ company: item.companyName, reason: `already a lead (${known.stage})`, leadId: known.id, url: leadUrl(ctx, known.id) }); continue; }
         const lead = await api<any>("POST", "/leads", {
           pipelineId: pipeline.id, companyName: item.companyName, contactName: item.contactName ?? "", source: item.source, observedSignal: item.observedSignal ?? "", stage: "identified", ownerId: ctx.userId,

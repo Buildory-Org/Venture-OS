@@ -539,6 +539,11 @@ test("an import commit creates the clean rows for the importer, skips the rest, 
   const forced = parse(successEnvelope(importResultSchema), expectStatus(await commit(h, "contrib", { csv: raniOnly, importDuplicates: true, mapping }), 201).body).data;
   assert.deepEqual([forced.created, forced.duplicates], [1, 0]);
   assert.equal(await h.database.db.collection("opportunities").countDocuments({ companyName: `Rani Pipes ${tag}` }), 2);
+  // A commit that died after making its leads but before recording the file: committing it again (duplicate switch on) adds nothing twice.
+  assert.equal((await h.database.db.collection("sales_imports").deleteOne({ batchId: forced.batchId })).deletedCount, 1);
+  const retried = parse(successEnvelope(importResultSchema), expectStatus(await commit(h, "contrib", { csv: raniOnly, importDuplicates: true, mapping }), 201).body).data;
+  assert.equal(retried.created, 0);
+  assert.equal(await h.database.db.collection("opportunities").countDocuments({ companyName: `Rani Pipes ${tag}` }), 2);
 
   // A head and an admin import for themselves too; the importer owns what they import, whoever they are.
   const byHead = parse(successEnvelope(importResultSchema), expectStatus(await commit(h, "head", { csv: `Name\nHead Import ${tag}`, mapping: { company: 0 } }), 201).body).data;

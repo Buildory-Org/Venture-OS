@@ -27,17 +27,30 @@ export function guessCompany(title: string, domain: string): string {
   return label.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-/** One call against the engine's period counter for this workspace; false once the cap is used up. */
-export async function reserveSearch(db: AppDb, workspaceId: string, engine: SearchEngine): Promise<boolean> {
-  const { limit, period } = SEARCH_CAPS[engine];
+/**
+ * What searches from a chat (search_companies) may use of each allowance: the rest stays for the lead finder, so a busy chat never leaves
+ * queued find runs without searches. Both count on the same counter.
+ */
+export const CHAT_SEARCH_SHARE = { tinyfish: 1_000, exa: 1_000 } as const;
+
+/**
+ * One call against the engine's period counter for this workspace, while the counter is under `limit` (the workspace's cap unless a smaller
+ * share is given); false once it is not. A refused call is not counted, so asking again after the share is used up never eats into the rest.
+ */
+export async function reserveSearch(db: AppDb, workspaceId: string, engine: SearchEngine, limit: number = SEARCH_CAPS[engine].limit): Promise<boolean> {
+  const { period } = SEARCH_CAPS[engine];
   const now = new Date();
   const stamp = now.toISOString().slice(0, period === "day" ? 10 : 7);
-  const used = await db.collection("mcp_search_usage").findOneAndUpdate(
-    { _id: `${workspaceId}:${engine}:${stamp}` as never },
-    { $inc: { calls: 1 }, $setOnInsert: { workspaceId, engine, period: stamp, createdAt: now, expiresAt: new Date(now.getTime() + 62 * 86_400_000) } },
-    { upsert: true, returnDocument: "after" },
-  );
-  return Number((used as { calls?: number } | null)?.calls ?? 1) <= limit;
+  const usage = db.collection("mcp_search_usage");
+  const _id = `${workspaceId}:${engine}:${stamp}` as never;
+  // First the period's counter exists (two first calls at once both end up here: the server retries an upsert that matches on _id alone),
+  // then one call is counted only while the counter is under the limit.
+  try {
+    await usage.updateOne({ _id }, { $setOnInsert: { calls: 0, workspaceId, engine, period: stamp, createdAt: now, expiresAt: new Date(now.getTime() + 62 * 86_400_000) } }, { upsert: true });
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000) throw error;
+  }
+  return (await usage.updateOne({ _id, calls: { $lt: limit } }, { $inc: { calls: 1 } })).matchedCount === 1;
 }
 
 /** One request to a search API. Failures become short messages that carry no URL, header or response body (so no key can leak). */

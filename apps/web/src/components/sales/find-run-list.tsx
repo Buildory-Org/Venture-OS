@@ -1,11 +1,11 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { RotateCcw, X } from "@/components/ui/icons";
+import { Play, RotateCcw, X } from "@/components/ui/icons";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
-import { ActionLabel, Badge, Notice, secondaryClass } from "@/components/studio/primitives";
-import { cancelFindRun, type FindRun } from "@/lib/sales-api";
+import { ActionLabel, Badge, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { cancelFindRun, queueFindRun, type FindRun } from "@/lib/sales-api";
 import { canHead, stamp } from "./draft-shared";
 import { since, STALE_HEARTBEAT_MS } from "./find-engine";
 import { useOffersById } from "./offer-model";
@@ -34,8 +34,16 @@ export function FindRunList({ runs, now, canEdit, onReuse, onChanged }: { runs: 
     catch (cause) { setError(describeError(cause, "Could not cancel the run. Try again.")); }
     finally { setBusyId(""); }
   }
-  // The API lets the person who made a run, or a venture head, cancel it.
-  const mayCancel = (run: FindRun) => canEdit && (run.status === "planned" || isLiveRun(run)) && (run.createdBy === session?.user.id || canHead(session, run.ventureId));
+  async function queue(run: FindRun) {
+    setBusyId(run.id); setError("");
+    try { const updated = await queueFindRun(run.id); onChanged(updated); refresh(); toast({ title: "Queued for the lead finder", body: run.request.slice(0, 80) }); }
+    catch (cause) { setError(describeError(cause, "Could not queue the plan. Try again.")); }
+    finally { setBusyId(""); }
+  }
+  // The API lets the person who made a run, or a venture head, cancel it, and queue it while it is a saved plan.
+  const ownsRun = (run: FindRun) => run.createdBy === session?.user.id || canHead(session, run.ventureId);
+  const mayCancel = (run: FindRun) => canEdit && (run.status === "planned" || isLiveRun(run)) && ownsRun(run);
+  const mayQueue = (run: FindRun) => canEdit && run.status === "planned" && ownsRun(run);
 
   return <div>
     <Notice tone="error" message={error} onDismiss={() => setError("")} className="p-4 pb-0" />
@@ -63,6 +71,7 @@ export function FindRunList({ runs, now, canEdit, onReuse, onChanged }: { runs: 
         {run.status === "failed" && <p className="rounded-xl bg-danger-surface p-3 text-xs font-semibold leading-5 text-danger-text [overflow-wrap:anywhere]">{run.note || run.results?.note || "The lead finder could not finish this run. Queue it again, or ask Claude to look at it."}</p>}
         {run.note && run.status !== "failed" && run.status !== "done" && <p className="text-xs leading-5 text-neutral-500 [overflow-wrap:anywhere]">{run.note}</p>}
         {(canEdit && !enrich || mayCancel(run)) && <div className="flex flex-wrap gap-2">
+          {mayQueue(run) && <button type="button" disabled={busyId === run.id} onClick={() => void queue(run)} className={`${primaryClass} !min-h-9 !px-3 !text-xs`}><Play size={13} /><ActionLabel busy={busyId === run.id} busyText="Queueing…" idle="Queue it" /></button>}
           {canEdit && !enrich && <button type="button" onClick={() => onReuse(run)} className={`${secondaryClass} !min-h-9 !px-3 !text-xs`}><RotateCcw size={13} />Use this plan again</button>}
           {mayCancel(run) && <button type="button" aria-expanded={open} onClick={() => setConfirming(open ? "" : run.id)} className={`${secondaryClass} !min-h-9 !px-3 !text-xs !text-danger-text`}><X size={13} />Cancel</button>}
         </div>}

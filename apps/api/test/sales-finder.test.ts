@@ -215,6 +215,31 @@ test("extraction: verbatim dealer quotes with their page, published routes, PIN 
   assert.ok(!JSON.stringify(facts).includes("22AAACG1234A1Z5"), "no GSTIN is kept");
 });
 
+test("reading a page takes time in step with its size: broken or hostile HTML never stalls the API", () => {
+  // Each of these took minutes at 1.5 MB when a tag pattern rescanned the rest of the page from every tag it could not close.
+  const SIZE = 1_500_000;
+  const fill = (unit: string) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
+  const hostile: Record<string, string> = {
+    "unclosed links": fill("<a>"), "links without >": fill("<a "), "unclosed forms": fill("<form>"), "unclosed comments": fill("<!--"), "unclosed scripts": fill("<script><style><svg>"),
+    "unclosed titles": fill("<title>"), "bare <": fill("<"), "blocks without >": fill("<p "), "metas without >": fill("<meta "), "bases without >": fill("<base "),
+    "unclosed JSON-LD": fill('<script type="application/ld+json">'), "inputs in a form": `<form>${fill("<input ")}</form>`, "names in one input": `<form><input ${fill("name=x")}></form>`,
+  };
+  for (const [name, body] of Object.entries(hostile)) {
+    const started = performance.now();
+    parseHtml(body, "https://hostile.example/");
+    assert.ok(performance.now() - started < 3_000, `${name} read in ${Math.round(performance.now() - started)} ms`);
+  }
+  // The bot-check test runs on every page fetched, before it is read: the same shapes, with "captcha" in them so every part of it runs.
+  for (const [name, body] of Object.entries({ ...hostile, "unclosed titles with captcha": `captcha ${fill("<title ")}`, "unclosed scripts with captcha": `captcha ${fill("<script ")}` })) {
+    const started = performance.now();
+    looksLikeChallenge(body);
+    assert.ok(performance.now() - started < 3_000, `bot check on ${name} took ${Math.round(performance.now() - started)} ms`);
+  }
+  // The same tags as before on well-formed parts: a link after unclosed ones, an enquiry field, a login, comments and scripts gone.
+  const mixed = parseHtml(`<title>Acme</title><!-- x --><script>"<a href='/no'>"</script><a href="/contact">Contact us</a><a broken<form><input name="customer_email"></form><form><input type=password></form>`, "https://acme.example/");
+  assert.deepEqual([mixed.title, mixed.links.map((link) => link.href), mixed.forms], ["Acme", ["https://acme.example/contact"], { count: 2, enquiry: true, login: true }]);
+});
+
 test("extraction: PIN prefixes, visible numbers and emails, quote windows, and pages that are not a company's own site", () => {
   const page = (body: string, url = "https://shop.example/", head = "") => parseHtml(html(body, head), url);
   for (const [pin, state] of [["492001", "Chhattisgarh"], ["452001", "Madhya Pradesh"], ["462016", "Madhya Pradesh"], ["440001", "Maharashtra"], ["411001", "Maharashtra"], ["403001", "Goa"], ["751001", "Odisha"], ["768001", "Odisha"], ["110001", undefined]] as const) assert.equal(pinState(pin), state, pin);
@@ -263,7 +288,9 @@ test("planner: the plan's searches as given, else categories x places x business
   // The search loop: hits merged by domain, directories dropped, Exa asked only when TinyFish found nothing new, every call counted first.
   let reserved = 0;
   const usedUp = { tinyfish: false, exa: false };
-  const db = { collection: () => ({ findOneAndUpdate: async (filter: { _id: string }) => { reserved++; return { calls: usedUp[filter._id.includes(":exa:") ? "exa" : "tinyfish"] ? 1_000_000 : 1 }; } }) } as unknown as AppDb;
+  // The counter: the first update makes sure the period's row exists, the second counts a call only while it is under the limit
+  // (a used-up engine matches nothing). Only the counting update is a reservation.
+  const db = { collection: () => ({ updateOne: async (filter: { _id: string; calls?: unknown }) => { if (filter.calls === undefined) return { matchedCount: 1 }; reserved++; return { matchedCount: usedUp[filter._id.includes(":exa:") ? "exa" : "tinyfish"] ? 0 : 1 }; } }) } as unknown as AppDb;
   const asked: string[] = [];
   const search: SearchFn = async (engine, _key, query) => {
     asked.push(`${engine}:${query}`);
@@ -340,7 +367,7 @@ test("negatives: a search result whose title or snippet names one (any case, spa
   for (const text of ["A Web-Development Agency in Bengaluru", "web development agencies", "IT OUTSOURCING partner"]) assert.ok(negatives.test(text), text);
   for (const text of ["We build our own web app", "an outsourcing-free team", "development agency"]) assert.ok(!negatives.test(text), text);
   assert.equal(negativesOf(dealerPacket), undefined, "a packet with no negatives rules nothing out");
-  const db = { collection: () => ({ findOneAndUpdate: async () => ({ calls: 1 }) }) } as unknown as AppDb;
+  const db = { collection: () => ({ updateOne: async () => ({ matchedCount: 1 }) }) } as unknown as AppDb;
   const asked: string[] = [];
   const hit = (url: string, title: string, snippet = "") => ({ url, title, snippet, engine: "tinyfish" as const });
   const search: SearchFn = async (engine, _key, query) => {

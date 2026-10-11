@@ -13,6 +13,7 @@ import { REPORT_CHART_CSS, RateValue, ReportSection, SmallSample, StatValue, Wil
 import { DayBars, FunnelChart, HBarList, shortDay } from "@/components/sales/report-viz";
 import { AgingTable, BreakdownTable, CalibrationGrid, OldestList, OverrideList, SignalsTable } from "@/components/sales/report-tables";
 import { periodLabel, reportText } from "@/components/sales/report-text";
+import { daysLabel } from "@/components/sales/setup-checks";
 
 type RangeKey = "week" | "30d" | "quarter" | "custom";
 type ByKey = "source" | "play" | "owner" | "city";
@@ -181,22 +182,31 @@ function ActivitySection({ report }: { report: SalesReport }) {
   </ReportSection>;
 }
 
+/** The working hours the reply promise counts in, from the ventures' own settings: "Mon–Sat, 10:00 to 19:00", or each venture's own when they differ. */
+function workingHoursText(rules: SalesReport["workRules"]): string {
+  const hour = (value: number) => `${String(value).padStart(2, "0")}:00`;
+  const texts = [...new Set(rules.map((rule) => `${daysLabel(rule.workingDays)}, ${hour(rule.workStartHour)} to ${hour(rule.workEndHour)}`))];
+  return texts.length === 1 ? texts[0]! : "each venture's own working days and hours";
+}
+
 function SpeedSection({ report, onOpen, personName }: { report: SalesReport; onOpen: (leadId: string) => void; personName: (id: string) => string }) {
   const { firstResponse, sla } = report.activity;
+  const workingHours = workingHoursText(report.workRules);
   return <ReportSection id="report-speed" title="Speed" subtitle="How fast replies get an answer, and how long open deals have waited in their step.">
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+      <div className="min-w-0 space-y-4">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3">
           <div className="rounded-xl bg-neutral-50 px-3 py-3"><p className="text-[11px] font-semibold leading-4 text-neutral-600">Median time to answer a reply</p><div className="mt-1.5"><StatValue stat={firstResponse.medianHours} format={hours} size="lg" /></div>{firstResponse.medianWorkingHours.value !== null && <p className="mt-1 text-[11px] text-neutral-500">{hours(firstResponse.medianWorkingHours.value)} of working time</p>}</div>
           <div className="rounded-xl bg-neutral-50 px-3 py-3"><p className="text-[11px] font-semibold leading-4 text-neutral-600">Warm replies answered within {sla.hours} working hours</p><div className="mt-1.5"><RateValue rate={sla.rate} size="lg" /></div></div>
         </div>
         <p className="text-xs leading-5 text-neutral-500">
-          {sla.rate.n + sla.pending === 0 ? "No warm replies (interested, wants details, asks the price) in this period yet. The promise is measured on those, in working hours (Monday to Saturday, 10:00 to 19:00, no festival days)." : <>{count(sla.late)} answered late, {count(sla.missed)} still unanswered past the {sla.hours} hours{sla.pending ? `, ${count(sla.pending)} still inside the time` : ""}. Working hours are Monday to Saturday, 10:00 to 19:00.</>}
+          {sla.rate.n + sla.pending === 0 ? `No warm replies (interested, wants details, asks the price) in this period yet. The promise is measured on those, in working hours (${workingHours}, no festival days).` : <>{count(sla.late)} answered late, {count(sla.missed)} still unanswered past the {sla.hours} hours{sla.pending ? `, ${count(sla.pending)} still inside the time` : ""}. Working hours: {workingHours}.</>}
           {firstResponse.unanswered > 0 && <> {count(firstResponse.unanswered)} {firstResponse.unanswered === 1 ? "reply has" : "replies have"} had no answer yet.</>}
         </p>
-        <AgingTable groups={report.stageAging.groups} />
+        {/* On a phone the four columns may be wider than the card: they scroll inside it, never the page. */}
+        <div className="overflow-x-auto"><AgingTable groups={report.stageAging.groups} /></div>
       </div>
-      <div><p className="mb-2 text-xs font-bold text-neutral-700">Waiting longest</p><OldestList rows={report.stageAging.oldest} onOpen={onOpen} personName={personName} /></div>
+      <div className="min-w-0"><p className="mb-2 text-xs font-bold text-neutral-700">Waiting longest</p><OldestList rows={report.stageAging.oldest} onOpen={onOpen} personName={personName} /></div>
     </div>
   </ReportSection>;
 }

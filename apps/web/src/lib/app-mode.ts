@@ -10,7 +10,7 @@ export type AppMode = "studio" | "sales";
 const MODE_KEY = "vso-app-mode";
 const STUDIO_PATH_KEY = "vso-last-studio-path";
 const EVENT = "vso-app-mode-change";
-const STUDIO_ONLY = new Set(["dashboard", "today", "tasks", "board", "channels", "ventures", "decisions", "classes", "timeline", "requests", "focus", "planning"]);
+const STUDIO_ONLY = new Set(["dashboard", "today", "tasks", "board", "channels", "ventures", "decisions", "classes", "timeline", "requests", "focus", "planning", "leaderboard"]);
 
 /** The mode a route belongs to, or null for a shared page that keeps whichever mode is on. */
 export function routeMode(pathname: string): AppMode | null {

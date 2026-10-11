@@ -72,6 +72,19 @@ function ShellSkeleton() {
   </Frame>;
 }
 
+/** Everyone in the workspace (pages of 100, up to 2,000), so owner names show on every lead whatever the team's size. */
+async function allMembers() {
+  const items: Awaited<ReturnType<typeof listLiveMembers>>["items"] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const next = await listLiveMembers({ limit: 100, ...(cursor ? { cursor } : {}) });
+    items.push(...next.items);
+    if (!next.nextCursor) break;
+    cursor = next.nextCursor;
+  }
+  return { items };
+}
+
 function SalesLiveShell({ children }: { children: React.ReactNode }) {
   const { activeVentureId: ventureId, setActiveVentureId } = useStudio();
   const pathname = usePathname();
@@ -94,7 +107,7 @@ function SalesLiveShell({ children }: { children: React.ReactNode }) {
     let active = true;
     queueMicrotask(() => {
       setSessionError("");
-      Promise.all([loadLiveSession(), listLiveMembers({ limit: 100 }).catch(() => null)]).then(([nextSession, directory]) => {
+      Promise.all([loadLiveSession(), allMembers().catch(() => null)]).then(([nextSession, directory]) => {
         if (!active) return;
         setSession(nextSession);
         setMembers((directory?.items ?? []).map(({ id, name, role }) => ({ id, name, role })));

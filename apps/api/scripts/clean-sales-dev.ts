@@ -5,7 +5,7 @@
 //   node --env-file=.env node_modules/tsx/dist/cli.mjs apps/api/scripts/clean-sales-dev.ts --qa --dry-run
 //
 //   --qa              Removes what the QA scripts leave behind (Prospector tooling/vso-qa): leads they created and deleted
-//                     (tag "qa" or a QA name such as "QA Flow Test …" / "ZZ UI check co (delete me)"), and those leads' drafts,
+//                     (tag "qa", or a name the scripts write: "QA Flow Test …", "ZZ UI check co (delete me)"), and those leads' drafts,
 //                     activities, verdicts, reminders, notices and find runs. Today's send counters are recounted from what is
 //                     left, so test sends never use up a person's daily cap. Never touches a lead that is not deleted.
 //   --old-import      One-off clean of the leads imported from the old Dealflow SQLite, so Sales shows only work worth doing:
@@ -36,9 +36,12 @@ const IMPORT_SYSTEM = "dealflow-sqlite";
 const OPEN_DRAFT = ["draft", "in_review", "ready", "needs_changes"];
 const PRE_CONTACT = new Set(["identified", "researched"]);
 
-/** A lead the QA scripts made: tagged "qa", or named like their records ("QA MCP Lead x", "ZZ UI check co (delete me)"). */
-export const QA_NAME = /\bQA\b|\bZZ\b|delete me|\bUI (?:test|check)\b/i;
-const QA_RUN = /\bQA\b|\bUI test\b|delete me|safe to ignore/i;
+/**
+ * A lead the QA scripts made: tagged "qa", or with a name they write ("QA Flow Test 123", "QA MCP Lead 123", "ZZ UI check co (delete me)").
+ * A real company such as "QA Infotech" or "ZZ Traders" that someone deleted is never removed for good. Find runs: only the scripts' markers.
+ */
+export const QA_NAME = /^(?:QA (?:Flow Test|Opt-out Test|Same Person|Consent|UI Flow|MCP Lead)\b|ZZ UI (?:test|check)\b)|\(delete me\)/i;
+const QA_RUN = /safe to ignore|\(delete me\)/i;
 
 /** Buildory sells in person: the buyer's office must be in one of these states (owner, 2026-09-29). */
 const TARGET_STATES = new Set(["chhattisgarh", "madhya pradesh", "maharashtra", "odisha"]);

@@ -5,7 +5,7 @@ import { SUPPRESS_KEYS_VERSION, leadSuppressKeys, normalizeValue, suppressionKey
 
 export type SalesMigrationResult = { stagesRenamed: number; wonDatesSet: number; keysBackfilled: number; suppressionFixed: number; dncFlagged: number; verdictFlagsSet: number };
 
-export async function migrateSalesLeads(db: AppDb): Promise<SalesMigrationResult> {
+export async function migrateSalesLeads(db: AppDb, options: { whenChanged?: boolean } = {}): Promise<SalesMigrationResult> {
   const leads = db.collection("opportunities");
   // conversation -> replied; won -> invoice_contract (a won lead keeps the date it was last touched as its won date).
   const replied = await leads.updateMany({ stage: "conversation" }, { $set: { stage: "replied" } });
@@ -38,10 +38,17 @@ export async function migrateSalesLeads(db: AppDb): Promise<SalesMigrationResult
     if (batch.length >= 500) await flush();
   }
   await flush();
-  // Leads that the (re)normalised keys now match to an entry are flagged do-not-contact.
+  // Leads that the (re)normalised keys now match to an entry are flagged do-not-contact. The run at API start (`whenChanged`) skips this
+  // pass when no key changed and a pass already finished under the current rules: nothing new can match (an entry added since flagged its
+  // leads when it was added). A pass cut short (the server stopped) leaves no marker, so the next start runs it. npm run migrate always checks.
   let dncFlagged = 0;
-  for await (const entry of entries.find({ key: { $type: "string" } }, { projection: { key: 1, workspaceId: 1 } })) {
-    dncFlagged += (await leads.updateMany({ workspaceId: entry.workspaceId, suppressKeys: entry.key, deletedAt: null, doNotContact: { $ne: true } }, { $set: { doNotContact: true } })).modifiedCount;
+  const passMarker = { _id: "004-sales-dnc-pass" };
+  const passDone = (await db.collection("migrations").findOne(passMarker))?.keysVersion === SUPPRESS_KEYS_VERSION;
+  if (!options.whenChanged || keysBackfilled + suppressionFixed > 0 || !passDone) {
+    for await (const entry of entries.find({ key: { $type: "string" } }, { projection: { key: 1, workspaceId: 1 } })) {
+      dncFlagged += (await leads.updateMany({ workspaceId: entry.workspaceId, suppressKeys: entry.key, deletedAt: null, doNotContact: { $ne: true } }, { $set: { doNotContact: true } })).modifiedCount;
+    }
+    await db.collection("migrations").updateOne(passMarker, { $set: { keysVersion: SUPPRESS_KEYS_VERSION, lastRunAt: new Date() } }, { upsert: true });
   }
 
   // A lead a verdict disqualified is remembered by a flag, not by the wording of its reason: flag the ones already stored (once).

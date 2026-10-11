@@ -11,6 +11,7 @@ import { isIP } from "node:net";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+import { replaceTags, withoutElements } from "./html.js";
 import { FINDER_TOKEN, MAX_ROBOTS_BYTES, RobotsCache, type RobotsAnswer } from "./robots.js";
 
 export type LookupAddress = { address: string; family: number };
@@ -217,10 +218,11 @@ export function looksLikeChallenge(html: string, headers?: Headers): boolean {
   if (headers?.get("cf-mitigated")?.trim().toLowerCase() === "challenge") return true;
   const head = html.slice(0, 200_000);
   if (/cf-chl-|\/cdn-cgi\/challenge-platform\/|_cf_chl_opt|px-captcha|captcha-delivery\.com|_Incapsula_Resource|sgcaptcha|awswaf/i.test(head)) return true;
-  const title = /<title[^>]*>([\s\S]{0,300}?)<\/title/i.exec(head)?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  // Bounded parts only: page text comes from any website, and an unbounded [^>]* rescans the page from every unclosed "<title".
+  const title = /<title[^>]{0,500}>([\s\S]{0,300}?)<\/title/i.exec(head)?.[1]?.replace(/\s+/g, " ").trim() ?? "";
   if (/^(just a moment|attention required|access denied|are you (a )?(robot|human)|security check|human verification|verify(ing)? (that )?you are (a )?human|one more step|pardon our interruption|ddos protection|bot (check|verification))/i.test(title)) return true;
   if (!/captcha/i.test(head)) return false;
-  const text = head.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const text = replaceTags(withoutElements(head, ["script", "style"]), /<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   return text.length < 1_500 && !/<textarea\b/i.test(head);
 }
 

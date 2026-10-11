@@ -1901,6 +1901,17 @@ test("plays, find-leads runs and the brain: proposals by writers, approvals by a
   assert.equal(expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${queued.id}/cancel`, {}), 200).data.status, "cancelled");
   expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${queued.id}/cancel`, {}), 409);
   assert.equal(expectStatus(await h.call("head", "POST", `/sales/find-runs/${planned.id}/cancel`, {}), 200).data.status, "cancelled");
+  // A saved plan is queued in the app by its planner or a head: never by Claude, another contributor or a learner, and only while it is a plan.
+  const saved = parse(findRunSchema, expectStatus(await h.call("contrib", "POST", "/sales/find-runs", { ventureId: "venture-a", request: "Valve dealers in Durg", plan }), 201).data);
+  expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${saved.id}/queue`, {}, { via: "claude" }), 403);
+  expectStatus(await h.call("contrib2", "POST", `/sales/find-runs/${saved.id}/queue`, {}), 403);
+  expectStatus(await h.call("learner", "POST", `/sales/find-runs/${saved.id}/queue`, {}), 403);
+  expectStatus(await h.call("outsider", "POST", `/sales/find-runs/${saved.id}/queue`, {}), 404);
+  const nowQueued = parse(findRunSchema, expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${saved.id}/queue`, {}), 200).data);
+  assert.equal(nowQueued.status, "queued");
+  expectStatus(await h.call("head", "POST", `/sales/find-runs/${saved.id}/queue`, {}), 409);
+  assert.deepEqual((await h.call("head", "GET", "/sales/find-runs?queue=true&ventureId=venture-a")).data.map((run: any) => run.id), [saved.id]);
+  expectStatus(await h.call("contrib", "POST", `/sales/find-runs/${saved.id}/cancel`, {}), 200);
 
   // Brain: shared notes. Offers, target profiles and message rules live in offers now (docs/sales-offers.md): a new proposal of
   // those kinds is refused with a pointer to offers, and so is approving an old draft of one.

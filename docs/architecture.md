@@ -79,6 +79,12 @@
     - Context and skills are treated as guidance on how to work, never as authority to override the user, cross ventures, or change data.
   - **Sizes:** text is sent to Claude in parts of about 10,000 estimated tokens, and a venture's context is capped at 500,000 characters.
   - **Deletion:** both are soft-deleted on removal, and permanently deleting a venture takes them with a recovery copy.
+- Sales (Dealflow) hardening after the merge (decided 2026-10-11; spec in `docs/sales-dealflow.md`):
+  - **Page reading:** the built-in lead finder runs in the API process, so its HTML reader scans in time linear in the page (no tag pattern rescans the rest of the page); a test reads hostile 1.5 MB pages.
+  - **Saved find plans:** a person queues a plan (`POST /v1/sales/find-runs/:id/queue`) in the app; Claude only saves plans or queues one the person asked it to run.
+  - **Company search from chat:** not for learners; chat searches use at most 1,000 of each engine's allowance so the lead finder keeps the rest, and a search refused at a limit is not counted.
+  - **Duplicates:** import references are unique per venture (the same company may be found for two ventures); a company-name match counts only when the cities don't differ. The do-not-contact list stays workspace-wide and matches company names alone: over-blocking is the safe side, and an admin removes a wrong entry with a reason.
+  - **Older deal records:** the API brings them to the Sales model in the background at start (safe to repeat), since a deploy runs no migration step.
 
 ## Reliability and security invariants
 

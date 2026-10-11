@@ -17,7 +17,7 @@ import { defined, discardOpenDrafts, requireLeadEditor, updateLead } from "./lea
 import { OFFERS, assertVentureOffer, defaultOfferId, offerNames } from "./offers.js";
 import { leadMatchFilter } from "./queries.js";
 import { isExitStage, isPreContactStage, isWonStage, normalizeStage } from "./rules.js";
-import { SUPPRESS_KEYS_VERSION, extractEmails, extractPhones, leadSuppressKeys, normalizePhone } from "./suppression.js";
+import { SUPPRESS_KEYS_VERSION, extractEmails, extractPhones, leadSuppressKeys, normalizePhone, sameCity } from "./suppression.js";
 import { SALES_TZ } from "./workdays.js";
 
 // ---- Bulk edits -----------------------------------------------------------------------------------------------------------
@@ -412,8 +412,7 @@ const MATCH_WORDS: Record<string, string> = { email: "the same email", phone: "t
 const matchWord = (key: string) => MATCH_WORDS[key.slice(0, key.indexOf(":"))] ?? "the same details";
 const chunks = <T>(items: T[], size: number) => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
-/** A match on an email, phone or website is a duplicate; a match on the company name alone counts unless both have a city and the cities differ. */
-const sameCity = (a: unknown, b: unknown) => { const left = String(a ?? "").trim().toLowerCase(); const right = String(b ?? "").trim().toLowerCase(); return !left || !right || left === right; };
+// A match on an email, phone or website is a duplicate; a match on the company name alone counts unless both have a city and the cities differ (sameCity).
 
 /**
  * Marks the rows that match the do-not-contact list, or a lead of the venture (one deleted earlier included: it is reported, never brought
@@ -523,6 +522,12 @@ async function lockImports(ctx: SalesCtx, ventureId: string): Promise<() => Prom
   return async () => { await locks.deleteOne({ _id, token }); };
 }
 
+/** A row's lead id, the same each time this file (`recordId`: venture and content) is committed: a retry finds the leads made before. */
+function importLeadId(recordId: string, row: number): string {
+  const hex = createHash("sha256").update(`${recordId}:${row}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 /** The same rows read with the same columns into the same venture: line ends, quoting and the byte order mark do not change it. */
 function importHash(ventureId: string, data: string[][], mapping: ImportMapping): string {
   // An unmapped Offer column leaves the hash as it was before offers existed, so a file imported then is still recognised.
@@ -555,12 +560,22 @@ export async function commitImport(ctx: SalesCtx, input: ImportCommitInput): Pro
     const now = new Date();
     const importing = rows.filter((row) => row.lead && (row.status === "ok" || (input.importDuplicates && row.status === "duplicate")));
     const docs = importing.map((row) => defined({
-      _id: randomUUID(), workspaceId: ctx.workspaceId, ventureId: input.ventureId, ...row.lead!, pipelineId, suppressKeys: row.keys, suppressKeysV: SUPPRESS_KEYS_VERSION, importBatchId: batchId, createdAt: now, updatedAt: now,
+      _id: importLeadId(recordId, row.row), workspaceId: ctx.workspaceId, ventureId: input.ventureId, ...row.lead!, pipelineId, suppressKeys: row.keys, suppressKeysV: SUPPRESS_KEYS_VERSION, importBatchId: batchId, createdAt: now, updatedAt: now,
     }));
-    for (const part of chunks(docs, 250)) await ctx.db.collection("opportunities").insertMany(part, { ordered: true });
-    const result = { batchId, total: rows.length, created: docs.length, duplicates: input.importDuplicates ? 0 : count("duplicate"), doNotContact: count("do_not_contact"), invalid: count("invalid") };
+    // A commit that died part way left some of these leads already made, under the same ids: those are skipped, never added twice.
+    let created = 0;
+    for (const part of chunks(docs, 250)) {
+      try { created += (await ctx.db.collection("opportunities").insertMany(part, { ordered: false })).insertedCount; }
+      catch (error) {
+        const failed = error as { writeErrors?: { code?: number }[] | { code?: number }; insertedCount?: number };
+        const errors = [failed.writeErrors ?? []].flat();
+        if (!errors.length || errors.some((item) => item.code !== 11000)) throw error;
+        created += Number(failed.insertedCount ?? part.length - errors.length);
+      }
+    }
+    const result = { batchId, total: rows.length, created, duplicates: input.importDuplicates ? 0 : count("duplicate"), doNotContact: count("do_not_contact"), invalid: count("invalid") };
     // Only a file that created something counts as imported: one that created nothing (all duplicates) may come back with "import those too".
-    if (docs.length) await imports.insertOne({ _id: recordId, workspaceId: ctx.workspaceId, ventureId: input.ventureId, hash, batchId, userId: ctx.actor.id, created: docs.length, total: rows.length, createdAt: now });
+    if (created) await imports.insertOne({ _id: recordId, workspaceId: ctx.workspaceId, ventureId: input.ventureId, hash, batchId, userId: ctx.actor.id, created, total: rows.length, createdAt: now });
     await auditSales(ctx, "sales.lead.import", "lead_import", batchId, input.ventureId, { ...result });
     return result;
   } finally {

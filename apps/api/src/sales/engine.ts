@@ -10,7 +10,7 @@ import { AppError } from "../errors.js";
 import { canSeeVenture, canWriteIn, isHeadOf, notFound } from "./access.js";
 import type { SalesCtx } from "./ctx.js";
 import { createLead, stopContactWork, suppressedBy } from "./leads.js";
-import { SUPPRESS_KEYS_VERSION, isSharedDomain, leadSuppressKeys, normalizeCompany, normalizeDomain, normalizeEmail, normalizePhone, suppressionKey } from "./suppression.js";
+import { SUPPRESS_KEYS_VERSION, isSharedDomain, leadSuppressKeys, normalizeCompany, normalizeDomain, normalizeEmail, normalizePhone, sameCity, suppressionKey } from "./suppression.js";
 
 /** A claim with no heartbeat for this long can be taken over by another worker. */
 export const STALE_CLAIM_MS = 15 * 60_000;
@@ -50,17 +50,20 @@ export async function firstActivePipeline(ctx: SalesCtx, ventureId: string): Pro
 }
 
 /**
- * A lead of the venture (deleted ones included: a company someone removed is not found again) that has the same website domain
- * or the same normalised company name.
+ * A lead of the venture (deleted ones included: a company someone removed is not found again) that has the same website domain, or the
+ * same normalised company name where the cities don't differ (as the CSV import counts it: "Sharma Traders" of Indore is not the one in Raipur).
  */
-export async function findDuplicateLead(ctx: SalesCtx, ventureId: string, lead: { companyName: string; website?: string | undefined }): Promise<AppDocument | null> {
-  const keys: string[] = [];
+export async function findDuplicateLead(ctx: SalesCtx, ventureId: string, lead: { companyName: string; website?: string | undefined; city?: string | undefined }): Promise<AppDocument | null> {
+  const leads = ctx.db.collection("opportunities");
   const domain = lead.website ? normalizeDomain(lead.website) : null;
-  if (domain && !isSharedDomain(domain)) keys.push(suppressionKey("domain", domain));
+  if (domain && !isSharedDomain(domain)) {
+    const twin = await leads.findOne({ workspaceId: ctx.workspaceId, ventureId, suppressKeys: suppressionKey("domain", domain) }, { projection: { _id: 1, companyName: 1 } });
+    if (twin) return twin;
+  }
   const company = normalizeCompany(lead.companyName);
-  if (company) keys.push(suppressionKey("company", company));
-  if (!keys.length) return null;
-  return ctx.db.collection("opportunities").findOne({ workspaceId: ctx.workspaceId, ventureId, suppressKeys: { $in: keys } }, { projection: { _id: 1, companyName: 1 } });
+  if (!company) return null;
+  const named = await leads.find({ workspaceId: ctx.workspaceId, ventureId, suppressKeys: suppressionKey("company", company) }, { projection: { _id: 1, companyName: 1, city: 1 } }).limit(1_000).toArray();
+  return named.find((row) => sameCity(row.city, lead.city)) ?? null;
 }
 
 export type EngineSkip = { companyName: string; reason: "duplicate" | "do_not_contact" | "invalid"; id?: string; detail?: string };
@@ -79,8 +82,8 @@ export async function ingestEngineLead(ctx: SalesCtx, run: AppDocument, pipeline
     return { skipped: { companyName: given, reason: "invalid", detail: issue ? `${issue.path.join(".") || "lead"}: ${issue.message}`.slice(0, 300) : "invalid lead" } };
   }
   const lead = parsed.data;
-  // The same engine id again (a re-posted batch) is a duplicate, never a second lead.
-  const known = await ctx.db.collection("opportunities").findOne({ workspaceId: ctx.workspaceId, "externalRef.system": lead.externalRef.system, "externalRef.id": lead.externalRef.id }, { projection: { _id: 1 } });
+  // The same engine id again in this venture (a re-posted batch) is a duplicate, never a second lead; another venture may find the same company.
+  const known = await ctx.db.collection("opportunities").findOne({ workspaceId: ctx.workspaceId, ventureId: run.ventureId, "externalRef.system": lead.externalRef.system, "externalRef.id": lead.externalRef.id }, { projection: { _id: 1 } });
   if (known) return { skipped: { companyName: lead.companyName, reason: "duplicate", id: String(known._id) } };
   const keys = leadSuppressKeys({ companyName: lead.companyName, ...(lead.website ? { website: lead.website } : {}), contactRoutes: lead.contactRoutes });
   if (await suppressedBy(ctx, keys)) return { skipped: { companyName: lead.companyName, reason: "do_not_contact" } };

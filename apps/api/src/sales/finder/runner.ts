@@ -409,10 +409,10 @@ export function createFinder(options: FinderOptions): Finder {
   return { runOnce, start, stop, workerId };
 }
 
-/** A site the run should not read at all: one the finder added before, a company domain the venture already has, or one on the do-not-contact list. */
+/** A site the run should not read at all: one the finder added to this venture before, a company domain the venture already has, or one on the do-not-contact list. */
 async function knownSite(ctx: SalesCtx, ventureId: string, site: Candidate): Promise<"duplicate" | "do_not_contact" | null> {
   const leads = ctx.db.collection("opportunities");
-  if (await leads.findOne({ workspaceId: ctx.workspaceId, "externalRef.system": FINDER_SYSTEM, "externalRef.id": site.domain }, { projection: { _id: 1 } })) return "duplicate";
+  if (await leads.findOne({ workspaceId: ctx.workspaceId, ventureId, "externalRef.system": FINDER_SYSTEM, "externalRef.id": site.domain }, { projection: { _id: 1 } })) return "duplicate";
   const domain = normalizeDomain(site.domain);
   const domainKey = domain && !isSharedDomain(domain) ? suppressionKey("domain", domain) : null;
   const company = normalizeCompany(guessCompany(site.title, site.domain));

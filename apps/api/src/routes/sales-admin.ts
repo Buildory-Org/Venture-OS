@@ -168,6 +168,27 @@ export function salesAdminRoutes(database: Database): Router {
     res.json(ok(present((await db.collection("sales_find_runs").findOne({ _id: run._id }))!)));
   });
 
+  // A saved plan (Claude saves one when the person did not ask it to run) is checked by a person and queued here, in the app only.
+  router.post("/find-runs/:id/queue", async (req, res) => {
+    const ctx = salesCtx(database, req);
+    const run = await db.collection("sales_find_runs").findOne({ _id: idSchema.parse(req.params.id), workspaceId: ctx.workspaceId });
+    if (!run || !canSeeVenture(ctx.actor, run.ventureId)) throw notFound("Find run");
+    forbidClaude(ctx.via, "Queueing a saved search plan");
+    requireWriter(ctx.actor, run.ventureId, "queue searches");
+    if (!isHeadOf(ctx.actor, run.ventureId) && run.createdBy !== ctx.actor.id) throw forbidden("Only the person who planned this search or a venture head can queue it");
+    if (run.status !== "planned") throw new AppError(409, "CONFLICT", `Only a saved plan can be queued; this search is ${String(run.status)}`);
+    await loadVenture(db, ctx.actor, run.ventureId);
+    // The offer may have been paused or archived since the plan was saved.
+    if (typeof run.offerId === "string") await assertUsableOffer(ctx, run.ventureId, run.offerId);
+    const now = new Date();
+    await atomic(database, async (session) => {
+      const changed = await db.collection("sales_find_runs").updateOne({ _id: run._id, status: "planned" }, { $set: { status: "queued", queuedBy: ctx.actor.id, queuedAt: now, updatedAt: now } }, { session });
+      if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This search changed: reload it and try again");
+      await auditSales(ctx, "sales.find_run.queue", "find_run", String(run._id), String(run.ventureId), undefined, session);
+    });
+    res.json(ok(present((await db.collection("sales_find_runs").findOne({ _id: run._id }))!)));
+  });
+
   // ---- Brain ----------------------------------------------------------------------------------------------------------------
 
   async function loadBrainItem(ctx: SalesCtx, id: string): Promise<AppDocument> {

@@ -5,7 +5,7 @@ import {
   opportunityInputSchema, opportunitySchema, playInputSchema, playSchema, playUpdateSchema, salesOverviewSchema, successEnvelope, suppressionInputSchema, suppressionSchema,
   updateOpportunitySchema, verdictOverrideInputSchema, verdictSchema, taskSchema, whatsappOptInInputSchema,
 } from "@venture-studio/contracts";
-import { request } from "@/lib/studio-api";
+import { request as send } from "@/lib/studio-api";
 
 // Client for the Sales (Dealflow) API. Every route lives under /v1/sales; see docs/sales-dealflow.md.
 
@@ -27,8 +27,27 @@ export type DraftWithLead = z.infer<typeof draftWithLeadSchema>;
 export type FindRun = z.infer<typeof findRunSchema>;
 export type Suppression = z.infer<typeof suppressionSchema>;
 
+/**
+ * Reads asked for by two parts of a screen at once (the Sales layout and the sidebar counts both read the Overview; the Overview's money card
+ * is mounted for phones and for laptops) share one request while it is in flight. A later call always fetches afresh.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+/** Every Sales request. A change (anything but a read) lets go of the shared reads, so a refresh after it never gets an answer from before it. */
+function request(path: string, init?: RequestInit, options?: { devAuth?: boolean }) {
+  if (init?.method && init.method !== "GET") inFlight.clear();
+  return send(path, init, options);
+}
+function shared<T>(path: string, load: () => Promise<T>): Promise<T> {
+  const pending = inFlight.get(path) as Promise<T> | undefined;
+  if (pending) return pending;
+  const next = load().finally(() => inFlight.delete(path));
+  inFlight.set(path, next);
+  return next;
+}
+
 export async function getSalesOverview(input: { ventureId?: string; owner?: "me" } = {}) {
-  return successEnvelope(salesOverviewSchema).parse(await request(`/v1/sales/overview${query(input)}`)).data;
+  const path = `/v1/sales/overview${query(input)}`;
+  return shared(path, async () => successEnvelope(salesOverviewSchema).parse(await request(path)).data);
 }
 
 export async function listLeads(input: Partial<z.input<typeof leadListQuerySchema>> = {}) {
@@ -37,8 +56,8 @@ export async function listLeads(input: Partial<z.input<typeof leadListQuerySchem
 }
 /** The pipeline in money for the Overview: open and weighted value, the forecast by expected close month, won this month. */
 export async function getPipelineValue(input: Partial<z.input<typeof pipelineValueQuerySchema>> = {}) {
-  const valid = pipelineValueQuerySchema.parse(input);
-  return successEnvelope(pipelineValueSchema).parse(await request(`/v1/sales/pipeline-value${query(valid)}`)).data;
+  const path = `/v1/sales/pipeline-value${query(pipelineValueQuerySchema.parse(input))}`;
+  return shared(path, async () => successEnvelope(pipelineValueSchema).parse(await request(path)).data);
 }
 /** Counts for the lead filters (state, city, industry, how to reach), with every other active filter applied. */
 export async function getLeadFacets(input: Partial<z.input<typeof leadFacetsQuerySchema>> = {}) {
@@ -132,6 +151,11 @@ export async function createFindRun(input: z.input<typeof findRunInputSchema>, o
 }
 export async function cancelFindRun(runId: string) {
   return successEnvelope(findRunSchema).parse(await request(`/v1/sales/find-runs/${id(runId)}/cancel`, json({}))).data;
+}
+
+/** Queues a saved plan (one Claude saved without running it) for the lead finder: its planner or a venture head, in the app. */
+export async function queueFindRun(runId: string) {
+  return successEnvelope(findRunSchema).parse(await request(`/v1/sales/find-runs/${id(runId)}/queue`, json({}))).data;
 }
 
 // The lead finder built into the API: on or off, whether company search has a key (never the key), the run it is on and how its last one ended.

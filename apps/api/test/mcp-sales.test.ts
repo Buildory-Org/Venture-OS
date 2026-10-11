@@ -145,7 +145,9 @@ test("sales tools follow the token's scopes, and nothing that approves, sends or
       ["POST", "/v1/sales/drafts/draft-1/approve"], ["POST", "/v1/sales/drafts/draft-1/sent"], ["POST", "/v1/sales/drafts/draft-1/veto"], ["POST", "/v1/sales/drafts/draft-1/discard"],
       ["POST", "/v1/sales/plays/play-1/approve"], ["PATCH", "/v1/sales/plays/play-1"], ["POST", "/v1/sales/brain/item-1/approve"], ["PATCH", "/v1/sales/brain/item-1"],
       ["POST", "/v1/sales/verdicts/verdict-1/override"], ["DELETE", "/v1/sales/leads/lead-1"], ["POST", "/v1/sales/leads/lead-1/delivery-work"], ["POST", "/v1/sales/activities/act-1/handled"],
-      ["POST", "/v1/sales/suppression"], ["DELETE", "/v1/sales/suppression/entry-1"], ["PUT", "/v1/sales/settings"], ["PATCH", "/v1/sales/settings"], ["POST", "/v1/sales/find-runs/run-1/cancel"],
+      ["POST", "/v1/sales/suppression"], ["DELETE", "/v1/sales/suppression/entry-1"], ["PUT", "/v1/sales/settings"], ["PATCH", "/v1/sales/settings"], ["POST", "/v1/sales/find-runs/run-1/cancel"], ["POST", "/v1/sales/find-runs/run-1/queue"],
+      // Admin and person-only lists: company-search keys, bulk edits, CSV import and export, saved views.
+      ["GET", "/v1/sales/search-keys"], ["PUT", "/v1/sales/search-keys/exa"], ["POST", "/v1/sales/search-keys/exa/test"], ["POST", "/v1/sales/leads/bulk"], ["POST", "/v1/sales/leads/import/preview"], ["POST", "/v1/sales/leads/import/commit"], ["GET", "/v1/sales/leads/export.csv"], ["GET", "/v1/sales/views"], ["POST", "/v1/sales/views"],
       ["PATCH", "/v1/sales/activities/act-1"], ["POST", "/v1/sales/leads/lead-1/whatsapp-opt-in"], ["POST", "/v1/sales/brain/item-1/archive"], ["PUT", "/v1/sales/leads/lead-1"], ["GET", "/v1/opportunities"], ["DELETE", "/v1/sales/drafts/draft-1"],
       // Offers: approving a version, discarding one, editing a draft and pausing, activating or archiving an offer stay in the app.
       ["POST", "/v1/sales/offers/versions/version-1/approve"], ["POST", "/v1/sales/offers/versions/version-1/discard"], ["PATCH", "/v1/sales/offers/versions/version-1"], ["POST", "/v1/sales/offers/offer-1/state"], ["POST", "/v1/sales/offers/offer-1"],
@@ -214,6 +216,13 @@ test("sales workflow through Claude: research, judge, draft, review in a separat
     assert.equal(stored?.contactRoutes?.[0].publishedByCompany, true);
     const again = await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "gupta traders", source: "a second look" }] });
     assert.deepEqual([again.added, again.skipped[0].reason], [0, "already a lead (identified)"]);
+    // The same name in another city is another company; "Jaipur, RJ" is still Jaipur.
+    const otherCity = await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Gupta Traders", city: "Udaipur", source: "Udaipur trade list" }] });
+    assert.equal(otherCity.added, 1);
+    const sameCityAgain = await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Gupta Traders", city: "Jaipur, RJ", source: "a third look" }] });
+    assert.deepEqual([sameCityAgain.added, sameCityAgain.skipped[0].reason], [0, "already a lead (identified)"]);
+    // The rest of this walk-through counts the five leads above: the Udaipur one goes again.
+    await db.collection("opportunities").deleteOne({ _id: otherCity.created[0].leadId as never });
     await refused(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Bad Route Co", source: "Directory listing", contactRoutes: [{ kind: "email", value: "info@badroute.in" }] }] }, /contactRoutes\.0\.sourceUrl|contactRoutes\[0\]\.sourceUrl/);
     await refused(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Social Co", source: "Directory listing", contactRoutes: [{ kind: "linkedin", value: "https://linkedin.com/in/someone", sourceUrl: "https://example.com" }] }] }, /contactRoutes\.0\.kind|contactRoutes\[0\]\.kind/);
     await refused(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Typo Co", source: "Directory listing", contactRoutes: [{ kind: "email", value: "info at typo dot in", sourceUrl: "https://www.typo.in/contact" }] }] }, /an email route is one plain address/);

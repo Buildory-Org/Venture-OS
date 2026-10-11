@@ -9,6 +9,7 @@ import { CARD_BUILDERS, CARD_MIME, CARD_SHOWN_NOTE, CARD_URI, UI_EXTENSION, chat
 import { CARD_HTML } from "../src/mcp/sales-card-view.js";
 import { BATCH, greeting, refusalGuide, researchOption, startNext, startSay } from "../src/mcp/sales-guided.js";
 import { guessCompany } from "../src/mcp/tools-search.js";
+import { reserveSearch } from "../src/sales/search-engines.js";
 import { daybreakPlan, daybreakSay, daybreakWork, rateText, reportFrom, reportNext, reportSay } from "../src/mcp/tools-sales-reports.js";
 import { FULL, mcpCall, mcpTool, withSalesApp } from "./mcp-sales-harness.js";
 
@@ -471,16 +472,29 @@ test("search_companies with keys: TinyFish and Exa, merged by site, known leads 
       exaAnswer = () => Response.json({ results: [] });
       assert.match((await ok(writer, "search_companies", { query: "pump distributors in Indore" })).warnings[0], /^TinyFish Search refused the request: its key was rejected or its quota is used up$/);
 
-      // The workspace's allowance: a used-up engine is skipped with a plain note.
+      // The workspace's allowance: chat searches use their share of it (the rest stays for the lead finder), a used-up engine is skipped
+      // with a plain note, and asking again does not count.
       const today = new Date().toISOString().slice(0, 10);
-      await db.collection("mcp_search_usage").updateOne({ _id: `workspace-a:tinyfish:${today}` as never }, { $set: { calls: 1_500 } }, { upsert: true });
+      const tinyfishToday = { _id: `workspace-a:tinyfish:${today}` as never };
+      await db.collection("mcp_search_usage").updateOne(tinyfishToday, { $set: { calls: 1_000 } }, { upsert: true });
       tinyfishAnswer = () => Response.json({ results: [{ url: "https://never-asked.in", title: "Never asked", snippet: "" }] });
       exaAnswer = () => Response.json({ results: [{ url: "https://exa-only.in", title: "Exa Only", highlights: ["x"] }] });
       const capped = await ok(writer, "search_companies", { query: "pump distributors in Indore" });
       assert.deepEqual(capped.companies.map((row: any) => row.domain), ["exa-only.in"]);
-      assert.deepEqual(capped.warnings, ["TinyFish has reached this workspace's daily allowance"]);
+      assert.deepEqual(capped.warnings, ["TinyFish has reached this workspace's daily allowance for searches from chat (the rest is kept for the lead finder)"]);
+      assert.equal((await db.collection("mcp_search_usage").findOne(tinyfishToday))?.calls, 1_000, "a refused search is not counted, so the lead finder keeps its 500");
+      assert.equal(await reserveSearch(db, "workspace-a", "tinyfish"), true, "the lead finder still has its share");
 
-      // Per token: twelve a minute.
+      // A learner reads the pipeline but doesn't search: their key is refused before anything is spent.
+      const exaBefore = seen.filter((call) => call.engine === "exa").length;
+      const learnerSearch = await mcpTool(origin, await tokenFor("learner"), "search_companies", { query: "pump distributors in Indore" });
+      assert.equal(learnerSearch.isError, true);
+      assert.match(String(learnerSearch.text), /Company search is for people who add leads/);
+      assert.equal(seen.filter((call) => call.engine === "exa").length, exaBefore);
+
+      // Per token: twelve a minute. The budget counts in clock minutes, so the thirteen calls start early in one and all fall inside it.
+      const intoMinute = Date.now() % 60_000;
+      if (intoMinute > 40_000) await new Promise((resolve) => setTimeout(resolve, 60_000 - intoMinute + 100));
       const limited = await tokenFor("member");
       for (let index = 0; index < 12; index++) await ok(limited, "search_companies", { query: `pump distributors ${index}`, engine: "exa" });
       const over = await mcpTool(origin, limited, "search_companies", { query: "pump distributors again", engine: "exa" });

@@ -21,9 +21,15 @@ const PHOTO_SIGNATURES: [offset: number, hex: string][] = [[0, "ffd8ff"], [0, "8
 const isPhoto = (body: Buffer) => PHOTO_SIGNATURES.some(([offset, hex]) => body.subarray(offset, offset + hex.length / 2).toString("hex") === hex);
 const UNSUPPORTED = "Attach a photo (JPG, PNG, WebP or HEIC) or a PDF of the receipt";
 
+// The kept copy of a photo: at most about 4 megapixels (a tall, narrow receipt keeps its width, so small print stays sharp) and 4096 px
+// on its long side, as a WebP at quality 85 with sharp colour edges for text. A 12-megapixel phone photo comes out around a tenth of
+// its size.
+const MAX_PIXELS = 4_000_000;
+const MAX_SIDE = 4096;
+
 /**
- * A PDF is kept as it came (with its page count, read in the sandboxed PDF reader); a photo becomes a WebP at most 1600px on its long
- * side, turned upright, its location and camera data dropped.
+ * A PDF is kept as it came (with its page count, read in the sandboxed PDF reader); a photo becomes a WebP within MAX_PIXELS, turned
+ * upright, its location and camera data dropped.
  */
 export async function prepareReceipt(body: Buffer): Promise<PreparedReceipt> {
   if (body.subarray(0, 5).toString("latin1") === "%PDF-") {
@@ -32,8 +38,12 @@ export async function prepareReceipt(body: Buffer): Promise<PreparedReceipt> {
   }
   if (!isPhoto(body)) throw new AppError(415, "BAD_REQUEST", UNSUPPORTED);
   try {
-    const bytes = await sharp(body, { limitInputPixels: 50_000_000, animated: false, failOn: "error" })
-      .rotate().resize(1600, 1600, { fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toBuffer();
+    const options = { limitInputPixels: 50_000_000, animated: false, failOn: "error" } as const;
+    const { width = 0, height = 0 } = await sharp(body, options).metadata();
+    // Fitting the long side into a square box scales either orientation the same way.
+    const longSide = Math.max(1, Math.round(Math.max(width, height) * Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, width * height)), MAX_SIDE / Math.max(width, height, 1))));
+    const bytes = await sharp(body, options).rotate().resize(longSide, longSide, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 85, smartSubsample: true, effort: 5 }).toBuffer();
     return { bytes, contentType: "image/webp" };
   } catch {
     throw new AppError(415, "BAD_REQUEST", UNSUPPORTED);

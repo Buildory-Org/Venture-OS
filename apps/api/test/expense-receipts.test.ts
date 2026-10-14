@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import { expenseReceiptSchema, successEnvelope } from "@venture-studio/contracts";
-import { cleanReceipt, readReceipt, RECEIPT_MODEL, receiptReadFormat } from "../src/expense-receipts.js";
+import { cleanReceipt, prepareReceipt, readReceipt, RECEIPT_MODEL, receiptReadFormat } from "../src/expense-receipts.js";
 import { DEFAULT_EXPENSE_CATEGORIES } from "../src/routes/expenses.js";
 import { withSalesApp } from "./mcp-sales-harness.js";
 
@@ -79,6 +79,22 @@ test("the answer format stays within the structured-output limits: at most 16 fi
   assert.deepEqual([clean.merchantTaxId, clean.billedTo, clean.cardLast4, clean.currency, clean.date, clean.categoryId], [null, null, null, null, null, null]);
 });
 
+test("a photo is kept as a WebP of about 4 megapixels at most: a phone photo shrinks, a tall receipt keeps its width, a small one stays as it is", async () => {
+  const photo = (width: number, height: number) => sharp({ create: { width, height, channels: 3, background: "#7d7468", noise: { type: "gaussian", mean: 110, sigma: 12 } } }).jpeg({ quality: 90 }).toBuffer();
+  const kept = async (width: number, height: number) => {
+    const original = await photo(width, height);
+    const { bytes, contentType } = await prepareReceipt(original);
+    const meta = await sharp(bytes).metadata();
+    return { contentType, format: meta.format, width: meta.width!, height: meta.height!, smaller: bytes.length < original.length };
+  };
+  const phone = await kept(3000, 4000);
+  assert.deepEqual([phone.contentType, phone.format, phone.smaller], ["image/webp", "webp", true]);
+  assert.ok(phone.width * phone.height <= 4_000_000 && phone.width * phone.height > 3_900_000 && Math.abs(phone.width / phone.height - 0.75) < 0.01, `12 MP becomes about 4 MP, same shape: ${phone.width}x${phone.height}`);
+  const tall = await kept(1100, 4200);
+  assert.ok(tall.width >= 1000 && tall.height >= 3800, `a tall receipt keeps nearly all its width: ${tall.width}x${tall.height}`);
+  assert.deepEqual([(await kept(1200, 1600)).width, (await kept(1200, 1600)).height], [1200, 1600], "within the budget: never enlarged or shrunk");
+});
+
 test("with no key set, a receipt is kept but not read", async () => {
   assert.deepEqual(await readReceipt(undefined, { bytes: Buffer.from("x"), contentType: "image/webp" }, []), { error: "Reading receipts isn't set up yet: type the details in." });
 });
@@ -94,7 +110,7 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       await call("PUT", "/expenses/settings/access/user-member", "boss", { level: "edit", restricted: false });
       await call("PUT", "/expenses/settings/access/user-member2", "boss", { level: "view", restricted: false });
 
-      // The boss (restricted access) uploads a photo: kept as a WebP at most 1600px wide, read, the category matched.
+      // The boss (restricted access) uploads a photo: kept as a WebP (this one is within the size budget, so at its own size), read, the category matched.
       const first = await upload("boss", photo, "image/jpeg");
       assert.equal(first.status, 201, first.text);
       const receipt = successEnvelope(expenseReceiptSchema).parse(first.body).data;
@@ -103,7 +119,7 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       assert.deepEqual([sent.model, sent.thinking, sent.output_config.effort, sent.output_config.format.type, sent.messages[0].content[0].type, sent.messages[0].content[0].source.media_type], [RECEIPT_MODEL, { type: "adaptive" }, "low", "json_schema", "image", "image/webp"]);
       assert.match(sent.messages[0].content[1].text, /Salary/, "the boss may file it under a restricted category");
       const kept = await fetch(`${origin}/v1/expenses/receipts/${receipt.id}/file`, { headers: { "x-dev-user-id": "user-boss" } });
-      assert.deepEqual([kept.status, kept.headers.get("content-type"), (await sharp(Buffer.from(await kept.arrayBuffer())).metadata()).width], [200, "image/webp", 1600]);
+      assert.deepEqual([kept.status, kept.headers.get("content-type"), (await sharp(Buffer.from(await kept.arrayBuffer())).metadata()).width], [200, "image/webp", 2400]);
 
       // Not attached yet: only who uploaded it sees it. People who only view can't upload; a file that isn't a photo or PDF is refused.
       assert.equal((await call("GET", `/expenses/receipts/${receipt.id}`, "member")).status, 404);
@@ -182,7 +198,12 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
 
       // The audit trail says a receipt came in and whether it was read; never what it said.
       const audits = await db.collection("audit_events").find({ action: "expense.receipt.upload" }).toArray();
-      assert.ok(audits.length >= 6 && audits.every((entry) => !JSON.stringify(entry).includes("285") && !JSON.stringify(entry).includes("Sushi")));
+      // (Field names, not a search for "285": ids and timestamps can contain those digits by chance.)
+      assert.ok(audits.length >= 6, `${audits.length} uploads audited`);
+      for (const entry of audits) {
+        assert.deepEqual(Object.keys(entry.metadata ?? {}).sort(), ["contentType", "read"]);
+        assert.doesNotMatch(JSON.stringify(entry), /Sushi|Edamame/);
+      }
     }, "expense_receipts", { ANTHROPIC_API_KEY: "sk-ant-test-stand-in", LOCAL_UPLOAD_DIR: uploads });
   } finally {
     claude.restore();

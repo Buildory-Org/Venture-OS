@@ -14,6 +14,8 @@ import { isCompressibleImage, prepareUpload } from "@/lib/image-compress";
 const KIND: Record<ReceiptData["kind"], string> = { receipt: "Receipt", tax_invoice: "Tax invoice", invoice: "Invoice", bill: "Bill", other: "Receipt" };
 const PAID_BY: Record<ReceiptData["paymentMethod"], string> = { cash: "Cash", card: "Card", upi: "UPI", bank_transfer: "Bank transfer", wallet: "Wallet", other: "Other", unknown: "" };
 const GSTIN = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+// Receipts aren't chat photos: up to 3200 px either way at high quality, so the server still has the small print to keep.
+const RECEIPT_UPLOAD = { longSide: 3200, shortSide: 3200, quality: 0.92 };
 
 function money(value: number, currency: string | null) {
   if (currency) { try { return new Intl.NumberFormat("en-IN", { style: "currency", currency, minimumFractionDigits: 2 }).format(value); } catch { /* an unknown code: plain below */ } }
@@ -125,8 +127,9 @@ export function ReceiptSection({ receiptId, canEdit, onReceipt }: Props) {
     setError("");
     setBusy("reading");
     try {
-      // Photos shrink first, like chat images (the server keeps a smaller copy still); a PDF goes as it is.
-      const sent = isCompressibleImage(file.type) ? (await prepareUpload(file, { hd: false })).file : file;
+      // A big phone photo shrinks first so it uploads quickly, but gently (receipts are small print; the server makes the kept copy);
+      // a PDF goes as it is.
+      const sent = isCompressibleImage(file.type) ? (await prepareUpload(file, { hd: false }, RECEIPT_UPLOAD)).file : file;
       if (sent.size > MAX_RECEIPT_BYTES) { setError("That file is over 10 MB: pick a smaller photo or PDF."); return; }
       const added = await uploadReceipt(sent);
       setReceipt(added); latest.current(added, true);

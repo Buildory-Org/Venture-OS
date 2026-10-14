@@ -197,7 +197,9 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const companies = await db.collection(COMPANIES).find({ workspaceId, _id: { $in: [...seen.keys()] as never[] } }).toArray();
     return companies.map((company) => {
       const visible = seen.get(String(company._id))!;
-      return { id: String(company._id), name: String(company.name), website: (company.website as string | null) ?? null, gstin: (company.gstin as string | null) ?? null, logo: (company.logo as { version?: string } | undefined)?.version ?? null, keys: [...new Set([companyKey(String(company.name)), ...visible.names.map(companyKey)])], expenses: visible.expenses };
+      const fetching = company.logoStatus === "fetching" && company.logoCheckedAt instanceof Date && Date.now() - company.logoCheckedAt.getTime() < 120_000;
+      const logoStatus = company.logo ? null : fetching ? "fetching" : company.logoStatus ? "none" : null;
+      return { id: String(company._id), name: String(company.name), website: (company.website as string | null) ?? null, gstin: (company.gstin as string | null) ?? null, logo: (company.logo as { version?: string } | undefined)?.version ?? null, logoStatus, keys: [...new Set([companyKey(String(company.name)), ...visible.names.map(companyKey)])], expenses: visible.expenses };
     }).sort((a, b) => a.name.localeCompare(b.name));
   }
   /** A company the person can see (it has an expense they can see), or not found. */
@@ -225,13 +227,15 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     return before ? version : null;
   }
   /** Fetches the logo the company's website names, unless someone uploaded one (in the background; a few an hour per person). */
+  /** Whether a logo is being looked for: the screens say so (and say when none was found). Marked first, so the answer is never stale. */
   async function logoFromWebsite(companyId: string, actorId: string) {
     if (config.COMPANY_LOGO_FETCH === "off" || await overLimit(db, `company-logo-fetch:${actorId}`, LOGO_FETCHES_PER_HOUR, 3_600_000)) return;
     const company = await db.collection(COMPANIES).findOne({ _id: companyId as never });
     if (!company?.website || (company.logo as { source?: string } | undefined)?.source === "upload") return;
-    const bytes = await fetchLogoInTurn(String(company.website), { userAgent: `VentureStudioOS-logo/1.0 (+${config.APP_ORIGIN})` });
-    await db.collection(COMPANIES).updateOne({ _id: companyId as never }, { $set: { logoCheckedAt: new Date() } });
+    await db.collection(COMPANIES).updateOne({ _id: companyId as never }, { $set: { logoStatus: "fetching", logoCheckedAt: new Date() } });
+    const bytes = await fetchLogoInTurn(String(company.website), { userAgent: `VentureStudioOS-logo/1.0 (+${config.APP_ORIGIN})` }).catch(() => null);
     if (bytes) await saveLogo(String(company.workspaceId), companyId, bytes, "website");
+    await db.collection(COMPANIES).updateOne({ _id: companyId as never }, bytes ? { $unset: { logoStatus: "" } } : { $set: { logoStatus: "none" } });
   }
   /** Refuses a write to a company merged into another a moment ago (the person saves again and it goes to the one it was merged into). */
   async function companyStill(workspaceId: string, companyId: string, session?: ClientSession) {
@@ -479,8 +483,10 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     await db.collection(COMPANIES).updateOne({ _id: company._id }, { ...(Object.keys(set).length ? { $set: set } : {}), ...(key ? { $addToSet: { keys: key } } : {}) })
       .catch((error: { code?: number }) => { throw error.code === 11000 ? new AppError(409, "CONFLICT", "That name can't be used: pick another") : error; });
     await record("expense.company.update", "expense_company", String(company._id), { fields: Object.keys(change).sort().join(",") });
-    if (typeof set.website === "string" && set.website !== company.website) fetchLogoLater(String(company._id), actor.id);
-    res.json(ok({ id: String(company._id) }));
+    // A website (new, or saved again: "Find logo") is looked up for a logo, unless someone uploaded one.
+    const fetching = typeof set.website === "string" && (company.logo as { source?: string } | undefined)?.source !== "upload" && config.COMPANY_LOGO_FETCH !== "off";
+    if (fetching) fetchLogoLater(String(company._id), actor.id);
+    res.json(ok({ id: String(company._id), fetching }));
   });
 
   // One company into another: its expenses, spellings, and the website, GSTIN or logo the other lacks move across.

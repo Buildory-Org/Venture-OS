@@ -173,6 +173,8 @@ export const expenseCompanySchema = z.object({
   id: idSchema, name: z.string(), website: z.string().nullable(), gstin: z.string().nullable(),
   /** The logo's version (so a changed logo is fetched afresh), or null: the company shows its initial. */
   logo: z.string().nullable(),
+  /** Without a logo: one is being looked for on its website, or none was found there. */
+  logoStatus: z.enum(["fetching", "none"]).nullable().default(null),
   /** The spellings seen for it (as companyKey), so a typed name can be matched to it. */
   keys: z.array(z.string()),
   /** How many of its expenses the person can see. */

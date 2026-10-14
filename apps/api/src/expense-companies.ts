@@ -6,9 +6,10 @@ import { isPhoto } from "./expense-receipts.js";
 import { abortable, checkUrl, nodeFetch, readCapped, safeAddress, systemLookup, type FetchImpl, type LookupImpl } from "./sales/finder/fetch.js";
 
 // The companies expenses are paid to (docs/expenses.md#companies): grouped without any model, by the name's key (companyKey), else
-// GSTIN, else website (never a shared mail or payment domain such as gmail.com or razorpay.com). A logo is a 128 px WebP made from an image someone uploads, or from the icon the company's own website names,
-// fetched with the lead finder's safety checks (public https hosts only, every redirect checked, the connection pinned to the checked
-// address, small time and size limits). Nothing goes to a third-party icon service.
+// GSTIN, else website (never a shared mail or payment domain such as gmail.com or razorpay.com). A logo is a 128 px WebP made from an
+// image someone uploads, or from the icon the company's own website names, else (when the site refuses automated requests or names no
+// usable icon) from Google's favicon service, which then learns that domain and nothing else. Both are fetched with the lead finder's
+// safety checks (public https hosts only, every redirect checked, the connection pinned to the checked address, small time and size limits).
 
 export const COMPANIES = "expense_companies";
 const GSTIN = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -171,12 +172,17 @@ async function getPublic(url: string, max: number, accept: string, deps: LogoFet
   return null;
 }
 
-/** The logo a company's website names (its best icon, else /apple-touch-icon.png, else /favicon.ico), as kept; null when there is none. */
+/**
+ * A company's logo, as kept: the best icon its own website names (else /apple-touch-icon.png, else /favicon.ico); when the site refuses
+ * automated requests (GoDaddy and OpenAI do) or names nothing usable, Google's favicon service for that domain. Null when neither has one
+ * (Google answers 404 then, rather than its generic globe).
+ */
 export async function fetchLogo(host: string, deps: LogoFetchers = {}): Promise<Buffer | null> {
   const deadline = Date.now() + LOGO_DEADLINE_MS;
   const home = await getPublic(`https://${host}/`, MAX_HOME_BYTES, "text/html", deps);
   const named = home && /html/i.test(home.type) ? iconLinks(home.bytes.toString("utf8"), home.url) : [];
-  for (const url of [...named, `https://${host}/apple-touch-icon.png`, `https://${host}/favicon.ico`].slice(0, 5)) {
+  const fromSite = [...named, `https://${host}/apple-touch-icon.png`, `https://${host}/favicon.ico`].slice(0, 5);
+  for (const url of [...fromSite, `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=128`]) {
     if (Date.now() > deadline) return null;
     const icon = await getPublic(url, MAX_ICON_BYTES, "image/*", deps);
     const logo = icon && !icon.truncated ? await logoFromImage(icon.bytes) : null;

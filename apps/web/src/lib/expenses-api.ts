@@ -43,7 +43,10 @@ export async function receiptFileUrl(receiptId: string) {
   return URL.createObjectURL(await response.blob());
 }
 // ---- Companies ----
-export async function updateCompany(companyId: string, change: { name?: string; website?: string | null }) { await request(`/v1/expenses/companies/${id(companyId)}`, send("PATCH", change)); }
+/** `fetching` when its logo is now being looked for on the website (it shows in a few seconds). */
+export async function updateCompany(companyId: string, change: { name?: string; website?: string | null }) { return successEnvelope(z.object({ id: z.string(), fetching: z.boolean().default(false) })).parse(await request(`/v1/expenses/companies/${id(companyId)}`, send("PATCH", change))).data; }
+/** Reads again a little later: a logo looked for on a website takes a few seconds. */
+export const refreshSoon = (refresh: () => void) => { for (const ms of [4_000, 10_000]) window.setTimeout(refresh, ms); };
 export async function mergeCompany(companyId: string, into: string) { await request(`/v1/expenses/companies/${id(companyId)}/merge`, send("POST", { into })); }
 /** An image for the company's logo (kept as a 128 px WebP). */
 export async function uploadCompanyLogo(companyId: string, file: File) { await request(`/v1/expenses/companies/${id(companyId)}/logo`, { method: "POST", body: file, headers: { "content-type": file.type || "application/octet-stream" } }); }

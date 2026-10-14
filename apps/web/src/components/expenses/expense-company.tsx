@@ -6,7 +6,7 @@ import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { ActionLabel, inputClass, Notice, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { describeError } from "@/lib/errors";
-import { companyLogoUrl, mergeCompany, removeCompanyLogo, updateCompany, uploadCompanyLogo } from "@/lib/expenses-api";
+import { companyLogoUrl, mergeCompany, refreshSoon, removeCompanyLogo, updateCompany, uploadCompanyLogo } from "@/lib/expenses-api";
 
 // Companies in the expense tracker (docs/expenses.md#companies): a logo (or the company's initial) wherever an expense shows, and
 // Settings → Companies to rename, set a website or logo, and merge two spellings into one.
@@ -58,11 +58,20 @@ export function CompaniesPanel({ companies, onChanged }: { companies: ExpenseCom
     if (!editing) return;
     const value = editing.value.trim();
     if (editing.field === "name" && !value) return;
-    if (await run(editing.id, () => updateCompany(editing.id, editing.field === "name" ? { name: value } : { website: value || null }), editing.field === "name" ? "Company renamed" : value ? "Website saved: its logo is fetched in a moment" : "Website removed")) setEditing(null);
+    let fetching = false;
+    if (await run(editing.id, async () => { fetching = (await updateCompany(editing.id, editing.field === "name" ? { name: value } : { website: value || null })).fetching; }, editing.field === "name" ? "Company renamed" : value ? "Website saved: looking for its logo" : "Website removed")) {
+      setEditing(null);
+      if (fetching) refreshSoon(onChanged);
+    }
+  }
+  /** Looks for the logo on the company's website again (after none was found, or for a company saved before logos). */
+  async function findLogo(company: ExpenseCompany) {
+    let fetching = false;
+    if (await run(company.id, async () => { fetching = (await updateCompany(company.id, { website: company.website })).fetching; }, `Looking for ${company.name}'s logo`) && fetching) refreshSoon(onChanged);
   }
   return <Panel className="flex flex-col">
     <PanelHead title="Companies" aside={<span className="text-xs font-semibold text-neutral-500">{companies.length}</span>} />
-    <p className="px-4 pt-3 text-xs leading-5 text-neutral-500 sm:px-5">Expenses are grouped by who they were paid to: the same name, GSTIN or website (&ldquo;GoDaddy.com, LLC&rdquo; and &ldquo;GODADDY INDIA&rdquo; are one). Merge any the grouping missed; a logo comes from the website, or upload one.</p>
+    <p className="px-4 pt-3 text-xs leading-5 text-neutral-500 sm:px-5">Expenses are grouped by who they were paid to: the same name, GSTIN or website (&ldquo;GoDaddy.com, LLC&rdquo; and &ldquo;GODADDY INDIA&rdquo; are one). Merge any the grouping missed. Give a company its website and its logo is found for you (from the site, else Google&apos;s favicon service), or upload one.</p>
     {companies.length > 8 && <div className="px-4 pt-3 sm:px-5"><input aria-label="Find a company" className={clsx(inputClass, "!min-h-9 !text-sm")} placeholder="Find a company" value={query} onChange={(event) => setQuery(event.target.value)} /></div>}
     <Notice tone="error" message={error} onDismiss={() => setError("")} className="mx-4 mt-3 sm:mx-5" />
     {shown.length === 0 ? <p className="px-4 py-4 text-sm text-neutral-500 sm:px-5">{companies.length ? "No company matches." : "Companies appear here as expenses are added."}</p>
@@ -72,11 +81,14 @@ export function CompaniesPanel({ companies, onChanged }: { companies: ExpenseCom
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-bold text-neutral-900">{company.name}</span>
             <span className="block truncate text-xs text-neutral-500">{[company.website, company.gstin && `GSTIN ${company.gstin}`, `${company.expenses} ${company.expenses === 1 ? "expense" : "expenses"}`].filter(Boolean).join(" · ")}</span>
+            {company.logoStatus === "fetching" && <span role="status" className="mt-0.5 flex items-center gap-1.5 text-xs text-primary-700"><span aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-primary-200 border-t-primary-700" />Finding the logo on {company.website}…</span>}
+            {company.logoStatus === "none" && company.website && <span className="mt-0.5 block text-xs text-warning-text">No logo found on {company.website}: upload one.</span>}
           </span>
           <span className="flex shrink-0 flex-wrap items-center gap-0.5">
             <button type="button" disabled={busy !== ""} onClick={() => setEditing({ id: company.id, field: "name", value: company.name })} className={linkButton}>Rename</button>
             <button type="button" disabled={busy !== ""} onClick={() => setEditing({ id: company.id, field: "website", value: company.website ?? "" })} className={linkButton}>Website</button>
-            <button type="button" disabled={busy !== ""} onClick={() => { uploadFor.current = company.id; upload.current?.click(); }} className={linkButton}>{company.logo ? "New logo" : "Logo"}</button>
+            {company.website && !company.logo && company.logoStatus !== "fetching" && <button type="button" disabled={busy !== ""} onClick={() => void findLogo(company)} className={linkButton}>Find logo</button>}
+            <button type="button" disabled={busy !== ""} onClick={() => { uploadFor.current = company.id; upload.current?.click(); }} className={linkButton}>{company.logo ? "New logo" : "Upload logo"}</button>
             {company.logo && <button type="button" disabled={busy !== ""} onClick={() => void run(company.id, () => removeCompanyLogo(company.id), "Logo removed")} className={clsx(linkButton, "!text-neutral-600 hover:!bg-neutral-100")}>Remove logo</button>}
             {companies.length > 1 && <button type="button" disabled={busy !== ""} onClick={() => setMerging({ id: company.id, into: "" })} className={clsx(linkButton, "!text-neutral-600 hover:!bg-neutral-100")}>Merge…</button>}
           </span>

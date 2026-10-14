@@ -67,7 +67,7 @@ test("reading a hostile page for its icons stays quick (bounded patterns, the he
   }
 });
 
-test("a website's logo is fetched only from public https addresses: private hosts and plain-http redirects are refused", async () => {
+test("a website's logo is fetched only from public https addresses (private hosts and plain-http redirects refused), else from Google's favicon service", async () => {
   const touch = await png(180);
   const asked: string[] = [];
   const answer = (url: string, status: number, body?: Buffer | string, headers: Record<string, string> = {}) => ({ url, status, body, headers });
@@ -89,6 +89,15 @@ test("a website's logo is fetched only from public https addresses: private host
   routes = [answer("https://example.org/", 302, undefined, { location: "http://example.org/" }), answer("https://example.org/favicon.ico", 200, ico(await png(48), 48), { "content-type": "image/x-icon" })];
   assert.ok(await fetchLogo("example.org", { fetchImpl, lookupImpl: publicLookup }));
   assert.ok(!asked.some((url) => url.startsWith("http:")), "never asked over plain http");
+  // A site that refuses automated requests (GoDaddy does): its logo comes from Google's favicon service, through its redirect.
+  asked.length = 0;
+  const google = "https://www.google.com/s2/favicons?domain=example.org&sz=128";
+  routes = [answer("https://example.org/", 403, "Forbidden"), answer(google, 302, undefined, { location: "https://t1.gstatic.com/faviconV2?url=https://example.org&size=128" }), answer("https://t1.gstatic.com/faviconV2?url=https://example.org&size=128", 200, touch, { "content-type": "image/png" })];
+  assert.equal((await sharp((await fetchLogo("example.org", { fetchImpl, lookupImpl: publicLookup }))!).metadata()).format, "webp");
+  assert.deepEqual(asked, ["https://example.org/", "https://example.org/apple-touch-icon.png", "https://example.org/favicon.ico", google, "https://t1.gstatic.com/faviconV2?url=https://example.org&size=128"], "its own site first, then Google");
+  // Google answers 404 for a domain it has no icon for: no logo (never its generic globe).
+  routes = [answer("https://example.org/", 403, "Forbidden"), answer(google, 404, touch, { "content-type": "image/png" })];
+  assert.equal(await fetchLogo("example.org", { fetchImpl, lookupImpl: publicLookup }), null);
 });
 
 test("companies: grouped by name, GSTIN or website; hidden with restricted expenses; renamed, merged, given logos by the right people", { skip }, async () => {

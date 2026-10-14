@@ -6,7 +6,7 @@ import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
+import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, refreshSoon, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
 import { CompanyAvatar } from "./expense-company";
 import { ReceiptSection } from "./expense-receipt";
 import { amountText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
@@ -109,6 +109,8 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
       toast({ title: expense ? "Expense updated" : "Expense added", body: `${input.paidTo} · ${rupees(paise)}` });
       // The new company's logo goes on once the expense (and so the company) exists; the expense stays saved either way.
       if (logoFile && newCompany && saved.companyId) await uploadCompanyLogo(saved.companyId, logoFile).catch(() => toast({ title: "Logo not saved", body: "The expense is saved. Add the logo in Settings → Companies." }));
+      // A new company's website: its logo is looked for now, and the page reads it in a few seconds.
+      else if (newCompany && companyWebsite.trim()) refreshSoon(onSaved);
       onSaved(); onClose();
     } catch (cause) { setError(describeError(cause, "Could not save the expense. Try again.")); }
     finally { setBusy(null); }

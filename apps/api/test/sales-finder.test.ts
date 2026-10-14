@@ -17,6 +17,7 @@ import { checkUrl, createReader, isPublicAddress, looksLikeChallenge, safeAddres
 import { parseHtml } from "../src/sales/finder/html.js";
 import { buildQueries, countryOf, negativesOf, searchSites, searchStats, type SearchFn } from "../src/sales/finder/plan.js";
 import { OFFERS, OFFER_VERSIONS } from "../src/sales/offers.js";
+import { SearchError } from "../src/sales/search-engines.js";
 import { RobotsCache, parseRobots, robotsAllows } from "../src/sales/finder/robots.js";
 import { FINDER_WORKER, NO_KEY_NOTE, createFinder, finderEnabled } from "../src/sales/finder/runner.js";
 
@@ -301,7 +302,7 @@ test("planner: the plan's searches as given, else categories x places x business
   };
   const stats = searchStats();
   const batches = [];
-  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfishKey: "t", exaKey: "e" }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats })) batches.push(batch);
+  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfish: [{ id: "t1", key: "t" }], exa: [{ id: "e1", key: "e" }] }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats })) batches.push(batch);
   assert.deepEqual(batches.map((batch) => batch.sites.map((site) => site.domain)), [["a.example"], ["b.example"], []]);
   assert.deepEqual([...asked].sort(), ["exa:q1", "exa:q2", "exa:q3", "tinyfish:q1", "tinyfish:q2", "tinyfish:q3"], "both engines are asked every query, even when TinyFish found something");
   assert.equal(reserved, 6);
@@ -311,7 +312,7 @@ test("planner: the plan's searches as given, else categories x places x business
   const capped = searchStats();
   const failing: SearchFn = async () => { throw new Error("Exa refused the request: its key was rejected or its quota is used up"); };
   const none = [];
-  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfishKey: "t", exaKey: "e" }, queries: ["q1", "q2"], country: "IN", search: failing, signal: new AbortController().signal, seen: new Set(), stats: capped })) none.push(batch);
+  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfish: [{ id: "t1", key: "t" }], exa: [{ id: "e1", key: "e" }] }, queries: ["q1", "q2"], country: "IN", search: failing, signal: new AbortController().signal, seen: new Set(), stats: capped })) none.push(batch);
   assert.ok(capped.capped.has("tinyfish"));
   assert.equal(capped.calls, 1, "after the refusal nothing else is called");
   assert.equal(none.length, 1);
@@ -379,11 +380,25 @@ test("negatives: a search result whose title or snippet names one (any case, spa
     return [hit("https://pixel.example/", "PixelCraft"), hit("https://ledgerly.example/", "Ledgerly")];
   };
   const batches = [];
-  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfishKey: "t", exaKey: "e" }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats: searchStats(), negatives })) batches.push(batch);
+  for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfish: [{ id: "t1", key: "t" }], exa: [{ id: "e1", key: "e" }] }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats: searchStats(), negatives })) batches.push(batch);
   assert.deepEqual(batches.map((batch) => batch.sites.map((site) => site.domain)), [["ledgerly.example"], ["tallyho.example"], []]);
   assert.deepEqual(batches.map((batch) => batch.ruledOut.map((site) => site.domain)), [["pixel.example", "twice.example"], ["bodyshop.example"], []], "a second result naming a negative rules its site out too; a ruled-out site is not found again");
   assert.deepEqual([...asked].sort(), ["exa:q1", "exa:q2", "exa:q3", "tinyfish:q1", "tinyfish:q2", "tinyfish:q3"], "both engines are asked every query");
   assert.deepEqual(batches[0]!.sites[0]!.engines, ["tinyfish", "exa"], "a site both engines found keeps both, in engine order");
+});
+
+test("search failures: a busy engine is asked again on the next search, a refused one is left alone for the rest of the run", async () => {
+  const db = { collection: () => ({ updateOne: async () => ({ matchedCount: 1 }) }) } as unknown as AppDb;
+  const asked: string[] = [];
+  const search: SearchFn = async (engine, _key, query) => {
+    asked.push(`${engine}:${query}`);
+    if (engine === "tinyfish") throw new SearchError("TinyFish Search is busy: try again in a minute", "busy");
+    throw new SearchError("Exa refused the request: its key was rejected or its quota is used up", "refused");
+  };
+  const stats = searchStats();
+  for await (const _batch of searchSites({ db, workspaceId: "w", keys: { tinyfish: [{ id: "t1", key: "t" }], exa: [{ id: "e1", key: "e" }] }, queries: ["q1", "q2"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats })) { /* every batch */ }
+  assert.deepEqual([...asked].sort(), ["exa:q1", "tinyfish:q1", "tinyfish:q2"]);
+  assert.deepEqual([stats.failures.get("tinyfish"), stats.failures.get("exa")], [2, 3]);
 });
 
 test("offer signals: the packet's phrases are found in any case, with hyphens or spaces, plurals and enquiry or inquiry, quoted word for word ahead of the built-in ones", () => {

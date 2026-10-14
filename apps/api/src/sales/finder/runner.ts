@@ -157,7 +157,7 @@ export function createFinder(options: FinderOptions): Finder {
     const ready: string[] = [];
     for (const workspaceId of (await runs.distinct("workspaceId", { ...open, kind: { $ne: "enrich" } })) as string[]) {
       const keys = await resolveSearchKeys(db, workspaceId, options.env);
-      if (keys.tinyfishKey || keys.exaKey) { ready.push(workspaceId); continue; }
+      if (keys.tinyfish.length || keys.exa.length) { ready.push(workspaceId); continue; }
       await runs.updateMany({ workspaceId, status: "queued", kind: { $ne: "enrich" }, note: { $ne: NO_KEY_NOTE } }, { $set: { note: NO_KEY_NOTE, updatedAt: new Date() } });
     }
     return ready;
@@ -326,8 +326,10 @@ export function createFinder(options: FinderOptions): Finder {
     });
 
     let ending = "";
+    let asked = 0;
     for await (const batch of searchSites({ db, workspaceId: ctx.workspaceId, keys, queries, country: countryOf(plan, packet), search, signal, seen: new Set(), stats: state.stats, negatives: negativesOf(packet) })) {
       // Sites whose search result names one of the offer's negatives: looked at, never read.
+      asked = batch.index + 1;
       if (batch.ruledOut.length) { state.found += batch.ruledOut.length; skip("negative", batch.ruledOut.length); }
       state.note = `${searching}: ${batch.query.slice(0, 120)} (${batch.index + 1} of ${queries.length}), ${plural(state.crawled, "site")} read`;
       await beat().catch(() => undefined);
@@ -339,7 +341,7 @@ export function createFinder(options: FinderOptions): Finder {
     const { stats } = state;
     if (stats.calls === 0 && stats.capped.size) return `${capNote(stats)} Queue the run again later.`;
     if (stats.calls > 0 && stats.answered === 0) return `Company search didn't answer: ${[...stats.errors.values()].join("; ") || "no engine replied"}.`;
-    state.note = ending || searchEnd(stats, queries.length);
+    state.note = ending || searchEnd(stats, queries.length, asked);
     return undefined;
   }
 
@@ -427,12 +429,14 @@ async function knownSite(ctx: SalesCtx, ventureId: string, site: Candidate): Pro
   return null;
 }
 
-const capNote = (stats: SearchStats) => [...stats.capped].map((engine) => `${engine === "exa" ? "Exa" : "TinyFish"} has used this workspace's ${engine === "exa" ? "monthly" : "daily"} allowance.`).join(" ");
-/** Why the searches ended before the limit was reached. */
-function searchEnd(stats: SearchStats, queries: number): string {
+const capNote = (stats: SearchStats) => [...stats.capped].map((engine) => `Every ${engine === "exa" ? "Exa" : "TinyFish"} key has used its ${engine === "exa" ? "monthly" : "daily"} allowance or is paused after a refusal (Sales setup shows which).`).join(" ");
+/** Why the searches ended before the limit was reached: all `queries` were asked (an engine that ran out on the way is noted), or `asked` of them. */
+function searchEnd(stats: SearchStats, queries: number, asked: number): string {
+  const allUsed = `Every search was used (${plural(queries, "search", "searches")}).`;
+  if (asked >= queries) return stats.capped.size ? `${allUsed} ${capNote(stats)}` : allUsed;
   if (stats.capped.size) return capNote(stats);
   if (stats.errors.size && [...stats.failures.values()].every((count) => count >= 3)) return `Company search stopped answering: ${[...stats.errors.values()].join("; ")}.`;
-  return `Every search was used (${plural(queries, "search", "searches")}).`;
+  return allUsed;
 }
 
 /** The run's result in one paragraph: the offer it worked for, what was read and added, why the rest was skipped, and why it ended. */

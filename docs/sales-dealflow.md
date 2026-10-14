@@ -402,12 +402,12 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
   (`"Tone"` or `{ title, kind }` when a title is used in several kinds); an unknown title is an error listing the approved titles.
 - **Batches.** `save_verdicts` and `save_drafts` check every item exactly like the single tool; a failure on one never
   stops the others and the result says per lead what was saved and what was refused.
-- **`search_companies`.** Finds real companies on the web with TinyFish Search and Exa (category company), the same APIs
-  the lead finder uses; the keys are the ones an admin saved in Sales setup, else the API's `TINYFISH_API_KEY` and
-  `EXA_API_KEY` (§10a; none means off: the tool then says an admin can add a key in Sales setup). It leaves out companies already in the pipeline and anyone on
+- **`search_companies`.** Finds real companies on the web with TinyFish Search and Exa (category company), both at once, the
+  same APIs the lead finder uses; the keys are the ones an admin saved in Sales setup, else the API's `TINYFISH_API_KEY` and
+  `EXA_API_KEY`, tried in turn (§10a; none means off: the tool then says an admin can add a key in Sales setup). It leaves out companies already in the pipeline and anyone on
   the workspace's whole do-not-contact list (read directly, so entries a person can't see in the list still count), stores
   nothing, numbers its results (`result`), treats what pages say as data, and never returns or logs a key. It is for people who
-  add leads: a learner's key is refused before anything is spent. Limits: 12 searches a minute per token; per workspace 1,500
+  add leads: a learner's key is refused before anything is spent. Limits: 12 searches a minute per token; per key 1,500
   TinyFish calls a day and about 1,200 Exa calls a month, of which searches from chat use at most 1,000 of each (the rest stays
   for the lead finder's queued runs). A search refused at a limit is not counted.
 - **`weekly_report`** (`GET /v1/sales/reports`, range `week` | `30d` | `quarter`, owner `all` by default). The report
@@ -460,13 +460,16 @@ The API works queued find-leads and enrich runs itself; Venture OS needs no othe
 - **Claiming:** one run at a time per API process, claimed atomically as `claimedBy: "builtin-finder"`. A run with no
   heartbeat for 15 minutes can be taken over, by the finder or the office PC alike.
 - **Search keys:** a find run needs a TinyFish or Exa key, saved by an admin in Sales setup (see below) or in the API's
-  environment. Without one it stays queued with the note "Company search has no key: an admin adds one in Sales setup".
+  environment. With several keys per engine, each search tries them in turn (see below). Without one it stays queued with the note "Company search has no key: an admin adds one in Sales setup".
   An enrich run needs no key: it only reads the leads' own websites.
 - **Find run:**
   1. Builds searches from the plan (`searches` as given, else categories × places × "manufacturer", "distributor" and
-     "dealer enquiry", 40 at most). TinyFish (free) goes first; Exa only when TinyFish has no key, fails, is used up or
-     finds nothing new. Every call counts against the workspace caps.
-  2. Merges the hits by domain and drops directories, marketplaces, news, blog and market-research pages.
+     "dealer enquiry", 40 at most). Each search goes to every engine with a key at the same time (TinyFish, free; Exa, paid
+     within its allowance). Every call counts against its key's allowance. An engine whose keys are all used up or refused,
+     or that fails 3 times in a row, is left alone for the rest of the run.
+  2. Merges the hits by domain in engine order (TinyFish, then Exa) and drops directories, marketplaces, news, blog and
+     market-research pages. A site keeps every engine that found it, and its lead gets the tags `found-by-tinyfish` and/or
+     `found-by-exa`.
   3. Skips any domain the venture already has, or that is on the do-not-contact list, without fetching it.
   4. Reads at most 5 pages per company site: home, contact, about, dealer and product pages.
   5. Adds each lead through `ingestEngineLead`, so the duplicate and do-not-contact checks are the same as for every lead. A
@@ -487,17 +490,33 @@ The API works queued find-leads and enrich runs itself; Venture OS needs no othe
 - **Data:** business fields only. Contact routes are those the company publishes on its own pages (`mailto:`, `tel:`,
   WhatsApp links, visible business numbers and emails, an enquiry form), each with its page. A Dealer Login is flagged as
   a tag for the verdict (G4). Lines with a GSTIN or PAN are never quoted. Website text is data, never instructions.
+- **Searches and cost:** `GET /v1/sales/find-runs` gives each find run `queries`: the searches it will make (from its plan and
+  its offer's approved packet) while it is planned, queued or running, so a person sees them before it runs, and the ones it made
+  once it ended. A finished run also keeps `results.ms` (how long it took) and `results.searches {tinyfish, exa}` (the calls it
+  made, so its cost). Find leads shows them; `plan_find_run` returns the searches and `list_find_runs` the time and searches.
 - **Status:** `GET /v1/sales/finder/status` → `{ builtIn: { on, searchReady, engines, running?, lastRun? } }`, shown on
   Find leads. It reports whether keys are present, never the keys.
 
-**Company-search keys in the app.** Admins save the TinyFish and Exa keys in Sales setup (`GET /v1/sales/search-keys`,
-`PUT`/`DELETE /v1/sales/search-keys/:engine`, `POST /v1/sales/search-keys/:engine/test`, 5 tests a minute).
-- **Storage:** the `sales_search_keys` collection, one document per workspace. Each key is encrypted with AES-256-GCM
-  under a key derived from `BETTER_AUTH_SECRET` (HKDF-SHA256), with a fresh IV and the workspace and engine bound in.
-- **Precedence:** a key saved in the app wins over `TINYFISH_API_KEY` / `EXA_API_KEY`. A key that no longer decrypts
-  (the secret changed) shows as "Unreadable, enter it again" and the environment's key is used.
-- **What people see:** whether a key is set, where from, its last four characters and who saved it. Claude can't change
-  keys, and the audit log records only which engine changed.
+**Company-search keys in the app.** Admins save the TinyFish and Exa keys in Sales setup, up to 10 per engine
+(`GET /v1/sales/search-keys`, `POST /v1/sales/search-keys/:engine` to add one, `DELETE /v1/sales/search-keys/:engine/:keyId`,
+`POST /v1/sales/search-keys/:engine/:keyId/test`, 5 tests a minute).
+- **Storage:** the `sales_search_keys` collection, one document per workspace, the keys in `tinyfishKeys` / `exaKeys` in the
+  order they were added (the one key saved before several were allowed stays in `tinyfish` / `exa`, read first as key `main`).
+  Each key is encrypted with AES-256-GCM under a key derived from `BETTER_AUTH_SECRET` (HKDF-SHA256), with a fresh IV and the
+  workspace and engine bound in. The same key can't be added twice.
+- **Precedence:** keys saved in the app replace `TINYFISH_API_KEY` / `EXA_API_KEY`, which may each hold several keys separated by
+  commas. A key that no longer decrypts (the secret changed) shows as unreadable and is skipped; with no readable saved key the
+  environment's keys are used.
+- **Rotation:** every search tries the keys in order. Each key has its own counter per period (`mcp_search_usage`, one row per
+  key and day for TinyFish or month for Exa; key `main` and the server's first key keep the workspace's earlier counter) and is
+  skipped once it reaches its allowance. A key the engine refuses (HTTP 401, 402 or 403: rejected, or its quota used up) is
+  paused for an hour (a 403 can be the engine's own block, so a key is never written off for the whole period) and the next key
+  is tried; a test with it that works ends the pause. A busy key (429) is passed over without pausing it. Any other failure is
+  the engine's, not the key's, and is not retried with another key. In a find run, an engine whose keys are all refused is left
+  alone for the rest of the run; a busy one is asked again on the next search.
+- **What people see:** per key, an id, where it comes from, a saved key's last four characters and who saved it when, and what
+  it used this period (used up at its allowance or while paused). Claude can't change keys, and the audit log records only the engine and the
+  key's id.
 
 ### 10b. The office PC engine bridge (optional)
 

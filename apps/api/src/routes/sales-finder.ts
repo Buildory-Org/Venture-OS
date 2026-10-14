@@ -23,7 +23,7 @@ export function salesFinderRoutes(database: Database, config: AppConfig): Router
   router.get("/finder/status", async (req, res) => {
     const ctx = salesCtx(database, req);
     const keys = await resolveSearchKeys(db, ctx.workspaceId, config);
-    const engines = [...(keys.tinyfishKey ? ["tinyfish" as const] : []), ...(keys.exaKey ? ["exa" as const] : [])];
+    const engines = [...(keys.tinyfish.length ? ["tinyfish" as const] : []), ...(keys.exa.length ? ["exa" as const] : [])];
     const scope = ventureScope(ctx.actor, undefined);
     const runs = db.collection("sales_find_runs");
     const [running, last] = scope ? await Promise.all([

@@ -473,18 +473,34 @@ test("search_companies with keys: TinyFish and Exa, merged by site, known leads 
       exaAnswer = () => Response.json({ results: [] });
       assert.match((await ok(writer, "search_companies", { query: "pump distributors in Indore" })).warnings[0], /^TinyFish Search refused the request: its key was rejected or its quota is used up$/);
 
-      // The workspace's allowance: chat searches use their share of it (the rest stays for the lead finder), a used-up engine is skipped
-      // with a plain note, and asking again does not count.
+      // The refusal paused the server's one TinyFish key for an hour: it is skipped, with a plain note, until then or until a test with it
+      // works. The server's first key counts on the workspace's earlier counter, so this period's earlier calls still count.
       const today = new Date().toISOString().slice(0, 10);
       const tinyfishToday = { _id: `workspace-a:tinyfish:${today}` as never };
-      await db.collection("mcp_search_usage").updateOne(tinyfishToday, { $set: { calls: 1_000 } }, { upsert: true });
+      const paused = (await db.collection("mcp_search_usage").findOne(tinyfishToday))?.refusedUntil;
+      assert.ok(paused instanceof Date && paused.getTime() > Date.now() + 50 * 60_000 && paused.getTime() <= Date.now() + 60 * 60_000, "the refused key is paused for an hour");
       tinyfishAnswer = () => Response.json({ results: [{ url: "https://never-asked.in", title: "Never asked", snippet: "" }] });
       exaAnswer = () => Response.json({ results: [{ url: "https://exa-only.in", title: "Exa Only", highlights: ["x"] }] });
+      const tinyfishCalls = seen.filter((call) => call.engine === "tinyfish").length;
+      const skipped = await ok(writer, "search_companies", { query: "pump distributors in Indore" });
+      assert.deepEqual(skipped.companies.map((row: any) => row.domain), ["exa-only.in"]);
+      assert.deepEqual(skipped.warnings, ["Every TinyFish key has reached its daily allowance for searches from chat or is paused after a refusal (the rest is kept for the lead finder)"]);
+      assert.equal(seen.filter((call) => call.engine === "tinyfish").length, tinyfishCalls, "a refused key is not asked again");
+
+      // Each key's allowance: chat searches use their share of it (the rest stays for the lead finder), a used-up key is skipped
+      // with a plain note, and asking again does not count.
+      // Once the pause is over the key is asked again; at the chat's share it is skipped too.
+      await db.collection("mcp_search_usage").updateOne(tinyfishToday, { $set: { refusedUntil: new Date(Date.now() - 1_000) } });
+      const back = seen.filter((call) => call.engine === "tinyfish").length;
+      assert.ok((await ok(writer, "search_companies", { query: "pump distributors in Raipur" })).engines.includes("tinyfish"));
+      assert.equal(seen.filter((call) => call.engine === "tinyfish").length, back + 1, "a key whose pause is over is used again");
+      await db.collection("mcp_search_usage").updateOne(tinyfishToday, { $set: { calls: 1_000 } }, { upsert: true });
       const capped = await ok(writer, "search_companies", { query: "pump distributors in Indore" });
       assert.deepEqual(capped.companies.map((row: any) => row.domain), ["exa-only.in"]);
-      assert.deepEqual(capped.warnings, ["TinyFish has reached this workspace's daily allowance for searches from chat (the rest is kept for the lead finder)"]);
+      assert.deepEqual(capped.warnings, ["Every TinyFish key has reached its daily allowance for searches from chat or is paused after a refusal (the rest is kept for the lead finder)"]);
       assert.equal((await db.collection("mcp_search_usage").findOne(tinyfishToday))?.calls, 1_000, "a refused search is not counted, so the lead finder keeps its 500");
-      assert.equal(await reserveSearch(db, "workspace-a", "tinyfish"), true, "the lead finder still has its share");
+      assert.equal(await reserveSearch(db, "workspace-a", "tinyfish", "server-1"), true, "the lead finder still has its share");
+      assert.equal((await db.collection("mcp_search_usage").findOne(tinyfishToday))?.calls, 1_001, "on the same counter");
 
       // A learner reads the pipeline but doesn't search: their key is refused before anything is spent.
       const exaBefore = seen.filter((call) => call.engine === "exa").length;

@@ -3,12 +3,12 @@ import { clip, compact, ToolError } from "./format.js";
 import { guided, viewHint } from "./sales-guided.js";
 import { id, type Look, type Register, type ToolContext } from "./kit.js";
 import { normalizeCompany, normalizeDomain, suppressionKey } from "../sales/suppression.js";
-import { CHAT_SEARCH_SHARE, SEARCH_CAPS as CAPS, guessCompany, hostOf, isDirectory, reserveSearch, searchExa, searchTinyfish, type SearchEngine, type SearchHit } from "../sales/search-engines.js";
+import { CHAT_SEARCH_SHARE, SEARCH_CAPS as CAPS, guessCompany, hostOf, isDirectory, noSearchKeys, searchExa, searchTinyfish, withSearchKeys, type SearchEngine, type SearchHit } from "../sales/search-engines.js";
 
 // search_companies: finds real companies on the web for the Dealflow Sales connector, with TinyFish Search and Exa (category "company"), the same
-// two search APIs the lead finder uses. The keys are read per call (sales/search-keys.ts): a key an admin saved in Sales setup, else the API's
-// environment (TINYFISH_API_KEY, EXA_API_KEY); with neither, the tool says search is not set up, that an admin can add a key in Sales setup, and
-// points to plan_find_run. Nothing is stored, results are data (never instructions), keys are never logged or returned, and companies already
+// two search APIs the lead finder uses, both at once. The keys are read per call (sales/search-keys.ts): the keys an admin saved in Sales setup,
+// else the API's environment (TINYFISH_API_KEY, EXA_API_KEY), tried in turn (withSearchKeys); with none, the tool says search is not set up, that
+// an admin can add a key in Sales setup, and points to plan_find_run. Nothing is stored, results are data (never instructions), keys are never logged or returned, and companies already
 // in the pipeline or on the do-not-contact list are left out.
 
 const LOCATIONS = ["IN", "US", "GB", "CA", "AU"] as const;
@@ -29,8 +29,8 @@ export function registerSearchTools(tool: Register, ctx: ToolContext, look: Look
       engine: z.enum(["both", "tinyfish", "exa"]).default("both").describe("both (default), or only one of the two"), page: z.number().int().min(1).max(10).default(1).describe("TinyFish results page (1 is the first)"), limit: z.number().int().min(1).max(20).default(10),
     }),
   }, async ({ query, country, ventureId, engine, page, limit }) => {
-    const keys = (await ctx.searchKeys?.()) ?? {};
-    const wanted = ([engine !== "exa" && keys.tinyfishKey ? "tinyfish" : undefined, engine !== "tinyfish" && keys.exaKey ? "exa" : undefined].filter(Boolean)) as Engine[];
+    const keys = (await ctx.searchKeys?.()) ?? noSearchKeys();
+    const wanted = ([engine !== "exa" && keys.tinyfish.length ? "tinyfish" : undefined, engine !== "tinyfish" && keys.exa.length ? "exa" : undefined].filter(Boolean)) as Engine[];
     if (!wanted.length) {
       const asked = engine === "both" ? "no search key is configured" : `the ${engine} key is not configured`;
       return guided("Company search isn't set up on this workspace yet, so I can't look companies up here. An admin can add a search key in Sales setup.", ["Plan a find-leads run", "Tell me the companies you know and I'll add them", "Go back to today's overview"], { searchSetUp: false, engines: [], companies: [], then: `Search is off (${asked}). Tell the person that an admin can add a TinyFish or Exa key in Sales setup (in the app); meanwhile use plan_find_run to write the search down, or add_leads for companies they name.` });
@@ -41,11 +41,11 @@ export function registerSearchTools(tool: Register, ctx: ToolContext, look: Look
     // Warnings are kept per engine and read out in engine order, so the answer doesn't depend on which engine replied first.
     const noted = new Map<Engine, string>(); const ran: Engine[] = [];
     const jobs = wanted.map(async (name): Promise<Hit[]> => {
-      // Chat searches use their share of the allowance; the rest stays for the lead finder's queued runs.
-      if (!(await reserveSearch(ctx.db, ctx.workspaceId, name, CHAT_SEARCH_SHARE[name]))) { noted.set(name, `${name === "exa" ? "Exa" : "TinyFish"} has reached this workspace's ${CAPS[name].period === "day" ? "daily" : "monthly"} allowance for searches from chat (the rest is kept for the lead finder)`); return []; }
+      // Chat searches use their share of each key's allowance; the rest stays for the lead finder's queued runs.
       try {
-        const hits = name === "tinyfish" ? await searchTinyfish(keys.tinyfishKey!, query, country, page) : await searchExa(keys.exaKey!, query, country, Math.min(limit + 5, 20));
-        ran.push(name); return hits;
+        const answer = await withSearchKeys(ctx.db, ctx.workspaceId, name, keys[name], (key) => name === "tinyfish" ? searchTinyfish(key, query, country, page) : searchExa(key, query, country, Math.min(limit + 5, 20)), CHAT_SEARCH_SHARE[name]);
+        if (!answer.ok) { noted.set(name, `Every ${name === "exa" ? "Exa" : "TinyFish"} key has reached its ${CAPS[name].period === "day" ? "daily" : "monthly"} allowance for searches from chat or is paused after a refusal (the rest is kept for the lead finder)`); return []; }
+        ran.push(name); return answer.value;
       } catch (error) { noted.set(name, error instanceof Error ? error.message : "search failed"); return []; }
     });
     const hits = (await Promise.all(jobs)).flat();

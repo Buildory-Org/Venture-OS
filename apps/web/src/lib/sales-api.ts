@@ -386,23 +386,25 @@ export function rememberSalesSettings(settings: SalesSettingsView) {
   settingsCache.set(settings.ventureId, { at: Date.now(), value: Promise.resolve(settings) });
 }
 
-// ---- Company-search keys (TinyFish, Exa) for search_companies and the lead finder: admins only, for the whole workspace. The API never
-// sends a key back, only whether one is set, where from, and a saved key's last four characters.
-import { salesSearchKeyInputSchema, salesSearchKeysSchema, salesSearchKeyTestSchema, type SalesSearchEngine, type SalesSearchKeys, type SalesSearchKeyStatus, type SalesSearchKeyTest } from "@venture-studio/contracts";
-export type { SalesSearchEngine, SalesSearchKeys, SalesSearchKeyStatus, SalesSearchKeyTest };
+// ---- Company-search keys (TinyFish, Exa) for search_companies and the lead finder: admins only, for the whole workspace, up to 10 per
+// engine, tried in order. The API never sends a key back, only an id per key, where it comes from, a saved key's last four characters and
+// what it used this period.
+import { MAX_SEARCH_KEYS, salesSearchKeyInputSchema, salesSearchKeysSchema, salesSearchKeyTestSchema, type SalesSearchEngine, type SalesSearchKeyEntry, type SalesSearchKeys, type SalesSearchKeyStatus, type SalesSearchKeyTest } from "@venture-studio/contracts";
+export { MAX_SEARCH_KEYS };
+export type { SalesSearchEngine, SalesSearchKeyEntry, SalesSearchKeys, SalesSearchKeyStatus, SalesSearchKeyTest };
 
 export async function getSearchKeys() {
   return successEnvelope(salesSearchKeysSchema).parse(await request("/v1/sales/search-keys")).data;
 }
-/** Saves (or replaces) the engine's key, encrypted on the server; it wins over a key set on the server. Answers the new status. */
-export async function saveSearchKey(engine: SalesSearchEngine, key: string) {
-  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}`, { method: "PUT", body: JSON.stringify(salesSearchKeyInputSchema.parse({ key })) })).data;
+/** Adds a key after the engine's others, encrypted on the server; saved keys replace the server's. Answers the new status. */
+export async function addSearchKey(engine: SalesSearchEngine, key: string) {
+  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}`, json(salesSearchKeyInputSchema.parse({ key })))).data;
 }
-/** Removes the key saved in the app; a key set on the server (if any) is used again. Answers the new status. */
-export async function removeSearchKey(engine: SalesSearchEngine) {
-  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}`, { method: "DELETE" })).data;
+/** Removes one saved key; with none left, the server's keys (if any) are used again. Answers the new status. */
+export async function removeSearchKey(engine: SalesSearchEngine, keyId: string) {
+  return successEnvelope(salesSearchKeysSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}/${id(keyId)}`, { method: "DELETE" })).data;
 }
-/** One small search with the key in use (it counts against the allowance): `{ ok: true }`, or `{ ok: false, message }`. */
-export async function testSearchKey(engine: SalesSearchEngine) {
-  return successEnvelope(salesSearchKeyTestSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}/test`, json({}))).data;
+/** One small search with one key (it counts against that key's allowance; one that works makes a refused key usable again): `{ ok: true }`, or `{ ok: false, message }`. */
+export async function testSearchKey(engine: SalesSearchEngine, keyId: string) {
+  return successEnvelope(salesSearchKeyTestSchema).parse(await request(`/v1/sales/search-keys/${id(engine)}/${id(keyId)}/test`, json({}))).data;
 }

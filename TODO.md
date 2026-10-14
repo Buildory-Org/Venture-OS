@@ -652,6 +652,11 @@ Spec: `docs/sales-dealflow.md`. Built 2026-10-09 on the local dev stack (standal
     - An independent review (2 issues found and fixed).
     - Three smoke agents on an isolated stack: Sales API about 300 checks, Studio regression and both connectors, and screens on desktop and phone as head, admin and learner. All passed.
     - Close dates stay on India time end to end (the forecast and export count them there).
+- [x] Sales research in parallel and several search keys (2026-10-14, branch `task/sales-research-parallel`):
+  - **Parallel search:** every lead-finder search goes to TinyFish and Exa at the same time; leads are tagged `found-by-tinyfish` / `found-by-exa`.
+  - **Searches and cost:** a saved or queued find run lists the searches it will make; a finished run keeps its time and searches per engine (Find leads, `plan_find_run`, `list_find_runs`).
+  - **Several keys:** up to 10 per engine in Sales setup (or comma separated in the server settings), each with its own allowance; a refused key is paused for an hour and the next one used, a busy one passed over; old saved keys and counters carry over.
+  - **Verified:** API suites 166/166 on a replica set; typecheck, lint and web build clean; an independent review (2 medium and 5 low findings, all fixed and re-tested); a local smoke test on an isolated stack (add, refuse a repeat, remove, phone width, searches listed, time and searches shown).
 - [ ] Owner walkthrough and refinements
 - [ ] Run against a MongoDB replica set (transactions) and repeat the live checks
 - [ ] Email lane: send from each person's own mailbox over SMTP (off until the owner switches it on per venture)

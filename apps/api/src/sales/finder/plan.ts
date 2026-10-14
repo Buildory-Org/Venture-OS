@@ -1,10 +1,10 @@
 // The built-in lead finder's searches: the queries a run's plan asks for (with its offer packet's industries, places and search words
-// where the plan names none), and the company sites TinyFish and Exa return for them. Every search call is counted against the
-// workspace's allowance first (reserveSearch); hits are merged by domain, directories are dropped, and hits that name one of the
-// offer's negatives are ruled out before any page is read.
+// where the plan names none), and the company sites TinyFish and Exa return for them. Every search call goes through the workspace's
+// keys in turn and is counted against that key's allowance first (withSearchKeys); hits are merged by domain, directories are dropped,
+// and hits that name one of the offer's negatives are ruled out before any page is read.
 import type { OfferPacket } from "@venture-studio/contracts";
 import type { AppDb } from "../../db.js";
-import { reserveSearch, searchExa, searchTinyfish, hostOf, type SearchEngine, type SearchHit, type SearchKeys } from "../search-engines.js";
+import { SearchError, searchExa, searchTinyfish, hostOf, withSearchKeys, type SearchEngine, type SearchHit, type SearchKey, type SearchKeys } from "../search-engines.js";
 import { anyPhrase, isNotCompanyHost } from "./extract.js";
 
 export const MAX_QUERIES = 40;
@@ -76,23 +76,26 @@ export const searchStats = (): SearchStats => ({ calls: 0, answered: 0, byEngine
  */
 export async function* searchSites(input: { db: AppDb; workspaceId: string; keys: SearchKeys; queries: readonly string[]; country: string; search: SearchFn; signal: AbortSignal; seen: Set<string>; stats: SearchStats; negatives?: RegExp | undefined }): AsyncGenerator<{ query: string; index: number; sites: Candidate[]; ruledOut: Candidate[] }> {
   const { stats } = input;
-  const engines = ([["tinyfish", input.keys.tinyfishKey], ["exa", input.keys.exaKey]] as const).filter((entry): entry is readonly [SearchEngine, string] => Boolean(entry[1]));
+  const engines = (["tinyfish", "exa"] as const).flatMap((engine) => input.keys[engine].length ? [[engine, input.keys[engine]] as const] : []);
   const usable = (engine: SearchEngine) => !stats.capped.has(engine) && (stats.failures.get(engine) ?? 0) < ENGINE_FAILURES;
-  /** One engine's hits for one query: none when it is used up, failing or failed now (the failure is counted in `stats`). */
-  const ask = async (engine: SearchEngine, key: string, query: string): Promise<SearchHit[]> => {
+  /**
+   * One engine's hits for one query, with its keys in turn (the next one when a key is used up, refused or busy): none when every key is
+   * used up or refused this period, or the engine is failing or failed now (the failure is counted in `stats`).
+   */
+  const ask = async (engine: SearchEngine, keys: readonly SearchKey[], query: string): Promise<SearchHit[]> => {
     if (!usable(engine) || input.signal.aborted) return [];
-    if (!(await reserveSearch(input.db, input.workspaceId, engine))) { stats.capped.add(engine); return []; }
-    stats.calls++;
-    stats.byEngine[engine]++;
     try {
-      const hits = await input.search(engine, key, query, input.country);
+      const answer = await withSearchKeys(input.db, input.workspaceId, engine, keys, (key) => { stats.calls++; stats.byEngine[engine]++; return input.search(engine, key, query, input.country); });
+      if (!answer.ok) { stats.capped.add(engine); return []; }
       stats.answered++; stats.failures.set(engine, 0);
-      return hits;
+      return answer.value;
     } catch (error) {
       // Messages from the search helpers never carry a key, a URL or a response body.
       const message = error instanceof Error ? error.message : "search failed";
       stats.errors.set(engine, message);
-      stats.failures.set(engine, /refused/i.test(message) ? ENGINE_FAILURES : (stats.failures.get(engine) ?? 0) + 1);
+      // Every key refused: the engine is left alone for the rest of the run. Busy or failing: it is tried again, up to ENGINE_FAILURES times in a row.
+      const refused = error instanceof SearchError ? error.reason === "refused" : /refused/i.test(message);
+      stats.failures.set(engine, refused ? ENGINE_FAILURES : (stats.failures.get(engine) ?? 0) + 1);
       return [];
     }
   };
@@ -100,7 +103,7 @@ export async function* searchSites(input: { db: AppDb; workspaceId: string; keys
     if (input.signal.aborted || !engines.some(([engine]) => usable(engine))) return;
     const sites: Candidate[] = [];
     const ruledOut: Candidate[] = [];
-    const answers = await Promise.all(engines.map(([engine, key]) => ask(engine, key, query)));
+    const answers = await Promise.all(engines.map(([engine, keys]) => ask(engine, keys, query)));
     for (const [position, hits] of answers.entries()) {
       const engine = engines[position]![0];
       for (const hit of hits) {

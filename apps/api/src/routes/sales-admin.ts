@@ -8,6 +8,7 @@ import { canSeeVenture, canWriteIn, forbidClaude, forbidden, isHeadOf, notFound,
 import { auditSales, salesCtx, type SalesCtx } from "../sales/ctx.js";
 import { addSuppression, defined, loadLead } from "../sales/leads.js";
 import { buildQueries } from "../sales/finder/plan.js";
+import { FINDER_WORKER } from "../sales/finder/runner.js";
 import { LEGACY_BRAIN_KINDS, LEGACY_KIND_REFUSAL, approvedOffer, assertUsableOffer, assertVentureOffer, defaultOfferId } from "../sales/offers.js";
 import { present } from "../sales/present.js";
 import { isSharedDomain, normalizeValue, suppressionKey } from "../sales/suppression.js";
@@ -135,6 +136,8 @@ export function salesAdminRoutes(database: Database): Router {
       if (run.kind === "enrich") return present(run);
       if (Array.isArray(run.results?.queries)) return { ...present(run), queries: run.results.queries };
       if (!["planned", "queued", "running"].includes(String(run.status))) return present(run);
+      // The office PC engine builds its own searches: a run it holds lists none.
+      if (run.status === "running" && run.claimedBy !== FINDER_WORKER) return present(run);
       // As the finder does, an offer of another venture is never searched with.
       const approved = typeof run.offerId === "string" ? await packetOf(run.offerId) : null;
       const packet = approved && approved.offer.ventureId === run.ventureId ? approved.packet : undefined;

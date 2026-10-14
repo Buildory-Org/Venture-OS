@@ -100,7 +100,7 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       const receipt = successEnvelope(expenseReceiptSchema).parse(first.body).data;
       assert.deepEqual([receipt.contentType, receipt.data?.number, receipt.data?.total, receipt.data?.categoryId, receipt.data?.footer, receipt.expenseId], ["image/webp", "3528", 285.8, "ai-tools", "Paid with card •••• 1111. Thank you", undefined]);
       const sent = claude.seen.at(-1);
-      assert.deepEqual([sent.model, sent.thinking, sent.output_config.format.type, sent.messages[0].content[0].type, sent.messages[0].content[0].source.media_type], [RECEIPT_MODEL, { type: "disabled" }, "json_schema", "image", "image/webp"]);
+      assert.deepEqual([sent.model, sent.thinking, sent.output_config.effort, sent.output_config.format.type, sent.messages[0].content[0].type, sent.messages[0].content[0].source.media_type], [RECEIPT_MODEL, { type: "adaptive" }, "low", "json_schema", "image", "image/webp"]);
       assert.match(sent.messages[0].content[1].text, /Salary/, "the boss may file it under a restricted category");
       const kept = await fetch(`${origin}/v1/expenses/receipts/${receipt.id}/file`, { headers: { "x-dev-user-id": "user-boss" } });
       assert.deepEqual([kept.status, kept.headers.get("content-type"), (await sharp(Buffer.from(await kept.arrayBuffer())).metadata()).width], [200, "image/webp", 1600]);

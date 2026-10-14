@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useId, useState } from "react";
 import clsx from "clsx";
 import { addMonths, expenseAccessAtLeast, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
 import { Select } from "@/components/ui/select";
@@ -25,7 +25,10 @@ const NEW = "__new__";
 
 const whereOf = (key: string): ExpenseScope => key === "office" ? { kind: "office" } : key === "personal" ? { kind: "personal" } : { kind: "venture", ventureId: key.slice("venture:".length) };
 
-/** Add or edit one expense. People who can only view see it read-only. */
+/**
+ * Add or edit one expense, in a popup (full screen on phones): the receipt on the left on wide screens, the details on the right, Save
+ * pinned at the bottom. People who can only view see it read-only.
+ */
 export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defaultWhere, canEdit, level, onClose, onSaved, onSettingsChanged }: Props) {
   // Ones added from this form show at once, before the page has read the settings again.
   const [added, setAdded] = useState<{ categories: ExpenseCategory[]; groups: ExpenseGroup[] }>({ categories: [], groups: [] });
@@ -133,10 +136,22 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   }
 
   const title = expense ? (readOnly ? expense.paidTo : "Edit expense") : "Add an expense";
-  return <DetailDrawer title={title} subtitle={readOnly ? "You can view expenses but not change them." : "Amounts and labels only: never bank, card or account numbers."} onClose={onClose} dirty={!readOnly && dirty}>
-    <form onSubmit={save} className="grid grid-cols-1 gap-4">
+  const formId = useId();
+  // Someone who only views an expense without a receipt has nothing for the receipt column.
+  const receiptColumn = !readOnly || Boolean(receiptId);
+  const actions = !readOnly && <div className="flex flex-wrap items-center gap-2">
+    <button type="submit" form={formId} disabled={busy !== null} className={primaryClass}><ActionLabel busy={busy === "save"} idle={expense ? "Save changes" : "Add expense"} /></button>
+    {expense && <button type="button" onClick={remove} disabled={busy !== null} className={clsx(secondaryClass, confirmDelete && "!border-danger-text !text-danger-text")}><ActionLabel busy={busy === "delete"} busyText="Deleting…" idle={confirmDelete ? (expense.continuesId ? "Yes, undo the price change" : "Yes, delete it for good") : "Delete"} /></button>}
+    {confirmDelete && busy === null && <button type="button" onClick={() => setConfirmDelete(false)} className={secondaryClass}>Keep it</button>}
+  </div>;
+  return <DetailDrawer layout="dialog" wide={receiptColumn} title={title} subtitle={readOnly ? "You can view expenses but not change them." : "Amounts and labels only: never bank, card or account numbers."} onClose={onClose} dirty={!readOnly && dirty} footer={actions || undefined}>
+    <div className={clsx("grid grid-cols-1 gap-5", receiptColumn && "lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:items-start")}>
+    {receiptColumn && <div className="grid min-w-0 gap-3 lg:sticky lg:top-0">
       <ReceiptSection receiptId={receiptId} canEdit={!readOnly} onReceipt={receiptChanged} />
-      <p role="status" className={receiptNote ? "-mt-1 rounded-xl bg-primary-50 px-3 py-2 text-xs leading-5 text-primary-900" : "sr-only"}>{receiptNote}</p>
+      <p role="status" className={receiptNote ? "rounded-xl bg-primary-50 px-3 py-2 text-xs leading-5 text-primary-900" : "sr-only"}>{receiptNote}</p>
+    </div>}
+    <div className="grid min-w-0 gap-5">
+    <form id={formId} onSubmit={save} className="grid grid-cols-1 gap-4">
       <fieldset disabled={readOnly || busy !== null} className="grid grid-cols-1 gap-4">
         <Field label="Paid to"><input required maxLength={120} className={inputClass} value={paidTo} onChange={(event) => setPaidTo(event.target.value)} placeholder="Anthropic, GoDaddy, Contabo…" autoFocus={!expense} /></Field>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -165,13 +180,8 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
       </fieldset>
       {expense?.continuesId && confirmDelete && <p className="text-xs leading-5 text-neutral-600">This amount came from a price change. Deleting it undoes the change: the earlier amount carries on as before.</p>}
       <Notice tone="error" message={error} onDismiss={() => setError("")} />
-      {!readOnly && <div className="flex flex-wrap items-center gap-2">
-        <button disabled={busy !== null} className={primaryClass}><ActionLabel busy={busy === "save"} idle={expense ? "Save changes" : "Add expense"} /></button>
-        {expense && <button type="button" onClick={remove} disabled={busy !== null} className={clsx(secondaryClass, confirmDelete && "!border-danger-text !text-danger-text")}><ActionLabel busy={busy === "delete"} busyText="Deleting…" idle={confirmDelete ? (expense.continuesId ? "Yes, undo the price change" : "Yes, delete it for good") : "Delete"} /></button>}
-        {confirmDelete && busy === null && <button type="button" onClick={() => setConfirmDelete(false)} className={secondaryClass}>Keep it</button>}
-      </div>}
     </form>
-    {expense && expense.repeat !== "none" && !readOnly && <section aria-label="New amount from a month" className="mt-6 grid grid-cols-1 gap-3 rounded-2xl border border-neutral-200 p-4">
+    {expense && expense.repeat !== "none" && !readOnly && <section aria-label="New amount from a month" className="grid grid-cols-1 gap-3 rounded-2xl border border-neutral-200 p-4">
       <div><h3 className="text-sm font-bold text-neutral-900">Price changed?</h3><p className="mt-1 text-xs leading-5 text-neutral-500">Set the new amount from a month on. Earlier months keep {rupees(expense.amountPaise)}; editing the amount above would change every month.</p></div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <Field label="From"><input type="month" className={inputClass} value={changeMonth} min={addMonths(monthOf(expense.date), 1)} onChange={(event) => setChangeMonth(event.target.value)} /></Field>
@@ -179,5 +189,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
         <button type="button" onClick={changeFrom} disabled={busy !== null || !changeAmount.trim()} className={clsx(secondaryClass, "!min-h-11")}><ActionLabel busy={busy === "change"} idle="Save new amount" /></button>
       </div>
     </section>}
+    </div>
+    </div>
   </DetailDrawer>;
 }

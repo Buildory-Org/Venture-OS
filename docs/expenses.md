@@ -35,7 +35,7 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
 
 ## Receipts
 
-- **Adding one:** "Add a receipt" at the top of the add or edit panel takes a photo (JPG, PNG, WebP, GIF or HEIC; never SVG) or a PDF, up to 10 MB (`MAX_RECEIPT_BYTES`; the web app's proxy copies at most 10 MB of a request, so keep the two equal). The browser first shrinks a big phone photo, gently (at most 3200 px either way, quality 0.92, unlike chat photos), so it uploads quickly; the server then keeps:
+- **Adding one:** the receipt column of the add or edit popup offers **Take a photo** (a phone or tablet opens its own camera app, rear camera, for full resolution, focus and flash; a computer opens its webcam in the popup, with a frame to fit the receipt in, a shutter that waits for a real picture, and a switch when there are several cameras; blocked or missing cameras say so and leave Upload) and **Upload** (or drop a file). Either takes a photo (JPG, PNG, WebP, GIF or HEIC; never SVG) or a PDF, up to 10 MB (`MAX_RECEIPT_BYTES`; the web app's proxy copies at most 10 MB of a request, so keep the two equal). The browser first shrinks a big phone photo, gently (at most 3200 px either way, quality 0.92, unlike chat photos), so it uploads quickly; the server then keeps:
   - a photo as a WebP of at most about 4 megapixels (and 4096 px on its long side) at quality 85 with sharp colour edges, turned upright, with its location and camera data dropped. The budget is by area, so a tall, narrow receipt keeps its width and small print stays sharp; a smaller photo is never enlarged. A 12-megapixel phone photo (about 3 MB) comes out around 250–550 KB;
   - a PDF as it came.
 - **Reading it:** Claude Haiku 5.5 (`claude-haiku-5-5`, `apps/api/src/expense-receipts.ts`) reads it in one call, with brief thinking (low effort: it reads blurry words reliably instead of guessing a better-known word), in at most 22 seconds and without a retry (the web app's proxy gives up on a request after 30). It stops if the person closes the page. A PDF of more than 5 pages (`MAX_RECEIPT_PAGES`, counted by the sandboxed PDF reader) is kept but not read. Its answer must match the receipt schema (`receiptDataSchema`, structured outputs). The fields it reads:
@@ -102,7 +102,7 @@ The tracker has its own access list, under Settings. Each member has a **level**
   - **Animations:** everything animates in once when the page opens (columns rise, rings sweep, totals count up), and stays still for people who ask for reduced motion.
   - **Corner buttons** open Monthly and Subscriptions, or scroll down to the list.
   - **The list:** the month's expenses with their total. Exports as CSV.
-- **Adding an expense:** "+ New group…" (Edit) and "+ New category…" (Manage) at the end of the lists add one without leaving the panel.
+- **Adding or editing an expense** opens a popup: the receipt on the left on wide screens, the details on the right, Save pinned at the bottom. On phones it fills the screen, and Back closes it like leaving a screen (asking first when something was changed). "+ New group…" (Edit) and "+ New category…" (Manage) at the end of the lists add one without leaving it.
 - **Office:** the same list, limited to Office, with the Office's own monthly total.
 - **Monthly:** the last 3, 6 or 12 months for Office, Personal, each venture and overall, plus the chosen month by category. Exports as CSV.
 - **Subscriptions:**

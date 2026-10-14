@@ -98,6 +98,8 @@ import {
   ArrowDown01Icon,
   Wallet01Icon,
   Delete02Icon,
+  Camera01Icon,
+  CameraRotated01Icon,
 } from "@hugeicons/core-free-icons";
 
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -211,3 +213,5 @@ export const Repeat = icon(RepeatIcon);
 export const LinkIcon = icon(Link01Icon);
 export const Wallet = icon(Wallet01Icon);
 export const Trash = icon(Delete02Icon);
+export const Camera = icon(Camera01Icon);
+export const CameraSwitch = icon(CameraRotated01Icon);

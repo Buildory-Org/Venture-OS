@@ -2,8 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { MAX_RECEIPT_BYTES, type ExpenseReceipt, type ReceiptData } from "@venture-studio/contracts";
-import { AlertTriangle, FileText, Paperclip } from "@/components/ui/icons";
-import { Notice, secondaryClass } from "@/components/studio/primitives";
+import { AlertTriangle, Camera, CameraSwitch, FileText, Paperclip, Upload } from "@/components/ui/icons";
+import { Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { describeError } from "@/lib/errors";
 import { getReceipt, receiptFileUrl, uploadReceipt } from "@/lib/expenses-api";
 import { isCompressibleImage, prepareUpload } from "@/lib/image-compress";
@@ -88,14 +88,82 @@ type Props = {
   onReceipt: (receipt: ExpenseReceipt | null, fresh: boolean) => void;
 };
 
-/** Add, show, replace or remove the expense's receipt. */
+/** Why the webcam didn't open, for the person (the browser's own error names). */
+function cameraProblem(cause: unknown): string {
+  const name = cause instanceof DOMException ? cause.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return "Camera access is blocked: allow it from the camera icon in the address bar, or upload a file instead.";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera was found: upload a file instead.";
+  if (name === "NotReadableError") return "The camera is in use by another app: close it, or upload a file instead.";
+  return "Couldn't open the camera: upload a file instead.";
+}
+
+/** The webcam, in the panel, for computers: a live view, a shutter, and a switch when there is more than one camera. */
+function CameraView({ onShot, onCancel, onFail }: { onShot: (file: File) => void; onCancel: () => void; onFail: (message: string) => void }) {
+  const video = useRef<HTMLVideoElement>(null);
+  const [cameras, setCameras] = useState<string[]>([]);
+  const [cameraId, setCameraId] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const fail = useRef(onFail);
+  useEffect(() => { fail.current = onFail; });
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let live = true;
+    // As sharp as the camera gives: small print needs the pixels. The back camera on a tablet, the chosen one after a switch.
+    navigator.mediaDevices.getUserMedia({ audio: false, video: { ...(cameraId ? { deviceId: { exact: cameraId } } : { facingMode: { ideal: "environment" } }), width: { ideal: 3840 }, height: { ideal: 2160 } } })
+      .then(async (opened) => {
+        if (!live) { opened.getTracks().forEach((track) => track.stop()); return; }
+        stream = opened;
+        if (video.current) { video.current.srcObject = opened; await video.current.play().catch(() => undefined); }
+        const found = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "videoinput").map((device) => device.deviceId).filter(Boolean);
+        if (live) setCameras(found);
+      })
+      .catch((cause: unknown) => { if (live) fail.current(cameraProblem(cause)); });
+    return () => { live = false; stream?.getTracks().forEach((track) => track.stop()); };
+  }, [cameraId]);
+
+  // The shutter waits for a real picture: a camera's first frames can be tiny or blank while it starts.
+  const sized = () => setReady((video.current?.videoWidth ?? 0) >= 320);
+  function shoot() {
+    const frame = video.current;
+    if (!frame || frame.videoWidth < 320) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = frame.videoWidth; canvas.height = frame.videoHeight;
+    canvas.getContext("2d")?.drawImage(frame, 0, 0);
+    canvas.toBlob((blob) => { if (blob) onShot(new File([blob], `receipt-${Date.now()}.jpg`, { type: "image/jpeg" })); }, "image/jpeg", 0.92);
+  }
+  function next() {
+    const stream = video.current?.srcObject;
+    const current = stream instanceof MediaStream ? stream.getVideoTracks()[0]?.getSettings().deviceId : undefined;
+    const at = cameras.indexOf(cameraId ?? current ?? "");
+    setReady(false); setCameraId(cameras[(at + 1) % cameras.length] ?? null);
+  }
+  return <div role="group" aria-label="Camera" className="grid gap-3 rounded-2xl bg-[#0c0d0f] p-3">
+    <div className="relative aspect-[3/4] overflow-hidden rounded-xl bg-black sm:aspect-[4/3] lg:aspect-[3/4]">
+      <video ref={video} playsInline muted onLoadedData={sized} onResize={sized} className="h-full w-full object-contain" />
+      {!ready && <span className="absolute inset-0 grid place-items-center text-sm text-white/70">Opening the camera…</span>}
+      <span aria-hidden="true" className="pointer-events-none absolute inset-[7%] rounded-lg border-2 border-dashed border-white/35" />
+    </div>
+    <p className="text-center text-xs text-white/60">Fit the whole receipt inside the frame, flat and in good light.</p>
+    <div className="grid grid-cols-[1fr_auto_1fr] items-center">
+      <button type="button" onClick={onCancel} className="justify-self-start rounded-lg px-3 py-2 text-sm font-semibold text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Cancel</button>
+      <button type="button" onClick={shoot} disabled={!ready} aria-label="Take the photo" className="grid h-16 w-16 place-items-center rounded-full border-4 border-white/80 transition-transform duration-150 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40"><span className="h-12 w-12 rounded-full bg-white" /></button>
+      {cameras.length > 1 ? <button type="button" onClick={next} aria-label="Switch camera" className="grid h-10 w-10 justify-self-end place-items-center rounded-full text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"><CameraSwitch size={20} /></button> : <span />}
+    </div>
+  </div>;
+}
+
+/** Add (a photo taken now, or a photo or PDF), show, replace or remove the expense's receipt. */
 export function ReceiptSection({ receiptId, canEdit, onReceipt }: Props) {
   const [receipt, setReceipt] = useState<ExpenseReceipt | null>(null);
   const [busy, setBusy] = useState<"loading" | "reading" | null>(receiptId ? "loading" : null);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<{ id: string; url: string } | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
+  // Choosing a new one over the one shown (Replace), and the computer's webcam open.
+  const [replacing, setReplacing] = useState(false);
+  const [camera, setCamera] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const shot = useRef<HTMLInputElement>(null);
   // Reading takes seconds and the form stays editable meanwhile: the answer goes to the form as it is then, not as it was when picked.
   const latest = useRef(onReceipt);
   useEffect(() => { latest.current = onReceipt; });
@@ -124,7 +192,7 @@ export function ReceiptSection({ receiptId, canEdit, onReceipt }: Props) {
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
 
   async function add(file: File) {
-    setError("");
+    setError(""); setCamera(false);
     setBusy("reading");
     try {
       // A big phone photo shrinks first so it uploads quickly, but gently (receipts are small print; the server makes the kept copy);
@@ -132,45 +200,64 @@ export function ReceiptSection({ receiptId, canEdit, onReceipt }: Props) {
       const sent = isCompressibleImage(file.type) ? (await prepareUpload(file, { hd: false }, RECEIPT_UPLOAD)).file : file;
       if (sent.size > MAX_RECEIPT_BYTES) { setError("That file is over 10 MB: pick a smaller photo or PDF."); return; }
       const added = await uploadReceipt(sent);
-      setReceipt(added); latest.current(added, true);
+      setReceipt(added); setReplacing(false); latest.current(added, true);
     } catch (cause) { setError(describeError(cause, "Couldn't add the receipt. Try again.")); }
-    finally { setBusy(null); if (input.current) input.current.value = ""; }
+    finally { setBusy(null); for (const picker of [input.current, shot.current]) if (picker) picker.value = ""; }
+  }
+  /** Phones and tablets open their own camera app (full resolution, focus, flash); a computer opens its webcam here. */
+  function takePhoto() {
+    setError("");
+    if (window.matchMedia("(pointer: coarse)").matches || !navigator.mediaDevices?.getUserMedia) shot.current?.click();
+    else setCamera(true);
   }
 
   if (!canEdit && !receiptId) return null;
   const copy = preview && shown && preview.id === shown.id ? preview.url : null;
-  const picker = <input ref={input} type="file" accept="image/*,application/pdf" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { const file = event.target.files?.[0]; if (file) void add(file); }} />;
-  return <section aria-label="Receipt" className="grid gap-3">
-    {busy === "loading" ? <div className="h-16 animate-pulse rounded-2xl bg-neutral-100" aria-label="Loading the receipt" />
-      : !shown ? <button type="button" disabled={busy !== null} onClick={() => input.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) void add(file); }}
-          className="flex w-full items-center gap-3 rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-3 text-left transition-transform duration-150 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-progress">
+  const choose = canEdit && (!shown || replacing) && busy !== "loading";
+  const chooser = camera
+    ? <CameraView onShot={(file) => void add(file)} onCancel={() => setCamera(false)} onFail={(message) => { setCamera(false); setError(message); }} />
+    : <div onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file && busy === null) void add(file); }}
+        className="grid gap-3 rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 p-4">
+        <div className="flex items-center gap-3" aria-live="polite">
           <span aria-hidden="true" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white text-primary-700 shadow-sm">{busy === "reading" ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary-200 border-t-primary-700" /> : <Paperclip size={18} />}</span>
-          <span className="min-w-0" aria-live="polite"><span className="block text-sm font-bold text-neutral-900">{busy === "reading" ? "Reading the receipt…" : "Add a receipt"}</span><span className="block text-xs leading-5 text-neutral-500">{busy === "reading" ? "Filling in the details from it. This takes a few seconds." : "A photo or PDF, up to 10 MB. It fills in the details for you."}</span></span>
-        </button>
-      : <>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="flex items-center gap-1.5 text-sm font-bold text-neutral-900"><FileText size={15} aria-hidden="true" />Receipt</h3>
-          <span className="flex flex-wrap gap-2">
-            <button type="button" aria-expanded={showOriginal} onClick={() => setShowOriginal(!showOriginal)} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>{showOriginal ? "Hide original" : "Original"}</button>
-            {canEdit && <button type="button" disabled={busy !== null} onClick={() => input.current?.click()} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>{busy === "reading" ? "Reading…" : "Replace"}</button>}
-            {canEdit && <button type="button" disabled={busy !== null} onClick={() => { setReceipt(null); latest.current(null, false); }} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>Remove</button>}
-          </span>
+          <span className="min-w-0"><span className="block text-sm font-bold text-neutral-900">{busy === "reading" ? "Reading the receipt…" : replacing ? "Another receipt" : "Add a receipt"}</span><span className="block text-xs leading-5 text-neutral-500">{busy === "reading" ? "Filling in the details from it. This takes a few seconds." : "Take a photo, or upload a photo or PDF (up to 10 MB). It fills in the details for you."}</span></span>
         </div>
-        {showOriginal && <div className="grid gap-2">
-          {!copy ? <div className="h-40 animate-pulse rounded-xl bg-neutral-100" aria-label="Loading the original" />
-            : shown.contentType === "application/pdf" ? <iframe src={copy} title="The receipt as uploaded" className="h-[28rem] w-full rounded-xl border border-neutral-200 bg-white" />
-            // eslint-disable-next-line @next/next/no-img-element -- an authorized blob link can't use Next image optimization
-            : <img src={copy} alt="The receipt as uploaded" className="max-h-[32rem] w-auto justify-self-center rounded-xl border border-neutral-200" />}
-          {copy && <a href={copy} target="_blank" rel="noopener noreferrer" className="justify-self-start text-xs font-semibold text-primary-700 underline-offset-2 hover:underline">Open in a new tab</a>}
+        {busy !== "reading" && <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={takePhoto} className={clsx(primaryClass, "!min-h-11")}><Camera size={17} aria-hidden="true" />Take a photo</button>
+          <button type="button" onClick={() => input.current?.click()} className={clsx(secondaryClass, "!min-h-11")}><Upload size={17} aria-hidden="true" />Upload</button>
         </div>}
-        {shown.data ? <ReceiptPaper data={shown.data} />
-          : <div className="grid gap-2 rounded-2xl border border-neutral-200 bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">
-            <p>{shown.error ?? "Couldn't read this receipt."} The original is kept with the expense.</p>
-            {/* eslint-disable-next-line @next/next/no-img-element -- an authorized blob link can't use Next image optimization */}
-            {copy && !showOriginal && <img src={copy} alt="The receipt as uploaded" className="max-h-72 w-auto self-start rounded-lg border border-neutral-200" />}
-          </div>}
-      </>}
-    {canEdit && picker}
+        {replacing && busy !== "reading" && <button type="button" onClick={() => setReplacing(false)} className="justify-self-center text-xs font-semibold text-neutral-500 underline-offset-2 hover:underline">Keep the one I have</button>}
+      </div>;
+  return <section aria-label="Receipt" className="grid gap-3">
+    {busy === "loading" && <div className="h-16 animate-pulse rounded-2xl bg-neutral-100" aria-label="Loading the receipt" />}
+    {choose && chooser}
+    {shown && <>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-sm font-bold text-neutral-900"><FileText size={15} aria-hidden="true" />Receipt</h3>
+        <span className="flex flex-wrap gap-2">
+          <button type="button" aria-expanded={showOriginal} onClick={() => setShowOriginal(!showOriginal)} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>{showOriginal ? "Hide original" : "Original"}</button>
+          {canEdit && !replacing && <button type="button" disabled={busy !== null} onClick={() => setReplacing(true)} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>Replace</button>}
+          {canEdit && <button type="button" disabled={busy !== null} onClick={() => { setReceipt(null); setReplacing(false); setCamera(false); latest.current(null, false); }} className={clsx(secondaryClass, "!min-h-8 !px-3 !text-xs")}>Remove</button>}
+        </span>
+      </div>
+      {showOriginal && <div className="grid gap-2">
+        {!copy ? <div className="h-40 animate-pulse rounded-xl bg-neutral-100" aria-label="Loading the original" />
+          : shown.contentType === "application/pdf" ? <iframe src={copy} title="The receipt as uploaded" className="h-[28rem] w-full rounded-xl border border-neutral-200 bg-white" />
+          // eslint-disable-next-line @next/next/no-img-element -- an authorized blob link can't use Next image optimization
+          : <img src={copy} alt="The receipt as uploaded" className="max-h-[32rem] w-auto justify-self-center rounded-xl border border-neutral-200" />}
+        {copy && <a href={copy} target="_blank" rel="noopener noreferrer" className="justify-self-start text-xs font-semibold text-primary-700 underline-offset-2 hover:underline">Open in a new tab</a>}
+      </div>}
+      {shown.data ? <ReceiptPaper data={shown.data} />
+        : <div className="grid gap-2 rounded-2xl border border-neutral-200 bg-neutral-50 p-3 text-xs leading-5 text-neutral-600">
+          <p>{shown.error ?? "Couldn't read this receipt."} The original is kept with the expense.</p>
+          {/* eslint-disable-next-line @next/next/no-img-element -- an authorized blob link can't use Next image optimization */}
+          {copy && !showOriginal && <img src={copy} alt="The receipt as uploaded" className="max-h-72 w-auto self-start rounded-lg border border-neutral-200" />}
+        </div>}
+    </>}
+    {canEdit && <>
+      <input ref={input} type="file" accept="image/*,application/pdf" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { const file = event.target.files?.[0]; if (file) void add(file); }} />
+      <input ref={shot} type="file" accept="image/*" capture="environment" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { const file = event.target.files?.[0]; if (file) void add(file); }} />
+    </>}
     <Notice tone="error" message={error} onDismiss={() => setError("")} />
   </section>;
 }

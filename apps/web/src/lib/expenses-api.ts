@@ -20,10 +20,11 @@ export async function getExpenseAccess() { return successEnvelope(expenseAccessS
 export async function getExpenseSettings() { return successEnvelope(expenseSettingsSchema).parse(await request("/v1/expenses/settings")).data; }
 export async function listExpenses() { return successEnvelope(expenseListSchema).parse(await request("/v1/expenses")).data; }
 export async function createExpense(input: ExpenseInput) { return successEnvelope(expenseSchema).parse(await request("/v1/expenses", send("POST", input))).data; }
-export async function updateExpense(expenseId: string, change: Partial<ExpenseInput>) { return successEnvelope(expenseSchema).parse(await request(`/v1/expenses/${id(expenseId)}`, send("PATCH", change))).data; }
-export async function deleteExpense(expenseId: string) { await request(`/v1/expenses/${id(expenseId)}`, send("DELETE")); }
+/** `expectedUpdatedAt` is the version the person edited: a change saved meanwhile refuses the edit (409) instead of being undone. */
+export async function updateExpense(expenseId: string, change: Partial<ExpenseInput> & { expectedUpdatedAt?: string }) { return successEnvelope(expenseSchema).parse(await request(`/v1/expenses/${id(expenseId)}`, send("PATCH", change))).data; }
+export async function deleteExpense(expenseId: string, expectedUpdatedAt?: string) { await request(`/v1/expenses/${id(expenseId)}${expectedUpdatedAt ? `?expectedUpdatedAt=${id(expectedUpdatedAt)}` : ""}`, send("DELETE")); }
 /** A new amount from a month on: the expense stops the month before and a copy carries on. */
-export async function changeExpenseFrom(expenseId: string, input: { fromMonth: string; amountPaise: number }) {
+export async function changeExpenseFrom(expenseId: string, input: { fromMonth: string; amountPaise: number; expectedUpdatedAt?: string }) {
   return successEnvelope(z.object({ stopped: expenseSchema, continued: expenseSchema })).parse(await request(`/v1/expenses/${id(expenseId)}/change`, send("POST", input))).data;
 }
 export async function createCategory(input: { name: string; color: ExpenseCategory["color"]; restricted: boolean }) { return successEnvelope(expenseCategorySchema).parse(await request("/v1/expenses/settings/categories", send("POST", input))).data; }

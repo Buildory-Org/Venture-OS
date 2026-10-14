@@ -61,6 +61,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
         <div><dt className="text-xs font-semibold text-neutral-500">Expenses</dt><dd className="tnum mt-1 text-lg font-bold text-neutral-800">{rows.length}</dd></div>
       </dl>
       {data.hiddenRestricted && <p className="mt-3 text-xs leading-5 text-neutral-500">Totals leave out restricted categories (such as salaries) that you don&apos;t have access to.</p>}
+      {data.truncated && <p className="mt-3 text-xs font-semibold leading-5 text-warning-text">There are more expenses than this page can load: the oldest are left out, so totals may be short.</p>}
     </Panel>
 
     {rows.length === 0

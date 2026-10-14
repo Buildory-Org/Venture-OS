@@ -12,16 +12,25 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
   - who it was paid to;
   - where it's charged (a venture, Office or Personal);
   - an optional note.
-- **No numbers that could identify an account.** The "paid to" and note fields refuse any run of 9 or more digits (spaces, dots and dashes between them are allowed). That keeps out account, card and phone numbers: only amounts and labels are stored.
+- **No numbers that could identify an account.** Labels (who it was paid to, notes, category and group names) refuse what reads like an account, card or phone number (`LONG_NUMBER`):
+  - 9 or more digits in a row;
+  - a card's groups of four;
+  - a phone number in two groups of five or three groups.
+
+  Dates, times and invoice numbers such as `INV-2026-10-00123` are fine. Only amounts and labels are stored.
 - **Repeats:**
   - One-time, monthly or yearly. A repeat lands on the same day of the month, or on the month's last day when the month is shorter.
   - A repeating expense continues until its **last month**, which is optional and included.
+  - All dates are between 2000 and 2099.
   - Totals are worked out from these rules (`occurrenceIn`), so no scheduled job has to create monthly copies.
 - **"Price changed?"** (`POST /v1/expenses/:id/change`):
   - The expense stops the month before the change, and a copy with the new amount starts that month (`continuesId` points back to the original).
   - Earlier months keep what was actually paid.
+  - The copy keeps the original's day of the month in `anchorDay`, so the 31st stays the 31st after a 30-day month.
   - Editing the amount directly changes every month.
 - **Delete** removes an expense for good. The audit log records that it happened.
+  - Deleting the copy a price change made **undoes** that change: the original carries on as before.
+- **Version check:** an edit, a price change or a delete sends the version it was made from (`expectedUpdatedAt`). A change saved in the meantime refuses it (409) instead of being overwritten, and the form sends only the fields that changed.
 
 ## Categories and groups
 
@@ -46,8 +55,14 @@ The tracker has its own access list, under Settings. Each member has a **level**
 - **Restricted switch:** each member also has a switch for whether they see **restricted** categories (salary, EMI).
   - Without it, those expenses are left out of the list, the totals, the categories and every change, and the screens say restricted items are left out.
   - Only people with restricted access can grant it, take it away, make a category restricted, or add to a restricted category.
-- **Defaults:** admins get Manage with restricted access; everyone else gets No access.
-- **The tracker can't be locked:** at least one member always keeps Manage with restricted access.
+- **Defaults:**
+  - The admins there are when the tracker is first opened get Manage with restricted access, recorded in the list.
+  - Admins made later get Manage without restricted access, until someone with restricted access grants it.
+  - Everyone else gets No access.
+- **The tracker can't be locked:**
+  - The access list must always leave at least one active member with Manage and restricted access.
+  - If that person leaves the workspace, any admin regains Manage with restricted access.
+  - Entries for people no longer in the workspace are removed the next time the list is saved.
 - **Enforced on the server:** the API applies every rule (`routes/expenses.ts`). The screens only hide what the API would refuse anyway.
 - **No Claude access:** Claude connections can't reach these routes.
 - **Audit:** every change is audited (`expense.*`) with the category, the repeat and the fields changed, never an amount. Refusals are audited too.
@@ -61,7 +76,8 @@ The tracker has its own access list, under Settings. Each member has a **level**
   - everything that repeats, by group, with its cost a month and a year (a yearly payment counts as a twelfth a month);
   - the next payment dates, with what's due in the next 30 days;
   - stopped ones at the end.
-- **Settings:** the access list, categories and groups (managers only).
+- **Subscriptions** counts only what has already started. One starting later (such as a new price from next month) is listed under "Starting later", outside the totals.
+- **Settings:** the access list, categories and groups (managers only). A manager who can't see restricted categories is never told a hidden category's name.
 - **Inside a venture:** when a venture is selected in the sidebar, the page shows that venture only and new expenses are charged to it, shown read-only. "Show everything" clears the selection.
 
 ## API

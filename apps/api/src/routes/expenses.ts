@@ -12,13 +12,15 @@ import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 
 // The expense tracker (docs/expenses.md). Its own access list decides who sees, adds or manages expenses: nobody but admins until a
-// manager adds them, and restricted categories (salary, EMI) only for the people allowed to see them. Claude connections never reach
-// these routes. Every change is audited without amounts.
+// manager adds them, and restricted categories (salary, EMI) only for the people allowed to see them. The admins there are when the
+// tracker is first opened get Manage with restricted access; admins made later get Manage only, until someone with restricted access
+// lets them see it. Claude connections never reach these routes. Every change is audited without amounts.
 
 const SETTINGS = "expense_settings";
 const EXPENSES = "expenses";
 const MAX_CATEGORIES = 60;
 const MAX_GROUPS = 100;
+const MAX_LISTED = 20_000;
 const ok = (data: unknown) => ({ ok: true, data });
 
 /** The categories a workspace starts with. Salary and Personal EMI are restricted. */
@@ -42,14 +44,40 @@ async function loadSettings(db: AppDb, workspaceId: string, session?: ClientSess
     access: doc?.access && typeof doc.access === "object" ? doc.access as Record<string, ExpenseAccess> : {},
   };
 }
-/** A person's access: what a manager set for them, else admins manage (and see restricted) and everyone else has none. */
+/** A person's access: what a manager set for them, else admins manage (without restricted categories) and everyone else has none. */
 export function accessOf(settings: Settings, userId: string, role: string): ExpenseAccess & { custom: boolean } {
   const set = settings.access[userId];
   if (set) return { level: set.level, restricted: set.restricted, custom: true };
-  return role === "admin" ? { level: "manage", restricted: true, custom: false } : { level: "none", restricted: false, custom: false };
+  return role === "admin" ? { level: "manage", restricted: false, custom: false } : { level: "none", restricted: false, custom: false };
+}
+
+/**
+ * The tracker's settings document, made on first use with the admins of that moment holding Manage with restricted access (so an admin
+ * made later never sees salaries unless someone who does lets them). Two first uses at once: one insert wins, the other is ignored.
+ */
+async function ensureSettings(db: AppDb, workspaceId: string): Promise<void> {
+  if (await db.collection(SETTINGS).findOne({ _id: workspaceId as never }, { projection: { _id: 1 } })) return;
+  const admins = await db.collection("memberships").find({ workspaceId, status: "active", role: "admin" }).project({ userId: 1 }).toArray();
+  const now = new Date();
+  try {
+    await db.collection(SETTINGS).insertOne({ _id: workspaceId as never, categories: DEFAULT_EXPENSE_CATEGORIES, groups: [], access: Object.fromEntries(admins.map((item) => [String(item.userId), { level: "manage", restricted: true }])), createdAt: now, updatedAt: now });
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000) throw error;
+  }
+}
+/** The active members who keep Manage with restricted access. */
+async function keepersOf(db: AppDb, workspaceId: string, settings: Settings, session?: ClientSession) {
+  const memberships = await db.collection("memberships").find({ workspaceId, status: "active" }, { session }).project({ userId: 1, role: 1 }).toArray();
+  return { memberships, keepers: memberships.filter((item) => { const resolved = accessOf(settings, String(item.userId), String(item.role)); return resolved.level === "manage" && resolved.restricted; }) };
 }
 const restrictedIds = (settings: Settings) => settings.categories.filter((category) => category.restricted).map((category) => category.id);
 const shortId = () => randomBytes(5).toString("hex");
+const scopeKeyOf = (scope: unknown) => { const value = scope as { kind?: string; ventureId?: string } | null; return value?.kind === "venture" ? `venture:${value.ventureId}` : String(value?.kind ?? ""); };
+const visibleCategories = (settings: Settings, me: ExpenseAccess) => settings.categories.filter((category) => me.restricted || !category.restricted);
+/** Refuses an edit made from an older copy of the expense than the one saved now. */
+function sameVersion(current: AppDocument, expected: string | undefined) {
+  if (expected && (!(current.updatedAt instanceof Date) || current.updatedAt.toISOString() !== new Date(expected).toISOString())) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
+}
 const json = (doc: AppDocument) => { const { startMonth: _startMonth, ...rest } = doc; return jsonValue(rest); };
 
 export function expenseRoutes(database: Database): Router {
@@ -61,8 +89,11 @@ export function expenseRoutes(database: Database): Router {
     if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
     const actor = req.actor!;
     const workspaceId = actor.membership.workspaceId;
+    await ensureSettings(db, workspaceId);
     const settings = await loadSettings(db, workspaceId, session);
-    const me = accessOf(settings, actor.id, actor.membership.role);
+    let me = accessOf(settings, actor.id, actor.membership.role);
+    // Nobody left who keeps Manage with restricted access (they left the workspace): any admin can take it back, so it is never locked.
+    if (actor.membership.role === "admin" && !(me.level === "manage" && me.restricted) && !(await keepersOf(db, workspaceId, settings, session)).keepers.length) me = { level: "manage", restricted: true, custom: me.custom };
     if (!expenseAccessAtLeast(me.level, needed)) {
       await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: `expense.${needed}`, objectType: "expense", result: "denied" });
       if (me.level === "none") throw new AppError(404, "NOT_FOUND", "Not found");
@@ -80,8 +111,8 @@ export function expenseRoutes(database: Database): Router {
     return doc;
   }
 
-  /** Checks an expense's category, group, venture and end month against the settings and what the person may see. */
-  async function checkInput(workspaceId: string, input: ExpenseInput, settings: Settings, me: ExpenseAccess, unchanged: { categoryId?: string; groupId?: string | null } = {}) {
+  /** Checks an expense's category, group, venture and end month against the settings and what the person may see. Kept values (an archived category, a deleted venture) pass. */
+  async function checkInput(workspaceId: string, input: ExpenseInput, settings: Settings, me: ExpenseAccess, unchanged: { categoryId?: string; groupId?: string | null; scope?: string } = {}) {
     const category = settings.categories.find((item) => item.id === input.categoryId);
     if (!category || (!me.restricted && category.restricted)) throw new AppError(400, "BAD_REQUEST", "Pick one of the categories");
     if (category.archived && input.categoryId !== unchanged.categoryId) throw new AppError(400, "BAD_REQUEST", `The category ${category.name} is archived`);
@@ -90,7 +121,7 @@ export function expenseRoutes(database: Database): Router {
       if (!group) throw new AppError(400, "BAD_REQUEST", "Pick one of the groups");
       if (group.archived && input.groupId !== unchanged.groupId) throw new AppError(400, "BAD_REQUEST", `The group ${group.name} is archived`);
     }
-    if (input.scope.kind === "venture" && !await db.collection("ventures").findOne({ _id: input.scope.ventureId as never, workspaceId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That venture is not in this workspace");
+    if (input.scope.kind === "venture" && unchanged.scope !== `venture:${input.scope.ventureId}` && !await db.collection("ventures").findOne({ _id: input.scope.ventureId as never, workspaceId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That venture is not in this workspace");
     if (input.repeat === "none" && input.endMonth) throw new AppError(400, "BAD_REQUEST", "Only a repeating expense has a last month");
     if (input.endMonth && input.endMonth < monthOf(input.date)) throw new AppError(400, "BAD_REQUEST", "The last month can't be before the first payment");
   }
@@ -99,7 +130,10 @@ export function expenseRoutes(database: Database): Router {
   router.get("/expenses/access", async (req, res) => {
     if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
     const actor = req.actor!;
-    const { level, restricted } = accessOf(await loadSettings(db, actor.membership.workspaceId), actor.id, actor.membership.role);
+    await ensureSettings(db, actor.membership.workspaceId);
+    const settings = await loadSettings(db, actor.membership.workspaceId);
+    let { level, restricted } = accessOf(settings, actor.id, actor.membership.role);
+    if (actor.membership.role === "admin" && !(level === "manage" && restricted) && !(await keepersOf(db, actor.membership.workspaceId, settings)).keepers.length) ({ level, restricted } = { level: "manage", restricted: true });
     res.json(ok({ level, restricted }));
   });
 
@@ -126,8 +160,8 @@ export function expenseRoutes(database: Database): Router {
   router.get("/expenses", async (req, res) => {
     const { workspaceId, settings, me } = await gate(req, "view");
     const hide = me.restricted ? [] : restrictedIds(settings);
-    const items = await db.collection(EXPENSES).find({ workspaceId, ...(hide.length ? { categoryId: { $nin: hide } } : {}) }).sort({ date: -1, _id: 1 }).limit(5_000).toArray();
-    res.json(ok({ items: items.map(json), hiddenRestricted: hide.length > 0 }));
+    const items = await db.collection(EXPENSES).find({ workspaceId, ...(hide.length ? { categoryId: { $nin: hide } } : {}) }).sort({ date: -1, _id: 1 }).limit(MAX_LISTED + 1).toArray();
+    res.json(ok({ items: items.slice(0, MAX_LISTED).map(json), hiddenRestricted: hide.length > 0, truncated: items.length > MAX_LISTED }));
   });
 
   router.post("/expenses", async (req, res) => {
@@ -146,29 +180,41 @@ export function expenseRoutes(database: Database): Router {
   router.patch("/expenses/:id", async (req, res) => {
     const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
     const id = idSchema.parse(req.params.id);
-    const change = expenseUpdateSchema.parse(req.body ?? {});
+    const { expectedUpdatedAt, ...change } = expenseUpdateSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
+    sameVersion(current, expectedUpdatedAt);
     const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", ...change });
     if (merged.repeat === "none") merged.endMonth = null;
-    await checkInput(workspaceId, merged, settings, me, { categoryId: String(current.categoryId), groupId: (current.groupId as string | null) ?? null });
+    await checkInput(workspaceId, merged, settings, me, { categoryId: String(current.categoryId), groupId: (current.groupId as string | null) ?? null, scope: scopeKeyOf(current.scope) });
     const now = new Date();
     await atomic(database, async (session) => {
-      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now } }, { session });
+      // A new date sets a new repeat day, so the copy's kept day goes.
+      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
       await record("expense.update", "expense", id, { fields: Object.keys(change).sort().join(",") }, session);
     });
     res.json(ok(json((await db.collection(EXPENSES).findOne({ _id: id as never }))!)));
   });
 
+  // Deleting removes an expense for good. Deleting the copy a price change made undoes the change: the expense it continued carries on
+  // as before (its last month goes back to the copy's).
   router.delete("/expenses/:id", async (req, res) => {
-    const { workspaceId, settings, me, record } = await gate(req, "edit");
+    const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
     const id = idSchema.parse(req.params.id);
+    const expected = typeof req.query.expectedUpdatedAt === "string" ? req.query.expectedUpdatedAt : undefined;
     const current = await visibleExpense(workspaceId, id, settings, me);
+    sameVersion(current, expected);
+    let reopened: string | undefined;
     await atomic(database, async (session) => {
-      const removed = await db.collection(EXPENSES).deleteOne({ _id: id as never, workspaceId }, { session });
-      if (removed.deletedCount) await record("expense.delete", "expense", id, { categoryId: String(current.categoryId), repeat: String(current.repeat) }, session);
+      const removed = await db.collection(EXPENSES).deleteOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { session });
+      if (!removed.deletedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
+      if (typeof current.continuesId === "string") {
+        const before = await db.collection(EXPENSES).updateOne({ _id: current.continuesId as never, workspaceId, endMonth: addMonths(monthOf(String(current.date)), -1) }, { $set: { endMonth: current.endMonth ?? null, updatedBy: actor.id, updatedAt: new Date() } }, { session });
+        if (before.modifiedCount) reopened = current.continuesId;
+      }
+      await record("expense.delete", "expense", id, { categoryId: String(current.categoryId), repeat: String(current.repeat), ...(reopened ? { reopened } : {}) }, session);
     });
-    res.json(ok({ id, deleted: true }));
+    res.json(ok({ id, deleted: true, ...(reopened ? { reopened } : {}) }));
   });
 
   // A new amount from a month on: the expense stops the month before, and a copy with the new amount starts that month (on the day it
@@ -176,14 +222,18 @@ export function expenseRoutes(database: Database): Router {
   router.post("/expenses/:id/change", async (req, res) => {
     const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
     const id = idSchema.parse(req.params.id);
-    const input = expenseChangeSchema.parse(req.body ?? {});
+    const { expectedUpdatedAt, ...input } = expenseChangeSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
+    sameVersion(current, expectedUpdatedAt);
     if (current.repeat === "none") throw new AppError(400, "BAD_REQUEST", "Only a repeating expense changes from a month on: edit this one instead");
-    const day = occurrenceIn({ date: String(current.date), repeat: current.repeat as "monthly" | "yearly", endMonth: (current.endMonth as string | null) ?? null }, input.fromMonth);
+    // The copy repeats on the same day of the month as the expense (the 31st stays the 31st after a 30-day month).
+    const anchorDay = typeof current.anchorDay === "number" ? current.anchorDay : Number(String(current.date).slice(8, 10));
+    const day = occurrenceIn({ date: String(current.date), repeat: current.repeat as "monthly" | "yearly", endMonth: (current.endMonth as string | null) ?? null, anchorDay }, input.fromMonth);
     if (!day) throw new AppError(400, "BAD_REQUEST", "Pick a month this expense is paid in");
     if (input.fromMonth <= monthOf(String(current.date))) throw new AppError(400, "BAD_REQUEST", "That is its first month: edit the expense instead");
     const now = new Date();
-    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
+    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
+      ...(Number(day.slice(8, 10)) !== anchorDay ? { anchorDay } : {}),
       ...(input.paidTo !== undefined ? { paidTo: input.paidTo } : {}), ...(input.note !== undefined ? { note: input.note } : {}), continuesId: id, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       const stopped = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { endMonth: addMonths(input.fromMonth, -1), updatedBy: actor.id, updatedAt: now } }, { session });
@@ -206,7 +256,7 @@ export function expenseRoutes(database: Database): Router {
     const created = await atomic(database, async (session) => {
       const { workspaceId, settings, me, record } = await gate(req, "manage", session);
       if (input.restricted && !me.restricted) throw new AppError(403, "FORBIDDEN", "Only people who see restricted categories can make one");
-      if (sameName(settings.categories, input.name)) throw new AppError(409, "CONFLICT", `There is already a category called ${input.name}`);
+      if (sameName(settings.categories, input.name)) throw new AppError(409, "CONFLICT", sameName(visibleCategories(settings, me), input.name) ? `There is already a category called ${input.name}` : "That name can't be used: pick another");
       if (settings.categories.length >= MAX_CATEGORIES) throw new AppError(409, "CONFLICT", `At most ${MAX_CATEGORIES} categories: archive one you no longer use`);
       const category: ExpenseCategory = { id: shortId(), ...input, archived: false };
       await saveSettings(workspaceId, { ...settings, categories: [...settings.categories, category] }, session);
@@ -224,7 +274,7 @@ export function expenseRoutes(database: Database): Router {
       const current = settings.categories.find((item) => item.id === id);
       if (!current || (current.restricted && !me.restricted)) throw new AppError(404, "NOT_FOUND", "Category not found");
       if (change.restricted !== undefined && change.restricted !== current.restricted && !me.restricted) throw new AppError(403, "FORBIDDEN", "Only people who see restricted categories can change that");
-      if (change.name && sameName(settings.categories, change.name, id)) throw new AppError(409, "CONFLICT", `There is already a category called ${change.name}`);
+      if (change.name && sameName(settings.categories, change.name, id)) throw new AppError(409, "CONFLICT", sameName(visibleCategories(settings, me), change.name, id) ? `There is already a category called ${change.name}` : "That name can't be used: pick another");
       const category = { ...current, ...change };
       await saveSettings(workspaceId, { ...settings, categories: settings.categories.map((item) => item.id === id ? category : item) }, session);
       await record("expense.category.update", "expense_category", id, { fields: Object.keys(change).sort().join(",") }, session);
@@ -274,10 +324,11 @@ export function expenseRoutes(database: Database): Router {
       if (input.restricted && !me.restricted) throw new AppError(403, "FORBIDDEN", "Only people who see restricted categories can let others see them");
       const before = accessOf(settings, userId, String(member.role));
       if (!me.restricted && before.restricted && !input.restricted) throw new AppError(403, "FORBIDDEN", "Only people who see restricted categories can change who sees them");
-      const access = { ...settings.access, [userId]: { level: input.level, restricted: input.restricted } };
-      const memberships = await db.collection("memberships").find({ workspaceId, status: "active" }).project({ userId: 1, role: 1 }).toArray();
-      const keepers = memberships.filter((item) => { const resolved = accessOf({ ...settings, access }, String(item.userId), String(item.role)); return resolved.level === "manage" && resolved.restricted; });
-      if (!keepers.length) throw new AppError(409, "CONFLICT", "Someone must keep Manage with restricted access: give it to another person first");
+      // Entries of people no longer in the workspace go, so a returning member starts from the default.
+      const { memberships } = await keepersOf(db, workspaceId, settings, session);
+      const active = new Set(memberships.map((item) => String(item.userId)));
+      const access = { ...Object.fromEntries(Object.entries(settings.access).filter(([key]) => active.has(key))), [userId]: { level: input.level, restricted: input.restricted } };
+      if (!(await keepersOf(db, workspaceId, { ...settings, access }, session)).keepers.length) throw new AppError(409, "CONFLICT", "Someone must keep Manage with restricted access: give it to another person first");
       await saveSettings(workspaceId, { ...settings, access }, session);
       await record("expense.access.set", "expense_access", userId, { level: input.level, restricted: input.restricted }, session);
       return { userId, level: input.level, restricted: input.restricted, custom: true };

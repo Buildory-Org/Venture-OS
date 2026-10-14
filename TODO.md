@@ -664,3 +664,11 @@ Spec: `docs/sales-dealflow.md`. Built 2026-10-09 on the local dev stack (standal
 - [ ] WhatsApp Cloud API lane: webhook (verify token, signature check, de-duplication), templates, 24-hour window (off until the owner has the business number)
 - [ ] Office-PC engine bridge: pick up queued find-lead runs and add leads with contact routes from the company's own pages
 - [ ] Deploy with the production stack and connect Claude on claude.ai for each teammate
+
+## Phase 8 — Expense tracker
+
+- [x] Expense tracker (2026-10-14, branch `task/expense-tracker`; `/expenses/live`, docs/expenses.md; Buildory tasks "log and filter every expense" and "separate Office monthly expenses"):
+  - **Expenses:** venture, Office or Personal; category and optional group; one-time, monthly or yearly until a last month; a new amount from a month on keeps earlier months as paid; labels refuse long numbers.
+  - **Screens:** Expenses (month, filters, total, CSV), Office, Monthly (Office, Personal, each venture, overall), Subscriptions (cost a month and a year, next payments), Settings.
+  - **Access list:** no access, view, edit or manage per member, plus restricted categories (salary, EMI); admins manage by default; someone always keeps Manage with restricted; enforced by the API; no Claude access.
+  - **Verified:** API suites 172/172 on a replica set (expenses: repeats, every access level, restricted data, the keeper rule, version checks, price changes and their undo); typecheck, lint and web build clean; an independent review (5 medium and 7 low findings, fixed and re-tested); a browser smoke test on an isolated stack as admin, a viewer without restricted access and someone with no access, at desktop and phone width.

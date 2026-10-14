@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { addMonths, expenseInputSchema, expenseListSchema, expenseSettingsSchema, formatRupees, monthlyEquivalentPaise, monthsBetween, nextOccurrence, occurrenceIn, successEnvelope } from "@venture-studio/contracts";
+import { addMonths, expenseInputSchema, expenseListSchema, expenseSettingsSchema, formatRupees, monthlyEquivalentPaise, monthsBetween, nextOccurrence, nextPaidMonthAfter, occurrenceIn, successEnvelope } from "@venture-studio/contracts";
 import { withSalesApp } from "./mcp-sales-harness.js";
 
 // The expense tracker (routes/expenses.ts): months and repeats, the access list (none, view, edit, manage, and restricted categories),
@@ -26,9 +26,13 @@ test("months and repeats: monthly on its day (the last day in a short month), ye
   assert.deepEqual([monthlyEquivalentPaise({ amountPaise: 120_000, repeat: "yearly" }), monthlyEquivalentPaise({ amountPaise: 999, repeat: "none" })], [10_000, 0]);
   assert.deepEqual([formatRupees(12_345_650), formatRupees(170_000)], ["₹1,23,456.50", "₹1,700"]);
   // Labels never hold account, card or phone numbers.
-  for (const note of ["A/c 123456789012", "card 4111 1111 1111 1111", "call 98270-12345"]) assert.equal(expenseInputSchema.safeParse({ ...base, note }).success, false, note);
-  assert.equal(expenseInputSchema.safeParse({ ...base, note: "Invoice INV-2026-10 for 3 seats" }).success, true);
+  for (const note of ["A/c 123456789012", "card 4111 1111 1111 1111", "4111 - 1111 - 1111 - 1111", "4111/1111/1111/1111", "call 98270-12345", "+91 98270 12345", "982-701-2345"]) assert.equal(expenseInputSchema.safeParse({ ...base, note }).success, false, note);
+  for (const note of ["Invoice INV-2026-10 for 3 seats", "INV-2026-10-00123", "Paid 2026-10-14 20:02", "GSTIN 22AAACG1234A1Z5", "3 seats at 1,700"]) assert.equal(expenseInputSchema.safeParse({ ...base, note }).success, true, note);
   assert.equal(expenseInputSchema.safeParse({ ...base, date: "2026-02-30" }).success, false, "not a real date");
+  assert.equal(expenseInputSchema.safeParse({ ...base, date: "0050-01-01" }).success, false, "years 2000 to 2099 only");
+  // A copy that starts in a short month keeps the original day.
+  assert.deepEqual(["2026-04", "2026-05"].map((month) => occurrenceIn({ date: "2026-04-30", repeat: "monthly", endMonth: null, anchorDay: 31 }, month)), ["2026-04-30", "2026-05-31"]);
+  assert.deepEqual([nextPaidMonthAfter({ date: "2025-11-20", repeat: "yearly", endMonth: null }, "2026-10"), nextPaidMonthAfter({ date: "2026-01-31", repeat: "monthly", endMonth: "2026-10" }, "2026-10")], ["2026-11", null]);
 });
 
 test("access: admins manage by default, others see nothing until a manager adds them; view reads, edit changes, manage sets categories and access", { skip }, async () => {
@@ -102,6 +106,22 @@ test("someone always keeps Manage with restricted access, and only people who se
   }, "expenses_keepers");
 });
 
+test("the admins of the first use hold restricted access; an admin made later manages without it; with no keeper left an admin takes it back", { skip }, async () => {
+  await withSalesApp(async ({ api, db }) => {
+    const call = async (method: string, path: string, handle: string, body?: unknown) => read(await api(method, path, handle, body));
+    assert.deepEqual((await call("GET", "/expenses/access", "boss")).body.data, { level: "manage", restricted: true }, "the first use records the admins of that moment");
+    await db.collection("memberships").updateOne({ userId: "user-member2" }, { $set: { role: "admin" } });
+    assert.deepEqual((await call("GET", "/expenses/access", "member2")).body.data, { level: "manage", restricted: false }, "a later admin doesn't see salaries until someone lets them");
+    assert.equal((await call("PUT", "/expenses/settings/access/user-member", "member2", { level: "view", restricted: true })).status, 403);
+    // The only keeper leaves the workspace: an admin takes Manage with restricted access back, so the tracker is never locked.
+    await db.collection("memberships").updateOne({ userId: "user-boss" }, { $set: { status: "removed" } });
+    assert.deepEqual((await call("GET", "/expenses/access", "member2")).body.data, { level: "manage", restricted: true });
+    assert.equal((await call("PUT", "/expenses/settings/access/user-member2", "member2", { level: "manage", restricted: true })).status, 200);
+    const stored = (await db.collection("expense_settings").findOne({ _id: "workspace-a" as never }))!;
+    assert.equal(stored.access["user-boss"], undefined, "entries of people who left are pruned");
+  }, "expenses_admins");
+});
+
 test("expenses: categories and groups, input checks, a new amount from a month on, and edits that crossed are refused", { skip }, async () => {
   await withSalesApp(async ({ api, db }) => {
     const call = async (method: string, path: string, handle: string, body?: unknown) => read(await api(method, path, handle, body));
@@ -129,12 +149,33 @@ test("expenses: categories and groups, input checks, a new amount from a month o
     ] as const) assert.equal((await call("POST", "/expenses", "boss", body)).status, 400, why);
 
     // A new amount from April: January to March keep ₹1,700, April on is ₹1,900, on the day it falls in April.
-    const changed = await call("POST", `/expenses/${claude.body.data.id}/change`, "boss", { fromMonth: "2026-04", amountPaise: 190_000 });
+    assert.deepEqual(claude.body.data.scope, { kind: "venture", ventureId: "venture-a" }, "the venture it was added in is the one stored");
+    await call("PATCH", `/expenses/${claude.body.data.id}`, "boss", { note: "Team plan, 3 seats" });
+    const loaded = (await call("GET", "/expenses", "boss")).body.data.items.find((item: any) => item.id === claude.body.data.id);
+    // An edit or a change made from an older copy is refused instead of undoing what was saved meanwhile.
+    assert.equal((await call("PATCH", `/expenses/${claude.body.data.id}`, "boss", { note: "stale", expectedUpdatedAt: claude.body.data.updatedAt })).status, 409);
+    assert.equal((await call("POST", `/expenses/${claude.body.data.id}/change`, "boss", { fromMonth: "2026-04", amountPaise: 1, expectedUpdatedAt: claude.body.data.updatedAt })).status, 409);
+    const changed = await call("POST", `/expenses/${claude.body.data.id}/change`, "boss", { fromMonth: "2026-04", amountPaise: 190_000, expectedUpdatedAt: loaded.updatedAt });
     assert.equal(changed.status, 201, changed.text);
-    assert.deepEqual([changed.body.data.stopped.endMonth, changed.body.data.continued.date, changed.body.data.continued.amountPaise, changed.body.data.continued.continuesId, changed.body.data.continued.groupId], ["2026-03", "2026-04-30", 190_000, claude.body.data.id, group.body.data.id]);
-    const all = (await call("GET", "/expenses", "boss")).body.data.items as any[];
+    const continued = changed.body.data.continued;
+    assert.deepEqual([changed.body.data.stopped.endMonth, continued.date, continued.anchorDay, continued.amountPaise, continued.continuesId, continued.groupId, continued.note], ["2026-03", "2026-04-30", 31, 190_000, claude.body.data.id, group.body.data.id, "Team plan, 3 seats"]);
+    const listed = async () => (await call("GET", "/expenses", "boss")).body.data.items as any[];
+    let all = await listed();
     const paidIn = (month: string) => all.reduce((sum, item) => sum + (occurrenceIn(item, month) ? item.amountPaise : 0), 0);
     assert.deepEqual(["2026-02", "2026-03", "2026-04", "2026-09"].map(paidIn), [170_000, 170_000, 190_000, 190_000]);
+    assert.equal(occurrenceIn(all.find((item) => item.id === continued.id), "2026-05"), "2026-05-31", "still paid on the 31st");
+    // Deleting the copy undoes the price change: the first amount carries on.
+    const undone = await call("DELETE", `/expenses/${continued.id}?expectedUpdatedAt=${encodeURIComponent(continued.updatedAt)}`, "boss");
+    assert.deepEqual([undone.status, undone.body.data.reopened], [200, claude.body.data.id]);
+    all = await listed();
+    assert.deepEqual(["2026-03", "2026-04", "2026-09"].map(paidIn), [170_000, 170_000, 170_000]);
+    const again = await call("POST", `/expenses/${claude.body.data.id}/change`, "boss", { fromMonth: "2026-04", amountPaise: 190_000 });
+    assert.equal(again.status, 201, again.text);
+    all = await listed();
+    // A manager who can't see restricted categories never learns a hidden one's name.
+    await call("PUT", "/expenses/settings/access/user-lead", "boss", { level: "manage", restricted: false });
+    const hiddenName = await call("POST", "/expenses/settings/categories", "lead", { name: "salaries" });
+    assert.deepEqual([hiddenName.status, hiddenName.body.error.message], [409, "That name can't be used: pick another"]);
     assert.equal((await call("POST", `/expenses/${claude.body.data.id}/change`, "boss", { fromMonth: "2026-06", amountPaise: 1 })).status, 400, "not a month it is paid in any more");
     const once = await call("POST", "/expenses", "boss", { ...base, date: "2026-03-02" });
     assert.equal((await call("POST", `/expenses/${once.body.data.id}/change`, "boss", { fromMonth: "2026-04", amountPaise: 1 })).status, 400, "a one-time expense is edited, not changed");

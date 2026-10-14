@@ -19,15 +19,19 @@ export const EXPENSE_SCOPES = ["venture", "office", "personal"] as const;
 export const EXPENSE_COLORS = ["green", "blue", "amber", "red", "purple", "neutral"] as const;
 export const expenseColorSchema = z.enum(EXPENSE_COLORS);
 
-/** A calendar day, YYYY-MM-DD. */
-export const expenseDaySchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, "A date is YYYY-MM-DD").refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().startsWith(value), "Not a real date");
-/** A calendar month, YYYY-MM. */
-export const expenseMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "A month is YYYY-MM");
+/** A calendar day, YYYY-MM-DD, in 2000–2099. */
+export const expenseDaySchema = z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, "A date is YYYY-MM-DD, from 2000 to 2099").refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().startsWith(value), "Not a real date");
+/** A calendar month, YYYY-MM, in 2000–2099. */
+export const expenseMonthSchema = z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/, "A month is YYYY-MM, from 2000 to 2099");
 /** At most ₹1,000 crore, in paise. */
 export const MAX_EXPENSE_PAISE = 10_000_000_000_00;
 
-/** A run of 9 or more digits (spaces, dots and dashes between them allowed) reads like an account, card or phone number: never kept. */
-export const LONG_NUMBER = /\d(?:[\s.-]?\d){8,}/;
+/**
+ * What reads like an account, card or phone number, never kept: 9 or more digits in a row; a card's groups of four (4111 1111 1111 1111,
+ * with spaces, dashes, dots, slashes or underscores between); a phone number in two groups of five (98270 12345) or three groups
+ * (982-701-2345). Dates, times and invoice numbers such as 2026-10-14 20:02 or INV-2026-10-00123 are fine.
+ */
+export const LONG_NUMBER = /\d{9,}|\d{4}[\s./_-]+\d{4}[\s./_-]+\d{4}|\d{5}[\s./_-]+\d{5}|\d{3,5}[\s.-]\d{3,4}[\s.-]\d{3,4}/;
 const label = (max: number, what: string) => z.string().trim().max(max).refine((value) => !LONG_NUMBER.test(value), `${what} can't hold account, card or other long numbers`);
 
 export const expenseScopeSchema = z.discriminatedUnion("kind", [
@@ -53,27 +57,31 @@ const expenseFields = {
 export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default("") });
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 /** An edit: only the fields sent change (no defaults, so leaving a field out never resets it). */
-export const expenseUpdateSchema = z.object(expenseFields).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
+/** The version an edit was made from (the expense's updatedAt as loaded): a change saved meanwhile refuses the edit instead of being undone. */
+const expectedUpdatedAt = isoDateSchema.optional();
+export const expenseUpdateSchema = z.object({ ...expenseFields, expectedUpdatedAt }).partial().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "Nothing to change");
 /** A new amount (or other details) from a month on: the expense stops the month before and a copy starts that month, so past months keep what was paid. */
-export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amountPaise: expenseInputSchema.shape.amountPaise, paidTo: expenseInputSchema.shape.paidTo.optional(), note: expenseInputSchema.shape.note.optional() });
+export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amountPaise: expenseFields.amountPaise, paidTo: expenseFields.paidTo.optional(), note: expenseFields.note.optional(), expectedUpdatedAt });
 
 export const expenseSchema = z.object({
   id: idSchema, workspaceId: idSchema, date: expenseDaySchema, amountPaise: z.number().int(), categoryId: idSchema, groupId: idSchema.nullable(),
   paidTo: z.string(), scope: expenseScopeSchema, repeat: expenseRepeatSchema, endMonth: expenseMonthSchema.nullable(), note: z.string(),
   /** Set on the copy that "a new amount from a month" made: the expense it continues. */
   continuesId: idSchema.optional(),
+  /** The day of the month it repeats on, when that differs from `date`'s day (a copy that starts in a shorter month): the 31st stays the 31st. */
+  anchorDay: z.number().int().min(1).max(31).optional(),
   createdBy: idSchema, updatedBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
 export type Expense = z.infer<typeof expenseSchema>;
 
 export const expenseCategorySchema = z.object({ id: idSchema, name: z.string(), color: expenseColorSchema, restricted: z.boolean(), archived: z.boolean() });
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
-const categoryFields = { name: z.string().trim().min(1).max(60), color: expenseColorSchema, restricted: z.boolean() };
+const categoryFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, restricted: z.boolean() };
 export const expenseCategoryInputSchema = z.object({ ...categoryFields, color: categoryFields.color.default("neutral"), restricted: categoryFields.restricted.default(false) });
 export const expenseCategoryUpdateSchema = z.object({ ...categoryFields, archived: z.boolean() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
 export const expenseGroupSchema = z.object({ id: idSchema, name: z.string(), color: expenseColorSchema, note: z.string(), archived: z.boolean() });
 export type ExpenseGroup = z.infer<typeof expenseGroupSchema>;
-const groupFields = { name: z.string().trim().min(1).max(60), color: expenseColorSchema, note: label(300, "A note") };
+const groupFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, note: label(300, "A note") };
 export const expenseGroupInputSchema = z.object({ ...groupFields, color: groupFields.color.default("neutral"), note: groupFields.note.default("") });
 export const expenseGroupUpdateSchema = z.object({ ...groupFields, archived: z.boolean() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
 
@@ -93,7 +101,8 @@ export const expenseSettingsSchema = z.object({
   hiddenRestricted: z.boolean(),
 });
 export type ExpenseSettings = z.infer<typeof expenseSettingsSchema>;
-export const expenseListSchema = z.object({ items: z.array(expenseSchema), hiddenRestricted: z.boolean() });
+/** `truncated` when there were more than the list returns (the oldest left out): totals would be short. */
+export const expenseListSchema = z.object({ items: z.array(expenseSchema), hiddenRestricted: z.boolean(), truncated: z.boolean().default(false) });
 
 // ---- Months and occurrences (shared by the API's checks and the screens) -------------------------------------------------------
 
@@ -112,26 +121,35 @@ export function monthsBetween(from: string, to: string): string[] {
 }
 const daysIn = (month: string) => new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
 
+type Repeating = Pick<Expense, "date" | "repeat" | "endMonth"> & { anchorDay?: number | undefined };
 /** The day an expense is paid in `month`, or null when it isn't paid that month (a repeat lands on the month's last day when it is shorter). */
-export function occurrenceIn(expense: Pick<Expense, "date" | "repeat" | "endMonth">, month: string): string | null {
+export function occurrenceIn(expense: Repeating, month: string): string | null {
   const start = monthOf(expense.date);
   if (month < start) return null;
   if (expense.repeat === "none") return month === start ? expense.date : null;
   if (expense.endMonth && month > expense.endMonth) return null;
   if (expense.repeat === "yearly" && month.slice(5, 7) !== start.slice(5, 7)) return null;
-  const day = Math.min(Number(expense.date.slice(8, 10)), daysIn(month));
+  const day = Math.min(expense.anchorDay ?? Number(expense.date.slice(8, 10)), daysIn(month));
   return `${month}-${String(day).padStart(2, "0")}`;
 }
 /** What an expense costs a month on average: a yearly one is spread over 12. One-time expenses have none. */
 export const monthlyEquivalentPaise = (expense: Pick<Expense, "amountPaise" | "repeat">) => expense.repeat === "monthly" ? expense.amountPaise : expense.repeat === "yearly" ? Math.round(expense.amountPaise / 12) : 0;
 /** The next day a repeating expense is paid on or after `today` (YYYY-MM-DD), or null once it has stopped. */
-export function nextOccurrence(expense: Pick<Expense, "date" | "repeat" | "endMonth">, today: string): string | null {
+export function nextOccurrence(expense: Repeating, today: string): string | null {
   if (expense.repeat === "none") return expense.date >= today ? expense.date : null;
   let month = monthOf(today) < monthOf(expense.date) ? monthOf(expense.date) : monthOf(today);
   for (let step = 0; step < 24; step++, month = addMonths(month, 1)) {
     const day = occurrenceIn(expense, month);
     if (day && day >= today) return day;
     if (expense.endMonth && month >= expense.endMonth) return null;
+  }
+  return null;
+}
+/** The first month after `month` that a repeating expense is paid in (for "a new amount from"), or null when it has stopped by then. */
+export function nextPaidMonthAfter(expense: Repeating, month: string): string | null {
+  for (let next = addMonths(month, 1), step = 0; step < 24; step++, next = addMonths(next, 1)) {
+    if (expense.endMonth && next > expense.endMonth) return null;
+    if (occurrenceIn(expense, next)) return next;
   }
   return null;
 }

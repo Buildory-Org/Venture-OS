@@ -46,9 +46,12 @@ export function lookups(settings: ExpenseSettings) {
   return { category: (id: string) => categories.get(id), group: (id: string | null) => (id ? groups.get(id) : undefined) };
 }
 
-/** Saves rows as a CSV file (opens in Excel or Sheets), with a header row; quotes every cell. */
+/**
+ * Saves rows as a CSV file (opens in Excel or Sheets), with a header row; quotes every cell. A text cell that starts like a formula
+ * (=, +, -, @, tab) gets a leading apostrophe so a spreadsheet shows it as text instead of running it.
+ */
 export function downloadCsv(name: string, header: string[], rows: (string | number)[][]) {
-  const cell = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+  const cell = (value: string | number) => { const text = typeof value === "string" && /^[=+\-@\t\r]/.test(value) ? `'${value}` : String(value); return `"${text.replace(/"/g, '""')}"`; };
   const text = [header, ...rows].map((row) => row.map(cell).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([`﻿${text}`], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
@@ -56,7 +59,7 @@ export function downloadCsv(name: string, header: string[], rows: (string | numb
   setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-export type ExpenseData = { settings: ExpenseSettings; expenses: Expense[]; hiddenRestricted: boolean };
+export type ExpenseData = { settings: ExpenseSettings; expenses: Expense[]; hiddenRestricted: boolean; truncated: boolean };
 /** The settings and expenses every tab reads, loaded together; `noAccess` when the API says the person has none. */
 export function useExpenseData() {
   const [data, setData] = useState<ExpenseData | null>(null);
@@ -70,7 +73,7 @@ export function useExpenseData() {
     queueMicrotask(() => { if (call === latest.current) setBusy(true); });
     Promise.all([getExpenseSettings(), listExpenses()]).then(([settings, list]) => {
       if (call !== latest.current) return;
-      setData({ settings, expenses: list.items, hiddenRestricted: list.hiddenRestricted }); setError(""); setNoAccess(false); setBusy(false);
+      setData({ settings, expenses: list.items, hiddenRestricted: list.hiddenRestricted, truncated: list.truncated }); setError(""); setNoAccess(false); setBusy(false);
     }).catch((cause: unknown) => {
       if (call !== latest.current) return;
       // No access reads as "not found" from the API.

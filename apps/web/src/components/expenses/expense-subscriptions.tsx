@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { monthlyEquivalentPaise, nextOccurrence } from "@venture-studio/contracts";
+import { monthOf, monthlyEquivalentPaise, nextOccurrence } from "@venture-studio/contracts";
 import { Repeat } from "@/components/ui/icons";
 import { Badge, Empty, Panel, PanelHead } from "@/components/studio/primitives";
 import type { Expense } from "@/lib/expenses-api";
@@ -16,10 +16,13 @@ export function ExpenseSubscriptions({ data, ventureName, onlyWhere, onOpen }: P
   const find = useMemo(() => lookups(data.settings), [data.settings]);
   const today = todayLocal();
   const repeating = data.expenses.filter((expense) => expense.repeat !== "none" && (!onlyWhere || scopeKey(expense.scope) === onlyWhere));
-  const active = repeating.filter((expense) => !expense.endMonth || expense.endMonth >= thisMonth());
+  const notEnded = repeating.filter((expense) => !expense.endMonth || expense.endMonth >= thisMonth());
+  // Running: started by this month and not stopped. One that starts later (a new price from next month) isn't counted yet.
+  const active = notEnded.filter((expense) => monthOf(expense.date) <= thisMonth());
+  const later = notEnded.filter((expense) => monthOf(expense.date) > thisMonth());
   const stopped = repeating.filter((expense) => expense.endMonth && expense.endMonth < thisMonth());
   const monthly = active.reduce((sum, expense) => sum + monthlyEquivalentPaise(expense), 0);
-  const upcoming = active.map((expense) => ({ expense, next: nextOccurrence(expense, today) })).filter((row): row is { expense: Expense; next: string } => Boolean(row.next) && daysUntil(row.next!, today) <= 30).sort((a, b) => a.next.localeCompare(b.next));
+  const upcoming = notEnded.map((expense) => ({ expense, next: nextOccurrence(expense, today) })).filter((row): row is { expense: Expense; next: string } => Boolean(row.next) && daysUntil(row.next!, today) <= 30).sort((a, b) => a.next.localeCompare(b.next));
   const groups = new Map<string, Expense[]>();
   for (const expense of active) { const key = expense.groupId ?? ""; groups.set(key, [...(groups.get(key) ?? []), expense]); }
   const ordered = [...groups].sort(([a], [b]) => (!a ? 1 : !b ? -1 : (find.group(a)?.name ?? "").localeCompare(find.group(b)?.name ?? "")));
@@ -68,6 +71,11 @@ export function ExpenseSubscriptions({ data, ventureName, onlyWhere, onOpen }: P
         <ul className="divide-y divide-neutral-100">{list.sort((a, b) => b.amountPaise - a.amountPaise).map(row)}</ul>
       </Panel>;
     })}
+
+    {later.length > 0 && <Panel className="overflow-hidden">
+      <PanelHead title="Starting later" aside={<span className="text-xs font-semibold text-neutral-500">Not in the totals yet</span>} />
+      <ul className="divide-y divide-neutral-100">{later.map(row)}</ul>
+    </Panel>}
 
     {stopped.length > 0 && <div>
       <button type="button" aria-expanded={showStopped} onClick={() => setShowStopped(!showStopped)} className="min-h-9 rounded-lg px-1 text-xs font-semibold text-primary-700 hover:text-primary-800">{showStopped ? "Hide" : "Show"} {stopped.length} stopped</button>

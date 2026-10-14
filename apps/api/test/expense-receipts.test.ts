@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import { expenseReceiptSchema, successEnvelope } from "@venture-studio/contracts";
-import { cleanReceipt, readReceipt, RECEIPT_MODEL } from "../src/expense-receipts.js";
+import { cleanReceipt, readReceipt, RECEIPT_MODEL, receiptReadFormat } from "../src/expense-receipts.js";
 import { DEFAULT_EXPENSE_CATEGORIES } from "../src/routes/expenses.js";
 import { withSalesApp } from "./mcp-sales-harness.js";
 
@@ -18,8 +18,8 @@ const base = { date: "2026-10-01", amountPaise: 28_580, categoryId: "ai-tools", 
 
 /** What the stand-in Claude reads off every receipt, as the receipt schema has it (the category by name). */
 const READ = {
-  kind: "receipt", merchant: "Sushi Yasuda", merchantAddress: "204 East 43rd Street, New York", merchantPhone: "(212) 972-1001", merchantTaxId: null, number: "3528",
-  date: "2026-10-01", time: "1:19 PM", billedTo: null, currency: "INR",
+  kind: "receipt", merchant: "Sushi Yasuda", merchantAddress: "204 East 43rd Street, New York", merchantPhone: "(212) 972-1001", merchantTaxId: "", number: "3528",
+  date: "2026-10-01", time: "1:19 PM", billedTo: "", currency: "INR",
   items: [{ name: "Edamame", quantity: 1, unitPrice: 9, amount: 9 }, { name: "A la Carte Sushi", quantity: 1, unitPrice: 243, amount: 243 }],
   subtotal: 262.5, discount: null, taxes: [{ label: "Sales Tax", ratePercent: 8.875, amount: 23.3 }], tip: null, total: 285.8,
   paymentMethod: "card", cardLast4: "1111", footer: "Paid with card 4111 1111 1111 1111. Thank you", category: "AI tools",
@@ -62,6 +62,21 @@ test("what is read is tidied: card numbers cut to four digits, a date only when 
   }
   const loose = cleanReceipt({ ...READ, billedTo: "Buildory, A/c 123456789012", footer: "Plan 01/10/2026 - 31/10/2026, call 080 4567 1200", items: [{ name: "Pro plan 01/10/2026 - 31/10/2026", quantity: 1, unitPrice: null, amount: 1 }] } as never, DEFAULT_EXPENSE_CATEGORIES);
   assert.deepEqual([loose.billedTo, loose.footer, loose.items[0]!.name], ["Buildory, A/c •••• 9012", "Plan 01/10/2026 - 31/10/2026, call 080 4567 1200", "Pro plan 01/10/2026 - 31/10/2026"]);
+});
+
+test("the answer format stays within the structured-output limits: at most 16 fields that may be null", () => {
+  let unions = 0;
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    const value = node as Record<string, unknown>;
+    if (Array.isArray(value.anyOf) || Array.isArray(value.type)) unions++;
+    Object.values(value).forEach(walk);
+  };
+  walk(receiptReadFormat.schema);
+  assert.ok(unions <= 16, `${unions} fields may be null`);
+  // Text that isn't printed comes back empty and is kept as null.
+  const clean = cleanReceipt({ ...READ, merchantTaxId: "", billedTo: "", cardLast4: "", currency: "", date: "", category: "" } as never, DEFAULT_EXPENSE_CATEGORIES);
+  assert.deepEqual([clean.merchantTaxId, clean.billedTo, clean.cardLast4, clean.currency, clean.date, clean.categoryId], [null, null, null, null, null, null]);
 });
 
 test("with no key set, a receipt is kept but not read", async () => {

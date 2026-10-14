@@ -656,7 +656,8 @@ Spec: `docs/sales-dealflow.md`. Built 2026-10-09 on the local dev stack (standal
   - **Parallel search:** every lead-finder search goes to TinyFish and Exa at the same time; leads are tagged `found-by-tinyfish` / `found-by-exa`.
   - **Searches and cost:** a saved or queued find run lists the searches it will make; a finished run keeps its time and searches per engine (Find leads, `plan_find_run`, `list_find_runs`).
   - **Several keys:** up to 10 per engine in Sales setup (or comma separated in the server settings), each with its own allowance; a refused key is paused for an hour and the next one used, a busy one passed over; old saved keys and counters carry over.
-  - **Verified:** API suites 166/166 on a replica set; typecheck, lint and web build clean; an independent review (2 medium and 5 low findings, all fixed and re-tested); a local smoke test on an isolated stack (add, refuse a repeat, remove, phone width, searches listed, time and searches shown).
+  - **Contact pages:** a "Dealer Enquiry" page no longer takes the contact page's place, so the site's own Contact page (and its email) is read too.
+  - **Verified:** API suites 167/167 on a replica set; typecheck, lint and web build clean; an independent review (2 medium and 5 low findings, all fixed and re-tested); a local smoke test on an isolated stack (add, refuse a repeat, remove, phone width, searches listed, time and searches shown); a real find run on the smoke stack with stand-in search and sites (both engines per search, a refused key rotated and paused, tags, time and searches saved); the api, worker and web images built as Coolify builds them and run together (the old saved key and its count carried over).
 - [ ] Owner walkthrough and refinements
 - [ ] Run against a MongoDB replica set (transactions) and repeat the live checks
 - [ ] Email lane: send from each person's own mailbox over SMTP (off until the owner switches it on per venture)

@@ -47,7 +47,16 @@ const PAGE_KINDS: { kind: string; path: RegExp; text: RegExp }[] = [
   { kind: "dealer", path: /dealer|distributor|stockist|franchise|partner/i, text: /dealer|distributor|stockist|franchise|partner with us|become a/i },
   { kind: "products", path: /products?|range|catalog(ue)?|shop|collections?|solutions/i, text: /products?|our range|catalog(ue)?|shop|collections?/i },
 ];
-const kindOf = (link: PageLink) => PAGE_KINDS.find((item) => item.path.test(pathOf(link.href)) || item.text.test(link.text))?.kind;
+/**
+ * The kind a link points to: by its address first, then its words. A dealer word beats "enquiry", so a "Dealer Enquiry" page is the dealer
+ * page and the site's own Contact page is still read as the contact page (taking it as contact left the real contact page, and the email
+ * on it, unread). "Enquiry" on its own is still a contact page.
+ */
+const KIND_PRIORITY = ["dealer", "contact", "about", "products"].map((kind) => PAGE_KINDS.find((item) => item.kind === kind)!);
+const kindOf = (link: PageLink) => {
+  const path = pathOf(link.href);
+  return (KIND_PRIORITY.find((item) => item.path.test(path)) ?? KIND_PRIORITY.find((item) => item.text.test(link.text)))?.kind;
+};
 
 /** After the home page: its contact, about, dealer or distributor, and products pages (one of each, on the same site), at most `max`. */
 export function pickPages(home: ParsedPage, max = 4): string[] {

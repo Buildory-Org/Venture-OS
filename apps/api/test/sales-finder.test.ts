@@ -187,6 +187,18 @@ test("the reader waits between requests to one host", async () => {
 
 // ---- What a company's pages say ---------------------------------------------------------------------------------------------------
 
+test("pages to read: a Dealer Enquiry page is the dealer page, so the site's own Contact page is still read; Enquiry on its own is the contact page", () => {
+  const site = "https://www.rkhardware.example";
+  const home = (links: string) => parseHtml(html(`<nav>${links}</nav><p>Hardware distributor</p>`), `${site}/`);
+  assert.deepEqual(pickPages(home('<a href="/dealer-enquiry">Dealer Enquiry</a> <a href="/contact">Contact</a> <a href="/about-us">About Us</a>')), [`${site}/contact`, `${site}/about-us`, `${site}/dealer-enquiry`]);
+  assert.deepEqual(pickPages(home('<a href="/distributor-enquiry">Distributor Enquiry</a> <a href="/reach-us">Reach us</a>')), [`${site}/reach-us`, `${site}/distributor-enquiry`]);
+  assert.deepEqual(pickPages(home('<a href="/enquiry">Enquiry</a> <a href="/become-a-dealer">Become a Dealer</a>')), [`${site}/enquiry`, `${site}/become-a-dealer`]);
+  assert.deepEqual(pickPages(home('<a href="/dealer-enquiry">Dealer Enquiry</a>')), [`${site}/dealer-enquiry`], "a site with only a dealer enquiry page still has it read");
+  // The address decides before the words: a contact page whose link mentions dealers is the contact page.
+  assert.deepEqual(pickPages(home('<a href="/contact-us">Contact our dealers</a> <a href="/dealers">Dealers</a>')), [`${site}/contact-us`, `${site}/dealers`]);
+  assert.deepEqual(pickPages(home('<a href="/page?id=7">Contact</a>')), [`${site}/page?id=7`], "a link whose address says nothing goes by its words");
+});
+
 test("extraction: verbatim dealer quotes with their page, published routes, PIN to state, the dealer login flag, and nothing from scripts", () => {
   const pages = parsedGood();
   const home = pages[0]!;

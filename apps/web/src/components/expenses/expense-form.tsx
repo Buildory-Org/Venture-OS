@@ -1,12 +1,13 @@
 "use client";
-import { useId, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { addMonths, expenseAccessAtLeast, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
+import { addMonths, companyKey, expenseAccessAtLeast, LONG_NUMBER, MAX_LOGO_BYTES, websiteHost, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, updateExpense, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
+import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
+import { CompanyAvatar } from "./expense-company";
 import { ReceiptSection } from "./expense-receipt";
 import { amountText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
 
@@ -46,6 +47,15 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const [categoryPicked, setCategoryPicked] = useState(Boolean(expense));
   const [receiptId, setReceiptId] = useState(expense?.receiptId ?? null);
   const [receiptNote, setReceiptNote] = useState("");
+  // A company seen for the first time may get its website (for its logo) or a logo now; both optional.
+  const [companyWebsite, setCompanyWebsite] = useState("");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const logoInput = useRef<HTMLInputElement>(null);
+  const logoPreview = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : null), [logoFile]);
+  useEffect(() => () => { if (logoPreview) URL.revokeObjectURL(logoPreview); }, [logoPreview]);
+  const typedKey = paidTo.trim() ? companyKey(paidTo) : "";
+  const knownCompany = typedKey ? settings.companies.find((company) => company.keys.includes(typedKey)) ?? (expense && expense.paidTo === paidTo ? settings.companies.find((company) => company.id === expense.companyId) : undefined) : undefined;
+  const newCompany = Boolean(typedKey) && !knownCompany && canEdit;
   const [groupId, setGroupId] = useState(expense?.groupId ?? "");
   const [where, setWhere] = useState(expense ? scopeKey(expense.scope) : fixedVentureId ? `venture:${fixedVentureId}` : defaultWhere ?? "office");
   const [repeat, setRepeat] = useState<ExpenseInput["repeat"]>(expense?.repeat ?? "none");
@@ -69,6 +79,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     if (!fresh || !data) return;
     const filled: string[] = [];
     if (!paidTo.trim() && data.merchant) { setPaidTo(data.merchant.slice(0, 120)); filled.push("paid to"); }
+    if (!companyWebsite.trim() && data.website) setCompanyWebsite(data.website);
     // The amount is filled in only for a receipt in rupees: one in another currency, or with none known, asks for the rupee amount.
     const inRupees = data.currency === "INR";
     if (!amount.trim() && data.total && inRupees) { setAmount(amountText(Math.round(data.total * 100))); filled.push("amount"); }
@@ -84,16 +95,20 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     if (!paise) { setError("Enter an amount in rupees, like 1700 or 1700.50."); return; }
     if (LONG_NUMBER.test(paidTo) || LONG_NUMBER.test(note)) { setError("Leave out account, card and phone numbers: only amounts and labels are kept."); return; }
     if (repeat !== "none" && endMonth && endMonth < monthOf(date)) { setError("The last month can't be before the first payment."); return; }
-    const input: ExpenseInput = { date, amountPaise: paise, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId };
+    if (newCompany && companyWebsite.trim() && !websiteHost(companyWebsite)) { setError("Enter the company's website like godaddy.com, or leave it empty."); return; }
+    const input: ExpenseInput = { date, amountPaise: paise, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId, ...(newCompany && companyWebsite.trim() ? { companyWebsite: companyWebsite.trim() } : {}) };
     setBusy("save"); setError("");
+    let saved: Expense;
     try {
       if (expense) {
         // Only what changed is sent, with the version it was changed from.
         const before: ExpenseInput = { date: expense.date, amountPaise: expense.amountPaise, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, receiptId: expense.receiptId ?? null };
         const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key as keyof ExpenseInput])));
-        if (Object.keys(changed).length) await updateExpense(expense.id, { ...changed, expectedUpdatedAt: expense.updatedAt });
-      } else await createExpense(input);
+        saved = Object.keys(changed).length ? await updateExpense(expense.id, { ...changed, expectedUpdatedAt: expense.updatedAt }) : expense;
+      } else saved = await createExpense(input);
       toast({ title: expense ? "Expense updated" : "Expense added", body: `${input.paidTo} · ${rupees(paise)}` });
+      // The new company's logo goes on once the expense (and so the company) exists; the expense stays saved either way.
+      if (logoFile && newCompany && saved.companyId) await uploadCompanyLogo(saved.companyId, logoFile).catch(() => toast({ title: "Logo not saved", body: "The expense is saved. Add the logo in Settings → Companies." }));
       onSaved(); onClose();
     } catch (cause) { setError(describeError(cause, "Could not save the expense. Try again.")); }
     finally { setBusy(null); }
@@ -154,6 +169,18 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     <form id={formId} onSubmit={save} className="grid grid-cols-1 gap-4">
       <fieldset disabled={readOnly || busy !== null} className="grid grid-cols-1 gap-4">
         <Field label="Paid to"><input required maxLength={120} className={inputClass} value={paidTo} onChange={(event) => setPaidTo(event.target.value)} placeholder="Anthropic, GoDaddy, Contabo…" autoFocus={!expense} /></Field>
+        {knownCompany && <p className="-mt-2 flex items-center gap-2 text-xs text-neutral-500"><CompanyAvatar company={knownCompany} name={knownCompany.name} size={20} />Grouped with <span className="font-semibold text-neutral-700">{knownCompany.name}</span> · {knownCompany.expenses} {knownCompany.expenses === 1 ? "expense" : "expenses"}</p>}
+        {newCompany && <div role="group" aria-label="New company" className="-mt-1 grid gap-2.5 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+          <p className="text-xs leading-5 text-neutral-600"><span className="font-semibold text-neutral-800">{paidTo.trim()}</span> is a new company. Add its website or a logo if you like: without either it shows its initial, and you can add them later in Settings → Companies.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* eslint-disable-next-line @next/next/no-img-element -- a local preview of the picked file */}
+            {logoPreview ? <img src={logoPreview} alt="" aria-hidden="true" className="h-9 w-9 shrink-0 rounded-full bg-white object-contain p-1 ring-1 ring-black/5" /> : <CompanyAvatar name={paidTo} size={36} />}
+            <input aria-label="Company website (optional)" inputMode="url" maxLength={300} placeholder="Website, e.g. godaddy.com" className={clsx(inputClass, "!min-h-9 min-w-0 !w-auto flex-1 basis-40 !text-sm")} value={companyWebsite} onChange={(event) => setCompanyWebsite(event.target.value)} />
+            <button type="button" onClick={() => logoInput.current?.click()} className={clsx(secondaryClass, "!min-h-9 !px-3 !text-xs")}>{logoFile ? "Change logo" : "Upload logo"}</button>
+            {logoFile && <button type="button" onClick={() => setLogoFile(null)} className={clsx(secondaryClass, "!min-h-9 !px-3 !text-xs")}>Remove</button>}
+          </div>
+          <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; if (file.size > MAX_LOGO_BYTES) { setError("Pick a logo image under 2 MB."); return; } setLogoFile(file); }} />
+        </div>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Amount (₹)"><input required inputMode="decimal" className={inputClass} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="1700" /></Field>
           <Field label={repeat === "none" ? "Date paid" : "First payment"}><input required type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /></Field>

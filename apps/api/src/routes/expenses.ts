@@ -6,10 +6,12 @@ import {
   expenseGroupUpdateSchema, expenseInputSchema, expenseUpdateSchema, idSchema, MAX_RECEIPT_BYTES, monthOf, occurrenceIn,
   type ExpenseAccess, type ExpenseAccessLevel, type ExpenseCategory, type ExpenseGroup, type ExpenseInput,
 } from "@venture-studio/contracts";
+import { companyKey, expenseCompanyMergeSchema, expenseCompanyUpdateSchema, MAX_LOGO_BYTES, websiteHost } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
 import type { AppConfig } from "../config.js";
 import { atomic, type AppDb, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
+import { COMPANIES, fetchLogoInTurn, logoFromImage, logoVersion, resolveCompany } from "../expense-companies.js";
 import { prepareReceipt, readReceipt } from "../expense-receipts.js";
 import { jsonValue } from "../json.js";
 import { overLimit } from "../middleware.js";
@@ -27,6 +29,7 @@ const SETTINGS = "expense_settings";
 const EXPENSES = "expenses";
 const RECEIPTS = "expense_receipts";
 const RECEIPTS_PER_HOUR = 40;
+const LOGO_FETCHES_PER_HOUR = 30;
 const MAX_CATEGORIES = 60;
 const MAX_GROUPS = 100;
 const MAX_LISTED = 20_000;
@@ -180,6 +183,62 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
   }
   const sweepReceipts = (workspaceId: string) => void dropOrphanReceipts(workspaceId).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_cleanup_failed", message: error instanceof Error ? error.message : String(error) })));
 
+  // ---- Companies (helpers) ------------------------------------------------------------------------------------------------------
+
+  const hiddenFor = (settings: Settings, me: ExpenseAccess) => (me.restricted ? [] : restrictedIds(settings));
+  /**
+   * The companies with an expense the person can see, with how many, by name. A company paid only in restricted categories stays hidden,
+   * and the spellings shown are those of the expenses the person can see (not ones only restricted expenses used).
+   */
+  async function companiesFor(workspaceId: string, settings: Settings, me: ExpenseAccess) {
+    const hide = hiddenFor(settings, me);
+    const counts = await db.collection(EXPENSES).aggregate([{ $match: { workspaceId, companyId: { $exists: true }, ...(hide.length ? { categoryId: { $nin: hide } } : {}) } }, { $group: { _id: "$companyId", expenses: { $sum: 1 }, names: { $addToSet: "$paidTo" } } }]).toArray();
+    const seen = new Map(counts.map((item) => [String(item._id), { expenses: Number(item.expenses), names: item.names as string[] }]));
+    const companies = await db.collection(COMPANIES).find({ workspaceId, _id: { $in: [...seen.keys()] as never[] } }).toArray();
+    return companies.map((company) => {
+      const visible = seen.get(String(company._id))!;
+      return { id: String(company._id), name: String(company.name), website: (company.website as string | null) ?? null, gstin: (company.gstin as string | null) ?? null, logo: (company.logo as { version?: string } | undefined)?.version ?? null, keys: [...new Set([companyKey(String(company.name)), ...visible.names.map(companyKey)])], expenses: visible.expenses };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  /** A company the person can see (it has an expense they can see), or not found. */
+  async function visibleCompany(workspaceId: string, id: string, settings: Settings, me: ExpenseAccess) {
+    const hide = hiddenFor(settings, me);
+    const company = await db.collection(COMPANIES).findOne({ _id: id as never, workspaceId });
+    if (!company || !await db.collection(EXPENSES).findOne({ workspaceId, companyId: id, ...(hide.length ? { categoryId: { $nin: hide } } : {}) }, { projection: { _id: 1 } })) throw new AppError(404, "NOT_FOUND", "Company not found");
+    return company;
+  }
+  /** The company for an expense: its "Paid to", with the GSTIN and website from its receipt (one the person may use) or the form. */
+  async function companyFor(workspaceId: string, actorId: string, paidTo: string, receiptId: string | null, website: string | undefined, expenseId?: string) {
+    const receipt = receiptId ? await db.collection(RECEIPTS).findOne({ _id: receiptId as never, workspaceId, $or: [{ ownerId: actorId }, ...(expenseId ? [{ expenseId }] : [])] }) : null;
+    const data = receipt?.data as { merchantTaxId?: string | null; website?: string | null } | null | undefined;
+    return resolveCompany(db, workspaceId, paidTo, { gstin: data?.merchantTaxId, website: website || data?.website }, actorId);
+  }
+  /** Stores a logo (a 128 px WebP) as the company's, dropping the one it replaces; the new version, or null when it wasn't kept (the company is gone, or a website logo met an upload). */
+  async function saveLogo(workspaceId: string, companyId: string, bytes: Buffer, source: "website" | "upload") {
+    const version = logoVersion();
+    const objectKey = `${workspaceId}/expense-companies/${companyId}/${version}.webp`;
+    await store.put(objectKey, bytes, "image/webp");
+    // A logo from the website never replaces an uploaded one (an upload can land while the website is still being read).
+    const before = await db.collection(COMPANIES).findOneAndUpdate({ _id: companyId as never, workspaceId, ...(source === "website" ? { "logo.source": { $ne: "upload" } } : {}) }, { $set: { logo: { objectKey, storage: store.kind, version, source } } }, { returnDocument: "before" });
+    const dropped = (before ? before.logo : { objectKey, storage: store.kind }) as AppDocument | undefined;
+    if (dropped?.objectKey) await fileStoreFor(dropped, store, localStore)?.discard(String(dropped.objectKey)).catch(() => undefined);
+    return before ? version : null;
+  }
+  /** Fetches the logo the company's website names, unless someone uploaded one (in the background; a few an hour per person). */
+  async function logoFromWebsite(companyId: string, actorId: string) {
+    if (config.COMPANY_LOGO_FETCH === "off" || await overLimit(db, `company-logo-fetch:${actorId}`, LOGO_FETCHES_PER_HOUR, 3_600_000)) return;
+    const company = await db.collection(COMPANIES).findOne({ _id: companyId as never });
+    if (!company?.website || (company.logo as { source?: string } | undefined)?.source === "upload") return;
+    const bytes = await fetchLogoInTurn(String(company.website), { userAgent: `VentureStudioOS-logo/1.0 (+${config.APP_ORIGIN})` });
+    await db.collection(COMPANIES).updateOne({ _id: companyId as never }, { $set: { logoCheckedAt: new Date() } });
+    if (bytes) await saveLogo(String(company.workspaceId), companyId, bytes, "website");
+  }
+  /** Refuses a write to a company merged into another a moment ago (the person saves again and it goes to the one it was merged into). */
+  async function companyStill(workspaceId: string, companyId: string, session?: ClientSession) {
+    if (!await db.collection(COMPANIES).findOne({ _id: companyId as never, workspaceId }, { session, projection: { _id: 1 } })) throw new AppError(409, "CONFLICT", "That company was just merged into another: save again");
+  }
+  const fetchLogoLater = (companyId: string, actorId: string) => void logoFromWebsite(companyId, actorId).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_company_logo_failed", companyId, message: error instanceof Error ? error.message : String(error) })));
+
   // My access, for the sidebar: anyone signed in may ask; it never says more than their own level.
   router.get("/expenses/access", async (req, res) => {
     if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
@@ -202,6 +261,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     res.json(ok({
       me: { level: me.level, restricted: me.restricted }, hiddenRestricted: hidden,
       categories: settings.categories.filter((category) => me.restricted || !category.restricted), groups: settings.groups, ...(access ? { access } : {}),
+      companies: await companiesFor(workspaceId, settings, me),
     }));
   });
 
@@ -219,31 +279,37 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
 
   router.post("/expenses", async (req, res) => {
     const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
-    const input = expenseInputSchema.parse(req.body ?? {});
+    const { companyWebsite, ...input } = expenseInputSchema.parse(req.body ?? {});
     await checkInput(workspaceId, input, settings, me);
     const now = new Date();
-    const doc = { _id: randomUUID(), workspaceId, ...input, startMonth: monthOf(input.date), createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
+    const company = await companyFor(workspaceId, actor.id, input.paidTo, input.receiptId, companyWebsite);
+    const doc = { _id: randomUUID(), workspaceId, ...input, companyId: company.id, startMonth: monthOf(input.date), createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       if (input.receiptId) await claimReceipt(workspaceId, actor.id, input.receiptId, doc._id, session);
+      await companyStill(workspaceId, company.id, session);
       await db.collection(EXPENSES).insertOne(doc as never, { session });
       await record("expense.create", "expense", doc._id, { categoryId: input.categoryId, repeat: input.repeat, receipt: Boolean(input.receiptId) }, session);
     });
+    if (company.websiteAdded) fetchLogoLater(company.id, actor.id);
     res.status(201).json(ok(json(doc)));
   });
 
   router.patch("/expenses/:id", async (req, res) => {
     const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
     const id = idSchema.parse(req.params.id);
-    const { expectedUpdatedAt, ...change } = expenseUpdateSchema.parse(req.body ?? {});
+    const { expectedUpdatedAt, companyWebsite, ...change } = expenseUpdateSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
     sameVersion(current, expectedUpdatedAt);
     const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", receiptId: current.receiptId ?? null, ...change });
     if (merged.repeat === "none") merged.endMonth = null;
     await checkInput(workspaceId, merged, settings, me, { categoryId: String(current.categoryId), groupId: (current.groupId as string | null) ?? null, scope: scopeKeyOf(current.scope) });
     const now = new Date();
+    // A new name, receipt or website may mean another company.
+    const company = change.paidTo !== undefined || change.receiptId !== undefined || companyWebsite ? await companyFor(workspaceId, actor.id, merged.paidTo, merged.receiptId, companyWebsite, id) : null;
     await atomic(database, async (session) => {
+      if (company) await companyStill(workspaceId, company.id, session);
       // A new date sets a new repeat day, so the copy's kept day goes.
-      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
+      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, ...(company ? { companyId: company.id } : {}), startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
       if (merged.receiptId !== (current.receiptId ?? null)) {
         if (typeof current.receiptId === "string") await releaseReceipt(workspaceId, current.receiptId, session);
@@ -251,6 +317,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
       }
       await record("expense.update", "expense", id, { fields: Object.keys(change).sort().join(",") }, session);
     });
+    if (company?.websiteAdded) fetchLogoLater(company.id, actor.id);
     res.json(ok(json((await db.collection(EXPENSES).findOne({ _id: id as never }))!)));
   });
 
@@ -291,12 +358,15 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     if (!day) throw new AppError(400, "BAD_REQUEST", "Pick a month this expense is paid in");
     if (input.fromMonth <= monthOf(String(current.date))) throw new AppError(400, "BAD_REQUEST", "That is its first month: edit the expense instead");
     const now = new Date();
+    // A new name from then on may be another company.
+    const company = input.paidTo !== undefined && input.paidTo !== current.paidTo ? await companyFor(workspaceId, actor.id, input.paidTo, null, undefined) : null;
     const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay", "receiptId"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
       ...(Number(day.slice(8, 10)) !== anchorDay ? { anchorDay } : {}),
-      ...(input.paidTo !== undefined ? { paidTo: input.paidTo } : {}), ...(input.note !== undefined ? { note: input.note } : {}), continuesId: id, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
+      ...(input.paidTo !== undefined ? { paidTo: input.paidTo } : {}), ...(company ? { companyId: company.id } : {}), ...(input.note !== undefined ? { note: input.note } : {}), continuesId: id, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       const stopped = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { endMonth: addMonths(input.fromMonth, -1), updatedBy: actor.id, updatedAt: now } }, { session });
       if (!stopped.matchedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
+      if (company) await companyStill(workspaceId, company.id, session);
       await db.collection(EXPENSES).insertOne(next as never, { session });
       await record("expense.change", "expense", id, { fromMonth: input.fromMonth, continuedBy: next._id }, session);
     });
@@ -344,6 +414,97 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const bytes = await fileStore.read(String(doc.objectKey), MAX_RECEIPT_BYTES);
     res.set({ "Content-Type": String(doc.contentType), "Content-Length": String(bytes.length), "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'", "Content-Disposition": `inline; filename="receipt.${doc.contentType === "application/pdf" ? "pdf" : "webp"}"` });
     res.send(bytes);
+  });
+
+  // ---- Companies ---------------------------------------------------------------------------------------------------------------
+
+  // A company's logo, sent by the API (no public link); its URL carries the version, so it may be kept a day.
+  router.get("/expenses/companies/:id/logo", async (req, res) => {
+    const { workspaceId, settings, me } = await gate(req, "view");
+    const company = await visibleCompany(workspaceId, idSchema.parse(req.params.id), settings, me);
+    const logo = company.logo as AppDocument | undefined;
+    const fileStore = logo ? fileStoreFor(logo, store, localStore) : undefined;
+    if (!logo || !fileStore) throw new AppError(404, "NOT_FOUND", "This company has no logo");
+    const bytes = await fileStore.read(String(logo.objectKey), MAX_LOGO_BYTES);
+    res.set({ "Content-Type": "image/webp", "Content-Length": String(bytes.length), "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'" });
+    res.send(bytes);
+  });
+
+  // An uploaded logo, kept as a 128 px WebP. Anyone who adds expenses may give a company its first logo (from the expense form);
+  // changing one is for managers.
+  router.post("/expenses/companies/:id/logo", express.raw({ type: ["image/*", "application/octet-stream"], limit: MAX_LOGO_BYTES }), async (req, res) => {
+    const { workspaceId, settings, me, record } = await gate(req, "edit");
+    const company = await visibleCompany(workspaceId, idSchema.parse(req.params.id), settings, me);
+    if (company.logo && me.level !== "manage") throw new AppError(403, "FORBIDDEN", "Only people who manage expenses can change a company's logo");
+    if (!Buffer.isBuffer(req.body) || !req.body.length) throw new AppError(400, "BAD_REQUEST", "Attach an image for the logo");
+    const logo = await logoFromImage(req.body);
+    if (!logo) throw new AppError(415, "BAD_REQUEST", "Use a PNG, JPG or WebP image for the logo");
+    const version = await saveLogo(workspaceId, String(company._id), logo, "upload");
+    await record("expense.company.logo", "expense_company", String(company._id), { source: "upload" });
+    res.json(ok({ logo: version }));
+  });
+
+  router.delete("/expenses/companies/:id/logo", async (req, res) => {
+    const { workspaceId, settings, me, record } = await gate(req, "manage");
+    const company = await visibleCompany(workspaceId, idSchema.parse(req.params.id), settings, me);
+    const before = await db.collection(COMPANIES).findOneAndUpdate({ _id: company._id, workspaceId }, { $unset: { logo: "" } }, { returnDocument: "before" });
+    const dropped = before?.logo as AppDocument | undefined;
+    if (dropped?.objectKey) await fileStoreFor(dropped, store, localStore)?.discard(String(dropped.objectKey)).catch(() => undefined);
+    await record("expense.company.logo_remove", "expense_company", String(company._id));
+    res.json(ok({ logo: null }));
+  });
+
+  // Rename (the new name is matched to it from then on) or set the website (its logo is fetched, unless one was uploaded).
+  router.patch("/expenses/companies/:id", async (req, res) => {
+    const { actor, workspaceId, settings, me, record } = await gate(req, "manage");
+    const change = expenseCompanyUpdateSchema.parse(req.body ?? {});
+    const company = await visibleCompany(workspaceId, idSchema.parse(req.params.id), settings, me);
+    const set: Record<string, unknown> = {};
+    let key: string | null = null;
+    if (change.name !== undefined) {
+      key = companyKey(change.name);
+      const other = await db.collection(COMPANIES).findOne({ workspaceId, keys: key, _id: { $ne: company._id } });
+      if (other) {
+        const hide = hiddenFor(settings, me);
+        const shown = await db.collection(EXPENSES).findOne({ workspaceId, companyId: String(other._id), ...(hide.length ? { categoryId: { $nin: hide } } : {}) }, { projection: { _id: 1 } });
+        throw new AppError(409, "CONFLICT", shown ? `There is already a company called ${String(other.name)}: merge them instead` : "That name can't be used: pick another");
+      }
+      set.name = change.name;
+    }
+    if (change.website !== undefined) {
+      const host = change.website ? websiteHost(change.website) : null;
+      if (change.website && !host) throw new AppError(400, "BAD_REQUEST", "Enter a website like godaddy.com");
+      set.website = host;
+    }
+    await db.collection(COMPANIES).updateOne({ _id: company._id }, { ...(Object.keys(set).length ? { $set: set } : {}), ...(key ? { $addToSet: { keys: key } } : {}) })
+      .catch((error: { code?: number }) => { throw error.code === 11000 ? new AppError(409, "CONFLICT", "That name can't be used: pick another") : error; });
+    await record("expense.company.update", "expense_company", String(company._id), { fields: Object.keys(change).sort().join(",") });
+    if (typeof set.website === "string" && set.website !== company.website) fetchLogoLater(String(company._id), actor.id);
+    res.json(ok({ id: String(company._id) }));
+  });
+
+  // One company into another: its expenses, spellings, and the website, GSTIN or logo the other lacks move across.
+  router.post("/expenses/companies/:id/merge", async (req, res) => {
+    const { workspaceId, settings, me, record } = await gate(req, "manage");
+    const { into } = expenseCompanyMergeSchema.parse(req.body ?? {});
+    const source = await visibleCompany(workspaceId, idSchema.parse(req.params.id), settings, me);
+    const target = await visibleCompany(workspaceId, into, settings, me);
+    if (String(source._id) === String(target._id)) throw new AppError(400, "BAD_REQUEST", "Pick another company to merge into");
+    const takeLogo = !target.logo && source.logo;
+    await atomic(database, async (session) => {
+      // Both must still be there (another merge may have just moved one): checked inside the transaction, so nothing is lost.
+      const gone = new AppError(409, "CONFLICT", "One of these companies was just merged: reload and try again");
+      if (!await db.collection(COMPANIES).findOne({ _id: target._id, workspaceId }, { session, projection: { _id: 1 } })) throw gone;
+      await db.collection(EXPENSES).updateMany({ workspaceId, companyId: String(source._id) }, { $set: { companyId: String(target._id) } }, { session });
+      // The spellings move only once the company they belonged to is gone (a key belongs to one company).
+      if (!(await db.collection(COMPANIES).deleteOne({ _id: source._id, workspaceId }, { session })).deletedCount) throw gone;
+      const set = { ...(!target.website && source.website ? { website: source.website } : {}), ...(!target.gstin && source.gstin ? { gstin: source.gstin } : {}), ...(takeLogo ? { logo: source.logo } : {}) };
+      if (!(await db.collection(COMPANIES).updateOne({ _id: target._id, workspaceId }, { $addToSet: { keys: { $each: source.keys as string[] } }, ...(Object.keys(set).length ? { $set: set } : {}) }, { session })).matchedCount) throw gone;
+      await record("expense.company.merge", "expense_company", String(target._id), { merged: String(source._id) }, session);
+    });
+    const dropped = !takeLogo ? source.logo as AppDocument | undefined : undefined;
+    if (dropped?.objectKey) await fileStoreFor(dropped, store, localStore)?.discard(String(dropped.objectKey)).catch(() => undefined);
+    res.json(ok({ id: String(target._id) }));
   });
 
   // ---- Categories, groups and access (managers) --------------------------------------------------------------------------------

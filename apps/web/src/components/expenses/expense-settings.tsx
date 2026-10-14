@@ -7,6 +7,7 @@ import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, Badge, inputClass, Notice, Panel, PanelHead, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { CompaniesPanel } from "./expense-company";
 import { createCategory, createGroup, setExpenseAccess, updateCategory, updateGroup, type ExpenseCategory, type ExpenseGroup, type ExpenseMemberAccess, type ExpenseSettings } from "@/lib/expenses-api";
 
 type Color = (typeof EXPENSE_COLORS)[number];
@@ -29,6 +30,7 @@ export function ExpenseSettingsPanel({ settings, onChanged }: { settings: Expens
       <ListPanel kind="category" title="Categories" items={settings.categories} canRestrict={settings.me.restricted} onChanged={onChanged} />
       <ListPanel kind="group" title="Groups" items={settings.groups} canRestrict={false} onChanged={onChanged} />
     </div>
+    <CompaniesPanel companies={settings.companies} onChanged={onChanged} />
   </div>;
 }
 

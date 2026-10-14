@@ -57,12 +57,14 @@ const expenseFields = {
   /** The receipt kept with it (uploaded first, attached when the expense is saved), or none. */
   receiptId: idSchema.nullable(),
 };
-export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null) });
+/** A brand-new company's website, given when its first expense is saved (for its logo); not kept on the expense. */
+const companyWebsite = z.string().trim().max(300).optional();
+export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null), companyWebsite });
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 /** An edit: only the fields sent change (no defaults, so leaving a field out never resets it). */
 /** The version an edit was made from (the expense's updatedAt as loaded): a change saved meanwhile refuses the edit instead of being undone. */
 const expectedUpdatedAt = isoDateSchema.optional();
-export const expenseUpdateSchema = z.object({ ...expenseFields, expectedUpdatedAt }).partial().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "Nothing to change");
+export const expenseUpdateSchema = z.object({ ...expenseFields, expectedUpdatedAt, companyWebsite }).partial().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "Nothing to change");
 /** A new amount (or other details) from a month on: the expense stops the month before and a copy starts that month, so past months keep what was paid. */
 export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amountPaise: expenseFields.amountPaise, paidTo: expenseFields.paidTo.optional(), note: expenseFields.note.optional(), expectedUpdatedAt });
 
@@ -74,6 +76,8 @@ export const expenseSchema = z.object({
   /** The day of the month it repeats on, when that differs from `date`'s day (a copy that starts in a shorter month): the 31st stays the 31st. */
   anchorDay: z.number().int().min(1).max(31).optional(),
   receiptId: idSchema.nullable().optional(),
+  /** The company it was paid to (grouped by name, GSTIN or website; see companyKey). */
+  companyId: idSchema.optional(),
   createdBy: idSchema, updatedBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
 export type Expense = z.infer<typeof expenseSchema>;
@@ -101,6 +105,8 @@ export const receiptDataSchema = z.object({
   merchantTaxId: z.string().nullable(),
   /** The receipt, bill or invoice number. */
   number: z.string().nullable(),
+  /** The merchant's website or e-mail domain, as printed (godaddy.com); none on receipts read before it was added. */
+  website: z.string().nullable().default(null),
   date: expenseDaySchema.nullable(), time: z.string().nullable(), billedTo: z.string().nullable(),
   /** ISO 4217, such as INR or USD. */
   currency: z.string().nullable(),
@@ -126,6 +132,58 @@ export type ExpenseReceipt = z.infer<typeof expenseReceiptSchema>;
 /** The largest receipt file accepted: a photo or a PDF. */
 export const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 
+// ---- Companies ---------------------------------------------------------------------------------------------------------------
+
+/** Legal words at the end of a name, left out when comparing ("GoDaddy.com, LLC" and "GODADDY INDIA" are one company). */
+const LEGAL_WORDS = new Set(["private", "pvt", "limited", "ltd", "llp", "llc", "inc", "incorporated", "corp", "corporation", "co", "company", "plc", "gmbh", "pbc", "pte", "india"]);
+/** The company part of a "Paid to": notes in brackets left out ("GoDaddy (buildory.dev)" → "GoDaddy"). */
+export function companyName(paidTo: string): string {
+  return paidTo.replace(/\([^)]*\)|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim() || paidTo.trim();
+}
+/**
+ * The key two spellings of one company share: notes in brackets, accents on Latin letters, web endings (.com, .in…), punctuation and
+ * spaces dropped, and legal words at the end left out ("Go Daddy", "GoDaddy.com, LLC", "GODADDY INDIA" and "GoDaddy (buildory.dev)" are
+ * all "godaddy"). Names in any script keep their letters (Hindi, Tamil…), so they never fall together.
+ */
+export function companyKey(name: string): string {
+  const words = companyName(name).normalize("NFKD").toLowerCase().replace(/(?<=[a-z])\p{M}+/gu, "").replace(/&/g, " and ")
+    .replace(/^(https?:\/\/)?(www\.)?/, "").replace(/\.(com|co\.in|in|io|co|net|org|ai|app|dev)(?=[^\p{L}\p{N}]|$)/gu, " ")
+    .split(/[^\p{L}\p{M}\p{N}]+/u).filter(Boolean);
+  while (words.length > 1 && LEGAL_WORDS.has(words.at(-1)!)) words.pop();
+  if (words.length > 1 && words[0] === "the") words.shift();
+  return words.join("").slice(0, 120) || name.trim().toLowerCase().slice(0, 120) || "unnamed";
+}
+/** Mail and payment services many companies share (an e-mail at gmail.com or "Powered by Razorpay" says nothing about who was paid). */
+const SHARED_DOMAINS = new Set(["gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.in", "ymail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "zohomail.com", "zohomail.in", "rediffmail.com", "mail.com", "gmx.com", "yandex.com",
+  "razorpay.com", "rzp.io", "paytm.com", "phonepe.com", "instamojo.com", "stripe.com", "paypal.com", "cashfree.com", "payu.in", "ccavenue.com", "billdesk.com", "chargebee.com", "paddle.com", "fastspring.com"]);
+/** True for a mail or payment service's domain, which never identifies a company on its own. */
+export const isSharedDomain = (host: string) => SHARED_DOMAINS.has(host);
+/** A website or e-mail address as a plain host name (https://www.GoDaddy.com/in → godaddy.com; billing@godaddy.com → godaddy.com), or null. */
+export function websiteHost(raw: string | null | undefined): string | null {
+  const text = raw?.trim().toLowerCase();
+  if (!text) return null;
+  let host = "";
+  if (/^[^\s/@]+@[^\s/@]+$/.test(text)) host = text.split("@")[1]!;
+  else { try { host = new URL(/^[a-z][a-z0-9+.-]*:\/\//.test(text) ? text : `https://${text}`).hostname; } catch { return null; } }
+  const bare = host.replace(/^www\./, "").replace(/\.$/, "");
+  return /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(bare) ? bare : null;
+}
+/** A company expenses were paid to: what a person sees of it (only companies with an expense they can see). */
+export const expenseCompanySchema = z.object({
+  id: idSchema, name: z.string(), website: z.string().nullable(), gstin: z.string().nullable(),
+  /** The logo's version (so a changed logo is fetched afresh), or null: the company shows its initial. */
+  logo: z.string().nullable(),
+  /** The spellings seen for it (as companyKey), so a typed name can be matched to it. */
+  keys: z.array(z.string()),
+  /** How many of its expenses the person can see. */
+  expenses: z.number().int(),
+});
+export type ExpenseCompany = z.infer<typeof expenseCompanySchema>;
+export const expenseCompanyUpdateSchema = z.object({ name: label(120, "A name").pipe(z.string().min(1, "Give it a name")), website: z.string().trim().max(300).nullable() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
+export const expenseCompanyMergeSchema = z.object({ into: idSchema });
+/** The largest logo image accepted (it is kept as a 128 px WebP). */
+export const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
 /** One person's access: their level, and whether they see restricted categories. */
 export const expenseAccessSchema = z.object({ level: expenseAccessLevelSchema, restricted: z.boolean() });
 export type ExpenseAccess = z.infer<typeof expenseAccessSchema>;
@@ -140,6 +198,8 @@ export const expenseSettingsSchema = z.object({
   access: z.array(expenseMemberAccessSchema).optional(),
   /** Restricted categories exist that I can't see: totals I see leave them out. */
   hiddenRestricted: z.boolean(),
+  /** The companies with an expense I can see, by name. */
+  companies: z.array(expenseCompanySchema).default([]),
 });
 export type ExpenseSettings = z.infer<typeof expenseSettingsSchema>;
 /** `truncated` when there were more than the list returns (the oldest left out): totals would be short. */

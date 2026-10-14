@@ -42,4 +42,17 @@ export async function receiptFileUrl(receiptId: string) {
   if (!response.ok) throw new StudioApiError(`The receipt returned HTTP ${response.status}.`, `HTTP_${response.status}`);
   return URL.createObjectURL(await response.blob());
 }
+// ---- Companies ----
+export async function updateCompany(companyId: string, change: { name?: string; website?: string | null }) { await request(`/v1/expenses/companies/${id(companyId)}`, send("PATCH", change)); }
+export async function mergeCompany(companyId: string, into: string) { await request(`/v1/expenses/companies/${id(companyId)}/merge`, send("POST", { into })); }
+/** An image for the company's logo (kept as a 128 px WebP). */
+export async function uploadCompanyLogo(companyId: string, file: File) { await request(`/v1/expenses/companies/${id(companyId)}/logo`, { method: "POST", body: file, headers: { "content-type": file.type || "application/octet-stream" } }); }
+export async function removeCompanyLogo(companyId: string) { await request(`/v1/expenses/companies/${id(companyId)}/logo`, send("DELETE")); }
+/** The company's logo as a local link (its version in the address, so a changed logo is fetched afresh). */
+export async function companyLogoUrl(companyId: string, version: string) {
+  const devUserId = localDevUserId();
+  const response = await fetch(`/v1/expenses/companies/${id(companyId)}/logo?v=${id(version)}`, { credentials: "same-origin", headers: devUserId ? { "x-dev-user-id": devUserId } : undefined });
+  if (!response.ok) throw new StudioApiError(`The logo returned HTTP ${response.status}.`, `HTTP_${response.status}`);
+  return URL.createObjectURL(await response.blob());
+}
 export async function setExpenseAccess(userId: string, access: ExpenseAccess) { return successEnvelope(expenseMemberAccessSchema.omit({ name: true, role: true })).parse(await request(`/v1/expenses/settings/access/${id(userId)}`, send("PUT", access))).data; }

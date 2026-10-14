@@ -43,7 +43,8 @@ export const sumPaise = (rows: { expense: Expense }[]) => rows.reduce((total, ro
 export function lookups(settings: ExpenseSettings) {
   const categories = new Map<string, ExpenseCategory>(settings.categories.map((category) => [category.id, category]));
   const groups = new Map<string, ExpenseGroup>(settings.groups.map((group) => [group.id, group]));
-  return { category: (id: string) => categories.get(id), group: (id: string | null) => (id ? groups.get(id) : undefined) };
+  const companies = new Map(settings.companies.map((company) => [company.id, company]));
+  return { category: (id: string) => categories.get(id), group: (id: string | null) => (id ? groups.get(id) : undefined), company: (id: string | null | undefined) => (id ? companies.get(id) : undefined) };
 }
 
 /**

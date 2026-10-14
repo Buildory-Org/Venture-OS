@@ -5,7 +5,9 @@ import { addMonths, monthlyEquivalentPaise, monthsBetween, nextOccurrence } from
 import { AutoHeight } from "@/components/ui/auto-height";
 import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
 import { prefersReducedMotion } from "@/lib/motion";
+import type { ExpenseCompany } from "@venture-studio/contracts";
 import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
+import { CompanyAvatar } from "./expense-company";
 import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, thisMonth, todayLocal } from "./expense-shared";
 
 // The expense dashboard above the list (after the reference designs): a dark "spent this month" card, a blue "repeating costs" card, the
@@ -80,7 +82,7 @@ export type DashboardProps = {
   /** Expenses after every filter but the category (the dial shows them all), and with it. */
   scoped: Expense[]; matching: Expense[];
   month: string; onMonth: (month: string) => void; category: string; onCategory: (id: string) => void;
-  findCategory: Lookup; ventureName: (id: string) => string;
+  findCategory: Lookup; findCompany: (id: string | null | undefined) => ExpenseCompany | undefined; ventureName: (id: string) => string;
   /** The Office tab (or one venture): the dark card splits by category instead of by where. */
   fixedWhere?: string; onOpen: (expense: Expense) => void; onTab: (tab: Tab) => void; onSeeAll: () => void;
 };
@@ -210,7 +212,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
 // ---- Dark: recent expenses ------------------------------------------------------------------------------------------------------
 
 const PILL: Record<Expense["repeat"], string> = { none: "bg-neutral-300 text-neutral-900", monthly: "bg-[#2563eb] text-white", yearly: "bg-[#16a34a] text-white" };
-function RecentCard({ scoped, matching, month, findCategory, ventureName, onOpen, onSeeAll }: DashboardProps) {
+function RecentCard({ scoped, matching, month, findCategory, findCompany, ventureName, onOpen, onSeeAll }: DashboardProps) {
   const today = todayLocal();
   // This month: what has been paid so far (what is still to come is under Repeating costs). Other months: all of it.
   const rows = paidIn(matching, month).filter((row) => month !== today.slice(0, 7) || row.day <= today);
@@ -239,7 +241,7 @@ function RecentCard({ scoped, matching, month, findCategory, ventureName, onOpen
         const delay = 260 + latest.findIndex((row) => row.expense.id === expense.id && row.day === group.day) * 70;
         return <li key={`${expense.id}-${group.day}`} className="vso-fade-up" style={{ "--delay": `${delay}ms` } as React.CSSProperties}>
           <button type="button" onClick={() => onOpen(expense)} className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl py-1.5 text-left sm:grid-cols-[2.25rem_minmax(0,1fr)_auto_auto] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
-            <span aria-hidden="true" className="grid h-9 w-9 place-items-center rounded-full text-sm font-bold text-white" style={{ background: fillOf(category?.color) }}>{expense.paidTo.trim().charAt(0).toUpperCase()}</span>
+            <CompanyAvatar company={findCompany(expense.companyId)} name={expense.paidTo} size={36} background={fillOf(category?.color)} />
             <span className="min-w-0"><span className="block truncate text-sm font-semibold">{expense.paidTo}</span><span className="block truncate text-xs text-white/50">{category?.name ?? "Other"} · {scopeLabel(expense.scope, ventureName)}</span></span>
             <span className={clsx("hidden rounded-full px-2.5 py-0.5 text-[11px] font-semibold sm:inline", PILL[expense.repeat])}>{REPEAT_LABEL[expense.repeat]}</span>
             <span className="text-right text-sm font-bold tabular-nums">-₹{Math.floor(expense.amountPaise / 100).toLocaleString("en-IN")}<span className="text-white/45">.{String(expense.amountPaise % 100).padStart(2, "0")}</span></span>

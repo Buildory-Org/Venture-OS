@@ -53,6 +53,22 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
 - **Where it goes:** the copy is stored with the app's other files (R2 in production), under `<workspace>/expense-receipts/`, and served only through the API. The receipt is sent to Anthropic's API only to be read. The audit (`expense.receipt.upload`) records whether it was read, never what it says.
 - **Setup:** `ANTHROPIC_API_KEY` in the API's settings (`deploy/.env`, Coolify). Without it, receipts are kept and not read.
 
+## Companies
+
+- **What a company is:** who an expense was paid to, kept once per workspace (`expense_companies`, `apps/api/src/expense-companies.ts`). Every expense gets one when it's saved; expenses saved before companies existed get theirs once when the API starts (`assignExpenseCompanies`, safe to repeat).
+- **Grouping, without any model:** an expense joins the company whose name matches its "Paid to", else the one with the same GSTIN (from its receipt), else the same website (from its receipt or the form); otherwise it starts a new company named after its "Paid to" without notes in brackets.
+  - **Matching names** (`companyKey` in the contracts) ignores case, accents on Latin letters, notes in brackets, web endings (.com, .in…), punctuation, spaces and legal words at the end (LLC, Ltd, Pvt, Limited, Inc, India…). "GoDaddy.com, LLC", "GODADDY INDIA", "Go Daddy" and "GoDaddy (buildory.dev)" are one company. Names in other scripts keep their letters, and text after a dash is part of the name, so "Salary - Ramesh" and "Salary - Priya" stay apart.
+  - **The name wins:** a misread website or GSTIN never pulls a known name into another company, and a GSTIN or website already belonging to one company is never copied onto another.
+  - **Shared domains don't count:** mail and payment services (gmail.com, outlook.com, razorpay.com, paytm.com…) never group or name a company.
+  - It's deliberately cautious: different spellings it misses ("AWS" and "Amazon Web Services") are merged once in Settings → Companies, and are matched from then on.
+- **Filter:** a Company filter beside Category and Group (once there are two companies), and the CSV has a Company column.
+- **Logos:** every list row and Recent expenses shows the company's logo, or its initial on its category's colour.
+  - **A new company** (first seen as the expense is added) shows an optional row under "Paid to": its website (filled in from the receipt when printed) or an uploaded logo. Without either it shows its initial.
+  - **From a website:** the API reads the company's own home page once and keeps the best icon it names (Apple touch icon, a PNG/WebP/JPEG icon, else /apple-touch-icon.png or a PNG inside /favicon.ico; never SVG). It uses the lead finder's safety checks: https on public hosts only, every redirect checked, the connection pinned to the checked address, 8 seconds per request, 30 seconds per site, small size limits, two sites at a time, and 30 an hour per person. Nothing goes to a third-party icon service. `COMPANY_LOGO_FETCH=off` keeps only uploaded logos.
+  - **Uploaded:** PNG, JPEG, WebP or GIF up to 2 MB, kept as a 128 px WebP. An uploaded logo is never replaced by one from the website. Anyone who adds expenses may give a company its first logo; changing or removing one is for managers.
+- **Settings → Companies** (managers): every company with its expense count, website and GSTIN. Rename (the new name is matched from then on), set the website (its logo is fetched), upload or remove the logo, and merge one company into another (its expenses, spellings, and the website, GSTIN or logo the other lacks move across).
+- **Who sees a company:** only people who can see at least one of its expenses. A company paid only in restricted categories (a salary to a person) stays hidden, its other spellings are only those of expenses the person can see, and a rename that clashes with a hidden company never names it. A company's website and logo are shared by all its expenses.
+
 ## Categories and groups
 
 - **Categories:** Subscription, Domain, AI tools, Hosting, Personal EMI and Salary to start with.
@@ -125,6 +141,11 @@ The tracker has its own access list, under Settings. Each member has a **level**
 | POST | `/v1/expenses/:id/change` | Edit |
 | POST | `/v1/expenses/receipts` (the photo or PDF as the body) | Edit |
 | GET | `/v1/expenses/receipts/:id[/file]` | View, and seeing its expense (before it's attached: the uploader) |
+| GET | `/v1/expenses/companies/:id/logo` | View, and seeing one of its expenses |
+| POST | `/v1/expenses/companies/:id/logo` (the image as the body) | Edit for a company without a logo, else Manage |
+| DELETE | `/v1/expenses/companies/:id/logo` | Manage |
+| PATCH | `/v1/expenses/companies/:id` (name, website) | Manage |
+| POST | `/v1/expenses/companies/:id/merge` (`into`) | Manage |
 | POST / PATCH | `/v1/expenses/settings/categories[/:id]` | Manage |
 | POST | `/v1/expenses/settings/groups` | Edit (start a group while adding an expense) |
 | PATCH | `/v1/expenses/settings/groups/:id` | Manage |

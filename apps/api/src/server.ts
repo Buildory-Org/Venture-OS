@@ -7,6 +7,7 @@ import { ensureIndexes } from "./indexes.js";
 import { createAuth } from "./auth.js";
 import { createObjectStore } from "./storage.js";
 import { createApp } from "./app.js";
+import { assignExpenseCompanies } from "./expense-companies.js";
 import { backfillFileTexts } from "./file-text.js";
 import { fileStoreFor } from "./routes/files.js";
 import { attachRealtime, stopRealtime } from "./collaboration.js";
@@ -31,6 +32,8 @@ server.listen(config.PORT, () => console.info(JSON.stringify({ level: "info", ev
 setTimeout(() => void backfillFileTexts(database.db, (file) => fileStoreFor(file, store, localStore)).then((read) => { if (read) console.info(JSON.stringify({ level: "info", event: "file_text.backfill", read })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "file_text.backfill_failed", message: error instanceof Error ? error.message : String(error) }))), 5_000).unref();
 // Older deal records (from before Sales) get the Sales names and do-not-contact match keys once, in the background: a deploy runs no
 // migration step, and the run is safe to repeat (it changes nothing the second time). npm run migrate does the same by hand.
+// Expenses saved before companies existed are grouped by their "Paid to" (safe to repeat; nothing to do once all have one).
+setTimeout(() => void assignExpenseCompanies(database.db).then((assigned) => { if (assigned) console.info(JSON.stringify({ level: "info", event: "expense_companies.assigned", assigned })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_companies.assign_failed", message: error instanceof Error ? error.message : String(error) }))), 4_000).unref();
 setTimeout(() => void migrateSalesLeads(database.db, { whenChanged: true }).then((result) => { if (Object.values(result).some(Boolean)) console.info(JSON.stringify({ level: "info", event: "sales.migration", ...result })); }, (error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "sales.migration_failed", message: error instanceof Error ? error.message : String(error) }))), 3_000).unref();
 // The built-in lead finder works queued find-leads and enrich runs in the background (SALES_FINDER=on, never under tests); a workspace
 // without a company-search key keeps its runs queued. On shutdown a run in progress goes back to the queue.

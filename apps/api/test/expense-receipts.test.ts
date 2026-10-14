@@ -18,7 +18,7 @@ const base = { date: "2026-10-01", amountPaise: 28_580, categoryId: "ai-tools", 
 
 /** What the stand-in Claude reads off every receipt, as the receipt schema has it (the category by name). */
 const READ = {
-  kind: "receipt", merchant: "Sushi Yasuda", merchantAddress: "204 East 43rd Street, New York", merchantPhone: "(212) 972-1001", merchantTaxId: "", number: "3528",
+  kind: "receipt", merchant: "Sushi Yasuda", merchantAddress: "204 East 43rd Street, New York", merchantPhone: "(212) 972-1001", merchantTaxId: "", number: "3528", website: "sushiyasuda.com",
   date: "2026-10-01", time: "1:19 PM", billedTo: "", currency: "INR",
   items: [{ name: "Edamame", quantity: 1, unitPrice: 9, amount: 9 }, { name: "A la Carte Sushi", quantity: 1, unitPrice: 243, amount: 243 }],
   subtotal: 262.5, discount: null, taxes: [{ label: "Sales Tax", ratePercent: 8.875, amount: 23.3 }], tip: null, roundOff: null, total: 285.8,
@@ -204,7 +204,7 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
         assert.deepEqual(Object.keys(entry.metadata ?? {}).sort(), ["contentType", "read"]);
         assert.doesNotMatch(JSON.stringify(entry), /Sushi|Edamame/);
       }
-    }, "expense_receipts", { ANTHROPIC_API_KEY: "sk-ant-test-stand-in", LOCAL_UPLOAD_DIR: uploads });
+    }, "expense_receipts", { ANTHROPIC_API_KEY: "sk-ant-test-stand-in", LOCAL_UPLOAD_DIR: uploads, COMPANY_LOGO_FETCH: "off" });
   } finally {
     claude.restore();
     await rm(uploads, { recursive: true, force: true });

@@ -25,6 +25,8 @@ const schema = z.object({
   EXA_API_KEY: z.string().trim().min(1).optional(),
   // Reads expense receipts (photos and PDFs) with Claude Haiku. Blank means off: receipts are still kept, and the details are typed in.
   ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
+  // Expense companies' logos from their websites (the icon the site names, fetched once with the lead finder's safety checks). off: only uploaded logos.
+  COMPANY_LOGO_FETCH: z.enum(["on", "off"]).default("on"),
   // The built-in lead finder (sales/finder): works queued find-leads and enrich runs in this API process. It waits while a workspace has no search key.
   SALES_FINDER: z.enum(["on", "off"]).default("on"),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),

@@ -110,6 +110,8 @@ export async function readReceipt(apiKey: string | undefined, file: PreparedRece
         { type: "text", text: `Categories: ${categories.map((category) => category.name).join(", ") || "none"}` },
       ] }],
     }, { signal });
+    // Tokens per read, for the cost (Haiku 5.5: $0.10 a million in, $0.50 out); never what was read.
+    console.info(JSON.stringify({ level: "info", event: "expense_receipt_read", file: file.contentType, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, stop: response.stop_reason }));
     if (response.stop_reason !== "end_turn" || !response.parsed_output) return { error: "Couldn't read this receipt: type the details in." };
     return { data: cleanReceipt(response.parsed_output, categories) };
   } catch (error) {

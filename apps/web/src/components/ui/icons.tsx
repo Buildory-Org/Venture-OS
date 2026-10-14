@@ -96,6 +96,8 @@ import {
   CrownIcon,
   ArrowUp01Icon,
   ArrowDown01Icon,
+  Wallet01Icon,
+  Delete02Icon,
 } from "@hugeicons/core-free-icons";
 
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -207,3 +209,5 @@ export const MapPin = icon(Location01Icon);
 export const Video = icon(Video01Icon);
 export const Repeat = icon(RepeatIcon);
 export const LinkIcon = icon(Link01Icon);
+export const Wallet = icon(Wallet01Icon);
+export const Trash = icon(Delete02Icon);

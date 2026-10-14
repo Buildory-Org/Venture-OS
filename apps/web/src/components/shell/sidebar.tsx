@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prefersReducedMotion } from "@/lib/motion";
-import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, Trophy, UserLock, Users, X, type Icon } from "@/components/ui/icons";
+import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, Trophy, UserLock, Users, Wallet, X, type Icon } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { Select } from "@/components/ui/select";
@@ -17,6 +17,7 @@ import { lastStudioPath, rememberAppMode, useAppMode, type AppMode } from "@/lib
 import { Phone } from "@/components/sales/lead-icons";
 import { ModeSwitch } from "./mode-switch";
 import { useSalesNavCounts } from "./use-sales-nav-counts";
+import { useExpenseAccess } from "./use-expense-access";
 
 const sections = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -35,6 +36,7 @@ const sections = [
   { label: "Timeline", href: "/timeline", icon: TrendingUp },
   { label: "Requests", href: "/requests", icon: FileQuestion },
   { label: "Sales", href: "/sales", icon: FolderOpen },
+  { label: "Expenses", href: "/expenses", icon: Wallet },
 ];
 type NavItem = { label: string; href: string; icon: Icon };
 const byHref = new Map<string, NavItem>(sections.map((item) => [item.href, item]));
@@ -109,8 +111,10 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
   const unread = data.notices.filter((notice) => !notice.read).length;
   const router = useRouter();
   const salesCounts = useSalesNavCounts(salesMode, activeVentureId);
-  // The leaderboard needs live data: the demo leaves it out.
-  const mainItems = mode === "demo" ? sections.filter(({ href }) => href !== "/leaderboard") : salesMode ? salesSections : studioSections;
+  // Expenses shows only to people the tracker's access list lets see it.
+  const seesExpenses = useExpenseAccess(mode === "connected");
+  // The leaderboard and expenses need live data: the demo leaves them out.
+  const mainItems = mode === "demo" ? sections.filter(({ href }) => href !== "/leaderboard" && href !== "/expenses") : salesMode ? salesSections : seesExpenses ? [...studioSections, byHref.get("/expenses")!] : studioSections;
   const sharedItems = mode === "demo" ? [] : sharedSections;
   const badgeFor = (href: string): number => {
     if (href === "/notifications") return unread;

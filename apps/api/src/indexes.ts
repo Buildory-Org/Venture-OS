@@ -97,6 +97,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
   await ensureLeadReferenceIndex(db.collection("opportunities"));
   await Promise.all([
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
+    // The expense tracker lists a workspace's expenses newest first.
+    db.collection("expenses").createIndex({ workspaceId: 1, date: -1, _id: 1 }),
     // Recovery copies from permanent venture deletes expire on their own after 30 days.
     db.collection("deleted_records").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("deleted_records").createIndex({ deletionId: 1 }),

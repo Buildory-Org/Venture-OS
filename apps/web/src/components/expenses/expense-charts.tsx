@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { addMonths, monthlyEquivalentPaise, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
 import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
@@ -8,9 +8,10 @@ import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
 import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, thisMonth, todayLocal } from "./expense-shared";
 
 // The expense dashboard above the list (after the reference designs): a dark "spent this month" card, a blue "repeating costs" card, the
-// month by category on a dial, a dark "recent expenses" card, and month-by-month columns. No hover effects: picking a month or a
-// category is a click (or Enter). Everything animates in once when the page opens (bars rise, rings sweep, numbers count up) and
-// stays still for people who ask for reduced motion. Every value is also in the list below or on the Monthly tab.
+// month by category on a dial, a dark "recent expenses" card, and month-by-month columns. No hover effects on the cards: picking a month
+// or a category is a click (or Enter); only the month columns show a tooltip when pointed at or focused. Everything animates in once
+// when the page opens (bars rise, rings sweep, numbers count up) and stays still for people who ask for reduced motion. Every value is
+// also in the list below or on the Monthly tab.
 
 type Lookup = (id: string) => ExpenseCategory | undefined;
 type Tab = "monthly" | "repeating";
@@ -247,18 +248,28 @@ function RecentCard({ scoped, matching, month, findCategory, ventureName, onOpen
   </section>;
 }
 
-// ---- White: month by month, as pill columns ------------------------------------------------------------------------------------
+// ---- White: month by month, as columns --------------------------------------------------------------------------------------------
 
 function windowFor(month: string): string[] {
   let end = month > thisMonth() ? month : addMonths(thisMonth(), 1);
   if (month < addMonths(end, -5)) end = addMonths(month, 3);
   return monthsBetween(addMonths(end, -6), end);
 }
-function MonthColumns({ matching, month, onMonth }: DashboardProps) {
+
+/** The axis top and its step, in paise: a round step (1, 2, 2.5 or 5 × a power of ten) about a third of the biggest month. */
+function axisFor(maxPaise: number): { top: number; step: number } {
+  const target = Math.max(maxPaise, 100) / 3;
+  const power = 10 ** Math.floor(Math.log10(target));
+  const step = [1, 2, 2.5, 5, 10].map((times) => times * power).find((value) => value >= target)!;
+  return { top: step * Math.ceil(Math.max(maxPaise, 1) / step), step };
+}
+
+function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: DashboardProps) {
   const months = windowFor(month);
-  const totals = months.map((one) => ({ month: one, total: sumPaise(paidIn(matching, one)) }));
-  const chosen = totals.find((item) => item.month === month)!;
-  const maxTotal = Math.max(1, ...totals.map((item) => item.total));
+  const totals = months.map((one) => ({ month: one, rows: paidIn(matching, one) })).map((item) => ({ ...item, total: sumPaise(item.rows) }));
+  const maxTotal = Math.max(0, ...totals.map((item) => item.total));
+  const { top, step } = axisFor(maxTotal);
+  const ticks = maxTotal ? Array.from({ length: Math.round(top / step) + 1 }, (_, index) => index * step) : [0];
   const rows = paidIn(matching, month);
   const part = (kind: string) => sumPaise(rows.filter((row) => (kind === "venture" ? row.expense.scope.kind === "venture" : scopeKey(row.expense.scope) === kind)));
   const tiles = [
@@ -266,47 +277,78 @@ function MonthColumns({ matching, month, onMonth }: DashboardProps) {
     { label: "Ventures", paise: part("venture"), icon: Layers3, tone: "bg-[#4ade80]" },
     { label: "Personal", paise: part("personal"), icon: Wallet, tone: "bg-[#60a5fa]" },
   ];
-  const [width, height, base, topPad] = [700, 240, 205, 26];
-  const band = width / months.length;
-  const barWidth = Math.min(64, band * 0.62);
-  const y = (paise: number) => base - (paise / maxTotal) * (base - topPad);
-  const chosenX = months.indexOf(month) * band + band / 2;
-  const gradient = useId().replace(/:/g, "");
+  // The column under the pointer (or keyboard focus) shows its month in a tooltip; a click or Enter picks that month for the page.
+  const [hovered, setHovered] = useState<string | null>(null);
+  const heightOf = (paise: number) => (maxTotal ? (paise / top) * 100 : 0);
+  const tip = totals.find((item) => item.month === hovered);
+  const tipIndex = tip ? months.indexOf(tip.month) : -1;
+  const tipHeight = tip ? heightOf(tip.total) : 0;
+  const plotRef = useRef<HTMLDivElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  // Above the column, measured so it never leaves the chart: centred on the bar where it fits, held at the edges, and lowered over the
+  // tallest bars rather than covering the cards above. Set before paint, so it never shows in the wrong place.
+  useLayoutEffect(() => {
+    const plot = plotRef.current;
+    const node = tipRef.current;
+    if (!plot || !node || tipIndex < 0) return;
+    const center = ((tipIndex + 0.5) / months.length) * plot.clientWidth;
+    node.style.left = `${Math.min(Math.max(center - node.offsetWidth / 2, 0), Math.max(0, plot.clientWidth - node.offsetWidth))}px`;
+    node.style.bottom = `${Math.min((tipHeight / 100) * plot.clientHeight + 8, plot.clientHeight - node.offsetHeight + 12)}px`;
+  }, [tipIndex, tipHeight, months.length]);
+  // What the tooltip splits by: where it was charged, or (on the Office tab or one venture) the category.
+  const splitOf = (items: typeof rows) => {
+    const buckets = new Map<string, { label: string; paise: number }>();
+    for (const { expense } of items) {
+      const key = fixedWhere ? expense.categoryId : expense.scope.kind;
+      const label = fixedWhere ? findCategory(expense.categoryId)?.name ?? "Other" : expense.scope.kind === "venture" ? "Ventures" : expense.scope.kind === "office" ? "Office" : "Personal";
+      const bucket = buckets.get(key) ?? { label, paise: 0 };
+      bucket.paise += expense.amountPaise;
+      buckets.set(key, bucket);
+    }
+    return [...buckets.values()].sort((a, b) => b.paise - a.paise).slice(0, 3);
+  };
+
   return <section aria-label="Month by month" className="vso-card-soft vso-fade-up overflow-hidden rounded-[1.75rem] border border-neutral-200 p-5 shadow-card sm:p-6" style={{ "--delay": "200ms" } as React.CSSProperties}>
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">{tiles.map((tile) => <div key={tile.label} className="rounded-2xl bg-neutral-50 p-4 shadow-[inset_0_0_0_1px_rgb(0_0_0/0.04)]">
       <span aria-hidden="true" className={clsx("grid h-9 w-9 place-items-center rounded-xl text-white shadow-sm", tile.tone)}><tile.icon size={17} /></span>
       <p className="mt-3 text-sm text-neutral-500">{tile.label} · {monthLabel(month)}</p>
       <p className="text-xl font-extrabold text-neutral-900">{rupees(tile.paise)}</p>
     </div>)}</div>
-    <div className="relative mt-4 [mask-image:linear-gradient(90deg,transparent,#000_9%,#000_91%,transparent)]">
-      <svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full overflow-visible" role="group" aria-label="Spending by month: pick a month">
-        <defs>
-          <linearGradient id={`${gradient}-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#5b7cff" /><stop offset="100%" stopColor="#2343e8" /></linearGradient>
-          <linearGradient id={`${gradient}-off`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" style={{ stopColor: "var(--bar-off-top)" }} /><stop offset="100%" style={{ stopColor: "var(--bar-off-bottom)" }} /></linearGradient>
-          <linearGradient id={`${gradient}-near`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3f5ef0" /><stop offset="100%" stopColor="#2a45d8" /></linearGradient>
-        </defs>
-        {chosen.total > 0 && <>
-          <line x1={0} x2={width} y1={y(chosen.total)} y2={y(chosen.total)} stroke="#3b5bfd" strokeOpacity={0.45} strokeWidth={1.5} strokeDasharray="5 5" className="vso-fade-up" style={{ "--delay": "700ms" } as React.CSSProperties} />
-          <text x={Math.max(70, chosenX - barWidth / 2 - 16)} y={y(chosen.total) - 8} textAnchor="end" className="vso-fade-up fill-[#2343e8] text-[15px] font-bold" style={{ "--delay": "750ms" } as React.CSSProperties}>{rupees(chosen.total)}</text>
-        </>}
-        {totals.map((item, position) => {
-          const x = position * band + band / 2;
-          const isChosen = item.month === month;
-          const near = Math.abs(months.indexOf(month) - position) === 1 && item.total > 0;
-          const top = Math.min(y(item.total), base - 18);
-          return <g key={item.month} role="button" tabIndex={0} aria-pressed={isChosen} aria-label={`${monthLabel(item.month)}: ${rupees(item.total)}`}
-            onClick={() => onMonth(item.month)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onMonth(item.month); } }}
-            className="cursor-pointer outline-none [&:focus-visible>rect:first-of-type]:stroke-[#2343e8]">
-            <rect x={x - barWidth / 2} y={top} width={barWidth} height={base - top} rx={Math.min(16, barWidth / 2)} fill={`url(#${gradient}-${isChosen ? "on" : near ? "near" : "off"})`} stroke={isChosen ? "#1d35c9" : near ? "none" : "var(--bar-off-stroke)"} strokeWidth={isChosen ? 2 : 1}
-              className="vso-rise" style={{ "--delay": `${position * 80}ms`, filter: isChosen ? "drop-shadow(0 10px 18px rgb(35 67 232 / 0.35))" : undefined } as React.CSSProperties} />
-            {isChosen && item.total > 0 && <>
-              <circle cx={x} cy={top + 22} r={11} fill="#fff" className="vso-fade-up" style={{ "--delay": "650ms", filter: "drop-shadow(0 2px 6px rgb(0 0 0 / 0.25))" } as React.CSSProperties} />
-              {[[-12, 48], [10, 70], [-6, 96], [14, 120]].map(([dx, dy], sparkle) => top + dy! < base - 8 && <circle key={sparkle} cx={x + dx!} cy={top + dy!} r={1.4} fill="#fff" fillOpacity={0.7} className="vso-fade-up" style={{ "--delay": `${700 + sparkle * 60}ms` } as React.CSSProperties} />)}
-            </>}
-            <text x={x} y={height - 6} textAnchor="middle" className={clsx("text-[15px]", isChosen ? "fill-neutral-900 font-bold" : near ? "fill-neutral-800 font-semibold" : "fill-neutral-400")}>{monthLabel(item.month).replace(/ \d{4}$/, "")}</text>
-          </g>;
-        })}
-      </svg>
+
+    <div className="mt-5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <h3 className="text-sm font-bold text-neutral-900">Month by month</h3>
+      <p className="text-xs text-neutral-500">Point at a month for its details; click to show it</p>
+    </div>
+    <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
+      <div aria-hidden="true" className="relative h-44 min-w-8">
+        {ticks.map((tick) => <span key={tick} className="absolute right-0 translate-y-1/2 text-[11px] font-semibold tabular-nums text-neutral-400" style={{ bottom: `${heightOf(tick)}%` }}>{compactRupees(tick)}</span>)}
+      </div>
+      <div ref={plotRef} className="relative h-44">
+        {ticks.map((tick) => <span key={tick} aria-hidden="true" className={clsx("absolute inset-x-0 border-t", tick ? "border-neutral-100" : "border-neutral-200")} style={{ bottom: `${heightOf(tick)}%` }} />)}
+        <div role="group" aria-label="Spending by month: pick a month" className="absolute inset-0 flex items-end">
+          {totals.map((item, position) => {
+            const isChosen = item.month === month;
+            const height = heightOf(item.total);
+            return <button key={item.month} type="button" aria-pressed={isChosen} aria-label={`${monthLabel(item.month)}: ${rupees(item.total)}`}
+              onClick={() => onMonth(item.month)} onPointerEnter={() => setHovered(item.month)} onPointerLeave={(event) => { if (event.pointerType === "mouse") setHovered(null); }}
+              onFocus={() => setHovered(item.month)} onBlur={() => setHovered(null)}
+              className="relative flex h-full flex-1 items-end justify-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">
+              {isChosen && item.total > 0 && <span aria-hidden="true" className="vso-fade-up absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] font-bold tabular-nums text-[var(--bar-on-label)]" style={{ bottom: `calc(${height}% + 6px)`, "--delay": "700ms" } as React.CSSProperties}>{compactRupees(item.total)}</span>}
+              <span aria-hidden="true" className={clsx("vso-rise block w-[58%] max-w-[34px] rounded-[9px]", isChosen ? "bg-gradient-to-b from-[#5b7cff] to-[#2343e8] shadow-[0_6px_14px_rgb(35_67_232/0.28)]" : "bg-[linear-gradient(180deg,var(--bar-off-top),var(--bar-off-bottom))]")}
+                style={{ height: item.total ? `max(${height}%, 6px)` : "3px", "--delay": `${position * 70}ms` } as React.CSSProperties} />
+            </button>;
+          })}
+        </div>
+        {tip && <div ref={tipRef} role="tooltip" className="vso-bar-tip pointer-events-none absolute z-10 w-max min-w-[9rem] max-w-[min(15rem,100%)] rounded-xl bg-[#15171c] px-3 py-2 text-xs text-white shadow-e3 ring-1 ring-white/10">
+          <p className="flex items-baseline justify-between gap-3"><span className="font-semibold text-white/60">{monthLabel(tip.month)}</span><span className="text-sm font-extrabold tabular-nums">{rupees(tip.total)}</span></p>
+          <p className="mt-0.5 text-white/75">{tip.rows.length ? splitOf(tip.rows).map((bucket) => `${bucket.label} ${compactRupees(bucket.paise)}`).join(" · ") : "Nothing paid"}</p>
+          {tip.rows.length > 0 && <p className="mt-0.5 text-[11px] text-white/45">{tip.rows.length} {tip.rows.length === 1 ? "expense" : "expenses"}{tip.month !== month ? " · click to show" : ""}</p>}
+        </div>}
+      </div>
+      <span aria-hidden="true" />
+      <div aria-hidden="true" className="mt-2 flex">
+        {months.map((one) => <span key={one} className={clsx("flex-1 text-center text-[11px]", one === month ? "font-bold text-neutral-900" : "font-semibold text-neutral-400")}>{monthLabel(one).replace(/ \d{4}$/, "")}</span>)}
+      </div>
     </div>
   </section>;
 }

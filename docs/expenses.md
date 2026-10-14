@@ -76,8 +76,8 @@ The tracker has its own access list, under Settings. Each member has a **level**
     - **Repeating costs** (blue card): cost a month, how many are running and due this week, and the cost a year.
     - **By category:** a dial for the month. Click a legend chip to filter to that category.
     - **Recent expenses** (dark card): the month's split by category as a segmented bar, then the latest expenses by day. In the current month it shows only what has been paid so far.
-    - **Month by month:** Office, ventures and Personal for the month as tiles, and seven months as pill columns. Click a column, or press Enter on it, to open that month.
-  - **No hover effects:** picking a month or a category is a click.
+    - **Month by month:** Office, ventures and Personal for the month as tiles, and seven months as columns on a rupee axis (34px bars at most, 11px labels, like the dashboard's other bar charts). Point at a column, or focus it, for a tooltip with the month's total, where it went (or its categories on the Office tab) and how many expenses; click it, or press Enter, to open that month. The open month is the blue column, with its total above it.
+  - **No hover effects on the cards:** picking a category is a click; only the month columns show a tooltip.
   - **Animations:** everything animates in once when the page opens (columns rise, rings sweep, totals count up), and stays still for people who ask for reduced motion.
   - **Corner buttons** open Monthly and Subscriptions, or scroll down to the list.
   - **The list:** the month's expenses with their total. Exports as CSV.

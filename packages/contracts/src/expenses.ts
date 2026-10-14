@@ -4,7 +4,8 @@ import { idSchema, isoDateSchema } from "./common.js";
 // The expense tracker (docs/expenses.md): what the studio spends, in rupees, charged to a venture, the Office or Personal, each in a
 // category and optionally a group (e.g. "AI subscriptions"). An expense is one-time, or repeats monthly or yearly from its first date
 // until the month it stops. Who may see, add or manage expenses is the tracker's own access list; restricted categories (salary, EMI)
-// are seen only by the people allowed to. Only amounts and labels are kept: no bank, card or account numbers.
+// are seen only by the people allowed to. Only amounts and labels are kept: no bank, card or account numbers. An expense may keep its
+// receipt: a small copy of the photo or the PDF, and what was read off it (card numbers cut to their last four digits).
 
 export const EXPENSE_ACCESS_LEVELS = ["none", "view", "edit", "manage"] as const;
 export const expenseAccessLevelSchema = z.enum(EXPENSE_ACCESS_LEVELS);
@@ -53,8 +54,10 @@ const expenseFields = {
   /** The last month a repeating expense is paid (included); none while it keeps repeating. */
   endMonth: expenseMonthSchema.nullable(),
   note: label(1_000, "A note"),
+  /** The receipt kept with it (uploaded first, attached when the expense is saved), or none. */
+  receiptId: idSchema.nullable(),
 };
-export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default("") });
+export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null) });
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 /** An edit: only the fields sent change (no defaults, so leaving a field out never resets it). */
 /** The version an edit was made from (the expense's updatedAt as loaded): a change saved meanwhile refuses the edit instead of being undone. */
@@ -70,6 +73,7 @@ export const expenseSchema = z.object({
   continuesId: idSchema.optional(),
   /** The day of the month it repeats on, when that differs from `date`'s day (a copy that starts in a shorter month): the 31st stays the 31st. */
   anchorDay: z.number().int().min(1).max(31).optional(),
+  receiptId: idSchema.nullable().optional(),
   createdBy: idSchema, updatedBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
 export type Expense = z.infer<typeof expenseSchema>;
@@ -84,6 +88,40 @@ export type ExpenseGroup = z.infer<typeof expenseGroupSchema>;
 const groupFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, note: label(300, "A note") };
 export const expenseGroupInputSchema = z.object({ ...groupFields, color: groupFields.color.default("neutral"), note: groupFields.note.default("") });
 export const expenseGroupUpdateSchema = z.object({ ...groupFields, archived: z.boolean() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
+
+// ---- Receipts ---------------------------------------------------------------------------------------------------------------
+
+export const RECEIPT_KINDS = ["receipt", "tax_invoice", "invoice", "bill", "other"] as const;
+export const RECEIPT_PAYMENT_METHODS = ["cash", "card", "upi", "bank_transfer", "wallet", "other", "unknown"] as const;
+/** What was read off a receipt, as printed: amounts in the receipt's own currency (not paise), null where it doesn't say. */
+export const receiptDataSchema = z.object({
+  kind: z.enum(RECEIPT_KINDS),
+  merchant: z.string().nullable(), merchantAddress: z.string().nullable(), merchantPhone: z.string().nullable(),
+  /** GSTIN, VAT or other tax registration number. */
+  merchantTaxId: z.string().nullable(),
+  /** The receipt, bill or invoice number. */
+  number: z.string().nullable(),
+  date: expenseDaySchema.nullable(), time: z.string().nullable(), billedTo: z.string().nullable(),
+  /** ISO 4217, such as INR or USD. */
+  currency: z.string().nullable(),
+  items: z.array(z.object({ name: z.string(), quantity: z.number().nullable(), unitPrice: z.number().nullable(), amount: z.number().nullable() })),
+  subtotal: z.number().nullable(), discount: z.number().nullable(),
+  taxes: z.array(z.object({ label: z.string(), ratePercent: z.number().nullable(), amount: z.number() })),
+  /** Tip or service charge. */
+  tip: z.number().nullable(), total: z.number().nullable(),
+  paymentMethod: z.enum(RECEIPT_PAYMENT_METHODS), cardLast4: z.string().nullable(), footer: z.string().nullable(),
+  /** The category it most likely belongs to, among those the uploader may use. */
+  categoryId: idSchema.nullable(),
+});
+export type ReceiptData = z.infer<typeof receiptDataSchema>;
+/** A receipt: its kept copy (a WebP of the photo, or the PDF), what was read off it, or why it couldn't be read. */
+export const expenseReceiptSchema = z.object({
+  id: idSchema, contentType: z.enum(["image/webp", "application/pdf"]), size: z.number().int(),
+  data: receiptDataSchema.nullable(), error: z.string().optional(), expenseId: idSchema.optional(), createdAt: isoDateSchema,
+});
+export type ExpenseReceipt = z.infer<typeof expenseReceiptSchema>;
+/** The largest receipt file accepted: a photo or a PDF. */
+export const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 
 /** One person's access: their level, and whether they see restricted categories. */
 export const expenseAccessSchema = z.object({ level: expenseAccessLevelSchema, restricted: z.boolean() });

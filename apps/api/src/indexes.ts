@@ -99,6 +99,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("workspaces").createIndex({ slug: 1 }, { unique: true }),
     // The expense tracker lists a workspace's expenses newest first.
     db.collection("expenses").createIndex({ workspaceId: 1, date: -1, _id: 1 }),
+    // Receipts attached to nothing are found by when they were let go, and deleted a day later.
+    db.collection("expense_receipts").createIndex({ workspaceId: 1, orphanedAt: 1 }, { partialFilterExpression: { orphanedAt: { $exists: true } } }),
     // Recovery copies from permanent venture deletes expire on their own after 30 days.
     db.collection("deleted_records").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("deleted_records").createIndex({ deletionId: 1 }),

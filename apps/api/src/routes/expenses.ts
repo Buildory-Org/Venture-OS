@@ -1,23 +1,32 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { Router, type Request } from "express";
+import express, { Router, type Request } from "express";
 import type { ClientSession } from "mongodb";
 import {
   addMonths, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema,
-  expenseGroupUpdateSchema, expenseInputSchema, expenseUpdateSchema, idSchema, monthOf, occurrenceIn,
+  expenseGroupUpdateSchema, expenseInputSchema, expenseUpdateSchema, idSchema, MAX_RECEIPT_BYTES, monthOf, occurrenceIn,
   type ExpenseAccess, type ExpenseAccessLevel, type ExpenseCategory, type ExpenseGroup, type ExpenseInput,
 } from "@venture-studio/contracts";
 import { audit } from "../audit.js";
+import type { AppConfig } from "../config.js";
 import { atomic, type AppDb, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
+import { prepareReceipt, readReceipt } from "../expense-receipts.js";
 import { jsonValue } from "../json.js";
+import { overLimit } from "../middleware.js";
+import type { LocalObjectStore, ObjectStore } from "../storage.js";
+import { fileStoreFor } from "./files.js";
 
 // The expense tracker (docs/expenses.md). Its own access list decides who sees, adds or manages expenses: nobody but admins until a
 // manager adds them, and restricted categories (salary, EMI) only for the people allowed to see them. The admins there are when the
 // tracker is first opened get Manage with restricted access; admins made later get Manage only, until someone with restricted access
-// lets them see it. Claude connections never reach these routes. Every change is audited without amounts.
+// lets them see it. Claude connections never reach these routes. Every change is audited without amounts. A receipt is uploaded (and
+// read) before its expense is saved, then attached; it is seen by whoever sees its expense, and until then only by who uploaded it.
+// One that ends up attached to nothing (the form was closed, or its expense deleted or given another receipt) goes after a day.
 
 const SETTINGS = "expense_settings";
 const EXPENSES = "expenses";
+const RECEIPTS = "expense_receipts";
+const RECEIPTS_PER_HOUR = 40;
 const MAX_CATEGORIES = 60;
 const MAX_GROUPS = 100;
 const MAX_LISTED = 20_000;
@@ -93,7 +102,7 @@ function sameVersion(current: AppDocument, expected: string | undefined) {
 }
 const json = (doc: AppDocument) => { const { startMonth: _startMonth, ...rest } = doc; return jsonValue(rest); };
 
-export function expenseRoutes(database: Database): Router {
+export function expenseRoutes(database: Database, config: AppConfig, store: ObjectStore, localStore: LocalObjectStore): Router {
   const db = database.db;
   const router = Router();
 
@@ -138,6 +147,39 @@ export function expenseRoutes(database: Database): Router {
     if (input.endMonth && input.endMonth < monthOf(input.date)) throw new AppError(400, "BAD_REQUEST", "The last month can't be before the first payment");
   }
 
+  /** Attaches a receipt to an expense: one the person uploaded and nothing holds yet, or the one it already has. */
+  async function claimReceipt(workspaceId: string, actorId: string, receiptId: string, expenseId: string, session?: ClientSession) {
+    const claimed = await db.collection(RECEIPTS).updateOne({ _id: receiptId as never, workspaceId, $or: [{ expenseId }, { expenseId: { $exists: false }, ownerId: actorId }] }, { $set: { expenseId }, $unset: { orphanedAt: "" } }, { session });
+    if (!claimed.matchedCount) throw new AppError(400, "BAD_REQUEST", "That receipt can't be attached any more: add it again");
+  }
+  /** Lets go of a receipt: nobody sees or attaches it again (not even who uploaded it), and it is deleted a day later. */
+  const releaseReceipt = (workspaceId: string, receiptId: string, session?: ClientSession) =>
+    db.collection(RECEIPTS).updateOne({ _id: receiptId as never, workspaceId }, { $unset: { expenseId: "", ownerId: "" }, $set: { orphanedAt: new Date() } }, { session });
+  /** A receipt the person may see: its expense's, when they see that expense; one not attached yet, only to who uploaded it. */
+  async function visibleReceipt(workspaceId: string, id: string, actorId: string, settings: Settings, me: ExpenseAccess) {
+    const doc = await db.collection(RECEIPTS).findOne({ _id: id as never, workspaceId });
+    if (!doc) throw new AppError(404, "NOT_FOUND", "Receipt not found");
+    if (typeof doc.expenseId === "string") await visibleExpense(workspaceId, doc.expenseId, settings, me).catch(() => { throw new AppError(404, "NOT_FOUND", "Receipt not found"); });
+    else if (doc.ownerId !== actorId || !expenseAccessAtLeast(me.level, "edit")) throw new AppError(404, "NOT_FOUND", "Receipt not found");
+    return doc;
+  }
+  /** A receipt for the screens. The category it suggested is left out when the person can't see that category (a restricted one). */
+  const receiptJson = (doc: AppDocument, settings: Settings, me: ExpenseAccess) => {
+    const data = doc.data as { categoryId?: string | null } | null | undefined;
+    const suggested = data?.categoryId && visibleCategories(settings, me).some((category) => category.id === data.categoryId) ? data.categoryId : null;
+    return jsonValue({ id: doc._id, contentType: doc.contentType, size: doc.size, data: data ? { ...data, categoryId: suggested } : null, ...(doc.error ? { error: doc.error } : {}), ...(doc.expenseId ? { expenseId: doc.expenseId } : {}), createdAt: doc.createdAt });
+  };
+  /** Deletes receipts attached to nothing for a day, a few at a time (run when receipts are added and when the list is opened). */
+  async function dropOrphanReceipts(workspaceId: string) {
+    const old = await db.collection(RECEIPTS).find({ workspaceId, orphanedAt: { $lt: new Date(Date.now() - 86_400_000) } }).limit(20).toArray();
+    for (const doc of old) {
+      // Still unattached at this moment, or it was claimed meanwhile and stays.
+      if (!(await db.collection(RECEIPTS).deleteOne({ _id: doc._id, orphanedAt: doc.orphanedAt })).deletedCount) continue;
+      await fileStoreFor(doc, store, localStore)?.discard(String(doc.objectKey)).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_cleanup_failed", receiptId: String(doc._id), message: error instanceof Error ? error.message : String(error) })));
+    }
+  }
+  const sweepReceipts = (workspaceId: string) => void dropOrphanReceipts(workspaceId).catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_cleanup_failed", message: error instanceof Error ? error.message : String(error) })));
+
   // My access, for the sidebar: anyone signed in may ask; it never says more than their own level.
   router.get("/expenses/access", async (req, res) => {
     if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
@@ -172,6 +214,7 @@ export function expenseRoutes(database: Database): Router {
     const hide = me.restricted ? [] : restrictedIds(settings);
     const items = await db.collection(EXPENSES).find({ workspaceId, ...(hide.length ? { categoryId: { $nin: hide } } : {}) }).sort({ date: -1, _id: 1 }).limit(MAX_LISTED + 1).toArray();
     res.json(ok({ items: items.slice(0, MAX_LISTED).map(json), hiddenRestricted: hide.length > 0, truncated: items.length > MAX_LISTED }));
+    sweepReceipts(workspaceId);
   });
 
   router.post("/expenses", async (req, res) => {
@@ -181,8 +224,9 @@ export function expenseRoutes(database: Database): Router {
     const now = new Date();
     const doc = { _id: randomUUID(), workspaceId, ...input, startMonth: monthOf(input.date), createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
+      if (input.receiptId) await claimReceipt(workspaceId, actor.id, input.receiptId, doc._id, session);
       await db.collection(EXPENSES).insertOne(doc as never, { session });
-      await record("expense.create", "expense", doc._id, { categoryId: input.categoryId, repeat: input.repeat }, session);
+      await record("expense.create", "expense", doc._id, { categoryId: input.categoryId, repeat: input.repeat, receipt: Boolean(input.receiptId) }, session);
     });
     res.status(201).json(ok(json(doc)));
   });
@@ -193,7 +237,7 @@ export function expenseRoutes(database: Database): Router {
     const { expectedUpdatedAt, ...change } = expenseUpdateSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
     sameVersion(current, expectedUpdatedAt);
-    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", ...change });
+    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", receiptId: current.receiptId ?? null, ...change });
     if (merged.repeat === "none") merged.endMonth = null;
     await checkInput(workspaceId, merged, settings, me, { categoryId: String(current.categoryId), groupId: (current.groupId as string | null) ?? null, scope: scopeKeyOf(current.scope) });
     const now = new Date();
@@ -201,6 +245,10 @@ export function expenseRoutes(database: Database): Router {
       // A new date sets a new repeat day, so the copy's kept day goes.
       const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
+      if (merged.receiptId !== (current.receiptId ?? null)) {
+        if (typeof current.receiptId === "string") await releaseReceipt(workspaceId, current.receiptId, session);
+        if (merged.receiptId) await claimReceipt(workspaceId, actor.id, merged.receiptId, id, session);
+      }
       await record("expense.update", "expense", id, { fields: Object.keys(change).sort().join(",") }, session);
     });
     res.json(ok(json((await db.collection(EXPENSES).findOne({ _id: id as never }))!)));
@@ -218,6 +266,7 @@ export function expenseRoutes(database: Database): Router {
     await atomic(database, async (session) => {
       const removed = await db.collection(EXPENSES).deleteOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { session });
       if (!removed.deletedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
+      if (typeof current.receiptId === "string") await releaseReceipt(workspaceId, current.receiptId, session);
       if (typeof current.continuesId === "string") {
         const before = await db.collection(EXPENSES).updateOne({ _id: current.continuesId as never, workspaceId, endMonth: addMonths(monthOf(String(current.date)), -1) }, { $set: { endMonth: current.endMonth ?? null, updatedBy: actor.id, updatedAt: new Date() } }, { session });
         if (before.modifiedCount) reopened = current.continuesId;
@@ -242,7 +291,7 @@ export function expenseRoutes(database: Database): Router {
     if (!day) throw new AppError(400, "BAD_REQUEST", "Pick a month this expense is paid in");
     if (input.fromMonth <= monthOf(String(current.date))) throw new AppError(400, "BAD_REQUEST", "That is its first month: edit the expense instead");
     const now = new Date();
-    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
+    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay", "receiptId"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
       ...(Number(day.slice(8, 10)) !== anchorDay ? { anchorDay } : {}),
       ...(input.paidTo !== undefined ? { paidTo: input.paidTo } : {}), ...(input.note !== undefined ? { note: input.note } : {}), continuesId: id, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
@@ -252,6 +301,49 @@ export function expenseRoutes(database: Database): Router {
       await record("expense.change", "expense", id, { fromMonth: input.fromMonth, continuedBy: next._id }, session);
     });
     res.status(201).json(ok({ stopped: json((await db.collection(EXPENSES).findOne({ _id: id as never }))!), continued: json(next as AppDocument) }));
+  });
+
+  // ---- Receipts ------------------------------------------------------------------------------------------------------------------
+
+  // A photo or PDF of a receipt, sent as the request body: kept as a small copy and read with Claude Haiku (when a key is set), so the
+  // form can fill itself in. Kept even when it can't be read. Anyone who adds expenses may upload, up to RECEIPTS_PER_HOUR an hour.
+  // Only image and PDF bodies are read, so a plain cross-site form can't post one (those types need the browser's CORS check first).
+  router.post("/expenses/receipts", express.raw({ type: ["image/*", "application/pdf", "application/octet-stream"], limit: MAX_RECEIPT_BYTES }), async (req, res) => {
+    const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
+    const wait = await overLimit(db, `expense-receipts:${actor.id}`, RECEIPTS_PER_HOUR, 3_600_000);
+    if (wait) { res.setHeader("retry-after", wait); throw new AppError(429, "RATE_LIMITED", "That's a lot of receipts for one hour: type the details in, or try again later"); }
+    if (!Buffer.isBuffer(req.body) || !req.body.length) throw new AppError(400, "BAD_REQUEST", "Attach a photo or PDF of the receipt");
+    const file = await prepareReceipt(req.body);
+    // Recorded (as attached to nothing) before the copy is stored, so a failure at any later step still leaves it for the clean-up.
+    const id = randomUUID();
+    const objectKey = `${workspaceId}/expense-receipts/${id}`;
+    const now = new Date();
+    await db.collection(RECEIPTS).insertOne({ _id: id, workspaceId, ownerId: actor.id, objectKey, storage: store.kind, contentType: file.contentType, size: file.bytes.length, orphanedAt: now, createdAt: now } as never);
+    await store.put(objectKey, file.bytes, file.contentType);
+    // A read the person no longer waits for (they closed the page) is stopped.
+    const gone = new AbortController();
+    res.on("close", () => { if (!res.writableFinished) gone.abort(); });
+    const read = await readReceipt(config.ANTHROPIC_API_KEY, file, visibleCategories(settings, me).filter((category) => !category.archived), gone.signal);
+    const doc = await db.collection(RECEIPTS).findOneAndUpdate({ _id: id as never }, { $set: read }, { returnDocument: "after" });
+    await record("expense.receipt.upload", "expense_receipt", id, { contentType: file.contentType, read: "data" in read });
+    res.status(201).json(ok(receiptJson(doc!, settings, me)));
+    sweepReceipts(workspaceId);
+  });
+
+  router.get("/expenses/receipts/:id", async (req, res) => {
+    const { actor, workspaceId, settings, me } = await gate(req, "view");
+    res.json(ok(receiptJson(await visibleReceipt(workspaceId, idSchema.parse(req.params.id), actor.id, settings, me), settings, me)));
+  });
+
+  // The kept copy itself (a WebP or the PDF), sent by the API so it never needs a public link.
+  router.get("/expenses/receipts/:id/file", async (req, res) => {
+    const { actor, workspaceId, settings, me } = await gate(req, "view");
+    const doc = await visibleReceipt(workspaceId, idSchema.parse(req.params.id), actor.id, settings, me);
+    const fileStore = fileStoreFor(doc, store, localStore);
+    if (!fileStore) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "The receipt's storage is not configured here");
+    const bytes = await fileStore.read(String(doc.objectKey), MAX_RECEIPT_BYTES);
+    res.set({ "Content-Type": String(doc.contentType), "Content-Length": String(bytes.length), "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'", "Content-Disposition": `inline; filename="receipt.${doc.contentType === "application/pdf" ? "pdf" : "webp"}"` });
+    res.send(bytes);
   });
 
   // ---- Categories, groups and access (managers) --------------------------------------------------------------------------------

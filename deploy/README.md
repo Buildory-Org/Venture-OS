@@ -27,6 +27,7 @@ it and Docker never copies it into an image.
 | `VAPID_SUBJECT` | `mailto:` plus an address you read. |
 | `MCP_ENABLED` | `true` turns on Claude connections (`/mcp`, `/mcp/sales` and the Connect Claude page); off when unset. `MCP_WRITES_ENABLED=false` keeps them read-only. See `docs/mcp.md`. |
 | `TINYFISH_API_KEY`, `EXA_API_KEY` | Optional. Company search for the Dealflow Sales connector (`search_companies`) and the built-in lead finder. An admin can instead save the keys in the app (Sales → Setup), stored encrypted with a key derived from `BETTER_AUTH_SECRET`; a key saved in the app wins. Never shown to Claude. Changing `BETTER_AUTH_SECRET` makes saved keys unreadable, so enter them again. |
+| `ANTHROPIC_API_KEY` | Optional. Reads expense receipts (photos and PDFs) with Claude Haiku 5.5 so the add-expense form fills itself in (`docs/expenses.md`). Blank means off: receipts are still kept and the details are typed in. The receipt is sent to Anthropic's API only to be read. |
 | `SALES_FINDER` | `on` (default) or `off`. The lead finder built into the API works the queued find-leads and enrich runs itself: polite, robots.txt respected, public pages only. |
 
 The two MongoDB passwords take effect when the database is first created. Do not change them afterwards.

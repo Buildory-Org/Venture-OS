@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { Download, Plus, Repeat } from "@/components/ui/icons";
+import { Download, Paperclip, Plus, Repeat } from "@/components/ui/icons";
 import { Select } from "@/components/ui/select";
 import { Badge, Empty, filterControl, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import type { Expense } from "@/lib/expenses-api";
@@ -77,6 +77,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
                   {grp && <Badge tone={grp.color}>{grp.name}</Badge>}
                   {!fixedWhere && <span className="text-xs text-neutral-500">{scopeLabel(expense.scope, ventureName)}</span>}
                   {expense.repeat !== "none" && <span className="inline-flex items-center gap-1 text-xs text-neutral-500"><Repeat size={12} aria-hidden="true" />{REPEAT_LABEL[expense.repeat]}</span>}
+                  {expense.receiptId && <span className="inline-flex items-center gap-1 text-xs text-neutral-500"><Paperclip size={12} aria-hidden="true" />Receipt</span>}
                 </span>
               </span>
               <span className="tabular-nums text-sm font-extrabold text-neutral-900">{rupees(expense.amountPaise)}</span>

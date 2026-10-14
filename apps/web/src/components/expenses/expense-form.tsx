@@ -1,12 +1,13 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { addMonths, expenseAccessAtLeast, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseScope } from "@venture-studio/contracts";
+import { addMonths, expenseAccessAtLeast, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, updateExpense, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
+import { ReceiptSection } from "./expense-receipt";
 import { amountText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
 
 type Venture = { id: string; name: string };
@@ -38,6 +39,10 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const [amount, setAmount] = useState(expense ? amountText(expense.amountPaise) : "");
   const [date, setDate] = useState(expense?.date ?? todayLocal());
   const [categoryId, setCategoryId] = useState(expense?.categoryId ?? usableCategories[0]?.id ?? "");
+  // A receipt fills in only what is still empty (and the category, until one is picked).
+  const [categoryPicked, setCategoryPicked] = useState(Boolean(expense));
+  const [receiptId, setReceiptId] = useState(expense?.receiptId ?? null);
+  const [receiptNote, setReceiptNote] = useState("");
   const [groupId, setGroupId] = useState(expense?.groupId ?? "");
   const [where, setWhere] = useState(expense ? scopeKey(expense.scope) : fixedVentureId ? `venture:${fixedVentureId}` : defaultWhere ?? "office");
   const [repeat, setRepeat] = useState<ExpenseInput["repeat"]>(expense?.repeat ?? "none");
@@ -49,9 +54,25 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   // A price change starts in a month the expense is paid in: the next one after this month (for a yearly one, its next renewal).
   const [changeMonth, setChangeMonth] = useState(() => (expense && expense.repeat !== "none" ? nextPaidMonthAfter(expense, monthOf(expense.date) > thisMonth() ? monthOf(expense.date) : thisMonth()) : null) ?? addMonths(thisMonth(), 1));
   const [changeAmount, setChangeAmount] = useState("");
-  const dirty = Boolean(paidTo !== (expense?.paidTo ?? "") || amount !== (expense ? amountText(expense.amountPaise) : "") || note !== (expense?.note ?? ""));
+  const dirty = Boolean(paidTo !== (expense?.paidTo ?? "") || amount !== (expense ? amountText(expense.amountPaise) : "") || note !== (expense?.note ?? "") || receiptId !== (expense?.receiptId ?? null));
   const fixedVenture = fixedVentureId ? ventures.find((venture) => venture.id === fixedVentureId) : undefined;
   const readOnly = !canEdit;
+
+  /** A receipt was added or removed. One just read fills in the fields still empty, and says which. */
+  function receiptChanged(receipt: ExpenseReceipt | null, fresh: boolean) {
+    setReceiptId(receipt?.id ?? null);
+    setReceiptNote("");
+    const data = receipt?.data;
+    if (!fresh || !data) return;
+    const filled: string[] = [];
+    if (!paidTo.trim() && data.merchant) { setPaidTo(data.merchant.slice(0, 120)); filled.push("paid to"); }
+    const inRupees = (data.currency ?? "INR") === "INR";
+    if (!amount.trim() && data.total && inRupees) { setAmount(amountText(Math.round(data.total * 100))); filled.push("amount"); }
+    if (!expense && data.date && date === todayLocal()) { setDate(data.date); filled.push("date"); }
+    if (!categoryPicked && data.categoryId && usableCategories.some((category) => category.id === data.categoryId)) { setCategoryId(data.categoryId); filled.push("category"); }
+    const foreign = data.total && !inRupees ? ` It's in ${data.currency} (${data.total.toFixed(2)}): enter what was charged in rupees.` : "";
+    setReceiptNote(filled.length ? `Filled in ${filled.join(", ").replace(/, ([^,]*)$/, " and $1")} from the receipt: check them before saving.${foreign}` : foreign.trim());
+  }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -59,12 +80,12 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     if (!paise) { setError("Enter an amount in rupees, like 1700 or 1700.50."); return; }
     if (LONG_NUMBER.test(paidTo) || LONG_NUMBER.test(note)) { setError("Leave out account, card and phone numbers: only amounts and labels are kept."); return; }
     if (repeat !== "none" && endMonth && endMonth < monthOf(date)) { setError("The last month can't be before the first payment."); return; }
-    const input: ExpenseInput = { date, amountPaise: paise, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim() };
+    const input: ExpenseInput = { date, amountPaise: paise, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId };
     setBusy("save"); setError("");
     try {
       if (expense) {
         // Only what changed is sent, with the version it was changed from.
-        const before: ExpenseInput = { date: expense.date, amountPaise: expense.amountPaise, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note };
+        const before: ExpenseInput = { date: expense.date, amountPaise: expense.amountPaise, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, receiptId: expense.receiptId ?? null };
         const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key as keyof ExpenseInput])));
         if (Object.keys(changed).length) await updateExpense(expense.id, { ...changed, expectedUpdatedAt: expense.updatedAt });
       } else await createExpense(input);
@@ -90,7 +111,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
         setAdded((current) => ({ ...current, groups: [...current.groups, group] })); setGroupId(group.id);
       } else {
         const category = await createCategory({ name: creating.name.trim(), color: "neutral", restricted: false });
-        setAdded((current) => ({ ...current, categories: [...current.categories, category] })); setCategoryId(category.id);
+        setAdded((current) => ({ ...current, categories: [...current.categories, category] })); setCategoryId(category.id); setCategoryPicked(true);
       }
       toast({ title: `${creating.kind === "group" ? "Group" : "Category"} added`, body: creating.name.trim() });
       setCreating(null); onSettingsChanged();
@@ -113,6 +134,8 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const title = expense ? (readOnly ? expense.paidTo : "Edit expense") : "Add an expense";
   return <DetailDrawer title={title} subtitle={readOnly ? "You can view expenses but not change them." : "Amounts and labels only: never bank, card or account numbers."} onClose={onClose} dirty={!readOnly && dirty}>
     <form onSubmit={save} className="grid grid-cols-1 gap-4">
+      <ReceiptSection receiptId={receiptId} canEdit={!readOnly} onReceipt={receiptChanged} />
+      <p role="status" className={receiptNote ? "-mt-1 rounded-xl bg-primary-50 px-3 py-2 text-xs leading-5 text-primary-900" : "sr-only"}>{receiptNote}</p>
       <fieldset disabled={readOnly || busy !== null} className="grid grid-cols-1 gap-4">
         <Field label="Paid to"><input required maxLength={120} className={inputClass} value={paidTo} onChange={(event) => setPaidTo(event.target.value)} placeholder="Anthropic, GoDaddy, Contabo…" autoFocus={!expense} /></Field>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -120,7 +143,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
           <Field label={repeat === "none" ? "Date paid" : "First payment"}><input required type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Category"><Select aria-label="Category" className={inputClass} value={categoryId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "category", name: "" }); else setCategoryId(event.target.value); }}>{usableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.restricted ? " (restricted)" : ""}{category.archived ? " · archived" : ""}</option>)}{canAddCategory && <option value={NEW}>+ New category…</option>}</Select></Field>
+          <Field label="Category"><Select aria-label="Category" className={inputClass} value={categoryId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "category", name: "" }); else { setCategoryId(event.target.value); setCategoryPicked(true); } }}>{usableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.restricted ? " (restricted)" : ""}{category.archived ? " · archived" : ""}</option>)}{canAddCategory && <option value={NEW}>+ New category…</option>}</Select></Field>
           <Field label="Group (optional)"><Select aria-label="Group" className={inputClass} value={groupId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "group", name: "" }); else setGroupId(event.target.value); }}><option value="">No group</option>{usableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.archived ? " · archived" : ""}</option>)}{canAddGroup && <option value={NEW}>+ New group…</option>}</Select></Field>
         </div>
         {creating && <div role="group" aria-label={`New ${creating.kind}`} className="-mt-1 flex flex-wrap items-center gap-2 rounded-xl border border-primary-100 bg-primary-50 p-2.5">

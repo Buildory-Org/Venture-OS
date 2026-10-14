@@ -23,6 +23,8 @@ const schema = z.object({
   // Company search for the Dealflow Sales connector (search_companies). Blank means off: the tool then says search is not set up.
   TINYFISH_API_KEY: z.string().trim().min(1).optional(),
   EXA_API_KEY: z.string().trim().min(1).optional(),
+  // Reads expense receipts (photos and PDFs) with Claude Haiku. Blank means off: receipts are still kept, and the details are typed in.
+  ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
   // The built-in lead finder (sales/finder): works queued find-leads and enrich runs in this API process. It waits while a workspace has no search key.
   SALES_FINDER: z.enum(["on", "off"]).default("on"),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),

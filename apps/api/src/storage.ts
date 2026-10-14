@@ -14,6 +14,8 @@ export interface ObjectStore {
   head(key: string): Promise<ObjectMetadata>;
   finalize(stagingKey: string, finalKey: string, expectedEtag?: string): Promise<ObjectMetadata>;
   discard(key: string): Promise<void>;
+  /** Stores bytes the API made itself (an expense receipt's copy) without an upload URL. */
+  put(key: string, body: Buffer, contentType: string): Promise<void>;
 }
 
 export class LocalObjectStore implements ObjectStore {
@@ -48,6 +50,7 @@ export class LocalObjectStore implements ObjectStore {
   async head(key: string): Promise<ObjectMetadata> { const body = await readFile(this.path(key)); const info = await stat(this.path(key)); return { size: info.size, etag: createHash("sha256").update(body).digest("hex") }; }
   async finalize(stagingKey: string, finalKey: string): Promise<ObjectMetadata> { const path = this.path(finalKey); await mkdir(dirname(path), { recursive: true }); await copyFile(this.path(stagingKey), path); return this.head(finalKey); }
   async discard(key: string): Promise<void> { try { await unlink(this.path(key)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
+  put(key: string, body: Buffer): Promise<void> { return this.write(key, body); }
 }
 
 export class R2ObjectStore implements ObjectStore {
@@ -84,6 +87,7 @@ export class R2ObjectStore implements ObjectStore {
     return this.head(finalKey);
   }
   async discard(key: string): Promise<void> { await this.client.send(new DeleteObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key })); }
+  async put(key: string, body: Buffer, contentType: string): Promise<void> { await this.client.send(new PutObjectCommand({ Bucket: this.config.R2_BUCKET, Key: key, Body: body, ContentType: contentType, ContentLength: body.length })); }
 }
 
 export function createObjectStore(config: AppConfig): ObjectStore {

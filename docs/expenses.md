@@ -11,7 +11,8 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
   - an optional group;
   - who it was paid to;
   - where it's charged (a venture, Office or Personal);
-  - an optional note.
+  - an optional note;
+  - an optional receipt (see [Receipts](#receipts)).
 - **No numbers that could identify an account.** Labels (who it was paid to, notes, category and group names) refuse what reads like an account, card or phone number (`LONG_NUMBER`):
   - 9 or more digits in a row;
   - a card's groups of four;
@@ -31,6 +32,26 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
 - **Delete** removes an expense for good. The audit log records that it happened.
   - Deleting the copy a price change made **undoes** that change: the original carries on as before.
 - **Version check:** an edit, a price change or a delete sends the version it was made from (`expectedUpdatedAt`). A change saved in the meantime refuses it (409) instead of being overwritten, and the form sends only the fields that changed.
+
+## Receipts
+
+- **Adding one:** "Add a receipt" at the top of the add or edit panel takes a photo (JPG, PNG, WebP, GIF or HEIC; never SVG) or a PDF, up to 10 MB (`MAX_RECEIPT_BYTES`; the web app's proxy copies at most 10 MB of a request, so keep the two equal). The browser first shrinks a photo, like chat images, and the server keeps:
+  - a photo as a WebP at most 1600px on its long side, turned upright, with its location and camera data dropped (usually 50–300 KB);
+  - a PDF as it came.
+- **Reading it:** Claude Haiku 5.5 (`claude-haiku-5-5`, `apps/api/src/expense-receipts.ts`) reads it in one call, with thinking off, in at most 22 seconds and without a retry (the web app's proxy gives up on a request after 30). It stops if the person closes the page. A PDF of more than 5 pages (`MAX_RECEIPT_PAGES`, counted by the sandboxed PDF reader) is kept but not read. Its answer must match the receipt schema (`receiptDataSchema`, structured outputs). The fields it reads:
+  - the kind of document and the merchant (name, address, phone, GSTIN or other tax ID);
+  - the receipt, bill or invoice number, the date and time, and who it was billed to;
+  - every line item (quantity, unit price, amount), the subtotal, discount, each tax line (CGST, SGST, IGST… with its rate), tip, and total;
+  - the currency, how it was paid (card with only its last four digits), the footer;
+  - the category it most likely belongs to, among those the person may use.
+- **Tidying:** the server caps lengths, keeps a date only when it is a real one, and matches the category by name. Card numbers (four groups of four however they're spaced, Amex's 4-6-5, or 13 to 19 digits in a row) keep only their last four digits in every field but the receipt number and tax ID, and so does any run of 9 or more digits (a bank account) in "billed to" and the footer. Date ranges such as 01/10/2026 - 31/10/2026 are left alone.
+- **Filling in the form:** only what's still empty when the reading finishes (the form stays editable meanwhile): who it was paid to, the amount (when it's in rupees), the date (for a new expense) and the category (until one is picked). A line says what was filled in. A receipt in another currency says so, and asks for the rupee amount.
+- **The digital receipt:** the panel shows what was read as a paper receipt. "Original" shows the kept photo or PDF above it (fetched only then), with "Open in a new tab". It warns when the items don't add up to the subtotal, or the subtotal, taxes and tip don't add up to the total.
+- **When it can't be read** (no key set, the reader is busy, refused or too slow, an unclear photo, a long or damaged PDF): the receipt is still kept and its photo shown, and the details are typed in.
+- **Who sees it:** whoever sees its expense, so a receipt on a restricted category stays hidden with it. Until the expense is saved, only the person who uploaded it. The category it suggested shows only to people who can see that category. Anyone with Edit may upload, up to 40 an hour. Only image and PDF bodies are accepted, so a plain cross-site form can't post one.
+- **Letting go:** removing or replacing a receipt (and saving), or deleting its expense, lets it go: nobody sees or attaches it again, not even who uploaded it. A receipt attached to nothing for a day (also one whose form was closed unsaved) is deleted, with its copy, the next time someone opens Expenses or adds a receipt. It is recorded before its copy is stored, so a failure partway never leaves a copy behind. A new amount from a month on doesn't take the receipt along.
+- **Where it goes:** the copy is stored with the app's other files (R2 in production), under `<workspace>/expense-receipts/`, and served only through the API. The receipt is sent to Anthropic's API only to be read. The audit (`expense.receipt.upload`) records whether it was read, never what it says.
+- **Setup:** `ANTHROPIC_API_KEY` in the API's settings (`deploy/.env`, Coolify). Without it, receipts are kept and not read.
 
 ## Categories and groups
 
@@ -102,6 +123,8 @@ The tracker has its own access list, under Settings. Each member has a **level**
 | POST | `/v1/expenses` | Edit |
 | PATCH / DELETE | `/v1/expenses/:id` | Edit |
 | POST | `/v1/expenses/:id/change` | Edit |
+| POST | `/v1/expenses/receipts` (the photo or PDF as the body) | Edit |
+| GET | `/v1/expenses/receipts/:id[/file]` | View, and seeing its expense (before it's attached: the uploader) |
 | POST / PATCH | `/v1/expenses/settings/categories[/:id]` | Manage |
 | POST | `/v1/expenses/settings/groups` | Edit (start a group while adding an expense) |
 | PATCH | `/v1/expenses/settings/groups/:id` | Manage |

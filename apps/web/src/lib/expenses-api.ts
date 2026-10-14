@@ -1,9 +1,10 @@
 import { z } from "zod";
 import {
-  expenseAccessSchema, expenseCategorySchema, expenseGroupSchema, expenseListSchema, expenseMemberAccessSchema, expenseSchema, expenseSettingsSchema, successEnvelope,
+  expenseAccessSchema, expenseCategorySchema, expenseGroupSchema, expenseListSchema, expenseMemberAccessSchema, expenseReceiptSchema, expenseSchema, expenseSettingsSchema, successEnvelope,
   type ExpenseAccess, type ExpenseCategory, type ExpenseGroup, type ExpenseInput,
 } from "@venture-studio/contracts";
-import { request } from "@/lib/studio-api";
+import { localDevUserId } from "@/lib/dev-identity";
+import { request, StudioApiError } from "@/lib/studio-api";
 
 // Client for the expense tracker (/v1/expenses; docs/expenses.md). The API decides who may see or change what; these only call it.
 
@@ -31,4 +32,14 @@ export async function createCategory(input: { name: string; color: ExpenseCatego
 export async function updateCategory(categoryId: string, change: Partial<Omit<ExpenseCategory, "id">>) { return successEnvelope(expenseCategorySchema).parse(await request(`/v1/expenses/settings/categories/${id(categoryId)}`, send("PATCH", change))).data; }
 export async function createGroup(input: { name: string; color: ExpenseGroup["color"]; note: string }) { return successEnvelope(expenseGroupSchema).parse(await request("/v1/expenses/settings/groups", send("POST", input))).data; }
 export async function updateGroup(groupId: string, change: Partial<Omit<ExpenseGroup, "id">>) { return successEnvelope(expenseGroupSchema).parse(await request(`/v1/expenses/settings/groups/${id(groupId)}`, send("PATCH", change))).data; }
+/** A photo or PDF of a receipt, sent as it is: the server keeps a small copy and reads it (a few seconds). */
+export async function uploadReceipt(file: File) { return successEnvelope(expenseReceiptSchema).parse(await request("/v1/expenses/receipts", { method: "POST", body: file, headers: { "content-type": file.type || "application/octet-stream" } })).data; }
+export async function getReceipt(receiptId: string) { return successEnvelope(expenseReceiptSchema).parse(await request(`/v1/expenses/receipts/${id(receiptId)}`)).data; }
+/** The kept copy as a local link (revoke it when done). */
+export async function receiptFileUrl(receiptId: string) {
+  const devUserId = localDevUserId();
+  const response = await fetch(`/v1/expenses/receipts/${id(receiptId)}/file`, { credentials: "same-origin", cache: "no-store", headers: devUserId ? { "x-dev-user-id": devUserId } : undefined });
+  if (!response.ok) throw new StudioApiError(`The receipt returned HTTP ${response.status}.`, `HTTP_${response.status}`);
+  return URL.createObjectURL(await response.blob());
+}
 export async function setExpenseAccess(userId: string, access: ExpenseAccess) { return successEnvelope(expenseMemberAccessSchema.omit({ name: true, role: true })).parse(await request(`/v1/expenses/settings/access/${id(userId)}`, send("PUT", access))).data; }

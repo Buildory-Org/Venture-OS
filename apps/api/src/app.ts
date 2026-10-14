@@ -86,7 +86,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesFinderRoutes(database, config));
   app.use("/v1/sales", salesSearchKeyRoutes(database, config));
   app.use("/v1", leaderboardRoutes(database, config));
-  app.use("/v1", expenseRoutes(database));
+  app.use("/v1", expenseRoutes(database, config, store, localStore));
   app.use("/v1", celebrationRoutes(database, config));
   app.use("/v1", searchRoutes(database.db));
   app.use("/v1", calendarRoutes(database));

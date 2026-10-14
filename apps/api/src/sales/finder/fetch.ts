@@ -182,7 +182,7 @@ function gate(size: number) {
 }
 
 /** Up to `max` bytes of a response body; the rest is not downloaded. */
-async function readCapped(response: Response, max: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+export async function readCapped(response: Response, max: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   if (!response.body) return { bytes: new Uint8Array(0), truncated: false };
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];

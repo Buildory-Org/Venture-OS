@@ -96,8 +96,13 @@ export function Notice({ tone, message, onDismiss, autoDismissMs, className }: {
  * With `dirty`, closing first asks inside the drawer whether to discard the changes.
  */
 /** `actions` sit beside Close in the header (they stay put while the body scrolls); `footer` is a bar pinned under the body. */
-export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = true, actions, footer, children }: { title: string; subtitle?: React.ReactNode; onClose: () => void; dirty?: boolean; enter?: boolean; actions?: React.ReactNode; footer?: React.ReactNode; children: React.ReactNode }) {
+/**
+ * `layout="dialog"` shows it as a centred popup instead (`wide` for two columns), full screen on phones, where the back button
+ * closes it like leaving a screen (asking first when there are unsaved changes).
+ */
+export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = true, actions, footer, layout = "drawer", wide = false, children }: { title: string; subtitle?: React.ReactNode; onClose: () => void; dirty?: boolean; enter?: boolean; actions?: React.ReactNode; footer?: React.ReactNode; layout?: "drawer" | "dialog"; wide?: boolean; children: React.ReactNode }) {
   const titleId = useId();
+  const dialog = layout === "dialog";
   const drawer = useRef<HTMLElement>(null);
   const close = useRef<HTMLButtonElement>(null);
   const keepEditing = useRef<HTMLButtonElement>(null);
@@ -134,12 +139,37 @@ export function DetailDrawer({ title, subtitle, onClose, dirty = false, enter = 
     document.addEventListener("keydown", onKeyDown);
     return () => { document.removeEventListener("keydown", onKeyDown); if (previous?.isConnected) previous.focus(); };
   }, []);
-  return <div data-state={state} data-enter={enter} className="vso-backdrop fixed inset-0 z-50 flex justify-end bg-neutral-900/25 backdrop-blur-[1px]" onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
-    <aside ref={drawer} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className="vso-enter-right flex h-full w-full max-w-[640px] flex-col bg-white shadow-e4">
-      <header className="flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4"><div className="min-w-0"><h2 id={titleId} className="text-lg font-bold text-neutral-900 [overflow-wrap:anywhere]">{title}</h2>{subtitle && <p className="mt-1 text-xs text-neutral-500">{subtitle}</p>}</div><div className="flex shrink-0 items-center gap-1.5">{actions}<button ref={close} type="button" onClick={requestClose} aria-label="Close detail" className="min-h-10 rounded-xl px-3 text-sm font-semibold text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]">Close</button></div></header>
+  // A popup is a step in the browser's history: Back closes it (or asks, with unsaved changes, and stays a step deep). Its entry is
+  // pushed once (React's development double mount keeps the ref) and taken back off when the popup really goes away.
+  const historyEntry = useRef("");
+  const popTimer = useRef(0);
+  useEffect(() => {
+    if (!dialog) return;
+    window.clearTimeout(popTimer.current);
+    if (!historyEntry.current) {
+      // A page reloaded with a popup open keeps that popup's mark on its history entry: clear it, so it never costs an extra Back.
+      if (window.history.state?.vsoDialog) window.history.replaceState({ ...window.history.state, vsoDialog: null }, "");
+      historyEntry.current = `vso-dialog-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      window.history.pushState({ ...(window.history.state ?? {}), vsoDialog: historyEntry.current }, "");
+    }
+    const id = historyEntry.current;
+    const onBack = () => {
+      if (window.history.state?.vsoDialog === id) return;
+      if (dirtyRef.current) { window.history.pushState({ ...(window.history.state ?? {}), vsoDialog: id }, ""); setConfirming(true); requestAnimationFrame(() => keepEditing.current?.focus()); return; }
+      exit();
+    };
+    window.addEventListener("popstate", onBack);
+    return () => {
+      window.removeEventListener("popstate", onBack);
+      popTimer.current = window.setTimeout(() => { if (window.history.state?.vsoDialog === id) window.history.back(); }, 0);
+    };
+  }, [dialog, exit]);
+  return <div data-state={state} data-enter={enter} className={clsx("vso-backdrop fixed inset-0 z-50 bg-neutral-900/25 backdrop-blur-[1px]", dialog ? "grid place-items-center sm:p-6" : "flex justify-end")} onMouseDown={(event) => event.target === event.currentTarget && requestClose()}>
+    <aside ref={drawer} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titleId} className={clsx("flex flex-col bg-white shadow-e4", dialog ? clsx("vso-enter-modal h-dvh w-full sm:h-auto sm:max-h-[min(92dvh,940px)] sm:overflow-hidden sm:rounded-3xl", wide ? "sm:max-w-5xl" : "sm:max-w-2xl") : "vso-enter-right h-full w-full max-w-[640px]")}>
+      <header className={clsx("flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4", dialog && "pt-[max(1rem,env(safe-area-inset-top))] sm:px-6 sm:pt-5")}><div className="min-w-0"><h2 id={titleId} className="text-lg font-bold text-neutral-900 [overflow-wrap:anywhere]">{title}</h2>{subtitle && <p className="mt-1 text-xs text-neutral-500">{subtitle}</p>}</div><div className="flex shrink-0 items-center gap-1.5">{actions}<button ref={close} type="button" onClick={requestClose} aria-label="Close detail" className="min-h-10 rounded-xl px-3 text-sm font-semibold text-neutral-500 transition-[background-color,transform] duration-150 hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]">Close</button></div></header>
       <div data-open={confirming} className="vso-collapse"><div><div role="alertdialog" aria-label="Discard changes?" className="flex flex-wrap items-center justify-between gap-3 border-b border-warning-surface bg-warning-surface px-5 py-3"><p className="text-sm font-semibold text-warning-text">Discard your unsaved changes?</p><div className="flex gap-2"><button ref={keepEditing} type="button" tabIndex={confirming ? 0 : -1} onClick={() => setConfirming(false)} className={clsx(secondaryClass, "!min-h-9")}>Keep editing</button><button type="button" tabIndex={confirming ? 0 : -1} onClick={() => { setConfirming(false); exit(); }} className="inline-flex min-h-9 items-center rounded-xl bg-danger px-3 text-sm font-semibold text-white transition-[transform,opacity] duration-150 hover:opacity-90 active:scale-[0.97]">Discard</button></div></div></div></div>
-      <div className="thin-scroll flex-1 overflow-y-auto p-5">{children}</div>
-      {footer && <div className="shrink-0 border-t border-neutral-100 bg-white px-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">{footer}</div>}
+      <div className={clsx("thin-scroll min-h-0 flex-1 overflow-y-auto p-5", dialog && "sm:p-6")}>{children}</div>
+      {footer && <div className={clsx("shrink-0 border-t border-neutral-100 bg-white px-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3", dialog && "sm:px-6 sm:pb-4")}>{footer}</div>}
     </aside>
   </div>;
 }

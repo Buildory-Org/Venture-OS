@@ -69,6 +69,10 @@ services:
       # Company search for the Dealflow Sales connector; blank means off.
       TINYFISH_API_KEY: ${TINYFISH_API_KEY:-}
       EXA_API_KEY: ${EXA_API_KEY:-}
+      # Reads expense receipts with Claude Haiku; blank means off (receipts are still kept).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Expense companies' logos from their own websites; off keeps only uploaded logos.
+      COMPANY_LOGO_FETCH: ${COMPANY_LOGO_FETCH:-on}
       # The lead finder built into the API (works queued find-leads runs); on unless set to off.
       SALES_FINDER: ${SALES_FINDER:-on}
       # Reads connected mailboxes for replies from leads (docs/sales-channels.md); on unless set to off.

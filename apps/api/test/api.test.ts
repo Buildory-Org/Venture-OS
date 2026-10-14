@@ -745,6 +745,7 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
       async head() { throw new Error("R2 unavailable in this test"); },
       async finalize() { throw new Error("R2 unavailable in this test"); },
       async discard() { throw new Error("R2 unavailable in this test"); },
+      async put() { throw new Error("R2 unavailable in this test"); },
     };
     const switchedConfig = { ...config, FILE_STORAGE: "r2" as const };
     const switchedServer = createServer(createApp(database, switchedConfig, auth, unavailableR2).app).listen(0);

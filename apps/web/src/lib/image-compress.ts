@@ -2,11 +2,11 @@
 
 /** What gets uploaded for a picked file: the file itself, plus an image's pixel size and whether it is the HD original. */
 export type PreparedUpload = { file: File; width?: number; height?: number; hd?: true };
+/** How far a photo shrinks: the box it must fit (either way round) and the encoder quality (0 to 1). */
+export type UploadLimits = { longSide: number; shortSide: number; quality: number };
 
 // Standard quality fits a photo inside 1080p, either way round: at most 1920 px on the long side and 1080 px on the short one.
-const LONG_SIDE = 1920;
-const SHORT_SIDE = 1080;
-const QUALITY = 0.8;
+const STANDARD: UploadLimits = { longSide: 1920, shortSide: 1080, quality: 0.8 };
 // Smaller than this and already within 1080p: not worth re-encoding.
 const SMALL_ENOUGH = 200 * 1024;
 
@@ -29,7 +29,7 @@ async function decode(file: File): Promise<ImageBitmap | null> {
   }
 }
 
-const encode = (canvas: HTMLCanvasElement, type: string) => new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, QUALITY));
+const encode = (canvas: HTMLCanvasElement, type: string, quality: number) => new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality));
 const renamed = (name: string, extension: string) => `${name.replace(/\.[^./\\]+$/, "") || "image"}.${extension}`;
 
 /**
@@ -37,13 +37,13 @@ const renamed = (name: string, extension: string) => `${name.replace(/\.[^./\\]+
  * also drops its location and other metadata. HD sends the original untouched. Animations (GIF, animated PNG or WebP) are kept, and anything
  * that wouldn't come out meaningfully smaller is sent as it is.
  */
-export async function prepareUpload(file: File, { hd }: { hd: boolean }): Promise<PreparedUpload> {
+export async function prepareUpload(file: File, { hd }: { hd: boolean }, limits: UploadLimits = STANDARD): Promise<PreparedUpload> {
   if (!file.type.startsWith("image/")) return { file };
   const bitmap = await decode(file);
   if (!bitmap) return { file };
   const { width, height } = bitmap;
   const original: PreparedUpload = { file, width, height, ...(hd && isCompressibleImage(file.type) ? { hd: true as const } : {}) };
-  const scale = Math.min(1, LONG_SIDE / Math.max(width, height), SHORT_SIDE / Math.min(width, height));
+  const scale = Math.min(1, limits.longSide / Math.max(width, height), limits.shortSide / Math.min(width, height));
   if (hd || !isCompressibleImage(file.type) || (scale === 1 && file.size <= SMALL_ENOUGH) || await animated(file)) { bitmap.close(); return original; }
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(width * scale));
@@ -53,11 +53,11 @@ export async function prepareUpload(file: File, { hd }: { hd: boolean }): Promis
   context.imageSmoothingQuality = "high";
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
-  let blob = await encode(canvas, "image/webp");
+  let blob = await encode(canvas, "image/webp", limits.quality);
   if (blob?.type !== "image/webp") {
     // This browser can't write WebP (Safari). Photos become JPEG; a PNG or WebP may be transparent, so it stays as it is.
     if (file.type !== "image/jpeg") return original;
-    blob = await encode(canvas, "image/jpeg");
+    blob = await encode(canvas, "image/jpeg", limits.quality);
   }
   if (!blob || blob.size >= file.size * 0.9) return original;
   const type = blob.type === "image/webp" ? "image/webp" : "image/jpeg";

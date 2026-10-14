@@ -793,3 +793,41 @@ button {
   .vso-pop-wrap[data-hover] .vso-pop, .vso-pop-wrap[data-hover] .vso-pop-avatar { transform: none; }
   .vso-pop-wrap[data-hover] .vso-pop::after { animation: none; }
 }
+
+/* Expense tracker charts (components/expenses/expense-charts.tsx): one hue per category colour, validated for colour-blind separation
+   and contrast on the light and dark card surfaces; grey is the deliberate neutral. */
+:root { --expense-green: #2a9d5c; --expense-blue: #3b7dd8; --expense-amber: #c47f10; --expense-red: #d64560; --expense-purple: #8b5cf6; --expense-neutral: #7c8a82; }
+:root[data-theme="dark"] { --expense-green: #2f9a5c; --expense-blue: #4683d4; --expense-amber: #b67f22; --expense-red: #d9566e; --expense-purple: #8a6ae6; --expense-neutral: #8b978f; }
+
+/* Expense dashboard entrances (components/expenses/expense-charts.tsx): bars rise from the baseline, rings sweep, bars fill, rows fade
+   up, each staggered with --delay. Transform, opacity and stroke only; nothing moves for people who ask for reduced motion. */
+@keyframes vso-rise { from { transform: scaleY(0); } }
+@keyframes vso-sweep { from { stroke-dasharray: 0 var(--circ, 1000); } }
+@keyframes vso-grow-x { from { transform: scaleX(0); } }
+@keyframes vso-fade-up { from { opacity: 0; transform: translateY(8px); } }
+.vso-rise { transform-box: fill-box; transform-origin: 50% 100%; animation: vso-rise 760ms cubic-bezier(0.23, 1, 0.32, 1) var(--delay, 0ms) both; }
+.vso-sweep { animation: vso-sweep 1100ms cubic-bezier(0.23, 1, 0.32, 1) var(--delay, 0ms) both; }
+.vso-grow-x { transform-origin: left center; animation: vso-grow-x 900ms cubic-bezier(0.23, 1, 0.32, 1) var(--delay, 0ms) both; }
+.vso-fade-up { animation: vso-fade-up 520ms cubic-bezier(0.23, 1, 0.32, 1) var(--delay, 0ms) both; }
+/* The month columns' tooltip: a short fade up from the bar the first time; moving between bars keeps the same node, so it just moves. */
+@keyframes vso-bar-tip { from { opacity: 0; transform: translateY(4px) scale(.97); } }
+.vso-bar-tip { animation: vso-bar-tip 140ms cubic-bezier(0.23, 1, 0.32, 1) both; transform-origin: bottom center; }
+@media (prefers-reduced-motion: reduce) { .vso-rise, .vso-sweep, .vso-grow-x, .vso-fade-up, .vso-bar-tip { animation: none; } }
+/* AutoHeight (components/ui/auto-height.tsx): a box that eases to its content's new height. Clipped while it moves, with room for
+   focus rings and soft shadows at the edges. */
+.vso-auto-height { transition: height 320ms cubic-bezier(0.23, 1, 0.32, 1); overflow: clip; overflow-clip-margin: 12px; }
+@media (prefers-reduced-motion: reduce) { .vso-auto-height { transition: none; } }
+/* The ink cards (after the reference design): a blue glow in a corner over the card's base, white in the light theme and near-black in
+   the dark; only the base and the ink on it change. Their text and marks read --ink (an "r g b" triple) and the --card-* colours, so one
+   set of classes serves both. And the blue card: a bright blue gradient with a lighter bloom. */
+.vso-card-ink { --card-base: #fff; --ink: 23 23 23; --card-slice: #1f2937; --card-track: #eef0f3; --card-stripe-bg: #e7e9ee; --card-stripe-line: #a3a9b6; --card-stripe: rgb(23 23 23 / 0.16);
+  background: radial-gradient(70% 55% at 85% 105%, rgb(37 99 235 / 0.55), transparent 70%), radial-gradient(50% 40% at 0% 0%, rgb(255 255 255 / 0.04), transparent 70%), var(--card-base);
+  color: rgb(var(--ink)); box-shadow: var(--shadow-e3); }
+:root[data-theme="dark"] .vso-card-ink { --card-base: #121212; --ink: 255 255 255; --card-slice: #fff; --card-track: #2a2a2a; --card-stripe-bg: #2a2a2a; --card-stripe-line: #6b6b6b; --card-stripe: rgb(255 255 255 / 0.28); }
+.vso-card-blue { background: radial-gradient(55% 70% at 88% 18%, rgb(147 197 253 / 0.65), transparent 72%), radial-gradient(60% 60% at 10% 110%, rgb(29 78 216 / 0.6), transparent 70%), linear-gradient(135deg, #2563ff 0%, #1d4ed8 100%); color: #fff; }
+.vso-stripes-ink { background-image: repeating-linear-gradient(135deg, var(--card-stripe) 0 2px, transparent 2px 7px); }
+/* The month-by-month card and its unpicked columns, light and dark. */
+.vso-card-soft { background: linear-gradient(180deg, #ffffff 0%, #f4f5ff 100%); }
+:root[data-theme="dark"] .vso-card-soft { background: linear-gradient(180deg, #111a14 0%, #151b33 100%); }
+:root { --bar-off-top: #dfe4ff; --bar-off-bottom: #edf0ff; --bar-on-label: #2343e8; }
+:root[data-theme="dark"] { --bar-off-top: #2a3566; --bar-off-bottom: #1b2340; --bar-on-label: #9db0ff; }

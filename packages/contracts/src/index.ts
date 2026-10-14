@@ -14,3 +14,4 @@ export * from "./calendar.js";
 export * from "./agent-context.js";
 export * from "./leaderboard.js";
 export * from "./celebrations.js";
+export * from "./expenses.js";

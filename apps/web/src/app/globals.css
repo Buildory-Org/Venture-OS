@@ -817,13 +817,13 @@ button {
    focus rings and soft shadows at the edges. */
 .vso-auto-height { transition: height 320ms cubic-bezier(0.23, 1, 0.32, 1); overflow: clip; overflow-clip-margin: 12px; }
 @media (prefers-reduced-motion: reduce) { .vso-auto-height { transition: none; } }
-/* The ink cards (after the reference design): white like the other cards in the light theme; near-black with a blue glow in a corner in
-   the dark. Their text and marks read --ink (an "r g b" triple) and the --card-* colours, so one set of classes serves both. And the blue
-   card: a bright blue gradient with a lighter bloom. */
-.vso-card-ink { --ink: 23 23 23; --card-slice: #1f2937; --card-track: #eef0f3; --card-stripe-bg: #e7e9ee; --card-stripe-line: #a3a9b6; --card-stripe: rgb(23 23 23 / 0.16);
-  background: #fff; color: rgb(var(--ink)); border: 1px solid var(--color-neutral-200); box-shadow: var(--shadow-card); }
-:root[data-theme="dark"] .vso-card-ink { --ink: 255 255 255; --card-slice: #fff; --card-track: #2a2a2a; --card-stripe-bg: #2a2a2a; --card-stripe-line: #6b6b6b; --card-stripe: rgb(255 255 255 / 0.28);
-  background: radial-gradient(70% 55% at 85% 105%, rgb(37 99 235 / 0.55), transparent 70%), radial-gradient(50% 40% at 0% 0%, rgb(255 255 255 / 0.04), transparent 70%), #121212; border-width: 0; box-shadow: var(--shadow-e3); }
+/* The ink cards (after the reference design): a blue glow in a corner over the card's base, white in the light theme and near-black in
+   the dark; only the base and the ink on it change. Their text and marks read --ink (an "r g b" triple) and the --card-* colours, so one
+   set of classes serves both. And the blue card: a bright blue gradient with a lighter bloom. */
+.vso-card-ink { --card-base: #fff; --ink: 23 23 23; --card-slice: #1f2937; --card-track: #eef0f3; --card-stripe-bg: #e7e9ee; --card-stripe-line: #a3a9b6; --card-stripe: rgb(23 23 23 / 0.16);
+  background: radial-gradient(70% 55% at 85% 105%, rgb(37 99 235 / 0.55), transparent 70%), radial-gradient(50% 40% at 0% 0%, rgb(255 255 255 / 0.04), transparent 70%), var(--card-base);
+  color: rgb(var(--ink)); box-shadow: var(--shadow-e3); }
+:root[data-theme="dark"] .vso-card-ink { --card-base: #121212; --ink: 255 255 255; --card-slice: #fff; --card-track: #2a2a2a; --card-stripe-bg: #2a2a2a; --card-stripe-line: #6b6b6b; --card-stripe: rgb(255 255 255 / 0.28); }
 .vso-card-blue { background: radial-gradient(55% 70% at 88% 18%, rgb(147 197 253 / 0.65), transparent 72%), radial-gradient(60% 60% at 10% 110%, rgb(29 78 216 / 0.6), transparent 70%), linear-gradient(135deg, #2563ff 0%, #1d4ed8 100%); color: #fff; }
 .vso-stripes-ink { background-image: repeating-linear-gradient(135deg, var(--card-stripe) 0 2px, transparent 2px 7px); }
 /* The month-by-month card and its unpicked columns, light and dark. */

@@ -1,158 +1,312 @@
 "use client";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import clsx from "clsx";
-import { addMonths, monthsBetween } from "@venture-studio/contracts";
-import { PopCard } from "@/components/sales/pop-card";
+import { addMonths, monthlyEquivalentPaise, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
+import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
+import { prefersReducedMotion } from "@/lib/motion";
 import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
-import { monthLabel, paidIn, rupees, scopeLabel, sumPaise, thisMonth } from "./expense-shared";
+import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, thisMonth, todayLocal } from "./expense-shared";
 
-// The charts on the expense tracker's lists: what was spent month by month (pick a month by its column), and the chosen month by
-// category (pick a category by its slice or its legend row). Marks are flat so lengths and angles read true; the cards lift and tilt
-// toward the cursor for depth. Every value is also in the legend, the list below or the Monthly tab, so nothing hides behind a hover.
+// The expense dashboard above the list (after the reference designs): a dark "spent this month" card, a blue "repeating costs" card, the
+// month by category on a dial, a dark "recent expenses" card, and month-by-month columns. No hover effects: picking a month or a
+// category is a click (or Enter). Everything animates in once when the page opens (bars rise, rings sweep, numbers count up) and
+// stays still for people who ask for reduced motion. Every value is also in the list below or on the Monthly tab.
 
 type Lookup = (id: string) => ExpenseCategory | undefined;
+type Tab = "monthly" | "repeating";
 const fillOf = (color: ExpenseCategory["color"] | undefined) => `var(--expense-${color ?? "neutral"})`;
 
-/** ₹950 · ₹12.4K · ₹1.2L · ₹3.4Cr, for axis ticks and tight labels (paise in). */
+/** ₹950 · ₹12.4K · ₹1.2L · ₹3.4Cr. */
 export function compactRupees(paise: number): string {
-  const rupeesValue = paise / 100;
-  const trim = (value: number) => (value >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, ""));
-  if (rupeesValue >= 1e7) return `₹${trim(rupeesValue / 1e7)}Cr`;
-  if (rupeesValue >= 1e5) return `₹${trim(rupeesValue / 1e5)}L`;
-  if (rupeesValue >= 1e3) return `₹${trim(rupeesValue / 1e3)}K`;
-  return `₹${Math.round(rupeesValue)}`;
-}
-/** A round axis top above `max` (1, 2, 2.5 or 5 times a power of ten), in paise. */
-function niceCeiling(max: number): number {
-  if (max <= 0) return 100_000;
-  const power = 10 ** Math.floor(Math.log10(max));
-  const step = [1, 2, 2.5, 5, 10].find((factor) => factor * power >= max)!;
-  return step * power;
+  const value = paise / 100;
+  const trim = (number: number) => (number >= 100 ? number.toFixed(0) : number.toFixed(1).replace(/\.0$/, ""));
+  if (value >= 1e7) return `₹${trim(value / 1e7)}Cr`;
+  if (value >= 1e5) return `₹${trim(value / 1e5)}L`;
+  if (value >= 1e3) return `₹${trim(value / 1e3)}K`;
+  return `₹${Math.round(value)}`;
 }
 
-/** The six months shown: they end at this month (or the chosen month, when it is later), and always include the chosen month. */
-function windowFor(month: string): string[] {
-  let end = month > thisMonth() ? month : thisMonth();
-  if (month < addMonths(end, -5)) end = addMonths(month, 5);
-  return monthsBetween(addMonths(end, -5), end);
+/** Counts up to `target` once (about a second, easing out); straight to it with reduced motion. */
+function useCountUp(target: number, durationMs = 950) {
+  const [shown, setShown] = useState(0);
+  useEffect(() => {
+    if (prefersReducedMotion()) { queueMicrotask(() => setShown(target)); return; }
+    let frame = 0;
+    const started = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - started) / durationMs);
+      setShown(Math.round(target * (1 - (1 - progress) ** 3)));
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target, durationMs]);
+  return shown;
 }
 
-export function SpendTrend({ expenses, month, onMonth, ventureName }: { expenses: Expense[]; month: string; onMonth: (month: string) => void; ventureName: (id: string) => string }) {
-  const [hover, setHover] = useState<string | null>(null);
-  const titleId = useId();
-  const months = windowFor(month);
-  const totals = months.map((one) => ({ month: one, rows: paidIn(expenses, one) })).map((item) => ({ ...item, total: sumPaise(item.rows) }));
-  const top = niceCeiling(Math.max(...totals.map((item) => item.total)));
-  const [width, height, left, bottom, topPad] = [560, 220, 52, 28, 14];
-  const plot = { w: width - left - 8, h: height - bottom - topPad };
-  const band = plot.w / months.length;
-  const barWidth = Math.min(24, band * 0.42);
-  const y = (paise: number) => topPad + plot.h - (paise / top) * plot.h;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((share) => share * top);
-  const focused = totals.find((item) => item.month === (hover ?? month))!;
-  // The tooltip: where the money went that month, the biggest three places.
-  const places = new Map<string, number>();
-  for (const { expense } of focused.rows) { const label = scopeLabel(expense.scope, ventureName); places.set(label, (places.get(label) ?? 0) + expense.amountPaise); }
-  const topPlaces = [...places].sort((a, b) => b[1] - a[1]).slice(0, 3);
-  const index = months.indexOf(focused.month);
+/** ₹94,500.00 with the paise dimmed, counting up. */
+function BigRupees({ paise, className, dim = "text-white/45" }: { paise: number; className?: string; dim?: string }) {
+  const shown = useCountUp(paise);
+  const whole = Math.floor(shown / 100).toLocaleString("en-IN");
+  const fraction = String(shown % 100).padStart(2, "0");
+  return <span className={clsx("font-extrabold tracking-[-0.02em]", className)} aria-label={rupees(paise)}><span aria-hidden="true">₹{whole}<span className={dim}>.{fraction}</span></span></span>;
+}
 
-  return <PopCard tilt={4} className="h-full rounded-2xl border border-neutral-200 bg-white p-4 shadow-card sm:p-5">
-    <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <div><h3 id={titleId} className="text-sm font-bold text-neutral-900">Spending, month by month</h3><p className="text-xs text-neutral-500">Pick a month to see its expenses</p></div>
-      <p className="text-right"><span className="block text-2xl font-extrabold text-neutral-900">{rupees(focused.total)}</span><span className="text-xs font-semibold text-neutral-500">{monthLabel(focused.month)} · {focused.rows.length} {focused.rows.length === 1 ? "expense" : "expenses"}</span></p>
+function CornerButton({ label, onClick, dark }: { label: string; onClick: () => void; dark?: boolean }) {
+  return <button type="button" aria-label={label} title={label} onClick={onClick} className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-full border transition-transform duration-150 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2", dark ? "border-white/25 text-white focus-visible:ring-white" : "border-neutral-200 text-neutral-800 focus-visible:ring-primary-600")}><ArrowUpRight size={17} aria-hidden="true" /></button>;
+}
+
+/** A ring of thick segments drawn as strokes, each sweeping in after the one before. */
+function Ring({ slices, size, radius, width, cap = "butt", gap = 0.02, track }: { slices: { key: string; value: number; stroke: string }[]; size: number; radius: number; width: number; cap?: "butt" | "round"; gap?: number; track?: string }) {
+  const circumference = 2 * Math.PI * radius;
+  const total = slices.reduce((sum, slice) => sum + slice.value, 0);
+  const capShare = cap === "round" ? width / circumference : 0;
+  const offsets = slices.map((_, index) => slices.slice(0, index).reduce((sum, slice) => sum + slice.value, 0) / (total || 1));
+  return <g>
+    {track && <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={track} strokeWidth={width + 10} />}
+    {slices.map((slice, index) => {
+      const share = slice.value / (total || 1);
+      const length = Math.max(0.001, (share - (slices.length > 1 ? gap + capShare : 0)) * circumference);
+      return <circle key={slice.key} cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={slice.stroke} strokeWidth={width} strokeLinecap={cap}
+        strokeDasharray={`${length} ${circumference}`} transform={`rotate(${-90 + (offsets[index]! + (slices.length > 1 ? (gap + capShare) / 2 : 0)) * 360} ${size / 2} ${size / 2})`}
+        className="vso-sweep" style={{ "--circ": circumference, "--delay": `${120 + index * 140}ms` } as React.CSSProperties} />;
+    })}
+  </g>;
+}
+
+export type DashboardProps = {
+  /** Expenses after every filter but the category (the dial shows them all), and with it. */
+  scoped: Expense[]; matching: Expense[];
+  month: string; onMonth: (month: string) => void; category: string; onCategory: (id: string) => void;
+  findCategory: Lookup; ventureName: (id: string) => string;
+  /** The Office tab (or one venture): the dark card splits by category instead of by where. */
+  fixedWhere?: string; onOpen: (expense: Expense) => void; onTab: (tab: Tab) => void; onSeeAll: () => void;
+};
+
+export function ExpenseDashboard(props: DashboardProps) {
+  return <div className="grid grid-cols-1 gap-4">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <SpentCard {...props} />
+      <div className="grid grid-cols-1 content-start gap-4">
+        <RepeatingCard {...props} />
+        <CategoryDial {...props} />
+      </div>
+      <RecentCard {...props} />
     </div>
-    <div className="relative mt-3">
-      <svg viewBox={`0 0 ${width} ${height}`} role="group" aria-labelledby={titleId} className="block h-auto w-full overflow-visible">
-        {ticks.map((tick) => <g key={tick}>
-          <line x1={left} x2={width - 8} y1={y(tick)} y2={y(tick)} className="stroke-neutral-200" strokeWidth={1} />
-          <text x={left - 8} y={y(tick)} dy="0.32em" textAnchor="end" className="fill-neutral-500 text-[11px] tabular-nums">{compactRupees(tick)}</text>
-        </g>)}
-        {totals.map((item, position) => {
-          const x = left + position * band + band / 2;
-          const chosen = item.month === month;
-          const lit = item.month === hover;
-          const barTop = y(item.total);
-          const barHeight = Math.max(item.total ? 2 : 0, topPad + plot.h - barTop);
-          // A 4px rounded top, square at the baseline.
-          const radius = Math.min(4, barHeight / 2, barWidth / 2);
-          const path = barHeight ? `M${x - barWidth / 2},${topPad + plot.h} V${barTop + radius} q0,-${radius} ${radius},-${radius} H${x + barWidth / 2 - radius} q${radius},0 ${radius},${radius} V${topPad + plot.h} Z` : "";
-          return <g key={item.month} role="button" tabIndex={0} aria-pressed={chosen} aria-label={`${monthLabel(item.month)}: ${rupees(item.total)}${chosen ? ", shown" : ""}`}
-            onClick={() => onMonth(item.month)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onMonth(item.month); } }}
-            onPointerEnter={() => setHover(item.month)} onPointerLeave={() => setHover(null)} onFocus={() => setHover(item.month)} onBlur={() => setHover(null)}
-            className="cursor-pointer outline-none [&:focus-visible>rect]:stroke-primary-600">
-            <rect x={left + position * band + 2} y={topPad} width={band - 4} height={plot.h + bottom - 4} rx={10} className={clsx("transition-[fill] duration-150", lit ? "fill-neutral-100" : "fill-transparent")} strokeWidth={2} />
-            {path && <path d={path} style={{ fill: chosen ? "var(--color-primary-600)" : lit ? "var(--color-primary-400)" : "var(--color-primary-200)" }} className="transition-[fill] duration-150" />}
-            {chosen && item.total > 0 && <text x={x} y={barTop - 6} textAnchor="middle" className="fill-neutral-800 text-[11px] font-bold">{compactRupees(item.total)}</text>}
-            <text x={x} y={height - 8} textAnchor="middle" className={clsx("text-[11px]", chosen ? "fill-neutral-900 font-bold" : "fill-neutral-500")}>{monthLabel(item.month).replace(/ \d{4}$/, "")}</text>
-          </g>;
-        })}
+    <MonthColumns {...props} />
+  </div>;
+}
+
+// ---- Dark: spent this month -------------------------------------------------------------------------------------------------------
+
+function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onTab }: DashboardProps) {
+  const rows = paidIn(matching, month);
+  const total = sumPaise(rows);
+  const repeating = sumPaise(rows.filter((row) => row.expense.repeat !== "none"));
+  const before = sumPaise(paidIn(matching, addMonths(month, -1)));
+  const change = before ? Math.round(((total - before) / before) * 100) : null;
+  // Where it went (or, on the Office tab, by category): the three biggest, the rest together.
+  const buckets = new Map<string, { label: string; paise: number }>();
+  for (const { expense } of rows) {
+    const key = fixedWhere ? expense.categoryId : expense.scope.kind === "venture" ? "ventures" : expense.scope.kind;
+    const label = fixedWhere ? findCategory(expense.categoryId)?.name ?? "Other" : expense.scope.kind === "venture" ? "Ventures" : expense.scope.kind === "office" ? "Office" : "Personal";
+    const bucket = buckets.get(key) ?? { label, paise: 0 };
+    bucket.paise += expense.amountPaise;
+    buckets.set(key, bucket);
+  }
+  const sorted = [...buckets.values()].sort((a, b) => b.paise - a.paise);
+  const parts = sorted.length > 3 ? [...sorted.slice(0, 2), { label: "Other", paise: sorted.slice(2).reduce((sum, item) => sum + item.paise, 0) }] : sorted;
+  const strokes = ["url(#spent-blue)", "#ffffff", "url(#spent-stripes)"];
+  const ventureCount = new Set(rows.filter((row) => row.expense.scope.kind === "venture").map((row) => scopeLabel(row.expense.scope, ventureName))).size;
+  const repeatingShare = total ? repeating / total : 0;
+  const gradientId = useId().replace(/:/g, "");
+
+  return <section aria-label={`Spent in ${monthLabel(month)}`} className="vso-card-dark vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 shadow-e3 sm:p-6">
+    <div className="flex items-start justify-between gap-3">
+      <div><h3 className="text-lg font-semibold">Spent in {monthLabel(month)}</h3>{change !== null && <p className="mt-0.5 text-xs text-white/55">{change >= 0 ? "+" : ""}{change}% vs {monthLabel(addMonths(month, -1))}</p>}</div>
+      <CornerButton label="Open the month by month view" onClick={() => onTab("monthly")} dark />
+    </div>
+    <BigRupees paise={total} className="mt-5 block text-4xl" />
+    <div className="mt-5">
+      <div className="flex justify-end text-[11px] text-white/60"><span className="tabular-nums">{rupees(total)}</span></div>
+      <div className="vso-stripes-dark mt-1 h-3 overflow-hidden rounded-full bg-white/5" role="img" aria-label={`${rupees(repeating)} repeating, ${rupees(total - repeating)} one-time`}>
+        <div className="vso-grow-x h-full rounded-full bg-gradient-to-r from-[#1d4ed8] to-[#3b82f6]" style={{ width: `${Math.max(repeatingShare * 100, repeating ? 4 : 0)}%`, "--delay": "250ms" } as React.CSSProperties} />
+      </div>
+      <p className="mt-2 text-xs text-white/60"><span className="font-semibold tabular-nums text-white">{rupees(repeating)}</span> repeating · <span className="tabular-nums">{rupees(total - repeating)}</span> one-time</p>
+    </div>
+    <div className="mt-auto flex flex-wrap items-center gap-5 pt-6">
+      <svg viewBox="0 0 140 140" className="h-44 w-44 shrink-0" role="img" aria-label={parts.map((part) => `${part.label} ${rupees(part.paise)}`).join(", ") || "Nothing spent"}>
+        <defs>
+          <linearGradient id={`${gradientId}-blue`} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#60a5fa" /><stop offset="100%" stopColor="#1d4ed8" /></linearGradient>
+          <pattern id={`${gradientId}-stripes`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#2a2a2a" /><rect width="2" height="6" fill="#6b6b6b" /></pattern>
+        </defs>
+        {parts.length ? <Ring size={140} radius={52} width={26} gap={0.025} slices={parts.map((part, index) => ({ key: part.label, value: part.paise, stroke: strokes[index]!.replace("spent", gradientId) }))} /> : <circle cx={70} cy={70} r={52} fill="none" stroke="#2a2a2a" strokeWidth={26} />}
       </svg>
-      {hover && <div role="status" className="pointer-events-none absolute top-1 z-10 w-52 rounded-xl border border-neutral-200 bg-white p-3 text-xs shadow-e3" style={{ left: `clamp(0px, calc(${((left + index * band + band / 2) / width) * 100}% - 6.5rem), calc(100% - 13rem))` }}>
-        <p className="font-bold text-neutral-900">{monthLabel(focused.month)} · {rupees(focused.total)}</p>
-        {topPlaces.length ? <ul className="mt-1.5 space-y-1">{topPlaces.map(([label, paise]) => <li key={label} className="flex justify-between gap-3 text-neutral-600"><span className="truncate">{label}</span><span className="tabular-nums font-semibold text-neutral-800">{rupees(paise)}</span></li>)}</ul> : <p className="mt-1 text-neutral-500">Nothing paid</p>}
-      </div>}
+      <ul className="grid gap-2 text-sm">
+        {parts.map((part, index) => <li key={part.label} className="flex items-center gap-2"><span aria-hidden="true" className={clsx("h-2.5 w-2.5 rounded-full", index === 0 ? "bg-[#3b82f6]" : index === 1 ? "bg-white" : "vso-stripes-dark bg-white/20")} /><span className="text-white/85">{part.label}</span><span className="tabular-nums text-white/50">{compactRupees(part.paise)}</span></li>)}
+        {!parts.length && <li className="text-white/50">Nothing spent yet</li>}
+        {!fixedWhere && ventureCount > 1 && <li className="text-[11px] text-white/40">{ventureCount} ventures</li>}
+      </ul>
     </div>
-  </PopCard>;
+  </section>;
 }
 
-export function CategoryRing({ expenses, month, category, onCategory, findCategory }: { expenses: Expense[]; month: string; category: string; onCategory: (id: string) => void; findCategory: Lookup }) {
-  const [hover, setHover] = useState<string | null>(null);
-  const titleId = useId();
-  const rows = paidIn(expenses, month);
+// ---- Blue: repeating costs --------------------------------------------------------------------------------------------------------
+
+function RepeatingCard({ scoped, onTab }: DashboardProps) {
+  const today = todayLocal();
+  const running = scoped.filter((expense) => expense.repeat !== "none" && expense.date.slice(0, 7) <= thisMonth() && (!expense.endMonth || expense.endMonth >= thisMonth()));
+  const monthly = running.reduce((sum, expense) => sum + monthlyEquivalentPaise(expense), 0);
+  const dueSoon = running.filter((expense) => { const next = nextOccurrence(expense, today); return next && Date.parse(`${next}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`) <= 7 * 86_400_000; }).length;
+  return <section aria-label="Repeating costs" className="vso-card-blue vso-fade-up rounded-[1.75rem] p-5 shadow-e3 sm:p-6" style={{ "--delay": "80ms" } as React.CSSProperties}>
+    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Repeating costs</h3><CornerButton label="Open subscriptions" onClick={() => onTab("repeating")} dark /></div>
+    <p className="mt-3"><BigRupees paise={monthly} className="text-4xl" dim="text-white/60" /> <span className="text-lg font-semibold text-white/85">a month</span></p>
+    <p className="mt-2 text-sm text-white/85"><strong className="font-bold">{running.length}</strong> running · <strong className="font-bold">{dueSoon}</strong> due this week · <strong className="font-bold">{compactRupees(monthly * 12)}</strong> a year</p>
+  </section>;
+}
+
+// ---- White: the month by category, on a dial --------------------------------------------------------------------------------------
+
+function CategoryDial({ scoped, month, category, onCategory, findCategory }: DashboardProps) {
+  const rows = paidIn(scoped, month);
   const byCategory = new Map<string, number>();
   for (const { expense } of rows) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + expense.amountPaise);
   const sorted = [...byCategory].sort((a, b) => b[1] - a[1]);
-  // At most six slices: the rest fold into "Other" (never a generated seventh colour).
-  const slices = sorted.length > 6 ? [...sorted.slice(0, 5), ["__other", sorted.slice(5).reduce((sum, [, paise]) => sum + paise, 0)] as [string, number]] : sorted;
+  const slices = sorted.length > 5 ? [...sorted.slice(0, 4), ["__other", sorted.slice(4).reduce((sum, [, paise]) => sum + paise, 0)] as [string, number]] : sorted;
   const total = slices.reduce((sum, [, paise]) => sum + paise, 0);
-  const [size, radius, thickness] = [200, 84, 26];
-  const center = size / 2;
-  const gap = slices.length > 1 ? 0.035 : 0;
-  // Each slice starts where the ones before it end (from 12 o'clock, clockwise).
-  const sweeps = slices.map(([, paise]) => (total ? (paise / total) * Math.PI * 2 : 0));
-  const arcs = slices.map(([id, paise], position) => {
-    const from = -Math.PI / 2 + sweeps.slice(0, position).reduce((sum, sweep) => sum + sweep, 0);
-    const start = from + gap / 2; const end = from + sweeps[position]! - gap / 2;
-    return { id, paise, start, end: Math.max(start + 0.001, end) };
-  });
-  const point = (theta: number, r: number) => [center + r * Math.cos(theta), center + r * Math.sin(theta)];
-  const arcPath = (start: number, end: number, outer: number) => {
-    const inner = outer - thickness;
-    if (end - start >= Math.PI * 2 - 0.01) return `M${center},${center - outer} a${outer},${outer} 0 1,1 0,${outer * 2} a${outer},${outer} 0 1,1 0,-${outer * 2} M${center},${center - inner} a${inner},${inner} 0 1,0 0,${inner * 2} a${inner},${inner} 0 1,0 0,-${inner * 2}`;
-    const large = end - start > Math.PI ? 1 : 0;
-    const [x1, y1] = point(start, outer); const [x2, y2] = point(end, outer); const [x3, y3] = point(end, inner); const [x4, y4] = point(start, inner);
-    return `M${x1},${y1} A${outer},${outer} 0 ${large} 1 ${x2},${y2} L${x3},${y3} A${inner},${inner} 0 ${large} 0 ${x4},${y4} Z`;
-  };
   const nameOf = (id: string) => (id === "__other" ? "Other" : findCategory(id)?.name ?? "Unknown");
   const colorOf = (id: string) => (id === "__other" ? "var(--expense-neutral)" : fillOf(findCategory(id)?.color));
-  const lit = hover ?? (category && byCategory.has(category) ? category : null);
-  const litPaise = lit ? (slices.find(([id]) => id === lit)?.[1] ?? 0) : total;
-  const pick = (id: string) => { if (id !== "__other") onCategory(category === id ? "" : id); };
-
-  return <PopCard tilt={4} className="h-full rounded-2xl border border-neutral-200 bg-white p-4 shadow-card sm:p-5">
-    <h3 id={titleId} className="text-sm font-bold text-neutral-900">{monthLabel(month)} by category</h3>
-    <p className="text-xs text-neutral-500">Pick a category to list only it</p>
-    {!total ? <p className="mt-6 text-sm text-neutral-500">Nothing paid in {monthLabel(month)}.</p> : <div className="mt-3 grid grid-cols-1 items-center gap-4 sm:grid-cols-[minmax(0,11rem)_1fr]">
-      <svg viewBox={`0 0 ${size} ${size}`} role="group" aria-labelledby={titleId} className="mx-auto block h-auto w-full max-w-[11rem] overflow-visible">
-        {arcs.map((arc) => {
-          const active = lit === arc.id;
-          return <path key={arc.id} d={arcPath(arc.start, arc.end, active ? radius + 6 : radius)} style={{ fill: colorOf(arc.id) }} opacity={lit && !active ? 0.45 : 1}
-            role="button" tabIndex={arc.id === "__other" ? -1 : 0} aria-label={`${nameOf(arc.id)}: ${rupees(arc.paise)}, ${Math.round((arc.paise / total) * 100)}%`} aria-pressed={category === arc.id}
-            onPointerEnter={() => setHover(arc.id)} onPointerLeave={() => setHover(null)} onFocus={() => setHover(arc.id)} onBlur={() => setHover(null)}
-            onClick={() => pick(arc.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(arc.id); } }}
-            className={clsx("outline-none transition-[opacity] duration-150", arc.id !== "__other" && "cursor-pointer")} />;
+  const size = 220; const center = size / 2;
+  const ticks = Array.from({ length: 60 }, (_, index) => index);
+  const shown = category && byCategory.has(category) ? category : null;
+  return <section aria-label={`${monthLabel(month)} by category`} className="vso-fade-up rounded-[1.75rem] border border-neutral-200 bg-white p-5 shadow-card sm:p-6" style={{ "--delay": "160ms" } as React.CSSProperties}>
+    <h3 className="text-base font-bold text-neutral-900">{monthLabel(month)} by category</h3>
+    {!total ? <p className="mt-4 text-sm text-neutral-500">Nothing paid in {monthLabel(month)}.</p> : <>
+      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto mt-2 block h-auto w-full max-w-[15rem]" role="img" aria-label={slices.map(([id, paise]) => `${nameOf(id)} ${rupees(paise)}`).join(", ")}>
+        <Ring size={size} radius={88} width={20} cap="round" gap={0.03} track="var(--color-neutral-100)" slices={slices.map(([id, paise]) => ({ key: id, value: paise, stroke: colorOf(id) }))} />
+        {ticks.map((tick) => {
+          const angle = (tick / 60) * Math.PI * 2 - Math.PI / 2;
+          const long = tick % 5 === 0;
+          const [outer, inner] = [64, long ? 57 : 60];
+          return <line key={tick} x1={center + outer * Math.cos(angle)} y1={center + outer * Math.sin(angle)} x2={center + inner * Math.cos(angle)} y2={center + inner * Math.sin(angle)} strokeWidth={long ? 2 : 1} strokeLinecap="round" className={long ? "stroke-neutral-700" : "stroke-neutral-300"} />;
         })}
-        <text x={center} y={center - 4} textAnchor="middle" className="fill-neutral-900 text-[19px] font-extrabold">{compactRupees(litPaise)}</text>
-        <text x={center} y={center + 16} textAnchor="middle" className="fill-neutral-500 text-[11px]">{lit ? nameOf(lit) : "in total"}</text>
+        <text x={center} y={center - 8} textAnchor="middle" className="fill-neutral-500 text-[12px]">{shown ? nameOf(shown) : "Total spend"}</text>
+        <text x={center} y={center + 18} textAnchor="middle" className="fill-neutral-900 text-[24px] font-extrabold">{compactRupees(shown ? byCategory.get(shown)! : total)}</text>
       </svg>
-      <ul className="grid grid-cols-1 gap-0.5">{slices.map(([id, paise]) => <li key={id}>
-        <button type="button" disabled={id === "__other"} onClick={() => pick(id)} onPointerEnter={() => setHover(id)} onPointerLeave={() => setHover(null)} aria-pressed={category === id}
-          className={clsx("grid w-full grid-cols-[0.625rem_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors duration-150 disabled:cursor-default", category === id ? "bg-primary-50" : "hover:bg-neutral-50")}>
-          <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: colorOf(id) }} />
-          <span className="truncate font-semibold text-neutral-800">{nameOf(id)}</span>
-          <span className="tabular-nums text-neutral-600">{rupees(paise)} <span className="text-neutral-400">· {Math.round((paise / total) * 100)}%</span></span>
+      <ul className="mt-3 flex flex-wrap justify-center gap-1.5" aria-label="Pick a category">{slices.map(([id, paise]) => <li key={id}>
+        <button type="button" disabled={id === "__other"} aria-pressed={category === id} onClick={() => onCategory(category === id ? "" : id)}
+          className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-default", category === id ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 text-neutral-700")}>
+          <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ background: colorOf(id) }} />{nameOf(id)}<span className={clsx("tabular-nums", category === id ? "text-white/70" : "text-neutral-400")}>{compactRupees(paise)}</span>
         </button>
       </li>)}</ul>
+    </>}
+  </section>;
+}
+
+// ---- Dark: recent expenses ------------------------------------------------------------------------------------------------------
+
+const PILL: Record<Expense["repeat"], string> = { none: "bg-neutral-300 text-neutral-900", monthly: "bg-[#2563eb] text-white", yearly: "bg-[#16a34a] text-white" };
+function RecentCard({ scoped, matching, month, findCategory, ventureName, onOpen, onSeeAll }: DashboardProps) {
+  const today = todayLocal();
+  // This month: what has been paid so far (what is still to come is under Repeating costs). Other months: all of it.
+  const rows = paidIn(matching, month).filter((row) => month !== today.slice(0, 7) || row.day <= today);
+  const latest = rows.slice(0, 6);
+  const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  const dayName = (day: string) => (day === today ? `Today, ${dayLabel(day)}` : day === yesterday ? `Yesterday, ${dayLabel(day)}` : dayLabel(day));
+  const groups = latest.reduce<{ day: string; items: typeof latest }[]>((list, row) => { const last = list.at(-1); if (last && last.day === row.day) last.items.push(row); else list.push({ day: row.day, items: [row] }); return list; }, []);
+  // The month's split by category as one segmented bar, the biggest named above it.
+  const byCategory = new Map<string, number>();
+  for (const { expense } of paidIn(scoped, month)) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + expense.amountPaise);
+  const segments = [...byCategory].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const segmentTotal = segments.reduce((sum, [, paise]) => sum + paise, 0);
+  const top = segments[0];
+  return <section aria-label="Recent expenses" className="vso-card-dark vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 shadow-e3 sm:p-6" style={{ "--delay": "120ms" } as React.CSSProperties}>
+    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Recent expenses</h3><CornerButton label="See every expense this month" onClick={onSeeAll} dark /></div>
+    {top && <div className="mt-4">
+      <p className="mb-2 inline-flex rounded-full bg-white/12 px-3 py-1 text-xs font-semibold backdrop-blur">{findCategory(top[0])?.name ?? "Other"} · {Math.round((top[1] / (segmentTotal || 1)) * 100)}%</p>
+      <div className="flex h-5 gap-1.5" role="img" aria-label={segments.map(([id, paise]) => `${findCategory(id)?.name ?? "Other"} ${rupees(paise)}`).join(", ")}>
+        {segments.map(([id, paise], position) => <span key={id} className="vso-grow-x h-full min-w-5 rounded-full" style={{ flexGrow: paise, flexBasis: 0, background: fillOf(findCategory(id)?.color), "--delay": `${200 + position * 120}ms`, ...(position === 0 ? { boxShadow: "0 0 0 2px rgb(255 255 255 / 0.35)" } : {}) } as React.CSSProperties} />)}
+      </div>
     </div>}
-  </PopCard>;
+    {!latest.length ? <p className="mt-6 text-sm text-white/55">Nothing paid in {monthLabel(month)} yet.</p> : <div className="mt-4 grid gap-3">{groups.map((group) => <div key={group.day}>
+      <p className="mb-1.5 text-xs text-white/50">{dayName(group.day)}</p>
+      <ul className="grid gap-1">{group.items.map(({ expense }) => {
+        const category = findCategory(expense.categoryId);
+        const delay = 260 + latest.findIndex((row) => row.expense.id === expense.id && row.day === group.day) * 70;
+        return <li key={`${expense.id}-${group.day}`} className="vso-fade-up" style={{ "--delay": `${delay}ms` } as React.CSSProperties}>
+          <button type="button" onClick={() => onOpen(expense)} className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl py-1.5 text-left sm:grid-cols-[2.25rem_minmax(0,1fr)_auto_auto] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+            <span aria-hidden="true" className="grid h-9 w-9 place-items-center rounded-full text-sm font-bold text-white" style={{ background: fillOf(category?.color) }}>{expense.paidTo.trim().charAt(0).toUpperCase()}</span>
+            <span className="min-w-0"><span className="block truncate text-sm font-semibold">{expense.paidTo}</span><span className="block truncate text-xs text-white/50">{category?.name ?? "Other"} · {scopeLabel(expense.scope, ventureName)}</span></span>
+            <span className={clsx("hidden rounded-full px-2.5 py-0.5 text-[11px] font-semibold sm:inline", PILL[expense.repeat])}>{REPEAT_LABEL[expense.repeat]}</span>
+            <span className="text-right text-sm font-bold tabular-nums">-₹{Math.floor(expense.amountPaise / 100).toLocaleString("en-IN")}<span className="text-white/45">.{String(expense.amountPaise % 100).padStart(2, "0")}</span></span>
+          </button>
+        </li>;
+      })}</ul>
+    </div>)}</div>}
+    {rows.length > latest.length && <button type="button" onClick={onSeeAll} className="mt-auto pt-3 text-left text-xs font-semibold text-white/70 underline-offset-2 hover:underline">{rows.length - latest.length} more in {monthLabel(month)}</button>}
+  </section>;
+}
+
+// ---- White: month by month, as pill columns ------------------------------------------------------------------------------------
+
+function windowFor(month: string): string[] {
+  let end = month > thisMonth() ? month : addMonths(thisMonth(), 1);
+  if (month < addMonths(end, -5)) end = addMonths(month, 3);
+  return monthsBetween(addMonths(end, -6), end);
+}
+function MonthColumns({ matching, month, onMonth }: DashboardProps) {
+  const months = windowFor(month);
+  const totals = months.map((one) => ({ month: one, total: sumPaise(paidIn(matching, one)) }));
+  const chosen = totals.find((item) => item.month === month)!;
+  const maxTotal = Math.max(1, ...totals.map((item) => item.total));
+  const rows = paidIn(matching, month);
+  const part = (kind: string) => sumPaise(rows.filter((row) => (kind === "venture" ? row.expense.scope.kind === "venture" : scopeKey(row.expense.scope) === kind)));
+  const tiles = [
+    { label: "Office", paise: part("office"), icon: Home, tone: "bg-[#fdba74]" },
+    { label: "Ventures", paise: part("venture"), icon: Layers3, tone: "bg-[#4ade80]" },
+    { label: "Personal", paise: part("personal"), icon: Wallet, tone: "bg-[#60a5fa]" },
+  ];
+  const [width, height, base, topPad] = [700, 240, 205, 26];
+  const band = width / months.length;
+  const barWidth = Math.min(64, band * 0.62);
+  const y = (paise: number) => base - (paise / maxTotal) * (base - topPad);
+  const chosenX = months.indexOf(month) * band + band / 2;
+  const gradient = useId().replace(/:/g, "");
+  return <section aria-label="Month by month" className="vso-card-soft vso-fade-up overflow-hidden rounded-[1.75rem] border border-neutral-200 p-5 shadow-card sm:p-6" style={{ "--delay": "200ms" } as React.CSSProperties}>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">{tiles.map((tile) => <div key={tile.label} className="rounded-2xl bg-neutral-50 p-4 shadow-[inset_0_0_0_1px_rgb(0_0_0/0.04)]">
+      <span aria-hidden="true" className={clsx("grid h-9 w-9 place-items-center rounded-xl text-white shadow-sm", tile.tone)}><tile.icon size={17} /></span>
+      <p className="mt-3 text-sm text-neutral-500">{tile.label} · {monthLabel(month)}</p>
+      <p className="text-xl font-extrabold text-neutral-900">{rupees(tile.paise)}</p>
+    </div>)}</div>
+    <div className="relative mt-4 [mask-image:linear-gradient(90deg,transparent,#000_9%,#000_91%,transparent)]">
+      <svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full overflow-visible" role="group" aria-label="Spending by month: pick a month">
+        <defs>
+          <linearGradient id={`${gradient}-on`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#5b7cff" /><stop offset="100%" stopColor="#2343e8" /></linearGradient>
+          <linearGradient id={`${gradient}-off`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" style={{ stopColor: "var(--bar-off-top)" }} /><stop offset="100%" style={{ stopColor: "var(--bar-off-bottom)" }} /></linearGradient>
+          <linearGradient id={`${gradient}-near`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3f5ef0" /><stop offset="100%" stopColor="#2a45d8" /></linearGradient>
+        </defs>
+        {chosen.total > 0 && <>
+          <line x1={0} x2={width} y1={y(chosen.total)} y2={y(chosen.total)} stroke="#3b5bfd" strokeOpacity={0.45} strokeWidth={1.5} strokeDasharray="5 5" className="vso-fade-up" style={{ "--delay": "700ms" } as React.CSSProperties} />
+          <text x={Math.max(70, chosenX - barWidth / 2 - 16)} y={y(chosen.total) - 8} textAnchor="end" className="vso-fade-up fill-[#2343e8] text-[15px] font-bold" style={{ "--delay": "750ms" } as React.CSSProperties}>{rupees(chosen.total)}</text>
+        </>}
+        {totals.map((item, position) => {
+          const x = position * band + band / 2;
+          const isChosen = item.month === month;
+          const near = Math.abs(months.indexOf(month) - position) === 1 && item.total > 0;
+          const top = Math.min(y(item.total), base - 18);
+          return <g key={item.month} role="button" tabIndex={0} aria-pressed={isChosen} aria-label={`${monthLabel(item.month)}: ${rupees(item.total)}`}
+            onClick={() => onMonth(item.month)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onMonth(item.month); } }}
+            className="cursor-pointer outline-none [&:focus-visible>rect:first-of-type]:stroke-[#2343e8]">
+            <rect x={x - barWidth / 2} y={top} width={barWidth} height={base - top} rx={Math.min(16, barWidth / 2)} fill={`url(#${gradient}-${isChosen ? "on" : near ? "near" : "off"})`} stroke={isChosen ? "#1d35c9" : near ? "none" : "var(--bar-off-stroke)"} strokeWidth={isChosen ? 2 : 1}
+              className="vso-rise" style={{ "--delay": `${position * 80}ms`, filter: isChosen ? "drop-shadow(0 10px 18px rgb(35 67 232 / 0.35))" : undefined } as React.CSSProperties} />
+            {isChosen && item.total > 0 && <>
+              <circle cx={x} cy={top + 22} r={11} fill="#fff" className="vso-fade-up" style={{ "--delay": "650ms", filter: "drop-shadow(0 2px 6px rgb(0 0 0 / 0.25))" } as React.CSSProperties} />
+              {[[-12, 48], [10, 70], [-6, 96], [14, 120]].map(([dx, dy], sparkle) => top + dy! < base - 8 && <circle key={sparkle} cx={x + dx!} cy={top + dy!} r={1.4} fill="#fff" fillOpacity={0.7} className="vso-fade-up" style={{ "--delay": `${700 + sparkle * 60}ms` } as React.CSSProperties} />)}
+            </>}
+            <text x={x} y={height - 6} textAnchor="middle" className={clsx("text-[15px]", isChosen ? "fill-neutral-900 font-bold" : near ? "fill-neutral-800 font-semibold" : "fill-neutral-400")}>{monthLabel(item.month).replace(/ \d{4}$/, "")}</text>
+          </g>;
+        })}
+      </svg>
+    </div>
+  </section>;
 }

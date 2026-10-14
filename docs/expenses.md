@@ -71,9 +71,15 @@ The tracker has its own access list, under Settings. Each member has a **level**
 
 - **Month:** one month picker in the page header, before Refresh, sets the month for Expenses, Office and Monthly.
 - **Expenses:** one filter row (category, group, where it's charged, one-time or repeating) scopes everything below it.
-  - **Spending, month by month:** six months as columns. Hover shows where the money went; clicking or pressing Enter on a column opens that month.
-  - **By category:** the month's split as a ring, at most six slices with the rest folded into "Other". Hovering shows the amount, and clicking a slice or legend row filters to that category.
-  - The cards tilt toward the cursor for depth; the marks stay flat, so lengths and angles read true. Every value is also in the legend, the list or the Monthly tab.
+  - **Dashboard cards:**
+    - **Spent this month** (dark card): the total, with the change against last month; a bar of repeating against one-time; a ring of Office, Personal and ventures (by category on the Office tab).
+    - **Repeating costs** (blue card): cost a month, how many are running and due this week, and the cost a year.
+    - **By category:** a dial for the month. Click a legend chip to filter to that category.
+    - **Recent expenses** (dark card): the month's split by category as a segmented bar, then the latest expenses by day. In the current month it shows only what has been paid so far.
+    - **Month by month:** Office, ventures and Personal for the month as tiles, and seven months as pill columns. Click a column, or press Enter on it, to open that month.
+  - **No hover effects:** picking a month or a category is a click.
+  - **Animations:** everything animates in once when the page opens (columns rise, rings sweep, totals count up), and stays still for people who ask for reduced motion.
+  - **Corner buttons** open Monthly and Subscriptions, or scroll down to the list.
   - **The list:** the month's expenses with their total. Exports as CSV.
 - **Adding an expense:** "+ New group…" (Edit) and "+ New category…" (Manage) at the end of the lists add one without leaving the panel.
 - **Office:** the same list, limited to Office, with the Office's own monthly total.

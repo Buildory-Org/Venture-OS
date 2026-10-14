@@ -5,7 +5,7 @@ import { Download, Plus, Repeat } from "@/components/ui/icons";
 import { Select } from "@/components/ui/select";
 import { Badge, Empty, filterControl, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import type { Expense } from "@/lib/expenses-api";
-import { CategoryRing, SpendTrend } from "./expense-charts";
+import { ExpenseDashboard } from "./expense-charts";
 import { dayLabel, downloadCsv, lookups, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, type ExpenseData } from "./expense-shared";
 
 type Props = {
@@ -14,10 +14,12 @@ type Props = {
   month: string; onMonth: (month: string) => void;
   /** Fixed "where" (the Office tab, or the venture the sidebar is scoped to): its filter is hidden. */
   fixedWhere?: string; title: string; canEdit: boolean; onOpen: (expense: Expense) => void; onAdd: () => void;
+  /** The dashboard's corner buttons open these tabs. */
+  onTab: (tab: "monthly" | "repeating") => void;
 };
 
 /** One month's expenses: one filter row that scopes the charts and the list, the month by month chart, the month by category, and the list. */
-export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixedWhere, title, canEdit, onOpen, onAdd }: Props) {
+export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixedWhere, title, canEdit, onOpen, onAdd, onTab }: Props) {
   const [category, setCategory] = useState("");
   const [group, setGroup] = useState("");
   const [where, setWhere] = useState("");
@@ -48,10 +50,9 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
       </span>
     </div>
 
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
-      <SpendTrend expenses={matching} month={month} onMonth={onMonth} ventureName={ventureName} />
-      <CategoryRing expenses={scoped} month={month} category={category} onCategory={setCategory} findCategory={find.category} />
-    </div>
+    <ExpenseDashboard key={`${fixedWhere ?? "all"}-${data.expenses.length}`} scoped={scoped} matching={matching} month={month} onMonth={onMonth} category={category} onCategory={setCategory}
+      findCategory={find.category} ventureName={ventureName} fixedWhere={fixedWhere} onOpen={onOpen} onTab={onTab}
+      onSeeAll={() => document.getElementById("expense-month-list")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
     {(data.hiddenRestricted || data.truncated) && <div className="grid gap-1 text-xs leading-5">
       {data.hiddenRestricted && <p className="text-neutral-500">Totals leave out restricted categories (such as salaries) that you don&apos;t have access to.</p>}
       {data.truncated && <p className="font-semibold text-warning-text">There are more expenses than this page can load: the oldest are left out, so totals may be short.</p>}
@@ -59,8 +60,8 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
 
     {rows.length === 0
       ? <Empty title={filtered ? "Nothing matches these filters" : `No expenses in ${monthLabel(month)}`} body={canEdit ? "Add one, or pick another month." : "Pick another month."} action={canEdit && !filtered ? <button type="button" onClick={onAdd} className={primaryClass}><Plus size={15} />Add expense</button> : undefined} />
-      : <Panel className="overflow-hidden">
-          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-100 px-4 py-3 sm:px-5">
+      : <Panel className="scroll-mt-4 overflow-hidden">
+          <div id="expense-month-list" className="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-100 px-4 py-3 sm:px-5">
             <h3 className="text-sm font-bold text-neutral-900">{filtered ? "Matching expenses" : `${title} expenses`} · {monthLabel(month)}</h3>
             <span className="text-xs font-semibold text-neutral-500"><span className="tabular-nums text-neutral-800">{rupees(total)}</span> · {rows.length} {rows.length === 1 ? "expense" : "expenses"}{repeating ? <> · repeating <span className="tabular-nums">{rupees(repeating)}</span></> : null}</span>
           </div>

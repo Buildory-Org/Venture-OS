@@ -51,8 +51,8 @@ export function LiveExpensesScreen() {
     {data && <>
       <SlidingTabs tabs={tabs} active={active} onChange={(key) => setTab(key as Tab)} label="Expense views" className="mb-4" />
       <div key={active} {...motion}>
-        {active === "expenses" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere={onlyWhere} title={scoped?.name ?? "All"} canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({})} />}
-        {active === "office" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere="office" title="Office" canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({ where: "office" })} />}
+        {active === "expenses" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere={onlyWhere} title={scoped?.name ?? "All"} canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({})} onTab={setTab} />}
+        {active === "office" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere="office" title="Office" canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({ where: "office" })} onTab={setTab} />}
         {active === "monthly" && <ExpenseMonthly data={data} ventureName={ventureName} month={month} onlyWhere={onlyWhere} />}
         {active === "repeating" && <ExpenseSubscriptions data={data} ventureName={ventureName} onlyWhere={onlyWhere} onOpen={(expense) => setOpen({ expense })} />}
         {active === "settings" && manage && <ExpenseSettingsPanel settings={data.settings} onChanged={reload} />}

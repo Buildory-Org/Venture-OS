@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { addMonths, monthsBetween } from "@venture-studio/contracts";
 import { Download } from "@/components/ui/icons";
+import { AutoHeight } from "@/components/ui/auto-height";
 import { Select } from "@/components/ui/select";
 import { Badge, filterControl, Panel, PanelHead, secondaryClass } from "@/components/studio/primitives";
 import { downloadCsv, lookups, monthLabel, paidIn, rupees, scopeKey, scopeLabel, type ExpenseData } from "./expense-shared";
@@ -43,6 +44,7 @@ export function ExpenseMonthly({ data, ventureName, month, onlyWhere }: Props) {
 
     <Panel className="overflow-hidden">
       <PanelHead title="Month by month" aside={<span className="tnum text-xs font-semibold text-neutral-500">{monthLabel(month)}: {rupees(current)}</span>} />
+      <AutoHeight>
       {keys.length === 0 ? <p className="p-5 text-sm text-neutral-500">Nothing was paid in these months.</p> : <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-sm">
           <thead><tr className="border-b border-neutral-100 text-left text-xs font-semibold text-neutral-500"><th scope="col" className="px-4 py-2.5 sm:px-5">Charged to</th>{months.map((one) => <th key={one} scope="col" className={clsx("px-3 py-2.5 text-right", one === month && "text-neutral-900")}>{monthLabel(one)}</th>)}<th scope="col" className="px-4 py-2.5 text-right sm:px-5">Total</th></tr></thead>
@@ -52,10 +54,12 @@ export function ExpenseMonthly({ data, ventureName, month, onlyWhere }: Props) {
           <tfoot><tr className="border-t-2 border-neutral-200"><th scope="row" className="px-4 py-3 text-left font-extrabold text-neutral-900 sm:px-5">Overall</th>{months.map((one) => <td key={one} className="tnum px-3 py-3 text-right font-extrabold text-neutral-900">{rupees(monthTotal(one))}</td>)}<td className="tnum px-4 py-3 text-right font-extrabold text-neutral-900 sm:px-5">{rupees(months.reduce((sum, one) => sum + monthTotal(one), 0))}</td></tr></tfoot>
         </table>
       </div>}
+      </AutoHeight>
     </Panel>
 
     <Panel>
       <PanelHead title={`${monthLabel(month)} by category`} />
+      <AutoHeight>
       {categoryRows.length === 0 ? <p className="p-5 text-sm text-neutral-500">Nothing was paid in {monthLabel(month)}.</p> : <ul className="grid grid-cols-1 gap-2 p-4 sm:p-5">{categoryRows.map(([id, paise]) => {
         const category = find.category(id);
         const share = current ? Math.round((paise / current) * 100) : 0;
@@ -65,6 +69,7 @@ export function ExpenseMonthly({ data, ventureName, month, onlyWhere }: Props) {
           <span aria-hidden="true" className="col-span-2 h-1.5 overflow-hidden rounded-full bg-neutral-100"><span className="block h-full rounded-full bg-primary-500" style={{ width: `${Math.max(share, 2)}%` }} /></span>
         </li>;
       })}</ul>}
+      </AutoHeight>
       {data.hiddenRestricted && <p className="px-5 pb-4 text-xs leading-5 text-neutral-500">Restricted categories you don&apos;t have access to are left out.</p>}
     </Panel>
   </div>;

@@ -2,6 +2,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { addMonths, monthlyEquivalentPaise, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
+import { AutoHeight } from "@/components/ui/auto-height";
 import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
 import { prefersReducedMotion } from "@/lib/motion";
 import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
@@ -181,6 +182,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
   const ticks = Array.from({ length: 60 }, (_, index) => index);
   const shown = category && byCategory.has(category) ? category : null;
   return <section aria-label={`${monthLabel(month)} by category`} className="vso-fade-up rounded-[1.75rem] border border-neutral-200 bg-white p-5 shadow-card sm:p-6" style={{ "--delay": "160ms" } as React.CSSProperties}>
+    <AutoHeight>
     <h3 className="text-base font-bold text-neutral-900">{monthLabel(month)} by category</h3>
     {!total ? <p className="mt-4 text-sm text-neutral-500">Nothing paid in {monthLabel(month)}.</p> : <>
       <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto mt-2 block h-auto w-full max-w-[15rem]" role="img" aria-label={slices.map(([id, paise]) => `${nameOf(id)} ${rupees(paise)}`).join(", ")}>
@@ -201,6 +203,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
         </button>
       </li>)}</ul>
     </>}
+    </AutoHeight>
   </section>;
 }
 

@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { Download, Paperclip, Plus, Repeat } from "@/components/ui/icons";
+import { AutoHeight } from "@/components/ui/auto-height";
 import { Select } from "@/components/ui/select";
 import { Badge, Empty, filterControl, Panel, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import type { Expense } from "@/lib/expenses-api";
@@ -58,6 +59,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
       {data.truncated && <p className="font-semibold text-warning-text">There are more expenses than this page can load: the oldest are left out, so totals may be short.</p>}
     </div>}
 
+    <AutoHeight>
     {rows.length === 0
       ? <Empty title={filtered ? "Nothing matches these filters" : `No expenses in ${monthLabel(month)}`} body={canEdit ? "Add one, or pick another month." : "Pick another month."} action={canEdit && !filtered ? <button type="button" onClick={onAdd} className={primaryClass}><Plus size={15} />Add expense</button> : undefined} />
       : <Panel className="scroll-mt-4 overflow-hidden">
@@ -84,5 +86,6 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
             </button></li>;
           })}</ul>
         </Panel>}
+    </AutoHeight>
   </div>;
 }

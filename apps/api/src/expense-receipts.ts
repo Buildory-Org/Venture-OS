@@ -104,8 +104,10 @@ export async function readReceipt(apiKey: string | undefined, file: PreparedRece
     if (response.stop_reason !== "end_turn" || !response.parsed_output) return { error: "Couldn't read this receipt: type the details in." };
     return { data: cleanReceipt(response.parsed_output, categories) };
   } catch (error) {
-    // The class and status only: a parse error's message can quote what was read off the receipt.
-    console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_read_failed", error: error instanceof Error ? error.constructor.name : typeof error, status: error instanceof Anthropic.APIError ? error.status : undefined }));
+    // The API's own error (such as a key that needs a workspace, or no credit left) helps whoever sets the key up. Nothing else is logged:
+    // a parse error's message can quote what was read off the receipt.
+    const api = error instanceof Anthropic.APIError ? (error.error as { error?: { type?: string; message?: string } } | undefined)?.error : undefined;
+    console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_read_failed", error: error instanceof Error ? error.constructor.name : typeof error, status: error instanceof Anthropic.APIError ? error.status : undefined, ...(api ? { type: api.type, message: api.message?.slice(0, 300) } : {}) }));
     if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) return { error: "The receipt reader's key was refused: an admin needs to check it. Type the details in." };
     if (error instanceof Anthropic.RateLimitError) return { error: "The receipt reader is busy: try again in a minute, or type the details in." };
     if (error instanceof Anthropic.APIConnectionTimeoutError) return { error: "Reading this receipt took too long: type the details in." };

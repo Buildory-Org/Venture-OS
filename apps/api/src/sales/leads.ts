@@ -120,8 +120,10 @@ export async function discardOpenDrafts(ctx: SalesCtx, leadId: string, mode: Dra
   if (mode === "none") return 0;
   // Everything about this lead is being closed, deleted or blocked: its waiting next-action reminder stops with its drafts.
   if (mode === "all") await cancelNextActionReminders(ctx, leadId, "lead_closed", now, session);
+  // A draft that is being sent through an account (or whose send is unclear) keeps its lock: the message may be on its way or gone already,
+  // and the send records it (or a person settles it). Discarding it would lose a message that went out.
   const result = await ctx.db.collection("sales_drafts").updateMany(
-    { workspaceId: ctx.workspaceId, leadId, status: { $in: OPEN_DRAFT }, ...(mode === "follow_ups" ? { purpose: "follow_up" } : {}) },
+    { workspaceId: ctx.workspaceId, leadId, status: { $in: OPEN_DRAFT }, sendLock: null, ...(mode === "follow_ups" ? { purpose: "follow_up" } : {}) },
     { $set: { status: "discarded", discardedAt: now, discardedReason: reason, updatedAt: now } }, { session });
   return result.modifiedCount;
 }
@@ -280,7 +282,7 @@ export async function updateLead(ctx: SalesCtx, lead: AppDocument, raw: z.infer<
 // ---- Daily caps -----------------------------------------------------------------------------------------------------------
 
 /** Channels with a daily cap per person and venture (the venture's settings). */
-export const CAPPED_CHANNELS = ["email", "whatsapp"] as const;
+export const CAPPED_CHANNELS = ["email", "whatsapp", "linkedin", "instagram"] as const;
 export type CappedChannel = (typeof CAPPED_CHANNELS)[number];
 export const isCappedChannel = (kind: unknown): kind is CappedChannel => (CAPPED_CHANNELS as readonly unknown[]).includes(kind);
 
@@ -330,7 +332,7 @@ export async function claimSendSlot(ctx: SalesCtx, ventureId: string, channel: C
  * exactly like marking a draft sent (which claims its own send first and passes `sendClaimed`). Imports, and messages logged for an
  * earlier day, do not count against today.
  */
-export async function applyActivity(ctx: SalesCtx, lead: AppDocument, input: z.infer<typeof activityInputSchema>, now: Date, session?: ClientSession, via: "app" | "claude" | "import" | "system" = ctx.via, options: { payloadHash?: string; sendClaimed?: boolean } = {}): Promise<{ activity: AppDocument; stageTo?: string }> {
+export async function applyActivity(ctx: SalesCtx, lead: AppDocument, input: z.infer<typeof activityInputSchema>, now: Date, session?: ClientSession, via: "app" | "claude" | "import" | "system" = ctx.via, options: { payloadHash?: string; sendClaimed?: boolean; message?: Record<string, unknown> } = {}): Promise<{ activity: AppDocument; stageTo?: string }> {
   const settings = await settingsFor(ctx, String(lead.ventureId));
   const plan = planActivity(lead, input, { now, actorId: ctx.actor.id, via, settings });
   const capped = plan.direction === "out" && isCappedChannel(input.kind) && (via === "app" || via === "claude") && !options.sendClaimed && plan.at.getTime() >= startOfLocalDay(now, settings.timezone).getTime();
@@ -339,6 +341,8 @@ export async function applyActivity(ctx: SalesCtx, lead: AppDocument, input: z.i
     _id: randomUUID(), workspaceId: ctx.workspaceId, ventureId: lead.ventureId, leadId: lead._id, actorId: ctx.actor.id, via, kind: input.kind, ...(plan.direction ? { direction: plan.direction } : {}),
     body: input.body, at: plan.at, callOutcome: input.callOutcome, replyType: input.replyType, draftId: input.draftId, nextAction: input.nextAction, nextActionAt: input.nextActionAt ? new Date(input.nextActionAt) : undefined,
     requestId: input.requestId, payloadHash: input.requestId ? options.payloadHash ?? payloadHash({ ...input, requestId: undefined }) : undefined, stageFrom: plan.stageTo ? plan.stageFrom : undefined, stageTo: plan.stageTo, createdAt: now,
+    // A message that went or came through a connected account (docs/sales-channels.md): the account, provider id, thread and delivery.
+    message: options.message,
   });
   try {
     await ctx.db.collection("sales_activities").insertOne(activity, { session });

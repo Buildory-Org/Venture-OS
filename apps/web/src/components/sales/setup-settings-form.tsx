@@ -27,6 +27,8 @@ export function SetupSettingsForm({ ventureId, initial, onSaved }: { ventureId: 
   const [sla, setSla] = useState(String(initial.replySlaHours));
   const [emails, setEmails] = useState(String(initial.dailyCaps.email));
   const [whatsapp, setWhatsapp] = useState(String(initial.dailyCaps.whatsapp));
+  const [linkedin, setLinkedin] = useState(String(initial.dailyCaps.linkedin ?? 15));
+  const [instagram, setInstagram] = useState(String(initial.dailyCaps.instagram ?? 20));
   const [approval, setApproval] = useState<SalesSettingsView["approvalMode"]>(initial.approvalMode);
   const [channels, setChannels] = useState<SalesSettingsView["allowedChannels"]>(initial.allowedChannels);
   const [holidays, setHolidays] = useState<string[]>(initial.blackoutDates);
@@ -45,11 +47,11 @@ export function SetupSettingsForm({ ventureId, initial, onSaved }: { ventureId: 
     event.preventDefault();
     if (!days.length) { setError("Pick at least one working day."); return; }
     if (!channels.length) { setError("Pick at least one channel."); return; }
-    const values = { followUp: number(followUp), sla: number(sla), emails: number(emails), whatsapp: number(whatsapp) };
+    const values = { followUp: number(followUp), sla: number(sla), emails: number(emails), whatsapp: number(whatsapp), linkedin: number(linkedin), instagram: number(instagram) };
     if (Object.values(values).some((value) => !Number.isInteger(value) || value < 0)) { setError("Days, hours and limits are whole numbers."); return; }
     setBusy(true); setError("");
     try {
-      const saved = await putSalesSettings(ventureId, { workingDays: days, blackoutDates: holidays, followUpAfterWorkingDays: values.followUp, replySlaHours: values.sla, dailyCaps: { email: values.emails, whatsapp: values.whatsapp }, approvalMode: approval, allowedChannels: channels, timezone: zone });
+      const saved = await putSalesSettings(ventureId, { workingDays: days, blackoutDates: holidays, followUpAfterWorkingDays: values.followUp, replySlaHours: values.sla, dailyCaps: { email: values.emails, whatsapp: values.whatsapp, linkedin: values.linkedin, instagram: values.instagram }, approvalMode: approval, allowedChannels: channels, timezone: zone });
       rememberSalesSettings(saved);
       toast({ title: "Settings saved", body: "They apply to every lead in this venture from now on." });
       onSaved(saved);
@@ -65,8 +67,11 @@ export function SetupSettingsForm({ ventureId, initial, onSaved }: { ventureId: 
       <Field label="Answer warm replies within (working hours)"><input type="number" inputMode="numeric" min={1} max={72} value={sla} onChange={(event) => setSla(event.target.value)} className={inputClass} /></Field>
       <Field label="Emails per person per day"><input type="number" inputMode="numeric" min={0} max={1000} value={emails} onChange={(event) => setEmails(event.target.value)} className={inputClass} /></Field>
       <Field label="WhatsApp messages per person per day"><input type="number" inputMode="numeric" min={0} max={1000} value={whatsapp} onChange={(event) => setWhatsapp(event.target.value)} className={inputClass} /></Field>
+      <Field label="LinkedIn messages per person per day"><input type="number" inputMode="numeric" min={0} max={1000} value={linkedin} onChange={(event) => setLinkedin(event.target.value)} className={inputClass} /></Field>
+      <Field label="Instagram replies per person per day"><input type="number" inputMode="numeric" min={0} max={1000} value={instagram} onChange={(event) => setInstagram(event.target.value)} className={inputClass} /></Field>
     </div>
-    <div><span className="mb-1.5 block text-xs font-semibold text-neutral-600">Channels this venture uses</span><div role="group" aria-label="Channels" className="flex flex-wrap gap-1.5">{SALES_CHANNELS.map((channel) => <button key={channel} type="button" aria-pressed={channels.includes(channel)} onClick={() => setChannels(toggle(channels, channel))} className={chip(channels.includes(channel))}>{CHANNEL_LABEL[channel]}</button>)}</div></div>
+    <p className="-mt-2 text-xs leading-5 text-neutral-500">Messages sent from the app and ones you mark sent count the same. LinkedIn stays low to keep well under LinkedIn&apos;s own weekly invitation limit.</p>
+    <div><span className="mb-1.5 block text-xs font-semibold text-neutral-600">Channels this venture uses</span><div role="group" aria-label="Channels" className="flex flex-wrap gap-1.5">{SALES_CHANNELS.map((channel) => <button key={channel} type="button" aria-pressed={channels.includes(channel)} onClick={() => setChannels(toggle(channels, channel))} className={chip(channels.includes(channel))}>{CHANNEL_LABEL[channel]}</button>)}</div>{channels.includes("instagram") && <p className="mt-1.5 text-xs leading-5 text-neutral-500">Instagram is for answering people who write to the venture&apos;s account first: Instagram doesn&apos;t let apps start a conversation.</p>}</div>
     <div>
       <span id="setup-approval" className="mb-1.5 block text-xs font-semibold text-neutral-600">Who approves messages?</span>
       <div role="radiogroup" aria-labelledby="setup-approval" className="grid gap-2 sm:grid-cols-2">{APPROVAL.map((option) => <button key={option.mode} type="button" role="radio" aria-checked={approval === option.mode} onClick={() => setApproval(option.mode)} className={clsx("rounded-xl border p-3 text-left transition-[background-color,border-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600", approval === option.mode ? "border-primary-600 bg-primary-50" : "border-neutral-200 bg-white hover:bg-neutral-50")}><span className={clsx("block text-[13px] font-bold", approval === option.mode ? "text-primary-900" : "text-neutral-800")}>{option.title}</span><span className={clsx("mt-0.5 block text-xs leading-5", approval === option.mode ? "text-primary-800" : "text-neutral-500")}>{option.line}</span></button>)}</div>

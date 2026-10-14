@@ -11,6 +11,7 @@ import { backfillFileTexts } from "./file-text.js";
 import { fileStoreFor } from "./routes/files.js";
 import { attachRealtime, stopRealtime } from "./collaboration.js";
 import { createFinder, finderEnabled } from "./sales/finder/runner.js";
+import { createMailSync, mailSyncEnabled } from "./sales/channels/email/sync.js";
 import { migrateSalesLeads } from "./sales/migration.js";
 
 const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
@@ -36,6 +37,9 @@ setTimeout(() => void migrateSalesLeads(database.db, { whenChanged: true }).then
 // without a company-search key keeps its runs queued. On shutdown a run in progress goes back to the queue.
 const finder = finderEnabled(config) ? createFinder({ database, env: config }) : undefined;
 if (finder) setTimeout(() => finder.start(), 5_000).unref();
-async function shutdown() { await finder?.stop(); stopRealtime(database); server.close(); await database.client.close(); }
+// Connected mailboxes are read every few minutes and replies from leads filed on them (SALES_MAIL_SYNC=on, never under tests); read-only.
+const mailSync = mailSyncEnabled(config) ? createMailSync({ database, env: config }) : undefined;
+if (mailSync) setTimeout(() => mailSync.start(), 5_000).unref();
+async function shutdown() { await Promise.all([finder?.stop(), mailSync?.stop()]); stopRealtime(database); server.close(); await database.client.close(); }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

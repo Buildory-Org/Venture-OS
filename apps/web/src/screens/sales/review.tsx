@@ -102,7 +102,8 @@ export function ReviewScreen() {
   function changed(change: DraftChange) {
     // The answer to an edit or an approval is a plain draft: the row's approval fields no longer hold (the reload brings fresh ones).
     const merge = (draft: ReviewDraft): ReviewDraft => ({ ...draft, ...change.draft, needsPersonApproval: false, approvalReason: null });
-    if (change.kind === "edited" || change.kind === "approved") {
+    // A send that could not be confirmed (or one a person said didn't go) keeps the draft open with its new delivery state.
+    if (change.kind === "edited" || change.kind === "approved" || change.kind === "delivery") {
       drafts.mutate((list) => list.map((draft) => draft.id === change.draft.id ? merge(draft) : draft));
       setLinkedDraft((draft) => draft && draft.id === change.draft.id ? merge(draft) : draft);
       return;

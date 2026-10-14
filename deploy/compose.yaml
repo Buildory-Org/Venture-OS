@@ -71,6 +71,10 @@ services:
       EXA_API_KEY: ${EXA_API_KEY:-}
       # The lead finder built into the API (works queued find-leads runs); on unless set to off.
       SALES_FINDER: ${SALES_FINDER:-on}
+      # Reads connected mailboxes for replies from leads (docs/sales-channels.md); on unless set to off.
+      SALES_MAIL_SYNC: ${SALES_MAIL_SYNC:-on}
+      # The Meta Graph API version the WhatsApp and Instagram connections call.
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v25.0}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 15s

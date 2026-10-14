@@ -11,7 +11,7 @@ import { logActivity } from "@/lib/sales-api";
 import { CALL_OUTCOME_LABELS, newRequestId, NotebookPen, Phone, REPLY_TYPE_LABELS, STAGE_LABELS } from "@/components/sales/sales-ui";
 
 export type LogMode = "call" | "reply" | "note";
-const REPLY_CHANNELS = [["email", "Email"], ["whatsapp", "WhatsApp"], ["call", "Phone call"], ["linkedin", "LinkedIn"], ["meeting", "In person"]] as const;
+const REPLY_CHANNELS = [["email", "Email"], ["whatsapp", "WhatsApp"], ["call", "Phone call"], ["linkedin", "LinkedIn"], ["instagram", "Instagram"], ["meeting", "In person"]] as const;
 type ReplyChannel = (typeof REPLY_CHANNELS)[number][0];
 const MODES: readonly { key: LogMode; label: string; short: string; icon: typeof Phone }[] = [
   { key: "call", label: "Log a call", short: "Call", icon: Phone },

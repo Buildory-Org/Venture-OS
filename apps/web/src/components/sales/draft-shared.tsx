@@ -8,7 +8,7 @@ import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { getCachedSalesSettings, type ReviewDraft, type SalesSettingsView } from "@/lib/sales-api";
 import { Badge, SkeletonRows } from "@/components/studio/primitives";
-import { Linkedin, Phone, Whatsapp } from "./draft-icons";
+import { Instagram, Linkedin, Phone, Whatsapp } from "./draft-icons";
 import { useSalesShell, type SalesSession } from "./sales-context";
 
 // Small helpers shared by the Review, Inbox, Plays, Find leads, Calls and Brain screens.
@@ -144,7 +144,7 @@ export function writableVentures(session: SalesSession | null) {
 
 // ---- Words -----------------------------------------------------------------------------------------------
 
-export const CHANNEL_LABEL: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", call: "Call", call_opener: "Call opener", linkedin: "LinkedIn", meeting: "Meeting", note: "Note" };
+export const CHANNEL_LABEL: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", call: "Call", call_opener: "Call opener", linkedin: "LinkedIn", instagram: "Instagram", meeting: "Meeting", note: "Note" };
 export const PURPOSE_LABEL: Record<string, string> = { first_touch: "First message", follow_up: "Follow-up", reply: "Reply", proposal: "Proposal", other: "Message" };
 export const REPLY_LABEL: Record<string, string> = { interested: "Interested", send_details: "Wants details", price_first: "Asks the price first", not_now: "Not now", wrong_person: "Wrong person", has_system: "Has a system", opt_out: "Asked us to stop", silence: "No reply", unclear: "Unclear", hostile: "Hostile" };
 const REPLY_TONE: Record<string, Tone> = { interested: "green", send_details: "blue", price_first: "amber", not_now: "amber", wrong_person: "neutral", has_system: "neutral", opt_out: "red", silence: "neutral", unclear: "neutral", hostile: "red" };
@@ -215,6 +215,12 @@ export function linkedinHref(value: string) {
     return ["http:", "https:"].includes(url.protocol) && (host === "linkedin.com" || host.endsWith(".linkedin.com")) ? url.href : "";
   } catch { return ""; }
 }
+/** The instagram.com profile for an Instagram route (an @handle or an instagram.com link), or "" when it is neither. */
+export function instagramHref(value: string) {
+  const text = value.trim();
+  const handle = /^@?([A-Za-z0-9._]{1,30})$/.exec(text)?.[1] ?? /^https:\/\/(?:www\.)?instagram\.com\/([A-Za-z0-9._]{1,30})\/?$/i.exec(text)?.[1];
+  return handle ? `https://www.instagram.com/${handle}/` : "";
+}
 
 export async function copyText(text: string, label = "Copied to clipboard") {
   try { await navigator.clipboard.writeText(text); toast({ title: label }); return true; }
@@ -226,7 +232,7 @@ export const typingTarget = (target: EventTarget | null) => target instanceof HT
 
 // ---- Small visual pieces ---------------------------------------------------------------------------------
 
-const CHANNEL_ICON: Record<string, Icon> = { email: Mail, whatsapp: Whatsapp, call: Phone, call_opener: Phone, linkedin: Linkedin, meeting: MessageSquareText, note: MessageSquareText };
+export const CHANNEL_ICON: Record<string, Icon> = { email: Mail, whatsapp: Whatsapp, call: Phone, call_opener: Phone, linkedin: Linkedin, instagram: Instagram, meeting: MessageSquareText, note: MessageSquareText };
 /** Square icon tile for a channel. WhatsApp is green because that is how people recognise it. */
 export function ChannelTile({ channel, size = 36, className }: { channel: string; size?: number; className?: string }) {
   const ChannelIcon = CHANNEL_ICON[channel] ?? Mail;

@@ -36,6 +36,7 @@ const TOOLS: Record<string, { title: string; description: string }> = {
   "do-not-contact": { title: "Do not contact", description: "People and companies we never message or call again." },
   reports: { title: "Reports", description: "How the pipeline is doing, and how good Claude's judgement has been." },
   setup: { title: "Set up sales", description: "Make this venture ready for Claude to research leads and write drafts." },
+  channels: { title: "Channels", description: "The mailbox, WhatsApp number, Instagram account and LinkedIn profile you send from. Connect them once, then send from Review." },
 };
 const DESCRIPTIONS: Record<string, string> = {
   overview: "Replies to answer, calls to make, and drafts waiting for you.",

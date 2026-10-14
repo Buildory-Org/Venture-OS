@@ -8,6 +8,7 @@ import { AppError } from "../errors.js";
 import { canSeeVenture, ventureScope } from "./access.js";
 import type { SalesCtx } from "./ctx.js";
 import { approvalNeed, canSendNow, needsPersonApproval } from "./drafts.js";
+import { shownSendState } from "./channels/dispatch.js";
 import { settingsFor } from "./ctx.js";
 import { leadCard, leadJson, leadSummary, present, whyFor } from "./present.js";
 import { offerClause, offerNames } from "./offers.js";
@@ -314,7 +315,8 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
     followUpsDue: await Promise.all(followRows.map(async (lead) => { const settings = await settingsFor(ctx, String(lead.ventureId)); return leadCard(lead, whyFor(lead, { kind: "followUp", now, calendar: calendarOf(settings), followUpDays: settings.followUpAfterWorkingDays })); })),
     needsYou: needsRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "needsYou" }))),
     wonToHandOver: wonRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "won" }))),
-    toReview: toReview.slice(0, LIST_LIMIT).map((row) => draftWithLead(row, approval(row))), readyToSend: readyToSend.slice(0, LIST_LIMIT).map((row) => draftWithLead(row, approval(row))),
+    // A send that never got its answer (the server stopped mid-send) shows as unconfirmed, so a person can say whether it went.
+    toReview: toReview.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row)))), readyToSend: readyToSend.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row)))),
     stageCounts, week: { contacted: size("contacted"), replied: size("replied"), meetings: size("meetings"), proposals: size("proposals"), won: wonWeek },
   };
 }

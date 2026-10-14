@@ -8,6 +8,7 @@ import { jsonValue } from "../json.js";
 import { canWriteIn, forbidClaude, forbidden, isHeadOf, notFound } from "../sales/access.js";
 import { auditSales, salesCtx, settingsFor } from "../sales/ctx.js";
 import { approvalNeed } from "../sales/drafts.js";
+import { shownSendState } from "../sales/channels/dispatch.js";
 import { createDeliveryWork } from "../sales/delivery.js";
 import { applyActivity, applyReplyType, createLead, discardOpenDrafts, loadLead, markHandled, payloadHash, requireLeadEditor, stageNote, updateLead } from "../sales/leads.js";
 import { leadJson, present } from "../sales/present.js";
@@ -65,7 +66,7 @@ export function salesLeadRoutes(database: Database): Router {
     const settings = await settingsFor(ctx, String(lead.ventureId));
     const playIds = [...new Set(drafts.map((draft) => draft.playId).filter((id): id is string => typeof id === "string"))];
     const plays = new Map(playIds.length ? (await db.collection("sales_plays").find({ _id: { $in: playIds }, workspaceId: ctx.workspaceId }).toArray()).map((play) => [String(play._id), play]) : []);
-    res.json(ok({ lead: leadJson(lead), activities: activities.map(present), drafts: drafts.map((draft) => ({ ...present(draft), ...approvalNeed(draft, plays.get(String(draft.playId)), settings) })), verdicts: verdicts.map(present) }));
+    res.json(ok({ lead: leadJson(lead), activities: activities.map(present), drafts: drafts.map((draft) => shownSendState({ ...present(draft), ...approvalNeed(draft, plays.get(String(draft.playId)), settings) })), verdicts: verdicts.map(present) }));
   });
 
   router.patch("/leads/:id", async (req, res) => {

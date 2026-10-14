@@ -1312,9 +1312,11 @@ test("drafts: review, separate-session rule, first-batch approval, marking sent,
   const sendLead = await newLead(h, "contrib");
   const sendDraft = expectStatus(await draftOf(sendLead.id, { subject: "Orders at Zorbo" }), 201).data;
   expectStatus(await h.call("reviewer", "POST", `/sales/drafts/${sendDraft.id}/review`, { result: "pass" }), 200);
-  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "smtp" }), 503);
-  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "whatsapp_api" }), 503);
-  assert.equal(((await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "smtp" })).body as any).error.code, "INTEGRATION_UNAVAILABLE");
+  // Sending through a connected account is POST .../send (sales-channels.test.ts): mark sent refuses anything but a hand-sent message.
+  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "smtp" }), 400);
+  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "whatsapp_api" }), 400);
+  const viaApp = (await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { sentVia: "smtp" })).body as any;
+  assert.deepEqual([viaApp.error.code, /drafts\/:id\/send/.test(viaApp.error.message)], ["BAD_REQUEST", true]);
   expectStatus(await h.call("contrib2", "POST", `/sales/drafts/${sendDraft.id}/sent`, {}), 403);
   const requestId = `sent-${randomUUID()}`;
   const sent = expectStatus(await h.call("contrib", "POST", `/sales/drafts/${sendDraft.id}/sent`, { requestId, at: "2026-10-09T09:30:00.000Z" }), 201);
@@ -2307,7 +2309,7 @@ test("sales settings: defaults for every venture, saved by a head or admin in th
   try {
     const get = (who: Who, ventureId = "venture-a") => h.call(who, "GET", `/sales/settings?ventureId=${ventureId}`);
     const put = (who: Who, body: unknown, ventureId = "venture-a", options?: { via?: "claude" }) => h.call(who, "PUT", `/sales/settings?ventureId=${ventureId}`, body, options);
-    const defaults = { workingDays: [1, 2, 3, 4, 5, 6], blackoutDates: ["2026-10-20", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10", "2026-11-11"], followUpAfterWorkingDays: 4, replySlaHours: 2, dailyCaps: { email: 20, whatsapp: 20 }, approvalMode: "claude_review_enough", allowedChannels: ["call", "email", "whatsapp", "linkedin"], timezone: "Asia/Kolkata" };
+    const defaults = { workingDays: [1, 2, 3, 4, 5, 6], blackoutDates: ["2026-10-20", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10", "2026-11-11"], followUpAfterWorkingDays: 4, replySlaHours: 2, dailyCaps: { email: 20, whatsapp: 20, linkedin: 15, instagram: 20 }, approvalMode: "claude_review_enough", allowedChannels: ["call", "email", "whatsapp", "linkedin"], timezone: "Asia/Kolkata" };
     for (const who of ["admin", "head", "contrib", "learner"] as const) {
       const reply = expectStatus(await get(who), 200);
       assert.deepEqual(salesSettingsViewSchema.parse(reply.data), { ventureId: "venture-a", ...defaults });
@@ -2323,7 +2325,7 @@ test("sales settings: defaults for every venture, saved by a head or admin in th
     expectStatus(await put("head", custom, "venture-b"), 404); // not their venture
     const saved = expectStatus(await put("head", custom), 200);
     const view = salesSettingsViewSchema.parse(saved.data);
-    assert.deepEqual([view.ventureId, view.workingDays, view.blackoutDates, view.followUpAfterWorkingDays, view.replySlaHours, view.dailyCaps, view.approvalMode, view.allowedChannels, view.timezone, view.updatedBy], ["venture-a", [1, 2, 3, 4, 5], ["2026-09-09", "2026-12-25"], 3, 4, { email: 2, whatsapp: 0 }, "person_approves_every_message", ["call", "email"], "America/New_York", "user-head"]);
+    assert.deepEqual([view.ventureId, view.workingDays, view.blackoutDates, view.followUpAfterWorkingDays, view.replySlaHours, view.dailyCaps, view.approvalMode, view.allowedChannels, view.timezone, view.updatedBy], ["venture-a", [1, 2, 3, 4, 5], ["2026-09-09", "2026-12-25"], 3, 4, { email: 2, whatsapp: 0, linkedin: 15, instagram: 20 }, "person_approves_every_message", ["call", "email"], "America/New_York", "user-head"]);
     assert.ok(view.updatedAt);
     assert.deepEqual(salesSettingsViewSchema.parse((await get("learner")).data).blackoutDates, ["2026-09-09", "2026-12-25"]);
     assert.deepEqual(salesSettingsViewSchema.parse((await get("head", "venture-c")).data), { ventureId: "venture-c", ...defaults }); // other ventures keep the defaults

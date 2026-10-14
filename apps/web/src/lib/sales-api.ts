@@ -37,6 +37,8 @@ function request(path: string, init?: RequestInit, options?: { devAuth?: boolean
   if (init?.method && init.method !== "GET") inFlight.clear();
   return send(path, init, options);
 }
+/** The same request for the channels client (lib/sales-channels-api.ts), so a send lets go of the shared reads too. */
+export const salesRequest = request;
 function shared<T>(path: string, load: () => Promise<T>): Promise<T> {
   const pending = inFlight.get(path) as Promise<T> | undefined;
   if (pending) return pending;

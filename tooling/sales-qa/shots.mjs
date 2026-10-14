@@ -41,7 +41,7 @@ const leadId = await firstLeadId();
 let PAGES = [
   ["overview", "/sales/live"], ["leads", "/sales/live/leads"], ["lead-drawer", leadId ? `/sales/live/leads?lead=${leadId}` : null],
   ["review", "/sales/live/review"], ["inbox", "/sales/live/inbox"], ["pipeline", "/sales/live/pipeline"], ["plays", "/sales/live/plays"],
-  ["brain", "/sales/live/brain?venture=venture-buildory"], ["calls", "/sales/live/calls"], ["find", "/sales/live/find"], ["do-not-contact", "/sales/live/do-not-contact"], ["reports", "/sales/live/reports"], ["setup", "/sales/live/setup?venture=venture-edithood"],
+  ["brain", "/sales/live/brain?venture=venture-buildory"], ["calls", "/sales/live/calls"], ["find", "/sales/live/find"], ["do-not-contact", "/sales/live/do-not-contact"], ["reports", "/sales/live/reports"], ["setup", "/sales/live/setup?venture=venture-edithood"], ["channels", "/sales/live/channels"],
 ].filter(([, path]) => path);
 if (args.only) { const only = new Set(args.only.split(",")); PAGES = PAGES.filter(([name]) => only.has(name)); }
 

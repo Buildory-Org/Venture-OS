@@ -65,6 +65,15 @@ export function normalizePhone(value: string): string | null {
   return digits.length >= 8 && digits.length <= 15 && !digits.startsWith("0") ? `+${digits}` : null;
 }
 
+/**
+ * A number written with its country code: "+44 …" (also "(+44) …"), "0044 …", or a wa.me / ?phone= link (always international). Without
+ * one, normalizePhone reads a 10-digit number as Indian, which is only right for leads in India.
+ */
+export function hasCountryCode(value: string): boolean {
+  const text = asciiDigits(value).trim().replace(/^tel:/i, "").trim();
+  return /^\(?\s*(\+|00)/.test(text) || /wa\.me\/\+?\d/i.test(text) || /[?&]phone=\+?\d/i.test(text);
+}
+
 /** Every phone number written in a free-text value: wa.me and tel: links, and numbers separated by "/", ",", ";", "|", "or", "and". */
 export function extractPhones(text: string): string[] {
   if (text.length > MAX_CONTACT_TEXT) return [];
@@ -124,7 +133,8 @@ export function leadContacts(lead: LeadLike): { emails: string[]; phones: string
   const domains = new Set<string>();
   const addDomain = (value: string | null) => { if (value && !isSharedDomain(value)) domains.add(value); };
   for (const route of lead.contactRoutes ?? []) {
-    if (route.kind === "linkedin") continue;
+    // A LinkedIn profile or an Instagram handle is not an email, a number or the company's domain: nothing to match or suppress on.
+    if (route.kind === "linkedin" || route.kind === "instagram") continue;
     if (route.kind === "email") for (const email of extractEmails(route.value)) emails.add(email);
     else if (route.kind === "phone" || route.kind === "whatsapp") for (const phone of extractPhones(route.value)) phones.add(phone);
     else {

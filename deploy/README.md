@@ -30,6 +30,8 @@ it and Docker never copies it into an image.
 | `COMPANY_LOGO_FETCH` | `on` (default) or `off`. Expense companies' logos from their own websites (the API reads the site's home page and icon once, with the lead finder's safety checks), else from Google's favicon service for sites that refuse automated requests (Google then sees that domain). Off keeps only uploaded logos. |
 | `ANTHROPIC_API_KEY` | Optional. Reads expense receipts (photos and PDFs) with Claude Haiku 5.5 so the add-expense form fills itself in (`docs/expenses.md`). Blank means off: receipts are still kept and the details are typed in. The receipt is sent to Anthropic's API only to be read. |
 | `SALES_FINDER` | `on` (default) or `off`. The lead finder built into the API works the queued find-leads and enrich runs itself: polite, robots.txt respected, public pages only. |
+| `SALES_MAIL_SYNC` | `on` (default) or `off`. The API reads the mailboxes people connected in Sales → Channels every few minutes (read-only) and files replies from leads. Mail that isn't from a lead is never stored. |
+| `META_GRAPH_VERSION` | Default `v25.0`. The Meta Graph API version the WhatsApp and Instagram connections call. Meta's webhook must reach `https://<your host>/v1/webhooks/meta` (see docs/sales-channels.md §9); the mailbox passwords and Meta tokens people save in the app are encrypted with a key derived from `BETTER_AUTH_SECRET`, so changing that secret means connecting them again. |
 
 The two MongoDB passwords take effect when the database is first created. Do not change them afterwards.
 

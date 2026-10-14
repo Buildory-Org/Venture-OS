@@ -1,7 +1,7 @@
 "use client";
 import { forwardRef } from "react";
 import { HugeiconsIcon, type HugeiconsIconProps, type IconSvgElement } from "@hugeicons/react";
-import { CalendarClockIcon, Delete02Icon, Flag01Icon, Globe02Icon, LockIcon, NotebookPenIcon, Package01Icon, PhoneIcon, Task01Icon } from "@hugeicons/core-free-icons";
+import { CalendarClockIcon, Delete02Icon, Flag01Icon, Globe02Icon, LockIcon, NotebookPenIcon, Package01Icon, PhoneIcon, Plug01Icon, Task01Icon } from "@hugeicons/core-free-icons";
 
 // Icons the shared set (components/ui/icons.tsx) does not export yet; same wrapper and stroke weight.
 type IconProps = Omit<HugeiconsIconProps, "icon">;
@@ -21,3 +21,5 @@ export const Globe = icon(Globe02Icon);
 export const ClipboardCheck = icon(Task01Icon);
 /** An offer: what a venture sells. */
 export const Package = icon(Package01Icon);
+/** A connected account (a mailbox, a WhatsApp number, an Instagram account): Sales > Channels. */
+export const Plug = icon(Plug01Icon);

@@ -245,5 +245,29 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_send_counters").createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 }),
     // Claude's sales conversations (start_sales): expired sessions clear themselves; lookups are by _id.
     db.collection("mcp_sales_sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    // Connected accounts (docs/sales-channels.md): per venture and kind; one mailbox per person and address (any case); a WhatsApp number or
+    // Instagram account connected once per workspace; the webhook handshake finds the verify token.
+    db.collection("sales_channel_accounts").createIndex({ workspaceId: 1, kind: 1, ventureIds: 1 }),
+    db.collection("sales_channel_accounts").createIndex({ workspaceId: 1, ownerUserId: 1, "settings.address": 1 }, { unique: true, collation: { locale: "en", strength: 2 }, partialFilterExpression: { kind: "email" } }),
+    db.collection("sales_channel_accounts").createIndex({ workspaceId: 1, "settings.phoneNumberId": 1 }, { unique: true, partialFilterExpression: { kind: "whatsapp" } }),
+    db.collection("sales_channel_accounts").createIndex({ workspaceId: 1, "settings.instagramAccountId": 1 }, { unique: true, partialFilterExpression: { kind: "instagram" } }),
+    // The webhook looks accounts up by the number or account id Meta names, across workspaces (the signature decides which ones count).
+    db.collection("sales_channel_accounts").createIndex({ "settings.phoneNumberId": 1 }, { partialFilterExpression: { kind: "whatsapp" }, name: "webhook_whatsapp_number" }),
+    db.collection("sales_channel_accounts").createIndex({ "settings.instagramAccountId": 1 }, { partialFilterExpression: { kind: "instagram" }, name: "webhook_instagram_account" }),
+    db.collection("sales_channel_accounts").createIndex({ verifyToken: 1 }, { partialFilterExpression: { verifyToken: { $type: "string" } } }),
+    // WhatsApp account updates (template status and the like) name only the WhatsApp Business account.
+    db.collection("sales_channel_accounts").createIndex({ "settings.businessAccountId": 1 }, { partialFilterExpression: { kind: "whatsapp" } }),
+    // A message that went or came through an account is stored once (a re-read mailbox, a webhook Meta retries); replies and delivery
+    // statuses find our message by its provider id.
+    db.collection("sales_activities").createIndex({ "message.accountId": 1, "message.externalId": 1 }, { unique: true, partialFilterExpression: { "message.externalId": { $type: "string" } } }),
+    db.collection("sales_activities").createIndex({ workspaceId: 1, "message.externalId": 1 }, { partialFilterExpression: { "message.externalId": { $type: "string" } } }),
+    db.collection("sales_activities").createIndex({ workspaceId: 1, "message.threadKey": 1 }, { partialFilterExpression: { "message.threadKey": { $type: "string" } } }),
+    // Who a WhatsApp number or Instagram sender is: linked once to a lead, per account.
+    db.collection("sales_channel_contacts").createIndex({ workspaceId: 1, accountId: 1, externalUserId: 1 }, { unique: true }),
+    db.collection("sales_channel_contacts").createIndex({ workspaceId: 1, leadId: 1 }),
+    // New conversations from people who aren't leads yet: one open conversation per account and sender (`open: true` until handled).
+    db.collection("sales_inbound").createIndex({ workspaceId: 1, accountId: 1, from: 1 }, { unique: true, partialFilterExpression: { open: true } }),
+    db.collection("sales_inbound").createIndex({ workspaceId: 1, ventureIds: 1, open: 1, at: -1 }),
+    db.collection("sales_inbound").createIndex({ workspaceId: 1, accountId: 1, "items.externalId": 1 }),
   ]);
 }

@@ -16,18 +16,20 @@ import { newestFirst, offerHref } from "@/components/sales/offer-model";
 import { PlayForm } from "@/components/sales/play-form";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { DEFAULT_SETTINGS } from "@/components/sales/setup-api";
-import { daysLabel, evaluateSetup, loadSetupData, sellersOf, SETUP_TOTAL, usableOffersOf, type SetupData, type SetupItem, type SetupKey } from "@/components/sales/setup-checks";
+import { daysLabel, evaluateSetup, loadSetupData, sellersOf, setupDone, setupTotal, usableOffersOf, viewerOf, type SetupData, type SetupItem, type SetupKey } from "@/components/sales/setup-checks";
+import { Plug } from "@/components/sales/lead-icons";
 import { SetupItemCard } from "@/components/sales/setup-item";
 import { SetupSearchKeys } from "@/components/sales/setup-search-keys";
 import { SetupSettingsForm } from "@/components/sales/setup-settings-form";
 
+const COUNT_WORD: Record<number, string> = { 5: "Five", 6: "Six", 7: "Seven", 8: "Eight" };
 const ROLE_LABEL: Record<string, string> = { admin: "Admin", venture_head: "Venture head", contributor: "Contributor", reviewer: "Reviewer", learner: "Learner" };
 
 /** Set up sales for {venture} (route /sales/live/setup): a checklist that makes a venture sales-ready, each step completed in place. */
 export function SetupScreen() {
   const { session, ventureId, ventureName, refresh } = useSalesShell();
   const { setActiveVentureId } = useStudio();
-  const checks = useSalesLoad<SetupData | null>(`setup|${ventureId}`, () => ventureId ? loadSetupData(ventureId) : Promise.resolve(null));
+  const checks = useSalesLoad<SetupData | null>(`setup|${ventureId}`, () => ventureId ? loadSetupData(ventureId, viewerOf(session, ventureId)) : Promise.resolve(null));
   const [offerForm, setOfferForm] = useState(false);
   const [playForm, setPlayForm] = useState(false);
   const [pipelineForm, setPipelineForm] = useState(false);
@@ -48,7 +50,8 @@ export function SetupScreen() {
   if (!data) return <div role="status" aria-label="Checking the setup" className="space-y-4"><Panel className="space-y-3 p-5"><span className="vso-skeleton block h-5 w-1/3" /><span className="vso-skeleton block h-2 w-full" /></Panel>{[0, 1, 2, 3].map((index) => <Panel key={index} className="flex items-center gap-3 p-4"><span className="vso-skeleton h-8 w-8 shrink-0 rounded-full" /><span className="vso-skeleton h-3 w-1/2" /></Panel>)}</div>;
 
   const items = evaluateSetup(data);
-  const done = items.filter((item) => item.done).length;
+  const done = setupDone(items);
+  const total = setupTotal(items);
   const name = ventureName(ventureId);
 
   const offers = data.offers.data ?? [];
@@ -101,15 +104,23 @@ export function SetupScreen() {
       <WorkspaceLink href="/connect/live" className={item.done ? secondaryClass : primaryClass}><Sparkles size={15} />{item.done ? "Manage keys" : "Connect Claude"}</WorkspaceLink>
       <span className="text-xs text-neutral-500">Choose the <b className="font-semibold text-neutral-700">Dealflow Sales</b> connector. Claude never sends anything: you do.</span>
     </div>,
+    mailbox: (item) => <div className="flex flex-wrap items-center gap-2">
+      <WorkspaceLink href="/sales/live/channels" className={item.done ? secondaryClass : primaryClass}><Plug size={15} />{item.action ?? (item.done ? "Open Channels" : "Connect your mailbox")}</WorkspaceLink>
+      {!item.done && <span className="text-xs text-neutral-500">Gmail, Outlook, Zoho, Hostinger, Titan or your own mail server. It takes an app password.</span>}
+    </div>,
+    whatsapp: (item) => <div className="flex flex-wrap items-center gap-2">
+      <WorkspaceLink href="/sales/live/channels" className={secondaryClass}><Plug size={15} />{item.action ?? (item.done ? "Open Channels" : "Add the WhatsApp number")}</WorkspaceLink>
+      {!item.done && <span className="text-xs text-neutral-500">Needs the venture&apos;s WhatsApp Business number in Meta Business Manager.</span>}
+    </div>,
   };
 
   return <>
     <Panel className="mb-4 p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0"><h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900">Set up sales for {name}</h2><p className="mt-1 max-w-xl text-xs leading-5 text-neutral-500">Six things make a venture ready for Claude to research leads and write drafts for. Do them in any order.</p></div>
-        <span className={clsx("inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold", done === SETUP_TOTAL ? "bg-success-surface text-success-text" : "bg-neutral-100 text-neutral-700")}>{done === SETUP_TOTAL && <CircleCheck size={14} aria-hidden="true" />}<span className="tnum">{done} of {SETUP_TOTAL} done</span></span>
+        <div className="min-w-0"><h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900">Set up sales for {name}</h2><p className="mt-1 max-w-xl text-xs leading-5 text-neutral-500">{COUNT_WORD[total] ?? total} things make a venture ready for Claude to research leads and write drafts for. Do them in any order.</p></div>
+        <span className={clsx("inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold", done === total ? "bg-success-surface text-success-text" : "bg-neutral-100 text-neutral-700")}>{done === total && <CircleCheck size={14} aria-hidden="true" />}<span className="tnum">{done} of {total} done</span></span>
       </div>
-      <div role="progressbar" aria-label="Setup progress" aria-valuemin={0} aria-valuemax={SETUP_TOTAL} aria-valuenow={done} className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-100"><div className="h-full rounded-full bg-primary-600 transition-[width] duration-300" style={{ width: `${(done / SETUP_TOTAL) * 100}%` }} /></div>
+      <div role="progressbar" aria-label="Setup progress" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-100"><div className="h-full rounded-full bg-primary-600 transition-[width] duration-300" style={{ width: `${(done / Math.max(1, total)) * 100}%` }} /></div>
       {learner && <p className="mt-3 text-xs text-neutral-500">You can read the checklist. A contributor or venture head does the steps.</p>}
     </Panel>
     {checks.error && <p role="alert" className="mb-3 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text">{checks.error}</p>}

@@ -13,7 +13,7 @@ export type LeadDoc = AppDocument;
 export type ActivityInput = z.infer<typeof activityInputSchema>;
 export type VerdictInput = z.infer<typeof verdictInputSchema>;
 
-export const OUTBOUND_KINDS = ["call", "email", "whatsapp", "linkedin"] as const;
+export const OUTBOUND_KINDS = ["call", "email", "whatsapp", "linkedin", "instagram"] as const;
 /** Working days from a first touch to the follow-up. */
 export const FOLLOW_UP_WORKING_DAYS = 4;
 

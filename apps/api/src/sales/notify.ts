@@ -43,12 +43,13 @@ async function queueNotice(ctx: SalesCtx, notice: Notice, now: Date, session?: C
   await ctx.db.collection("notification_outbox").updateOne({ idempotencyKey: notice.key }, { $setOnInsert: { _id: randomUUID(), workspaceId: ctx.workspaceId, userId: notice.userId, type: notice.type, title: notice.title.slice(0, 200), body: notice.body.slice(0, 500), resourceType: notice.resourceType, resourceId: notice.resourceId, idempotencyKey: notice.key, state: "pending", attempts: 0, nextAttemptAt: now, createdAt: now, updatedAt: now } }, { upsert: true, session });
 }
 
-const CHANNEL_LABEL: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", linkedin: "LinkedIn", call: "Call", meeting: "Meeting" };
+const CHANNEL_LABEL: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram", call: "Call", meeting: "Meeting" };
 
-/** "sales_reply": someone else (a teammate, or Claude) logged an inbound reply on your lead. */
+/** "sales_reply": someone else (a teammate, or Claude) logged an inbound reply on your lead, or one arrived through a connected account (mailbox, WhatsApp, Instagram). */
 export async function notifyReply(ctx: SalesCtx, lead: AppDocument, activity: AppDocument, now: Date, session?: ClientSession): Promise<void> {
   const owner = String(lead.ownerId);
-  if (owner === ctx.actor.id) return;
+  // A reply you logged yourself needs no notice; one the app filed for you (via "system", acting as you) does.
+  if (owner === ctx.actor.id && activity.via !== "system") return;
   const text = String(activity.body ?? "").replace(/\s+/g, " ").trim();
   await queueNotice(ctx, { userId: owner, type: "sales_reply", title: `Reply from ${String(lead.companyName)}`, body: `${CHANNEL_LABEL[String(activity.kind)] ?? "Message"}${text ? `: ${text.slice(0, SNIPPET)}${text.length > SNIPPET ? "..." : ""}` : ""}`, resourceType: "opportunity", resourceId: String(lead._id), key: `activity:${String(activity._id)}:reply` }, now, session);
 }

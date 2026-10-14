@@ -63,7 +63,9 @@ try {
   check("cannot send before review", (await call(SELLER, "POST", `/sales/drafts/${draft.data?.id}/sent`, {})).status === 409);
   const review = await call(HEAD, "POST", `/sales/drafts/${draft.data?.id}/review`, { result: "pass", issues: [], notes: "QA review" });
   check("review pass → ready", review.data?.status === "ready", brief(review));
-  check("smtp sending is off", (await call(SELLER, "POST", `/sales/drafts/${draft.data?.id}/sent`, { sentVia: "smtp" })).status === 503);
+  // Sending through a mailbox is POST /send (docs/sales-channels.md); "mark sent" only records a hand-sent message.
+  check("mark sent refuses smtp (that is /send)", (await call(SELLER, "POST", `/sales/drafts/${draft.data?.id}/sent`, { sentVia: "smtp" })).status === 400);
+  check("send needs a connected mailbox", (await call(SELLER, "POST", `/sales/drafts/${draft.data?.id}/send`, { requestId: `qa-through-${run}` })).status === 409);
   const sent = await call(SELLER, "POST", `/sales/drafts/${draft.data?.id}/sent`, { sentVia: "manual", requestId: `qa-send-${run}` });
   check("mark sent works", (sent.status === 200 || sent.status === 201) && sent.data?.draft?.status === "sent", brief(sent));
   check("first touch → contacted", sent.data?.lead?.stage === "contacted", sent.data?.lead?.stage);

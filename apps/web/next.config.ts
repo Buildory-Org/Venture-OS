@@ -6,6 +6,8 @@ const apiOrigin = process.env.VSO_API_ORIGIN ?? "http://localhost:4000";
 const demoEnabled = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENABLE_DEMO === "true";
 
 const nextConfig: NextConfig = {
+  // Rewrites to the API wait up to a minute: a send through a mailbox or WhatsApp, or a connection test, can take longer than the 30 s default.
+  experimental: { proxyTimeout: 60_000 },
   distDir: process.env.VSO_NEXT_DIST_DIR ?? ".next",
   // Docker production images run the self-contained server; the monorepo root is traced so workspace packages are included.
   ...(process.env.VSO_NEXT_OUTPUT === "standalone" ? { output: "standalone" as const, outputFileTracingRoot: resolve(process.cwd(), "../..") } : {}),

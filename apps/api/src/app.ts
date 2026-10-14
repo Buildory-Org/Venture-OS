@@ -23,6 +23,9 @@ import { salesReportsRoutes } from "./routes/sales-reports.js";
 import { salesFinderRoutes } from "./routes/sales-finder.js";
 import { salesSearchKeyRoutes } from "./routes/sales-search-keys.js";
 import { salesIoRoutes } from "./routes/sales-io.js";
+import { salesChannelRoutes } from "./routes/sales-channels.js";
+import { salesInboundRoutes } from "./routes/sales-inbound.js";
+import { salesWebhookRoutes } from "./routes/sales-webhooks.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { expenseRoutes } from "./routes/expenses.js";
 import { celebrationRoutes } from "./routes/celebrations.js";
@@ -47,7 +50,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/mcp", express.json({ limit: "64kb" }), mcpBodyErrors);
   // A CSV import carries a file of up to 5 MB: those two routes read their larger body only after the person is signed in (below).
   const jsonBody = express.json({ limit: "2mb" });
-  app.use((req, res, next) => (req.path.startsWith("/v1/sales/leads/import/") ? next() : jsonBody(req, res, next)));
+  // Meta's webhook is checked against the exact bytes Meta signed, so its router reads the raw body itself.
+  app.use((req, res, next) => (req.path.startsWith("/v1/sales/leads/import/") || req.path.startsWith("/v1/webhooks/") ? next() : jsonBody(req, res, next)));
   // Hosted MCP authenticates with personal access tokens, so it sits before the /v1 session gate.
   app.use(mcpRouter(database.db, config));
   // MCP tools act as the token owner, but only on the routes the tools use; everything else (tokens, admin, invitations,
@@ -55,6 +59,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use((req, _res, next) => next(req.interfaceChannel === "mcp" && !isMcpRoute(req.method, req.path) ? new AppError(403, "FORBIDDEN", "Not available to Claude connections") : undefined));
   // The office PC lead-finding worker: a Bearer token with the sales:engine scope, never a session, a dev header or the MCP loopback.
   app.use("/v1/sales/engine", salesEngineRoutes(database));
+  // WhatsApp and Instagram deliveries from Meta: no session, the X-Hub-Signature-256 of the raw body is the proof (routes/sales-webhooks.ts).
+  app.use("/v1/webhooks", rateLimit(database.db, 1_200, 60_000, "webhook-ip"), salesWebhookRoutes(database, config));
   app.get("/health", async (_req, res) => { await database.db.command({ ping: 1 }); res.json({ ok: true, mode: config.APP_MODE, transactions: database.transactions, storage: store.kind }); });
   app.use("/v1/setup/first-admin", rateLimit(database.db, 60, 60_000, "setup-ip"));
   app.use("/v1", firstAdminRoutes(database, config, auth));
@@ -85,6 +91,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesReportsRoutes(database));
   app.use("/v1/sales", salesFinderRoutes(database, config));
   app.use("/v1/sales", salesSearchKeyRoutes(database, config));
+  app.use("/v1/sales", salesChannelRoutes(database, config));
+  app.use("/v1/sales", salesInboundRoutes(database, config));
   app.use("/v1", leaderboardRoutes(database, config));
   app.use("/v1", expenseRoutes(database, config, store, localStore));
   app.use("/v1", celebrationRoutes(database, config));

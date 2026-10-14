@@ -1,9 +1,13 @@
 import { useSyncExternalStore } from "react";
-import { offerIsUsable, type Offer, type Play } from "@venture-studio/contracts";
+import { offerIsUsable, type ChannelAccount, type Offer, type Play } from "@venture-studio/contracts";
 import { listLiveMembers, listLivePats, listLivePipelines } from "@/lib/studio-api";
 import { describeError } from "@/lib/errors";
 import { listOffers, listPlays } from "@/lib/sales-api";
+import { getCachedChannelAccounts } from "@/lib/sales-channels-api";
 import { loadSettingsOrNull, type SalesSettingsView } from "./setup-api";
+import { canHead, canWriteIn } from "./draft-shared";
+import type { SalesSession } from "./sales-context";
+import { accountLine } from "./channel-model";
 
 // What it takes to make a venture sales-ready, checked against the live data. Used by the setup screen and by SetupBanner.
 
@@ -24,27 +28,38 @@ export type SetupData = {
   /** `data: null` without an error means this API has no settings route. */
   settings: Source<SalesSettingsView | null>;
   keys: Source<Pat[]>;
+  /** The accounts the person can see (docs/sales-channels.md). `data: null` without an error means this API has no channels yet. */
+  channels: Source<ChannelAccount[] | null>;
+  /** Who is looking: the mailbox step is theirs, and only heads see the WhatsApp step. */
+  viewer?: SetupViewer | undefined;
 };
+export type SetupViewer = { userId: string; writer: boolean; head: boolean };
+/** The person reading the checklist for this venture. */
+export const viewerOf = (session: SalesSession | null | undefined, ventureId: string): SetupViewer | undefined => session ? { userId: session.user.id, writer: canWriteIn(session, ventureId), head: canHead(session, ventureId) } : undefined;
 
-export type SetupKey = "pipeline" | "offer" | "play" | "team" | "settings" | "connect";
-export type SetupItem = { key: SetupKey; title: string; why: string; done: boolean; unknown: boolean; summary: string };
-export const SETUP_TOTAL = 6;
+export type SetupKey = "pipeline" | "offer" | "play" | "team" | "settings" | "mailbox" | "connect" | "whatsapp";
+/** `optional`: shown with the steps but not counted in "x of y done". */
+export type SetupItem = { key: SetupKey; title: string; why: string; done: boolean; unknown: boolean; summary: string; optional?: boolean; /** The words on its button, where they depend on the state. */ action?: string };
+/** How many steps count toward being set up (the optional ones don't). */
+export const setupTotal = (items: readonly SetupItem[]) => items.filter((item) => !item.optional).length;
+export const setupDone = (items: readonly SetupItem[]) => items.filter((item) => item.done && !item.optional).length;
 
 async function source<T>(load: () => Promise<T>): Promise<Source<T>> {
   try { return { data: await load() }; } catch (cause) { return { data: null, error: describeError(cause, "Could not check this.") }; }
 }
 
 /** Reads everything the checklist needs, in parallel. A source that fails does not stop the others. */
-export async function loadSetupData(ventureId: string): Promise<SetupData> {
-  const [pipelines, offers, plays, members, settings, keys] = await Promise.all([
+export async function loadSetupData(ventureId: string, viewer?: SetupViewer): Promise<SetupData> {
+  const [pipelines, offers, plays, members, settings, keys, channels] = await Promise.all([
     source(async () => (await listLivePipelines()).filter((pipeline) => pipeline.ventureId === ventureId)),
     source(() => listOffers({ ventureId })),
     source(() => listPlays({ ventureId })),
     source(async () => (await listLiveMembers({ ventureId, limit: 100 })).items),
     source(() => loadSettingsOrNull(ventureId)),
     source(() => listLivePats()),
+    source(() => getCachedChannelAccounts()),
   ]);
-  const data: SetupData = { ventureId, at: Date.now(), pipelines, offers, plays, members, settings, keys };
+  const data: SetupData = { ventureId, at: Date.now(), pipelines, offers, plays, members, settings, keys, channels, viewer };
   remember(data);
   return data;
 }
@@ -103,13 +118,37 @@ export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
   const sellers = sellersOf(data.members.data);
   const teammates = sellers.filter((member) => member.role !== "admin");
   const key = data.keys.data?.find((pat) => isActiveKey(pat, now));
+  // Channels: only on a server that has them. The mailbox step is the viewer's own; the WhatsApp number is the venture's (heads only, optional).
+  const channels: { list: ChannelAccount[] } | { error: string } | null = data.channels.error !== undefined ? { error: data.channels.error } : data.channels.data === null ? null : { list: data.channels.data };
+  const mailboxItem = (): SetupItem[] => {
+    if (!channels || !data.viewer?.writer) return [];
+    const base = { key: "mailbox" as const, title: "Connect your mailbox", why: "Send ready drafts from your own work email with one click. Replies from leads then land in the Inbox by themselves." };
+    if ("error" in channels) return [{ ...base, done: false, unknown: true, summary: "Could not check." }];
+    const mine = channels.list.filter((account) => account.kind === "email" && account.ownerUserId === data.viewer!.userId);
+    const here = mine.filter((account) => account.enabled && account.ventureIds.includes(data.ventureId));
+    const connected = here.find((account) => account.status === "connected");
+    const first = here[0];
+    const summary = connected ? `${connected.label} · ${accountLine(connected)}` : first ? (first.status === "needs_attention" ? `${first.label} needs attention: test it again.` : `${first.label} is saved but not tested yet.`) : mine.length ? "Your mailbox doesn't send for this venture yet." : "No mailbox yet. Until then, send from your own mail app and mark drafts sent.";
+    return [{ ...base, done: Boolean(connected), unknown: false, summary, action: connected ? "Open Channels" : first || mine.length ? "Fix it in Channels" : "Connect your mailbox" }];
+  };
+  const whatsappItem = (): SetupItem[] => {
+    if (!channels || !data.viewer?.head) return [];
+    const base = { key: "whatsapp" as const, optional: true, title: "Connect the venture's WhatsApp number", why: "Optional. Everyone selling for the venture then sends WhatsApp from one business number, and replies, ticks and opt-outs arrive by themselves." };
+    if ("error" in channels) return [{ ...base, done: false, unknown: true, summary: "Could not check." }];
+    const numbers = channels.list.filter((account) => account.kind === "whatsapp" && account.enabled && account.ventureIds.includes(data.ventureId));
+    const connected = numbers.find((account) => account.status === "connected");
+    const summary = connected ? `${connected.label} · ${accountLine(connected)}` : numbers[0] ? `${numbers[0].label} is saved but ${numbers[0].status === "needs_attention" ? "needs attention" : "not tested yet"}.` : "No WhatsApp number yet. Sellers send from their own phone and mark it sent.";
+    return [{ ...base, done: Boolean(connected), unknown: false, summary, action: connected || numbers[0] ? "Open Channels" : "Add the WhatsApp number" }];
+  };
   return [
     { key: "pipeline", title: "A pipeline", why: "Leads live in a pipeline: the stages deals move through, from first touch to delivery.", done: Boolean(pipeline), unknown: data.pipelines.error !== undefined, summary: data.pipelines.error !== undefined ? "Could not check." : pipeline ? pipeline.name : "No pipeline yet." },
     offerItem(),
     { key: "play", title: "A first play", why: "A play is one short campaign: who, which steps, when to stop. Drafts and calls follow it.", done: (data.plays.data?.length ?? 0) > 0, unknown: data.plays.error !== undefined, summary: data.plays.error !== undefined ? "Could not check." : data.plays.data?.length ? data.plays.data.map((play) => play.name).slice(0, 3).join(" · ") : "No play yet." },
     { key: "team", title: "Teammates with access", why: "Leads need an owner who calls, reads replies and sends messages.", done: teammates.length > 0, unknown: data.members.error !== undefined, summary: data.members.error !== undefined ? "Could not check." : sellers.length ? `${count(sellers.length, "person", "people")} can sell here: ${sellers.map((member) => member.name).slice(0, 4).join(", ")}${sellers.length > 4 ? "…" : ""}` : "Nobody can sell here yet." },
     { key: "settings", title: "Working days and daily limits", why: "When follow-ups fall due, how fast a reply must be answered, and how many messages a person sends a day.", done: Boolean(data.settings.data?.updatedAt), unknown: data.settings.error !== undefined, summary: data.settings.error !== undefined ? "Could not check." : data.settings.data ? (data.settings.data.updatedAt ? `${daysLabel(data.settings.data.workingDays)}: follow up after ${count(data.settings.data.followUpAfterWorkingDays, "working day")}, reply within ${data.settings.data.replySlaHours}h, ${data.settings.data.dailyCaps.email} emails and ${data.settings.data.dailyCaps.whatsapp} WhatsApp a day.` : "Defaults in use: Mon–Sat, follow-up after 4 working days, 20 emails and 20 WhatsApp a day.") : "Defaults in use: Mon–Sat, follow-up after 4 working days, 20 emails and 20 WhatsApp a day." },
+    ...mailboxItem(),
     { key: "connect", title: "Claude connected", why: "Claude researches leads, judges fit and writes drafts through the Dealflow Sales connector, using your own subscription.", done: Boolean(key), unknown: data.keys.error !== undefined, summary: data.keys.error !== undefined ? "Could not check." : key ? `Dealflow Sales connector · key “${key.name}”${key.lastUsedAt ? " in use" : ""}` : "No Dealflow Sales key yet." },
+    ...whatsappItem(),
   ];
 }
 
@@ -117,5 +156,5 @@ export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
 export function readiness(data: SetupData) {
   const items = evaluateSetup(data);
   const get = (key: SetupKey) => items.find((item) => item.key === key)!;
-  return { items, done: items.filter((item) => item.done).length, ready: get("pipeline").done && get("offer").done, known: !get("pipeline").unknown && !get("offer").unknown };
+  return { items, done: setupDone(items), total: setupTotal(items), ready: get("pipeline").done && get("offer").done, known: !get("pipeline").unknown && !get("offer").unknown };
 }

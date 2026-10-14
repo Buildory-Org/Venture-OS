@@ -14,12 +14,16 @@ import { dealFacts } from "@/components/sales/lead-deal";
 import { LeadOwnership } from "@/components/sales/lead-manage";
 import { offerChip, offerHref, openOffers, useVentureOffers } from "@/components/sales/offer-model";
 import { useSalesShell } from "@/components/sales/sales-context";
-import { hostOf, isDialable, isPlainEmail, Lock, mailHref, Phone, phoneOf, safeUrl, telHref, emailOf } from "@/components/sales/sales-ui";
+import { hostOf, isDialable, isPlainEmail, Lock, mailHref, Phone, phoneOf, routeOf, safeUrl, telHref, emailOf } from "@/components/sales/sales-ui";
+import { Instagram } from "@/components/sales/draft-icons";
+import { instagramHref } from "@/components/sales/draft-shared";
 
 const sectionLabel = "text-[11px] font-semibold uppercase tracking-[.08em] text-neutral-400";
 const dangerButton = "inline-flex min-h-10 items-center justify-center rounded-xl bg-danger px-4 text-sm font-semibold text-white transition-[transform,opacity] duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger active:scale-[0.97] disabled:opacity-50";
-const ROUTE_ICON: Record<ContactRoute["kind"], Icon> = { email: Mail, phone: Phone, whatsapp: MessageCircle, linkedin: Users, website_form: LinkIcon, other: LinkIcon };
-const ROUTE_NAME: Record<ContactRoute["kind"], string> = { email: "Email", phone: "Phone", whatsapp: "WhatsApp", linkedin: "LinkedIn", website_form: "Website form", other: "Other" };
+const ROUTE_ICON: Record<ContactRoute["kind"], Icon> = { email: Mail, phone: Phone, whatsapp: MessageCircle, linkedin: Users, instagram: Instagram, website_form: LinkIcon, other: LinkIcon };
+const ROUTE_NAME: Record<ContactRoute["kind"], string> = { email: "Email", phone: "Phone", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram", website_form: "Website form", other: "Other" };
+/** An Instagram route as people type it: the business's @handle or its instagram.com profile link (the API checks the same). */
+const isInstagram = (value: string) => /^@?[A-Za-z0-9._]{1,30}$/.test(value) || /^https:\/\/(www\.)?instagram\.com\/[A-Za-z0-9._]{1,30}\/?$/i.test(value);
 
 type Patch = Parameters<typeof updateLead>[1];
 type Built = { patch: Patch } | { error: string };
@@ -38,7 +42,7 @@ function EditButton({ label, onClick }: { label: string; onClick: () => void }) 
 
 function RouteRow({ route, blocked }: { route: ContactRoute; blocked: boolean }) {
   const RouteIcon = ROUTE_ICON[route.kind];
-  const href = blocked ? undefined : route.kind === "phone" ? telHref(route.value) : route.kind === "email" ? mailHref(route.value) : route.kind === "whatsapp" ? undefined : safeUrl(route.value);
+  const href = blocked ? undefined : route.kind === "phone" ? telHref(route.value) : route.kind === "email" ? mailHref(route.value) : route.kind === "whatsapp" ? undefined : route.kind === "instagram" ? instagramHref(route.value) || undefined : safeUrl(route.value);
   const source = safeUrl(route.sourceUrl);
   return <li className="flex items-start gap-2.5 text-sm">
     <span aria-hidden="true" className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-neutral-100 text-neutral-500"><RouteIcon size={14} /></span>
@@ -119,22 +123,29 @@ const CONTACT: readonly Spec[] = [
   { key: "contactName", label: "Contact person", get: (lead) => lead.contactName, full: true, max: 200 },
   { key: "phone", label: "Phone", get: (lead) => phoneOf(lead) ?? "", kind: "tel", placeholder: "Published business number", max: 40 },
   { key: "email", label: "Email", get: (lead) => emailOf(lead) ?? "", kind: "email", placeholder: "Published business email", max: 320 },
+  { key: "instagram", label: "Instagram", get: (lead) => routeOf(lead, "instagram")?.value ?? "", placeholder: "@handle or instagram.com link", max: 80 },
 ];
-/** Phone and email edit the first route of their kind; every other route (WhatsApp, LinkedIn, a form) stays as it is. */
+const ROUTE_CHECK = {
+  phone: { valid: isDialable, problem: "The phone number needs digits only (a + and spaces are fine)." },
+  email: { valid: isPlainEmail, problem: "The email must be one plain address, like name@company.in." },
+  instagram: { valid: isInstagram, problem: "Instagram takes the business's @handle or its instagram.com profile link." },
+} as const;
+/** Phone, email and Instagram edit the first route of their kind; every other route (WhatsApp, LinkedIn, a form) stays as it is. */
 function contactPatch(changed: Record<string, string>, lead: Lead): Built {
   const patch: Patch = {};
   if ("contactName" in changed) patch.contactName = changed.contactName;
-  if ("phone" in changed || "email" in changed) {
+  if ("phone" in changed || "email" in changed || "instagram" in changed) {
     const routes = [...lead.contactRoutes];
-    const swap = (kind: "phone" | "email", value: string): string | undefined => {
-      if (value && !(kind === "phone" ? isDialable(value) : isPlainEmail(value))) return kind === "phone" ? "The phone number needs digits only (a + and spaces are fine)." : "The email must be one plain address, like name@company.in.";
-      const index = routes.findIndex((route) => route.kind === kind && (kind === "phone" ? isDialable(route.value) : isPlainEmail(route.value)));
+    const swap = (kind: keyof typeof ROUTE_CHECK, value: string): string | undefined => {
+      const check = ROUTE_CHECK[kind];
+      if (value && !check.valid(value)) return check.problem;
+      const index = routes.findIndex((route) => route.kind === kind && check.valid(route.value));
       if (!value) { if (index >= 0) routes.splice(index, 1); }
       else if (index >= 0) routes[index] = { ...routes[index]!, value };
       else routes.push({ kind, value, publishedByCompany: true });
       return undefined;
     };
-    for (const kind of ["phone", "email"] as const) {
+    for (const kind of ["phone", "email", "instagram"] as const) {
       if (kind in changed) { const problem = swap(kind, changed[kind]!); if (problem) return { error: problem }; }
     }
     patch.contactRoutes = routes;

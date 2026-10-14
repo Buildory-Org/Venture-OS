@@ -22,7 +22,8 @@ export type SalesSearchKeyInput = z.infer<typeof salesSearchKeyInputSchema>;
 /**
  * One key. `source` "app" is a key saved here (saved keys replace the server's), "server" one from the API's environment. `unreadable` is a
  * saved key that can't be decrypted any more (enter it again). `used` of `limit` is this period's calls (a day for TinyFish, a month for
- * Exa); `usedUp` means search skips it until the period ends: its allowance is used, or the engine refused it (a test that works clears that).
+ * Exa); `usedUp` means search skips it for now: its allowance is used (until the period ends), or the engine refused it (paused for up to
+ * an hour; a test that works ends the pause).
  */
 export const salesSearchKeyEntrySchema = z.object({
   id: salesSearchKeyIdSchema, source: z.enum(["app", "server"]),

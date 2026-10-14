@@ -121,7 +121,7 @@ function KeyRow({ engine, name, entry, position, onChange }: { engine: SalesSear
   return <li className="space-y-2 p-3">
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-xs font-bold text-neutral-900">{label}</span>
-      {entry.unreadable ? <Badge tone="red">Unreadable, remove it and add it again</Badge> : entry.usedUp ? <Badge tone="amber">Used up or refused: skipped until it resets</Badge> : null}
+      {entry.unreadable ? <Badge tone="red">Unreadable, remove it and add it again</Badge> : entry.usedUp ? <Badge tone="amber">{entry.used >= entry.limit ? `Used up: resets ${entry.period === "day" ? "tomorrow" : "next month"}` : "Refused: paused for up to an hour"}</Badge> : null}
       <span className="tnum text-xs text-neutral-500 sm:ml-auto">{usage}</span>
     </div>
     {who && <p className="text-xs text-neutral-500">{who}</p>}

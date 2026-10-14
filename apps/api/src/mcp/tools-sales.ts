@@ -998,7 +998,9 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     return maybeOnce("plan_find_run", requestId, { queue, ...input }, async () => {
     const run = await api<any>("POST", `/find-runs${queue ? "?queue=true" : ""}`, input, "plan lead searches in this venture");
     return guided(run.status === "queued" ? "Queued for the lead finder. The companies it finds appear in the app under Find leads." : "Saved as a plan. You check it and queue it in the app under Find leads.", ["Research the leads already waiting", "Search for companies now, right here", "Go back to today's overview"],
-      compact({ runId: run.id, status: run.status, venture: await ventureName(run.ventureId), offer: await offers.nameOf(run.offerId, run.ventureId), then: run.status === "queued" ? "Queued for the lead finder (built into Venture OS; an office PC engine can also work runs). It waits while company search has no key. Results appear in the app under Find leads." : "Saved as a plan. A person checks and queues it in the app (Find leads).", url: `${base(ctx)}/find` }));
+      compact({ runId: run.id, status: run.status, venture: await ventureName(run.ventureId), offer: await offers.nameOf(run.offerId, run.ventureId),
+        searches: Array.isArray(run.queries) && run.queries.length ? run.queries : undefined, searchesNote: Array.isArray(run.queries) && run.queries.length ? "The searches the lead finder will make (each on every search engine that has a key, at the same time): show them to the person as a short list before anything runs." : undefined,
+        then: run.status === "queued" ? "Queued for the lead finder (built into Venture OS; an office PC engine can also work runs). It waits while company search has no key. Results appear in the app under Find leads." : "Saved as a plan. A person checks and queues it in the app (Find leads).", url: `${base(ctx)}/find` }));
     });
   });
 
@@ -1013,7 +1015,8 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     return guided(runs.length ? `${plural(runs.length, "run")}${open ? `, ${open} not finished yet` : ", all finished"}.` : "No runs yet.",
       runs.length ? ["Look at what the finished runs found", "Plan another search", "Go back to today's overview"] : ["Plan a find-leads run", "Search for companies now, right here", "Go back to today's overview"],
       compact({
-        runs: await Promise.all(runs.map(async (run) => compact({ runId: run.id, kind: run.kind ?? "find", status: run.status, venture: await ventureName(run.ventureId), request: clip(run.request, 160), leads: Array.isArray(run.leadIds) ? run.leadIds.length : undefined, found: run.results?.found, added: run.results?.added, skipped: run.results?.skipped, note: clip(run.results?.note, 160), at: localTime(run.updatedAt, tz) }))),
+        runs: await Promise.all(runs.map(async (run) => compact({ runId: run.id, kind: run.kind ?? "find", status: run.status, venture: await ventureName(run.ventureId), request: clip(run.request, 160), leads: Array.isArray(run.leadIds) ? run.leadIds.length : undefined, found: run.results?.found, added: run.results?.added, skipped: run.results?.skipped, note: clip(run.results?.note, 160),
+          tookMinutes: typeof run.results?.ms === "number" ? Math.round(run.results.ms / 6_000) / 10 : undefined, searches: run.results?.searches, at: localTime(run.updatedAt, tz) }))),
         url: `${base(ctx)}/find`, hint: runs.length ? undefined : "No runs match.", view: runs.length ? viewHint(plural(runs.length, "run"), runs.length) : undefined,
       }));
   });

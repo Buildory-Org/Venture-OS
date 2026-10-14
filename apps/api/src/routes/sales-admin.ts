@@ -7,7 +7,8 @@ import { AppError } from "../errors.js";
 import { canSeeVenture, canWriteIn, forbidClaude, forbidden, isHeadOf, notFound, requireHead, requireWriter, ventureScope, loadVenture } from "../sales/access.js";
 import { auditSales, salesCtx, type SalesCtx } from "../sales/ctx.js";
 import { addSuppression, defined, loadLead } from "../sales/leads.js";
-import { LEGACY_BRAIN_KINDS, LEGACY_KIND_REFUSAL, assertUsableOffer, assertVentureOffer, defaultOfferId } from "../sales/offers.js";
+import { buildQueries } from "../sales/finder/plan.js";
+import { LEGACY_BRAIN_KINDS, LEGACY_KIND_REFUSAL, approvedOffer, assertUsableOffer, assertVentureOffer, defaultOfferId } from "../sales/offers.js";
 import { present } from "../sales/present.js";
 import { isSharedDomain, normalizeValue, suppressionKey } from "../sales/suppression.js";
 
@@ -122,6 +123,25 @@ export function salesAdminRoutes(database: Database): Router {
 
   // ---- Find-leads runs (the office PC's engine picks queued ones up; nothing runs here) ---------------------------------------
 
+  /**
+   * Runs as JSON, each find run with `queries`: the searches it will make (from its plan and its offer's approved packet, the way the lead
+   * finder builds them) while it is planned, queued or running, so a person sees them before it runs; the ones it made once it ended.
+   * Each offer's packet is read once per call.
+   */
+  async function runsJson(ctx: SalesCtx, runs: AppDocument[]) {
+    const packets = new Map<string, Promise<Awaited<ReturnType<typeof approvedOffer>>>>();
+    const packetOf = (offerId: string) => { if (!packets.has(offerId)) packets.set(offerId, approvedOffer(db, ctx.workspaceId, offerId)); return packets.get(offerId)!; };
+    return Promise.all(runs.map(async (run) => {
+      if (run.kind === "enrich") return present(run);
+      if (Array.isArray(run.results?.queries)) return { ...present(run), queries: run.results.queries };
+      if (!["planned", "queued", "running"].includes(String(run.status))) return present(run);
+      // As the finder does, an offer of another venture is never searched with.
+      const approved = typeof run.offerId === "string" ? await packetOf(run.offerId) : null;
+      const packet = approved && approved.offer.ventureId === run.ventureId ? approved.packet : undefined;
+      return { ...present(run), queries: buildQueries({ request: String(run.request ?? ""), plan: run.plan ?? null }, packet) };
+    }));
+  }
+
   router.get("/find-runs", async (req, res) => {
     const ctx = salesCtx(database, req);
     const query = findRunQuerySchema.parse(req.query);
@@ -129,7 +149,7 @@ export function salesAdminRoutes(database: Database): Router {
     if (!scope) { res.json(ok([])); return; }
     const queued = query.queue === "true";
     const runs = await db.collection("sales_find_runs").find({ workspaceId: ctx.workspaceId, ...scope, ...(queued ? { status: "queued" } : {}) }).sort({ createdAt: queued ? 1 : -1, _id: 1 }).limit(query.limit).toArray();
-    res.json(ok(runs.map(present)));
+    res.json(ok(await runsJson(ctx, runs)));
   });
 
   router.post("/find-runs", async (req, res) => {
@@ -149,7 +169,7 @@ export function salesAdminRoutes(database: Database): Router {
       await db.collection("sales_find_runs").insertOne(run, { session });
       await auditSales(ctx, "sales.find_run.create", "find_run", run._id, input.ventureId, { status: run.status, limit: input.plan.limit, ...(offerId ? { offerId } : {}) }, session);
     });
-    res.status(201).json(ok(present(run)));
+    res.status(201).json(ok((await runsJson(ctx, [run]))[0]));
   });
 
   router.post("/find-runs/:id/cancel", async (req, res) => {
@@ -165,7 +185,7 @@ export function salesAdminRoutes(database: Database): Router {
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This search changed: reload it and try again");
       await auditSales(ctx, "sales.find_run.cancel", "find_run", String(run._id), String(run.ventureId), undefined, session);
     });
-    res.json(ok(present((await db.collection("sales_find_runs").findOne({ _id: run._id }))!)));
+    res.json(ok((await runsJson(ctx, [(await db.collection("sales_find_runs").findOne({ _id: run._id }))!]))[0]));
   });
 
   // A saved plan (Claude saves one when the person did not ask it to run) is checked by a person and queued here, in the app only.
@@ -186,7 +206,7 @@ export function salesAdminRoutes(database: Database): Router {
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This search changed: reload it and try again");
       await auditSales(ctx, "sales.find_run.queue", "find_run", String(run._id), String(run.ventureId), undefined, session);
     });
-    res.json(ok(present((await db.collection("sales_find_runs").findOne({ _id: run._id }))!)));
+    res.json(ok((await runsJson(ctx, [(await db.collection("sales_find_runs").findOne({ _id: run._id }))!]))[0]));
   });
 
   // ---- Brain ----------------------------------------------------------------------------------------------------------------

@@ -201,7 +201,13 @@ export const findRunInputSchema = z.object({
 });
 export const findRunSchema = findRunInputSchema.extend({
   id: idSchema, workspaceId: idSchema, status: z.enum(["planned", "queued", "running", "done", "failed", "cancelled"]), createdBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
-  results: z.object({ found: z.number().int(), added: z.number().int(), skipped: z.number().int(), note: z.string().optional() }).optional(),
+  // The built-in finder also keeps how long a run took (ms), the searches it made per engine (what it cost) and the searches themselves.
+  results: z.object({
+    found: z.number().int(), added: z.number().int(), skipped: z.number().int(), note: z.string().optional(),
+    ms: z.number().int().nonnegative().optional(), searches: z.object({ tinyfish: z.number().int().nonnegative(), exa: z.number().int().nonnegative() }).optional(), queries: z.array(z.string()).max(50).optional(),
+  }).optional(),
+  /** The searches a find run makes: worked out from its plan and its offer's approved packet while it waits or runs, the ones it made once it ended. */
+  queries: z.array(z.string()).max(50).optional(),
   // Set by the office PC worker (docs/sales-dealflow.md section 10): who holds the run, how far it is, and when it ended.
   workerId: z.string().optional(), claimedAt: isoDateSchema.optional(), heartbeatAt: isoDateSchema.optional(), finishedAt: isoDateSchema.optional(), note: z.string().optional(),
   progress: z.object({ found: z.number().int(), crawled: z.number().int(), added: z.number().int() }).optional(),

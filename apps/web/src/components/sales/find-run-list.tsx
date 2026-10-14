@@ -20,6 +20,26 @@ export const isLiveRun = (run: FindRun) => run.status === "queued" || run.status
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const RESULT_LABELS = { find: ["Found", "Added", "Skipped"], enrich: ["Looked at", "Filled in", "Skipped"] } as const;
 
+/** "Took 6 min · 24 TinyFish and 24 Exa searches" for a run the built-in lead finder ended: its time and what it cost. */
+function costLine(run: FindRun): string {
+  const ms = run.results?.ms;
+  const searches = run.results?.searches;
+  const took = ms === undefined ? "" : ms < 60_000 ? `Took ${Math.max(1, Math.round(ms / 1_000))} s` : `Took ${Math.round(ms / 60_000)} min`;
+  const total = searches ? searches.tinyfish + searches.exa : 0;
+  const used = searches ? (total ? `${[searches.tinyfish ? `${searches.tinyfish} TinyFish` : "", searches.exa ? `${searches.exa} Exa` : ""].filter(Boolean).join(" and ")} ${total === 1 ? "search" : "searches"}` : "No searches") : "";
+  return [took, used].filter(Boolean).join(" · ");
+}
+
+/** The searches a find run will make (worked out from its plan and offer, open at once while it is a saved plan) or made. */
+function SearchList({ queries, upcoming, startOpen }: { queries: string[]; upcoming: boolean; startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen);
+  const what = plural(queries.length, upcoming ? "search it will make" : "search it made", upcoming ? "searches it will make" : "searches it made");
+  return <div>
+    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="inline-flex min-h-9 items-center rounded-lg px-1 text-xs font-semibold text-primary-700 transition-colors duration-150 hover:text-primary-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">{open ? "Hide" : "Show"} the {what}</button>
+    {open && <ol className="mt-1 max-h-64 list-decimal space-y-1 overflow-y-auto rounded-xl bg-neutral-50 py-2.5 pl-8 pr-3 text-xs leading-5 text-neutral-700 [overflow-wrap:anywhere]">{queries.map((query, index) => <li key={index}>{query}</li>)}</ol>}
+  </div>;
+}
+
 /** Past and current runs, newest first: a search for new leads (Find) or a fill-in of contact details (Fill contacts). */
 export function FindRunList({ runs, now, canEdit, onReuse, onChanged }: { runs: FindRun[]; now: number; canEdit: boolean; onReuse: (run: FindRun) => void; onChanged: (run: FindRun) => void }) {
   const { session, ventureId, ventureName, personName, refresh, refreshKey } = useSalesShell();
@@ -68,6 +88,8 @@ export function FindRunList({ runs, now, canEdit, onReuse, onChanged }: { runs: 
         <p className="text-xs text-neutral-500">{run.offerId && offers[run.offerId] && <><span className="font-semibold text-neutral-700">{offers[run.offerId]!.name}</span> · </>}{parts.join(" · ")}</p>
         {run.results && <dl className="grid max-w-md grid-cols-3 gap-2">{([[labels[0], run.results.found], [labels[1], run.results.added], [labels[2], run.results.skipped]] as const).map(([label, value]) => <div key={label} className="rounded-xl bg-neutral-50 px-2 py-2 text-center"><dd className="tnum text-base font-extrabold text-neutral-900">{value}</dd><dt className="text-[10px] font-semibold text-neutral-500">{label}</dt></div>)}</dl>}
         {run.results?.note && <p className="rounded-xl bg-neutral-50 p-3 text-xs leading-5 text-neutral-600 [overflow-wrap:anywhere]">{run.results.note}</p>}
+        {costLine(run) && <p className="tnum text-xs font-semibold text-neutral-600">{costLine(run)}</p>}
+        {!enrich && run.queries?.length ? <SearchList queries={run.queries} upcoming={run.status === "planned" || isLiveRun(run)} startOpen={run.status === "planned"} /> : null}
         {run.status === "failed" && <p className="rounded-xl bg-danger-surface p-3 text-xs font-semibold leading-5 text-danger-text [overflow-wrap:anywhere]">{run.note || run.results?.note || "The lead finder could not finish this run. Queue it again, or ask Claude to look at it."}</p>}
         {run.note && run.status !== "failed" && run.status !== "done" && <p className="text-xs leading-5 text-neutral-500 [overflow-wrap:anywhere]">{run.note}</p>}
         {(canEdit && !enrich || mayCancel(run)) && <div className="flex flex-wrap gap-2">

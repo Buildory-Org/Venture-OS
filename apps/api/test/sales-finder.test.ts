@@ -285,7 +285,7 @@ test("planner: the plan's searches as given, else categories x places x business
   assert.equal(countryOf({ request: "Wedding videographers", plan: { places: ["London", "Manchester"] } }), "GB");
   assert.equal(countryOf({ request: "Pump dealers in Raipur" }), "IN");
 
-  // The search loop: hits merged by domain, directories dropped, Exa asked only when TinyFish found nothing new, every call counted first.
+  // The search loop: every engine asked each query at once, hits merged by domain, directories dropped, every call counted first.
   let reserved = 0;
   const usedUp = { tinyfish: false, exa: false };
   // The counter: the first update makes sure the period's row exists, the second counts a call only while it is under the limit
@@ -303,8 +303,9 @@ test("planner: the plan's searches as given, else categories x places x business
   const batches = [];
   for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfishKey: "t", exaKey: "e" }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats })) batches.push(batch);
   assert.deepEqual(batches.map((batch) => batch.sites.map((site) => site.domain)), [["a.example"], ["b.example"], []]);
-  assert.deepEqual(asked, ["tinyfish:q1", "tinyfish:q2", "exa:q2", "tinyfish:q3", "exa:q3"]);
-  assert.equal(reserved, 5);
+  assert.deepEqual([...asked].sort(), ["exa:q1", "exa:q2", "exa:q3", "tinyfish:q1", "tinyfish:q2", "tinyfish:q3"], "both engines are asked every query, even when TinyFish found something");
+  assert.equal(reserved, 6);
+  assert.deepEqual([stats.calls, stats.byEngine], [6, { tinyfish: 3, exa: 3 }]);
   // A used-up allowance stops that engine; a refused key stops it for the run.
   usedUp.tinyfish = true;
   const capped = searchStats();
@@ -381,7 +382,8 @@ test("negatives: a search result whose title or snippet names one (any case, spa
   for await (const batch of searchSites({ db, workspaceId: "w", keys: { tinyfishKey: "t", exaKey: "e" }, queries: ["q1", "q2", "q3"], country: "IN", search, signal: new AbortController().signal, seen: new Set(), stats: searchStats(), negatives })) batches.push(batch);
   assert.deepEqual(batches.map((batch) => batch.sites.map((site) => site.domain)), [["ledgerly.example"], ["tallyho.example"], []]);
   assert.deepEqual(batches.map((batch) => batch.ruledOut.map((site) => site.domain)), [["pixel.example", "twice.example"], ["bodyshop.example"], []], "a second result naming a negative rules its site out too; a ruled-out site is not found again");
-  assert.deepEqual(asked, ["tinyfish:q1", "tinyfish:q2", "exa:q2", "tinyfish:q3", "exa:q3"], "Exa is asked when TinyFish found only ruled-out sites");
+  assert.deepEqual([...asked].sort(), ["exa:q1", "exa:q2", "exa:q3", "tinyfish:q1", "tinyfish:q2", "tinyfish:q3"], "both engines are asked every query");
+  assert.deepEqual(batches[0]!.sites[0]!.engines, ["tinyfish", "exa"], "a site both engines found keeps both, in engine order");
 });
 
 test("offer signals: the packet's phrases are found in any case, with hyphens or spaces, plurals and enquiry or inquiry, quoted word for word ahead of the built-in ones", () => {
@@ -528,6 +530,10 @@ test("a find run: company sites become leads with evidence and routes; duplicate
   assert.ok(await db.collection("audit_events").findOne({ action: "sales.finder.claim", objectId: id, "metadata.workerId": "test-worker" }));
   const run = (await db.collection("sales_find_runs").findOne({ _id: id }))!;
   assert.deepEqual([run.status, run.claimedBy, run.workerId, run.results.found, run.results.added, run.results.skipped, Boolean(run.finishedAt)], ["done", FINDER_WORKER, "test-worker", 6, 1, 5, true]);
+  // What the run took and cost, and the searches it made (the plan's own, on the one engine with a key); the lead says which engine found it.
+  assert.ok(Number.isInteger(run.results.ms) && run.results.ms >= 0);
+  assert.deepEqual([run.results.searches, run.results.queries], [{ tinyfish: 1, exa: 0 }, ["pump dealer raipur"]]);
+  assert.deepEqual(lead.tags.filter((tag: string) => tag.startsWith("found-by-")), ["found-by-tinyfish"]);
   // What was never asked for: the duplicate and the do-not-contact company (not even robots.txt), the page robots.txt closes, the directory.
   assert.deepEqual(web.asked("https://dupsite.example"), []);
   assert.deepEqual(web.asked("https://blockedpumps.example"), []);
@@ -536,7 +542,7 @@ test("a find run: company sites become leads with evidence and routes; duplicate
   assert.ok(!web.asked(`${GOOD}/login`).length, "never a login page");
   // One log line for the run, with counts only.
   const line = logs.find((entry) => entry.event === "sales.finder.run")!;
-  assert.deepEqual([line.runId, line.status, line.added], [id, "done", 1]);
+  assert.deepEqual([line.runId, line.status, line.added, line.tinyfish, line.exa], [id, "done", 1, 1, 0]);
   assert.ok(!JSON.stringify(logs).includes("tf-test-key") && !JSON.stringify(logs).includes("Dealers wanted"), "no key and no page text in the logs");
 
   // The same domain in a later run is a duplicate without being read again.
@@ -560,6 +566,21 @@ test("the finder status: on, search ready and the engines (never a key), the run
   assert.equal(finderEnabled({ SALES_FINDER: "off", NODE_ENV: "development" }), false);
   assert.equal(finderEnabled({ SALES_FINDER: "on", NODE_ENV: "test" }), false);
   assert.equal(loadConfig({}).SALES_FINDER, "on");
+});
+
+test("the runs list shows the searches a find run will make while it waits, and the ones it made once it ended", skip, async () => {
+  const e = await getEnv();
+  const planned = await e.run({ status: "planned", plan: { places: ["Raipur"], categories: ["pumps"], searches: [], limit: 20 } });
+  const listed = expectStatus(await e.app("contrib", "GET", "/sales/find-runs?ventureId=venture-a&limit=200"), 200).data as any[];
+  assert.deepEqual(listed.find((run) => run.id === planned).queries, ["pumps dealer enquiry Raipur", "pumps manufacturer Raipur", "pumps distributor Raipur"]);
+  const ended = listed.filter((run) => run.status === "done");
+  assert.ok(ended.length && ended.every((run) => run.queries === undefined || run.queries.every((query: string) => query === "pump dealer raipur")), "a finished run lists only the searches it made");
+  assert.ok(ended.some((run) => run.queries?.length === 1));
+  // Queued from the app: the reply still carries them. Cancelled before it ran: it made none, so none are listed.
+  const queued = expectStatus(await e.app("contrib", "POST", `/sales/find-runs/${planned}/queue`), 200).data;
+  assert.equal(queued.queries.length, 3);
+  const cancelled = expectStatus(await e.app("contrib", "POST", `/sales/find-runs/${planned}/cancel`), 200).data;
+  assert.equal(cancelled.queries, undefined);
 });
 
 test("a run cancelled while it works stops at once, and what it added stays", skip, async () => {

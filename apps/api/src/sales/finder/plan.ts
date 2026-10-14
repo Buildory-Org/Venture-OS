@@ -63,12 +63,14 @@ export const liveSearch: SearchFn = (engine, key, query, country) => engine === 
 
 /** A company site to read: its domain, the page the search found and what the search said about it. */
 export type Candidate = { domain: string; url: string; title: string; snippet: string; engines: SearchEngine[] };
-export type SearchStats = { calls: number; answered: number; capped: Set<SearchEngine>; failures: Map<SearchEngine, number>; errors: Map<SearchEngine, string> };
-export const searchStats = (): SearchStats => ({ calls: 0, answered: 0, capped: new Set(), failures: new Map(), errors: new Map() });
+/** `byEngine` counts the calls made to each engine (each one counted against the workspace's allowance): a run's searches, and so its cost. */
+export type SearchStats = { calls: number; answered: number; byEngine: Record<SearchEngine, number>; capped: Set<SearchEngine>; failures: Map<SearchEngine, number>; errors: Map<SearchEngine, string> };
+export const searchStats = (): SearchStats => ({ calls: 0, answered: 0, byEngine: { tinyfish: 0, exa: 0 }, capped: new Set(), failures: new Map(), errors: new Map() });
 
 /**
- * The queries in order, each with the company sites it found that the run has not seen yet. TinyFish (free) goes first; Exa (paid, a
- * monthly allowance) is asked only when there is no TinyFish key, TinyFish failed or is used up, or TinyFish found nothing new to read.
+ * The queries in order, each with the company sites it found that the run has not seen yet. Every engine with a key (TinyFish, free;
+ * Exa, paid within a monthly allowance) is asked each query at the same time, and their hits are merged by domain in engine order
+ * (TinyFish, then Exa), so the result never depends on which answered first; a site keeps every engine that found it.
  * A site whose search result (title or snippet) names one of the offer's `negatives` is ruled out for the run before any page is read,
  * and handed back in `ruledOut` so the run can count it. It ends early when every engine is used up or failing; `stats` says why.
  */
@@ -76,23 +78,31 @@ export async function* searchSites(input: { db: AppDb; workspaceId: string; keys
   const { stats } = input;
   const engines = ([["tinyfish", input.keys.tinyfishKey], ["exa", input.keys.exaKey]] as const).filter((entry): entry is readonly [SearchEngine, string] => Boolean(entry[1]));
   const usable = (engine: SearchEngine) => !stats.capped.has(engine) && (stats.failures.get(engine) ?? 0) < ENGINE_FAILURES;
+  /** One engine's hits for one query: none when it is used up, failing or failed now (the failure is counted in `stats`). */
+  const ask = async (engine: SearchEngine, key: string, query: string): Promise<SearchHit[]> => {
+    if (!usable(engine) || input.signal.aborted) return [];
+    if (!(await reserveSearch(input.db, input.workspaceId, engine))) { stats.capped.add(engine); return []; }
+    stats.calls++;
+    stats.byEngine[engine]++;
+    try {
+      const hits = await input.search(engine, key, query, input.country);
+      stats.answered++; stats.failures.set(engine, 0);
+      return hits;
+    } catch (error) {
+      // Messages from the search helpers never carry a key, a URL or a response body.
+      const message = error instanceof Error ? error.message : "search failed";
+      stats.errors.set(engine, message);
+      stats.failures.set(engine, /refused/i.test(message) ? ENGINE_FAILURES : (stats.failures.get(engine) ?? 0) + 1);
+      return [];
+    }
+  };
   for (const [index, query] of input.queries.entries()) {
     if (input.signal.aborted || !engines.some(([engine]) => usable(engine))) return;
     const sites: Candidate[] = [];
     const ruledOut: Candidate[] = [];
-    for (const [engine, key] of engines) {
-      if (!usable(engine) || input.signal.aborted) continue;
-      if (!(await reserveSearch(input.db, input.workspaceId, engine))) { stats.capped.add(engine); continue; }
-      stats.calls++;
-      let hits: SearchHit[];
-      try { hits = await input.search(engine, key, query, input.country); stats.answered++; stats.failures.set(engine, 0); }
-      catch (error) {
-        // Messages from the search helpers never carry a key, a URL or a response body.
-        const message = error instanceof Error ? error.message : "search failed";
-        stats.errors.set(engine, message);
-        stats.failures.set(engine, /refused/i.test(message) ? ENGINE_FAILURES : (stats.failures.get(engine) ?? 0) + 1);
-        continue;
-      }
+    const answers = await Promise.all(engines.map(([engine, key]) => ask(engine, key, query)));
+    for (const [position, hits] of answers.entries()) {
+      const engine = engines[position]![0];
       for (const hit of hits) {
         const domain = hostOf(hit.url);
         if (!domain || !/^https?:\/\//i.test(hit.url) || isNotCompanyHost(domain)) continue;
@@ -105,7 +115,6 @@ export async function* searchSites(input: { db: AppDb; workspaceId: string; keys
         input.seen.add(domain);
         (negative ? ruledOut : sites).push({ domain, url: hit.url.slice(0, 2_000), title: hit.title.slice(0, 300), snippet: hit.snippet.slice(0, 400), engines: [engine] });
       }
-      if (sites.length) break;
     }
     yield { query, index, sites, ruledOut };
   }

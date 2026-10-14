@@ -59,8 +59,8 @@ const REASON_TEXT: Record<Reason, string> = {
   challenge: "behind a CAPTCHA or bot check", blocked: "refused the finder (HTTP 403 or 429)", unreachable: "could not be read", no_website: "without a website", nothing_new: "with nothing new on their site",
 };
 const reasonOf = (failure: ReadFailure): Reason => failure.failed === "robots" ? "robots" : failure.failed === "challenge" ? "challenge" : failure.failed === "blocked" ? "blocked" : "unreachable";
-/** `offer` is the run's offer name, for its notes. */
-type RunState = { found: number; crawled: number; added: number; note: string; offer?: string; reasons: Map<Reason, number>; stats: SearchStats };
+/** `offer` is the run's offer name, for its notes; `queries` the searches a find run made (saved with its results). */
+type RunState = { found: number; crawled: number; added: number; note: string; offer?: string; queries?: string[]; reasons: Map<Reason, number>; stats: SearchStats };
 
 /** A run's offer, read once per run: its name, its approved packet (none without an approved version), and whether a find run may use it (active). */
 type RunOffer = { name?: string; packet?: OfferPacket; usable: boolean };
@@ -204,11 +204,15 @@ export function createFinder(options: FinderOptions): Finder {
     const signal = controller.signal;
     const summary = (status: RunSummary["status"], note: string): RunSummary => ({ runId: String(run._id), kind, status, found: state.found, added: state.added, skipped: Math.max(0, state.found - state.added), note });
     const progress = () => ({ found: state.found, crawled: state.crawled, added: state.added });
-    /** Ends the run with its totals, the way the bridge's finish route does; a run that was cancelled meanwhile is left as it is. */
+    /**
+     * Ends the run with its totals, the way the bridge's finish route does; a run that was cancelled meanwhile is left as it is. A find
+     * run also keeps how long it took, the searches it made per engine (what it cost) and the searches themselves.
+     */
     const finish = async (status: "done" | "failed", text: string): Promise<RunSummary> => {
       const result = summary(status, text.slice(0, 2_000));
       const at = new Date();
-      const changed = await runs.updateOne({ _id: run._id, ...ours }, { $set: { status, results: { found: result.found, added: result.added, skipped: result.skipped, note: result.note }, note: result.note, progress: progress(), finishedAt: at, heartbeatAt: at, updatedAt: at } });
+      const costs = kind === "find" ? { searches: { ...state.stats.byEngine }, ...(state.queries ? { queries: state.queries.slice(0, 50) } : {}) } : {};
+      const changed = await runs.updateOne({ _id: run._id, ...ours }, { $set: { status, results: { found: result.found, added: result.added, skipped: result.skipped, note: result.note, ms: Date.now() - started, ...costs }, note: result.note, progress: progress(), finishedAt: at, heartbeatAt: at, updatedAt: at } });
       if (!changed.matchedCount) return summary("cancelled", "The run was cancelled or taken over before it finished");
       await record("sales.finder.finish", run, { status, found: result.found, added: result.added, skipped: result.skipped });
       return result;
@@ -256,7 +260,7 @@ export function createFinder(options: FinderOptions): Finder {
       clearInterval(heartbeat);
       clearTimeout(budget);
     }
-    log({ level: "info", event: "sales.finder.run", runId: outcome.runId, workspaceId: String(run.workspaceId), ventureId: String(run.ventureId), ...(typeof run.offerId === "string" ? { offerId: run.offerId } : {}), kind, status: outcome.status, found: outcome.found, added: outcome.added, skipped: outcome.skipped, searches: state.stats.calls, crawled: state.crawled, ms: Date.now() - started, ...(takeover ? { takeover: true } : {}) });
+    log({ level: "info", event: "sales.finder.run", runId: outcome.runId, workspaceId: String(run.workspaceId), ventureId: String(run.ventureId), ...(typeof run.offerId === "string" ? { offerId: run.offerId } : {}), kind, status: outcome.status, found: outcome.found, added: outcome.added, skipped: outcome.skipped, searches: state.stats.calls, tinyfish: state.stats.byEngine.tinyfish, exa: state.stats.byEngine.exa, crawled: state.crawled, ms: Date.now() - started, ...(takeover ? { takeover: true } : {}) });
     return outcome;
   }
 
@@ -288,6 +292,7 @@ export function createFinder(options: FinderOptions): Finder {
     const plan = { request: String(run.request ?? ""), plan: run.plan ?? null };
     const packet = offer?.packet;
     const queries = buildQueries(plan, packet);
+    state.queries = queries;
     const limit = Number(run.plan?.limit ?? 50);
     const categories = categoriesOf(run, packet);
     const lookFor = offerSignals(packet?.signals.lookFor ?? []);
@@ -311,7 +316,8 @@ export function createFinder(options: FinderOptions): Finder {
       if (facts.notCompany) { skip("not_company"); return; }
       const lead = {
         companyName: facts.companyName, website: facts.website, ...placeOf(facts), source: site.url.slice(0, 500), ...evidenceOf(facts, new Date().toISOString()), contactRoutes: routesOf(facts),
-        tags: ["finder", ...(facts.dealerPortal ? ["dealer-login-seen"] : [])], externalRef: { system: FINDER_SYSTEM, id: facts.domain },
+        // Which engines found the site: over a few runs this shows whether the paid one (Exa) finds companies the free one doesn't.
+        tags: ["finder", ...site.engines.map((engine) => `found-by-${engine}`), ...(facts.dealerPortal ? ["dealer-login-seen"] : [])], externalRef: { system: FINDER_SYSTEM, id: facts.domain },
       };
       // Checked again right before the lead goes in: a run cancelled while the site was read adds nothing more.
       const result = await serially(async () => state.added >= limit || !(await stillOurs(run, controller)) ? null : ingestEngineLead(ctx, run, String(pipeline._id), lead, "finder"));

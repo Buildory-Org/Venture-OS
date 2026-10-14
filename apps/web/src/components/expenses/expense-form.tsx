@@ -66,11 +66,12 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     if (!fresh || !data) return;
     const filled: string[] = [];
     if (!paidTo.trim() && data.merchant) { setPaidTo(data.merchant.slice(0, 120)); filled.push("paid to"); }
-    const inRupees = (data.currency ?? "INR") === "INR";
+    // The amount is filled in only for a receipt in rupees: one in another currency, or with none known, asks for the rupee amount.
+    const inRupees = data.currency === "INR";
     if (!amount.trim() && data.total && inRupees) { setAmount(amountText(Math.round(data.total * 100))); filled.push("amount"); }
     if (!expense && data.date && date === todayLocal()) { setDate(data.date); filled.push("date"); }
     if (!categoryPicked && data.categoryId && usableCategories.some((category) => category.id === data.categoryId)) { setCategoryId(data.categoryId); filled.push("category"); }
-    const foreign = data.total && !inRupees ? ` It's in ${data.currency} (${data.total.toFixed(2)}): enter what was charged in rupees.` : "";
+    const foreign = data.total && !inRupees ? (data.currency ? ` It's in ${data.currency} (${data.total.toFixed(2)}): enter what was charged in rupees.` : ` It doesn't say which currency its total of ${data.total.toFixed(2)} is in: enter the amount in rupees.`) : "";
     setReceiptNote(filled.length ? `Filled in ${filled.join(", ").replace(/, ([^,]*)$/, " and $1")} from the receipt: check them before saving.${foreign}` : foreign.trim());
   }
 

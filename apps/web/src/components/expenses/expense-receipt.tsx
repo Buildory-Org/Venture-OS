@@ -27,7 +27,7 @@ function mismatch(data: ReceiptData): string | null {
   const items = data.items.reduce((sum, item) => sum + (item.amount ?? 0), 0);
   if (data.items.length && data.items.every((item) => item.amount !== null) && data.subtotal !== null && !near(items, data.subtotal)) return `The items add up to ${money(items, data.currency)}, not the subtotal of ${money(data.subtotal, data.currency)}.`;
   if (data.subtotal !== null && data.total !== null) {
-    const expected = data.subtotal - (data.discount ?? 0) + data.taxes.reduce((sum, tax) => sum + tax.amount, 0) + (data.tip ?? 0);
+    const expected = data.subtotal - (data.discount ?? 0) + data.taxes.reduce((sum, tax) => sum + tax.amount, 0) + (data.tip ?? 0) + (data.roundOff ?? 0);
     // Prices that include tax print a total equal to the subtotal.
     if (!near(expected, data.total) && !near(data.subtotal, data.total)) return `The subtotal, taxes and tip come to ${money(expected, data.currency)}, not the total of ${money(data.total, data.currency)}.`;
   }
@@ -68,6 +68,7 @@ export function ReceiptPaper({ data }: { data: ReceiptData }) {
           {data.discount !== null && <Row label="Discount" value={`−${m(Math.abs(data.discount))}`} />}
           {data.taxes.map((tax, index) => <Row key={index} label={`${tax.label}${tax.ratePercent !== null && !tax.label.includes("%") ? ` ${tax.ratePercent}%` : ""}`} value={m(tax.amount)} />)}
           {data.tip !== null && <Row label="Tip / service" value={m(data.tip)} />}
+          {data.roundOff !== null && <Row label="Round off" value={`${data.roundOff < 0 ? "−" : "+"}${m(Math.abs(data.roundOff))}`} />}
         </dl>
         <Rule double />
         <p className="flex justify-between gap-4 font-sans text-[15px] font-extrabold"><span>Total</span><span className="tabular-nums">{data.total !== null ? m(data.total) : "–"}</span></p>

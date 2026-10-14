@@ -46,7 +46,7 @@ const printed = z.string();
 const shape = receiptDataSchema.shape;
 const readSchema = z.object({
   kind: shape.kind, merchant: printed, merchantAddress: printed, merchantPhone: printed, merchantTaxId: printed, number: printed, date: printed, time: printed,
-  billedTo: printed, currency: printed, items: shape.items, subtotal: shape.subtotal, discount: shape.discount, taxes: shape.taxes, tip: shape.tip, total: shape.total,
+  billedTo: printed, currency: printed, items: shape.items, subtotal: shape.subtotal, discount: shape.discount, taxes: shape.taxes, tip: shape.tip, roundOff: z.number().nullable(), total: shape.total,
   paymentMethod: shape.paymentMethod, cardLast4: printed, footer: printed, category: printed,
 });
 type ReadReceipt = z.infer<typeof readSchema>;
@@ -54,9 +54,9 @@ type ReadReceipt = z.infer<typeof readSchema>;
 export const receiptReadFormat = zodOutputFormat(readSchema);
 
 const SYSTEM = `You read receipts, bills and invoices for an Indian company's expense tracker. Fill in every field from what is printed, exactly as written; when the document doesn't show something, use an empty string for text and null for an amount, and never guess.
-- Amounts are plain numbers in the document's currency (285.8, not "₹285.80"). currency is the ISO 4217 code: INR for ₹, Rs or INR.
+- Amounts are plain numbers in the document's currency (285.8, not "₹285.80"). currency is the ISO 4217 code: INR for ₹, Rs or INR. When no currency is printed, take it from where the merchant is (an Indian address, a GSTIN or a +91 phone number means INR; a US address means USD); leave it empty only when nothing says.
 - date is YYYY-MM-DD. Indian documents write the day first: 06/05/26 is 6 May 2026.
-- items are the line items in order as printed; an item's name is the name alone (its quantity and prices go in their own fields). taxes are the tax lines (CGST, SGST, IGST, VAT, sales tax), with the rate when printed.
+- items are the line items in order as printed; an item's name is the name alone (its quantity and prices go in their own fields). taxes are the tax lines (CGST, SGST, IGST, VAT, sales tax), with the rate when printed. roundOff is a rounding line (Round Off, Rounding) with its sign.
 - Copy names and words letter by letter as they appear, even when they look misspelled or unfamiliar: never swap one for a better-known name or brand that looks similar.
 - cardLast4 is only the last four digits of a card.
 - category is the one name from the given list that fits best, or an empty string.
@@ -86,7 +86,7 @@ export function cleanReceipt(raw: ReadReceipt, categories: ExpenseCategory[]): R
     items: raw.items.slice(0, 60).map((item) => ({ name: text(item.name, 160) ?? "Item", quantity: amount(item.quantity), unitPrice: amount(item.unitPrice), amount: amount(item.amount) })),
     subtotal: amount(raw.subtotal), discount: amount(raw.discount),
     taxes: raw.taxes.slice(0, 12).flatMap((tax) => { const value = amount(tax.amount); return value === null ? [] : [{ label: text(tax.label, 60) ?? "Tax", ratePercent: amount(tax.ratePercent), amount: value }]; }),
-    tip: amount(raw.tip), total: amount(raw.total), paymentMethod: raw.paymentMethod, cardLast4: /^\d{4}$/.test(raw.cardLast4 ?? "") ? raw.cardLast4 : null,
+    tip: amount(raw.tip), roundOff: amount(raw.roundOff), total: amount(raw.total), paymentMethod: raw.paymentMethod, cardLast4: /^\d{4}$/.test(raw.cardLast4 ?? "") ? raw.cardLast4 : null,
     footer: loose(raw.footer, 300), categoryId: categories.find((category) => category.name.trim().toLowerCase() === named)?.id ?? null,
   });
 }

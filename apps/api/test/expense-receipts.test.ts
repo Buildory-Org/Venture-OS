@@ -21,7 +21,7 @@ const READ = {
   kind: "receipt", merchant: "Sushi Yasuda", merchantAddress: "204 East 43rd Street, New York", merchantPhone: "(212) 972-1001", merchantTaxId: "", number: "3528",
   date: "2026-10-01", time: "1:19 PM", billedTo: "", currency: "INR",
   items: [{ name: "Edamame", quantity: 1, unitPrice: 9, amount: 9 }, { name: "A la Carte Sushi", quantity: 1, unitPrice: 243, amount: 243 }],
-  subtotal: 262.5, discount: null, taxes: [{ label: "Sales Tax", ratePercent: 8.875, amount: 23.3 }], tip: null, total: 285.8,
+  subtotal: 262.5, discount: null, taxes: [{ label: "Sales Tax", ratePercent: 8.875, amount: 23.3 }], tip: null, roundOff: null, total: 285.8,
   paymentMethod: "card", cardLast4: "1111", footer: "Paid with card 4111 1111 1111 1111. Thank you", category: "AI tools",
 };
 

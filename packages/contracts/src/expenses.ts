@@ -108,7 +108,10 @@ export const receiptDataSchema = z.object({
   subtotal: z.number().nullable(), discount: z.number().nullable(),
   taxes: z.array(z.object({ label: z.string(), ratePercent: z.number().nullable(), amount: z.number() })),
   /** Tip or service charge. */
-  tip: z.number().nullable(), total: z.number().nullable(),
+  tip: z.number().nullable(),
+  /** A rounding line ("Round off -0.50"), with its sign; none on receipts read before it was added. */
+  roundOff: z.number().nullable().default(null),
+  total: z.number().nullable(),
   paymentMethod: z.enum(RECEIPT_PAYMENT_METHODS), cardLast4: z.string().nullable(), footer: z.string().nullable(),
   /** The category it most likely belongs to, among those the uploader may use. */
   categoryId: idSchema.nullable(),

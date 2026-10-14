@@ -49,15 +49,16 @@ function useCountUp(target: number, durationMs = 950) {
 }
 
 /** ₹94,500.00 with the paise dimmed, counting up. */
-function BigRupees({ paise, className, dim = "text-white/45" }: { paise: number; className?: string; dim?: string }) {
+function BigRupees({ paise, className, dim = "text-[rgb(var(--ink)/0.45)]" }: { paise: number; className?: string; dim?: string }) {
   const shown = useCountUp(paise);
   const whole = Math.floor(shown / 100).toLocaleString("en-IN");
   const fraction = String(shown % 100).padStart(2, "0");
   return <span className={clsx("font-extrabold tracking-[-0.02em]", className)} aria-label={rupees(paise)}><span aria-hidden="true">₹{whole}<span className={dim}>.{fraction}</span></span></span>;
 }
 
-function CornerButton({ label, onClick, dark }: { label: string; onClick: () => void; dark?: boolean }) {
-  return <button type="button" aria-label={label} title={label} onClick={onClick} className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-full border transition-transform duration-150 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2", dark ? "border-white/25 text-white focus-visible:ring-white" : "border-neutral-200 text-neutral-800 focus-visible:ring-primary-600")}><ArrowUpRight size={17} aria-hidden="true" /></button>;
+/** The round arrow in a card's corner: white on the blue card, the card's ink (white on dark, near-black on white) elsewhere. */
+function CornerButton({ label, onClick, onBlue }: { label: string; onClick: () => void; onBlue?: boolean }) {
+  return <button type="button" aria-label={label} title={label} onClick={onClick} className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-full border transition-transform duration-150 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2", onBlue ? "border-white/25 text-white focus-visible:ring-white" : "border-[rgb(var(--ink)/0.25)] text-[rgb(var(--ink))] focus-visible:ring-[rgb(var(--ink))]")}><ArrowUpRight size={17} aria-hidden="true" /></button>;
 }
 
 /** A ring of thick segments drawn as strokes, each sweeping in after the one before. */
@@ -101,7 +102,7 @@ export function ExpenseDashboard(props: DashboardProps) {
   </div>;
 }
 
-// ---- Dark: spent this month -------------------------------------------------------------------------------------------------------
+// ---- Ink (white in the light theme, near-black in the dark): spent this month -----------------------------------------------------
 
 function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onTab }: DashboardProps) {
   const rows = paidIn(matching, month);
@@ -120,36 +121,36 @@ function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onT
   }
   const sorted = [...buckets.values()].sort((a, b) => b.paise - a.paise);
   const parts = sorted.length > 3 ? [...sorted.slice(0, 2), { label: "Other", paise: sorted.slice(2).reduce((sum, item) => sum + item.paise, 0) }] : sorted;
-  const strokes = ["url(#spent-blue)", "#ffffff", "url(#spent-stripes)"];
+  const strokes = ["url(#spent-blue)", "var(--card-slice)", "url(#spent-stripes)"];
   const ventureCount = new Set(rows.filter((row) => row.expense.scope.kind === "venture").map((row) => scopeLabel(row.expense.scope, ventureName))).size;
   const repeatingShare = total ? repeating / total : 0;
   const gradientId = useId().replace(/:/g, "");
 
-  return <section aria-label={`Spent in ${monthLabel(month)}`} className="vso-card-dark vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 shadow-e3 sm:p-6">
+  return <section aria-label={`Spent in ${monthLabel(month)}`} className="vso-card-ink vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 sm:p-6">
     <div className="flex items-start justify-between gap-3">
-      <div><h3 className="text-lg font-semibold">Spent in {monthLabel(month)}</h3>{change !== null && <p className="mt-0.5 text-xs text-white/55">{change >= 0 ? "+" : ""}{change}% vs {monthLabel(addMonths(month, -1))}</p>}</div>
-      <CornerButton label="Open the month by month view" onClick={() => onTab("monthly")} dark />
+      <div><h3 className="text-lg font-semibold">Spent in {monthLabel(month)}</h3>{change !== null && <p className="mt-0.5 text-xs text-[rgb(var(--ink)/0.55)]">{change >= 0 ? "+" : ""}{change}% vs {monthLabel(addMonths(month, -1))}</p>}</div>
+      <CornerButton label="Open the month by month view" onClick={() => onTab("monthly")} />
     </div>
     <BigRupees paise={total} className="mt-5 block text-4xl" />
     <div className="mt-5">
-      <div className="flex justify-end text-[11px] text-white/60"><span className="tabular-nums">{rupees(total)}</span></div>
-      <div className="vso-stripes-dark mt-1 h-3 overflow-hidden rounded-full bg-white/5" role="img" aria-label={`${rupees(repeating)} repeating, ${rupees(total - repeating)} one-time`}>
+      <div className="flex justify-end text-[11px] text-[rgb(var(--ink)/0.6)]"><span className="tabular-nums">{rupees(total)}</span></div>
+      <div className="vso-stripes-ink mt-1 h-3 overflow-hidden rounded-full bg-[rgb(var(--ink)/0.05)]" role="img" aria-label={`${rupees(repeating)} repeating, ${rupees(total - repeating)} one-time`}>
         <div className="vso-grow-x h-full rounded-full bg-gradient-to-r from-[#1d4ed8] to-[#3b82f6]" style={{ width: `${Math.max(repeatingShare * 100, repeating ? 4 : 0)}%`, "--delay": "250ms" } as React.CSSProperties} />
       </div>
-      <p className="mt-2 text-xs text-white/60"><span className="font-semibold tabular-nums text-white">{rupees(repeating)}</span> repeating · <span className="tabular-nums">{rupees(total - repeating)}</span> one-time</p>
+      <p className="mt-2 text-xs text-[rgb(var(--ink)/0.6)]"><span className="font-semibold tabular-nums text-[rgb(var(--ink))]">{rupees(repeating)}</span> repeating · <span className="tabular-nums">{rupees(total - repeating)}</span> one-time</p>
     </div>
     <div className="mt-auto flex flex-wrap items-center gap-5 pt-6">
       <svg viewBox="0 0 140 140" className="h-44 w-44 shrink-0" role="img" aria-label={parts.map((part) => `${part.label} ${rupees(part.paise)}`).join(", ") || "Nothing spent"}>
         <defs>
           <linearGradient id={`${gradientId}-blue`} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#60a5fa" /><stop offset="100%" stopColor="#1d4ed8" /></linearGradient>
-          <pattern id={`${gradientId}-stripes`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#2a2a2a" /><rect width="2" height="6" fill="#6b6b6b" /></pattern>
+          <pattern id={`${gradientId}-stripes`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--card-stripe-bg)" /><rect width="2" height="6" fill="var(--card-stripe-line)" /></pattern>
         </defs>
-        {parts.length ? <Ring size={140} radius={52} width={26} gap={0.025} slices={parts.map((part, index) => ({ key: part.label, value: part.paise, stroke: strokes[index]!.replace("spent", gradientId) }))} /> : <circle cx={70} cy={70} r={52} fill="none" stroke="#2a2a2a" strokeWidth={26} />}
+        {parts.length ? <Ring size={140} radius={52} width={26} gap={0.025} slices={parts.map((part, index) => ({ key: part.label, value: part.paise, stroke: strokes[index]!.replace("spent", gradientId) }))} /> : <circle cx={70} cy={70} r={52} fill="none" stroke="var(--card-track)" strokeWidth={26} />}
       </svg>
       <ul className="grid gap-2 text-sm">
-        {parts.map((part, index) => <li key={part.label} className="flex items-center gap-2"><span aria-hidden="true" className={clsx("h-2.5 w-2.5 rounded-full", index === 0 ? "bg-[#3b82f6]" : index === 1 ? "bg-white" : "vso-stripes-dark bg-white/20")} /><span className="text-white/85">{part.label}</span><span className="tabular-nums text-white/50">{compactRupees(part.paise)}</span></li>)}
-        {!parts.length && <li className="text-white/50">Nothing spent yet</li>}
-        {!fixedWhere && ventureCount > 1 && <li className="text-[11px] text-white/40">{ventureCount} ventures</li>}
+        {parts.map((part, index) => <li key={part.label} className="flex items-center gap-2"><span aria-hidden="true" className={clsx("h-2.5 w-2.5 rounded-full", index === 0 ? "bg-[#3b82f6]" : index === 1 ? "bg-[var(--card-slice)]" : "vso-stripes-ink bg-[rgb(var(--ink)/0.2)]")} /><span className="text-[rgb(var(--ink)/0.85)]">{part.label}</span><span className="tabular-nums text-[rgb(var(--ink)/0.5)]">{compactRupees(part.paise)}</span></li>)}
+        {!parts.length && <li className="text-[rgb(var(--ink)/0.5)]">Nothing spent yet</li>}
+        {!fixedWhere && ventureCount > 1 && <li className="text-[11px] text-[rgb(var(--ink)/0.4)]">{ventureCount} ventures</li>}
       </ul>
     </div>
   </section>;
@@ -163,7 +164,7 @@ function RepeatingCard({ scoped, onTab }: DashboardProps) {
   const monthly = running.reduce((sum, expense) => sum + monthlyEquivalentPaise(expense), 0);
   const dueSoon = running.filter((expense) => { const next = nextOccurrence(expense, today); return next && Date.parse(`${next}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`) <= 7 * 86_400_000; }).length;
   return <section aria-label="Repeating costs" className="vso-card-blue vso-fade-up rounded-[1.75rem] p-5 shadow-e3 sm:p-6" style={{ "--delay": "80ms" } as React.CSSProperties}>
-    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Repeating costs</h3><CornerButton label="Open subscriptions" onClick={() => onTab("repeating")} dark /></div>
+    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Repeating costs</h3><CornerButton label="Open subscriptions" onClick={() => onTab("repeating")} onBlue /></div>
     <p className="mt-3"><BigRupees paise={monthly} className="text-4xl" dim="text-white/60" /> <span className="text-lg font-semibold text-white/85">a month</span></p>
     <p className="mt-2 text-sm text-white/85"><strong className="font-bold">{running.length}</strong> running · <strong className="font-bold">{dueSoon}</strong> due this week · <strong className="font-bold">{compactRupees(monthly * 12)}</strong> a year</p>
   </section>;
@@ -209,7 +210,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
   </section>;
 }
 
-// ---- Dark: recent expenses ------------------------------------------------------------------------------------------------------
+// ---- Ink: recent expenses -------------------------------------------------------------------------------------------------------
 
 const PILL: Record<Expense["repeat"], string> = { none: "bg-neutral-300 text-neutral-900", monthly: "bg-[#2563eb] text-white", yearly: "bg-[#16a34a] text-white" };
 function RecentCard({ scoped, matching, month, findCategory, findCompany, ventureName, onOpen, onSeeAll }: DashboardProps) {
@@ -226,30 +227,30 @@ function RecentCard({ scoped, matching, month, findCategory, findCompany, ventur
   const segments = [...byCategory].sort((a, b) => b[1] - a[1]).slice(0, 4);
   const segmentTotal = segments.reduce((sum, [, paise]) => sum + paise, 0);
   const top = segments[0];
-  return <section aria-label="Recent expenses" className="vso-card-dark vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 shadow-e3 sm:p-6" style={{ "--delay": "120ms" } as React.CSSProperties}>
-    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Recent expenses</h3><CornerButton label="See every expense this month" onClick={onSeeAll} dark /></div>
+  return <section aria-label="Recent expenses" className="vso-card-ink vso-fade-up flex min-h-[25rem] flex-col rounded-[1.75rem] p-5 sm:p-6" style={{ "--delay": "120ms" } as React.CSSProperties}>
+    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Recent expenses</h3><CornerButton label="See every expense this month" onClick={onSeeAll} /></div>
     {top && <div className="mt-4">
-      <p className="mb-2 inline-flex rounded-full bg-white/12 px-3 py-1 text-xs font-semibold backdrop-blur">{findCategory(top[0])?.name ?? "Other"} · {Math.round((top[1] / (segmentTotal || 1)) * 100)}%</p>
+      <p className="mb-2 inline-flex rounded-full bg-[rgb(var(--ink)/0.12)] px-3 py-1 text-xs font-semibold backdrop-blur">{findCategory(top[0])?.name ?? "Other"} · {Math.round((top[1] / (segmentTotal || 1)) * 100)}%</p>
       <div className="flex h-5 gap-1.5" role="img" aria-label={segments.map(([id, paise]) => `${findCategory(id)?.name ?? "Other"} ${rupees(paise)}`).join(", ")}>
-        {segments.map(([id, paise], position) => <span key={id} className="vso-grow-x h-full min-w-5 rounded-full" style={{ flexGrow: paise, flexBasis: 0, background: fillOf(findCategory(id)?.color), "--delay": `${200 + position * 120}ms`, ...(position === 0 ? { boxShadow: "0 0 0 2px rgb(255 255 255 / 0.35)" } : {}) } as React.CSSProperties} />)}
+        {segments.map(([id, paise], position) => <span key={id} className="vso-grow-x h-full min-w-5 rounded-full" style={{ flexGrow: paise, flexBasis: 0, background: fillOf(findCategory(id)?.color), "--delay": `${200 + position * 120}ms`, ...(position === 0 ? { boxShadow: "0 0 0 2px rgb(var(--ink) / 0.35)" } : {}) } as React.CSSProperties} />)}
       </div>
     </div>}
-    {!latest.length ? <p className="mt-6 text-sm text-white/55">Nothing paid in {monthLabel(month)} yet.</p> : <div className="mt-4 grid gap-3">{groups.map((group) => <div key={group.day}>
-      <p className="mb-1.5 text-xs text-white/50">{dayName(group.day)}</p>
+    {!latest.length ? <p className="mt-6 text-sm text-[rgb(var(--ink)/0.55)]">Nothing paid in {monthLabel(month)} yet.</p> : <div className="mt-4 grid gap-3">{groups.map((group) => <div key={group.day}>
+      <p className="mb-1.5 text-xs text-[rgb(var(--ink)/0.5)]">{dayName(group.day)}</p>
       <ul className="grid gap-1">{group.items.map(({ expense }) => {
         const category = findCategory(expense.categoryId);
         const delay = 260 + latest.findIndex((row) => row.expense.id === expense.id && row.day === group.day) * 70;
         return <li key={`${expense.id}-${group.day}`} className="vso-fade-up" style={{ "--delay": `${delay}ms` } as React.CSSProperties}>
-          <button type="button" onClick={() => onOpen(expense)} className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl py-1.5 text-left sm:grid-cols-[2.25rem_minmax(0,1fr)_auto_auto] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">
+          <button type="button" onClick={() => onOpen(expense)} className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl py-1.5 text-left sm:grid-cols-[2.25rem_minmax(0,1fr)_auto_auto] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--ink)/0.7)]">
             <CompanyAvatar company={findCompany(expense.companyId)} name={expense.paidTo} size={36} background={fillOf(category?.color)} />
-            <span className="min-w-0"><span className="block truncate text-sm font-semibold">{expense.paidTo}</span><span className="block truncate text-xs text-white/50">{category?.name ?? "Other"} · {scopeLabel(expense.scope, ventureName)}</span></span>
+            <span className="min-w-0"><span className="block truncate text-sm font-semibold">{expense.paidTo}</span><span className="block truncate text-xs text-[rgb(var(--ink)/0.5)]">{category?.name ?? "Other"} · {scopeLabel(expense.scope, ventureName)}</span></span>
             <span className={clsx("hidden rounded-full px-2.5 py-0.5 text-[11px] font-semibold sm:inline", PILL[expense.repeat])}>{REPEAT_LABEL[expense.repeat]}</span>
-            <span className="text-right text-sm font-bold tabular-nums">-₹{Math.floor(expense.amountPaise / 100).toLocaleString("en-IN")}<span className="text-white/45">.{String(expense.amountPaise % 100).padStart(2, "0")}</span></span>
+            <span className="text-right text-sm font-bold tabular-nums">-₹{Math.floor(expense.amountPaise / 100).toLocaleString("en-IN")}<span className="text-[rgb(var(--ink)/0.45)]">.{String(expense.amountPaise % 100).padStart(2, "0")}</span></span>
           </button>
         </li>;
       })}</ul>
     </div>)}</div>}
-    {rows.length > latest.length && <button type="button" onClick={onSeeAll} className="mt-auto pt-3 text-left text-xs font-semibold text-white/70 underline-offset-2 hover:underline">{rows.length - latest.length} more in {monthLabel(month)}</button>}
+    {rows.length > latest.length && <button type="button" onClick={onSeeAll} className="mt-auto pt-3 text-left text-xs font-semibold text-[rgb(var(--ink)/0.7)] underline-offset-2 hover:underline">{rows.length - latest.length} more in {monthLabel(month)}</button>}
   </section>;
 }
 

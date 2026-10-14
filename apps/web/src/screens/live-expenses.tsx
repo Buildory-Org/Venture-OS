@@ -1,9 +1,10 @@
 "use client";
 import { useMemo, useState } from "react";
-import { expenseAccessAtLeast } from "@venture-studio/contracts";
-import { LockKeyhole } from "@/components/ui/icons";
+import clsx from "clsx";
+import { addMonths, expenseAccessAtLeast } from "@venture-studio/contracts";
+import { ChevronLeft, ChevronRight, LockKeyhole } from "@/components/ui/icons";
 import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
-import { Empty, PageFrame, PageTitle, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
+import { Empty, HeaderActions, PageFrame, PageTitle, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
 import { useStudio } from "@/lib/studio-store";
 import type { Expense } from "@/lib/expenses-api";
 import { ExpenseForm } from "@/components/expenses/expense-form";
@@ -11,7 +12,7 @@ import { ExpenseList } from "@/components/expenses/expense-list";
 import { ExpenseMonthly } from "@/components/expenses/expense-monthly";
 import { ExpenseSettingsPanel } from "@/components/expenses/expense-settings";
 import { ExpenseSubscriptions } from "@/components/expenses/expense-subscriptions";
-import { thisMonth, useExpenseData } from "@/components/expenses/expense-shared";
+import { monthLabel, thisMonth, useExpenseData } from "@/components/expenses/expense-shared";
 
 // The expense tracker (docs/expenses.md): every expense by month, the Office on its own, month by month totals, what repeats, and
 // (for managers) categories, groups and access. Inside a venture (the sidebar scope) it shows that venture only.
@@ -19,7 +20,7 @@ import { thisMonth, useExpenseData } from "@/components/expenses/expense-shared"
 type Tab = "expenses" | "office" | "monthly" | "repeating" | "settings";
 
 export function LiveExpensesScreen() {
-  const { data: studio, activeVentureId, setActiveVentureId } = useStudio();
+  const { data: studio, activeVentureId } = useStudio();
   const { data, error, noAccess, busy, reload } = useExpenseData();
   const [tab, setTab] = useState<Tab>("expenses");
   const [month, setMonth] = useState(thisMonth());
@@ -40,12 +41,11 @@ export function LiveExpensesScreen() {
 
   if (noAccess) return <PageFrame><PageTitle title="Expenses" description="What the studio spends, by month." /><Empty icon={LockKeyhole} tone="neutral" title="You don't have access to expenses" body="Someone who manages expenses can give you access in the tracker's settings." /></PageFrame>;
 
+  // The month every list and chart shows; Subscriptions and Settings don't depend on one.
+  const usesMonth = active === "expenses" || active === "office" || active === "monthly";
   return <PageFrame>
-    <PageTitle title="Expenses" description={scoped ? `What ${scoped.name} spends, by month.` : "What the studio spends: ventures, the Office and personal, by month."} action={<RefreshButton busy={busy} onClick={reload} />} />
-    {scoped && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-primary-100 bg-primary-50 px-4 py-3 text-sm text-primary-900">
-      <span>Showing <strong>{scoped.name}</strong> only. New expenses here are charged to it.</span>
-      <button type="button" onClick={() => setActiveVentureId("")} className={`${secondaryClass} !min-h-9 !px-3 !text-xs`}>Show everything</button>
-    </div>}
+    <PageTitle title="Expenses" description={scoped ? `What ${scoped.name} spends, by month. Pick All ventures in the sidebar for everything.` : "What the studio spends: ventures, the Office and personal, by month."}
+      action={<HeaderActions>{usesMonth && <MonthPicker month={month} onMonth={setMonth} />}<RefreshButton busy={busy} onClick={reload} /></HeaderActions>} />
     {error && !data && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text"><span className="min-w-0 flex-1">Could not load expenses: {error}</span><button type="button" onClick={reload} className={secondaryClass}>Try again</button></div>}
     {!data && !error && <SkeletonRows rows={6} label="Loading expenses" />}
     {data && <>
@@ -53,11 +53,21 @@ export function LiveExpensesScreen() {
       <div key={active} {...motion}>
         {active === "expenses" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere={onlyWhere} title={scoped?.name ?? "All"} canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({})} />}
         {active === "office" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere="office" title="Office" canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({ where: "office" })} />}
-        {active === "monthly" && <ExpenseMonthly data={data} ventureName={ventureName} month={month} onMonth={setMonth} onlyWhere={onlyWhere} />}
+        {active === "monthly" && <ExpenseMonthly data={data} ventureName={ventureName} month={month} onlyWhere={onlyWhere} />}
         {active === "repeating" && <ExpenseSubscriptions data={data} ventureName={ventureName} onlyWhere={onlyWhere} onOpen={(expense) => setOpen({ expense })} />}
         {active === "settings" && manage && <ExpenseSettingsPanel settings={data.settings} onChanged={reload} />}
       </div>
     </>}
-    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} onClose={() => setOpen(null)} onSaved={reload} />}
+    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
   </PageFrame>;
+}
+
+/** Previous month, the month, next month, and back to this month: beside Refresh in the page header. */
+function MonthPicker({ month, onMonth }: { month: string; onMonth: (month: string) => void }) {
+  return <div role="group" aria-label="Month" className="flex items-center gap-1 rounded-xl border border-neutral-200 bg-white p-1">
+    <button type="button" aria-label="Previous month" onClick={() => onMonth(addMonths(month, -1))} className="grid h-8 w-8 place-items-center rounded-lg text-neutral-600 transition-colors duration-150 hover:bg-neutral-100 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><ChevronLeft size={16} /></button>
+    <span className="min-w-[4.75rem] text-center text-sm font-bold text-neutral-900" aria-live="polite">{monthLabel(month)}</span>
+    <button type="button" aria-label="Next month" onClick={() => onMonth(addMonths(month, 1))} className="grid h-8 w-8 place-items-center rounded-lg text-neutral-600 transition-colors duration-150 hover:bg-neutral-100 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><ChevronRight size={16} /></button>
+    {month !== thisMonth() && <button type="button" onClick={() => onMonth(thisMonth())} className={clsx("h-8 rounded-lg px-2 text-xs font-semibold text-primary-700 transition-colors duration-150 hover:bg-primary-50")}>Today</button>}
+  </div>;
 }

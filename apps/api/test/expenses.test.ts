@@ -58,6 +58,8 @@ test("access: admins manage by default, others see nothing until a manager adds 
     const edited = (await call("PATCH", `/expenses/${created.body.data.id}`, "member", { amountPaise: 180_000 })).body.data;
     assert.deepEqual([edited.amountPaise, edited.repeat, edited.paidTo, edited.updatedBy], [180_000, "monthly", "Anthropic", "user-member"], "an edit changes only what it sends");
     assert.equal((await call("POST", "/expenses/settings/categories", "member", { name: "Travel" })).status, 403);
+    assert.equal((await call("POST", "/expenses/settings/groups", "member", { name: "AI subscriptions" })).status, 201, "Edit may start a group while adding an expense");
+    assert.equal((await call("PATCH", "/expenses/settings/groups/none", "member", { name: "x" })).status, 403, "renaming stays with managers");
     assert.equal((await call("PUT", "/expenses/settings/access/user-learner", "member", { level: "view", restricted: false })).status, 403);
 
     // Restricted categories: hidden from the list, the categories, totals and every change for people without restricted access.
@@ -116,6 +118,9 @@ test("the admins of the first use hold restricted access; an admin made later ma
     // The only keeper leaves the workspace: an admin takes Manage with restricted access back, so the tracker is never locked.
     await db.collection("memberships").updateOne({ userId: "user-boss" }, { $set: { status: "removed" } });
     assert.deepEqual((await call("GET", "/expenses/access", "member2")).body.data, { level: "manage", restricted: true });
+    const reclaimed = (await call("GET", "/expenses/settings", "member2")).body.data.access.find((row: any) => row.userId === "user-member2");
+    assert.deepEqual([reclaimed.level, reclaimed.restricted, reclaimed.custom], ["manage", true, true], "taking it back is recorded, so the list shows it");
+    assert.ok(await db.collection("audit_events").findOne({ action: "expense.access.reclaim", actorId: "user-member2" }));
     assert.equal((await call("PUT", "/expenses/settings/access/user-member2", "member2", { level: "manage", restricted: true })).status, 200);
     const stored = (await db.collection("expense_settings").findOne({ _id: "workspace-a" as never }))!;
     assert.equal(stored.access["user-boss"], undefined, "entries of people who left are pruned");

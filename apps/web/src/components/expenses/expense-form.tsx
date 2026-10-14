@@ -1,12 +1,12 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { addMonths, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseInput, type ExpenseScope } from "@venture-studio/contracts";
+import { addMonths, expenseAccessAtLeast, LONG_NUMBER, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseScope } from "@venture-studio/contracts";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { changeExpenseFrom, createExpense, deleteExpense, updateExpense, type Expense, type ExpenseSettings } from "@/lib/expenses-api";
+import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, updateExpense, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
 import { amountText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
 
 type Venture = { id: string; name: string };
@@ -14,15 +14,26 @@ type Props = {
   settings: ExpenseSettings; ventures: Venture[]; expense?: Expense;
   /** Opened inside a venture (the sidebar scope): new expenses are charged to it, shown read-only. */
   fixedVentureId?: string; defaultWhere?: string; canEdit: boolean;
+  /** The person's access: Edit may add a group from here, Manage a category too. */
+  level: ExpenseAccessLevel;
   onClose: () => void; onSaved: () => void;
+  /** A category or group was added from the form: the page reads the settings again. */
+  onSettingsChanged: () => void;
 };
+const NEW = "__new__";
 
 const whereOf = (key: string): ExpenseScope => key === "office" ? { kind: "office" } : key === "personal" ? { kind: "personal" } : { kind: "venture", ventureId: key.slice("venture:".length) };
 
 /** Add or edit one expense. People who can only view see it read-only. */
-export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defaultWhere, canEdit, onClose, onSaved }: Props) {
-  const usableCategories = settings.categories.filter((category) => !category.archived || category.id === expense?.categoryId);
-  const usableGroups = settings.groups.filter((group) => !group.archived || group.id === expense?.groupId);
+export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defaultWhere, canEdit, level, onClose, onSaved, onSettingsChanged }: Props) {
+  // Ones added from this form show at once, before the page has read the settings again.
+  const [added, setAdded] = useState<{ categories: ExpenseCategory[]; groups: ExpenseGroup[] }>({ categories: [], groups: [] });
+  const withAdded = <T extends { id: string }>(list: T[], extra: T[]) => [...list, ...extra.filter((item) => !list.some((one) => one.id === item.id))];
+  const usableCategories = withAdded(settings.categories, added.categories).filter((category) => !category.archived || category.id === expense?.categoryId);
+  const usableGroups = withAdded(settings.groups, added.groups).filter((group) => !group.archived || group.id === expense?.groupId);
+  const canAddGroup = expenseAccessAtLeast(level, "edit");
+  const canAddCategory = level === "manage";
+  const [creating, setCreating] = useState<{ kind: "category" | "group"; name: string } | null>(null);
   const [paidTo, setPaidTo] = useState(expense?.paidTo ?? "");
   const [amount, setAmount] = useState(expense ? amountText(expense.amountPaise) : "");
   const [date, setDate] = useState(expense?.date ?? todayLocal());
@@ -32,7 +43,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const [repeat, setRepeat] = useState<ExpenseInput["repeat"]>(expense?.repeat ?? "none");
   const [endMonth, setEndMonth] = useState(expense?.endMonth ?? "");
   const [note, setNote] = useState(expense?.note ?? "");
-  const [busy, setBusy] = useState<"save" | "delete" | "change" | null>(null);
+  const [busy, setBusy] = useState<"save" | "delete" | "change" | "create" | null>(null);
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   // A price change starts in a month the expense is paid in: the next one after this month (for a yearly one, its next renewal).
@@ -69,6 +80,23 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     try { await deleteExpense(expense.id, expense.updatedAt); toast({ title: expense.continuesId ? "Price change undone" : "Expense deleted", body: expense.paidTo }); onSaved(); onClose(); }
     catch (cause) { setError(describeError(cause, "Could not delete the expense. Try again.")); setBusy(null); }
   }
+  /** Adds the category or group typed in the form and picks it. */
+  async function createInline() {
+    if (!creating?.name.trim()) return;
+    setBusy("create"); setError("");
+    try {
+      if (creating.kind === "group") {
+        const group = await createGroup({ name: creating.name.trim(), color: "neutral", note: "" });
+        setAdded((current) => ({ ...current, groups: [...current.groups, group] })); setGroupId(group.id);
+      } else {
+        const category = await createCategory({ name: creating.name.trim(), color: "neutral", restricted: false });
+        setAdded((current) => ({ ...current, categories: [...current.categories, category] })); setCategoryId(category.id);
+      }
+      toast({ title: `${creating.kind === "group" ? "Group" : "Category"} added`, body: creating.name.trim() });
+      setCreating(null); onSettingsChanged();
+    } catch (cause) { setError(describeError(cause, `Could not add the ${creating.kind}. Try again.`)); }
+    finally { setBusy(null); }
+  }
   async function changeFrom() {
     if (!expense) return;
     const paise = paiseOf(changeAmount);
@@ -92,11 +120,17 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
           <Field label={repeat === "none" ? "Date paid" : "First payment"}><input required type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Category"><Select aria-label="Category" className={inputClass} value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{usableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.restricted ? " (restricted)" : ""}{category.archived ? " · archived" : ""}</option>)}</Select></Field>
-          <Field label="Group (optional)"><Select aria-label="Group" className={inputClass} value={groupId} onChange={(event) => setGroupId(event.target.value)}><option value="">No group</option>{usableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.archived ? " · archived" : ""}</option>)}</Select></Field>
+          <Field label="Category"><Select aria-label="Category" className={inputClass} value={categoryId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "category", name: "" }); else setCategoryId(event.target.value); }}>{usableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.restricted ? " (restricted)" : ""}{category.archived ? " · archived" : ""}</option>)}{canAddCategory && <option value={NEW}>+ New category…</option>}</Select></Field>
+          <Field label="Group (optional)"><Select aria-label="Group" className={inputClass} value={groupId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "group", name: "" }); else setGroupId(event.target.value); }}><option value="">No group</option>{usableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.archived ? " · archived" : ""}</option>)}{canAddGroup && <option value={NEW}>+ New group…</option>}</Select></Field>
         </div>
+        {creating && <div role="group" aria-label={`New ${creating.kind}`} className="-mt-1 flex flex-wrap items-center gap-2 rounded-xl border border-primary-100 bg-primary-50 p-2.5">
+          <input autoFocus maxLength={60} aria-label={`Name of the new ${creating.kind}`} placeholder={creating.kind === "group" ? "New group, e.g. AI subscriptions" : "New category, e.g. Travel"} className={clsx(inputClass, "!min-h-9 min-w-0 !w-auto flex-1 basis-40 !text-sm")} value={creating.name}
+            onChange={(event) => setCreating({ ...creating, name: event.target.value })} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createInline(); } if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setCreating(null); } }} />
+          <button type="button" onClick={() => void createInline()} disabled={busy !== null || !creating.name.trim()} className={clsx(primaryClass, "!min-h-9 !px-3 !text-xs")}><ActionLabel busy={busy === "create"} busyText="Adding…" idle={`Add ${creating.kind}`} /></button>
+          <button type="button" onClick={() => setCreating(null)} className={clsx(secondaryClass, "!min-h-9 !px-3 !text-xs")}>Cancel</button>
+        </div>}
         {fixedVenture && !expense
-          ? <div role="group" aria-label="Charged to" className="rounded-xl border border-neutral-200 bg-neutral-50 p-3"><span className="block text-xs font-semibold text-neutral-500">Charged to · the venture you are in</span><span className="mt-1 block text-sm font-bold text-neutral-900">{fixedVenture.name}</span></div>
+          ? <div role="group" aria-label="Charged to" className="rounded-xl border border-primary-100 bg-primary-50 p-3"><span className="block text-xs font-semibold text-primary-800">Charged to · the venture you are in</span><span className="mt-1 block text-sm font-bold text-neutral-900">{fixedVenture.name}</span><span className="mt-1 block text-xs leading-5 text-neutral-600">You&apos;re looking at {fixedVenture.name} only, so new expenses here are charged to it. To charge the Office, Personal or another venture, pick All ventures in the sidebar.</span></div>
           : <Field label="Charged to"><Select aria-label="Charged to" className={inputClass} value={where} onChange={(event) => setWhere(event.target.value)}><option value="office">Office</option><option value="personal">Personal</option>{ventures.map((venture) => <option key={venture.id} value={`venture:${venture.id}`}>{venture.name}</option>)}{expense && expense.scope.kind === "venture" && !ventures.some((venture) => `venture:${venture.id}` === where) && <option value={where}>A venture no longer listed</option>}</Select></Field>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Repeats"><Select aria-label="Repeats" className={inputClass} value={repeat} onChange={(event) => setRepeat(event.target.value as ExpenseInput["repeat"])}><option value="none">One-time</option><option value="monthly">Every month</option><option value="yearly">Every year</option></Select></Field>

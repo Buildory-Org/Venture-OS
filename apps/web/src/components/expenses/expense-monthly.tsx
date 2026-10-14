@@ -7,10 +7,10 @@ import { Select } from "@/components/ui/select";
 import { Badge, filterControl, Panel, PanelHead, secondaryClass } from "@/components/studio/primitives";
 import { downloadCsv, lookups, monthLabel, paidIn, rupees, scopeKey, scopeLabel, type ExpenseData } from "./expense-shared";
 
-type Props = { data: ExpenseData; ventureName: (id: string) => string; month: string; onMonth: (month: string) => void; onlyWhere?: string };
+type Props = { data: ExpenseData; ventureName: (id: string) => string; month: string; onlyWhere?: string };
 
 /** Month by month: Office, Personal, each venture and the overall total; and the chosen month by category. */
-export function ExpenseMonthly({ data, ventureName, month, onMonth, onlyWhere }: Props) {
+export function ExpenseMonthly({ data, ventureName, month, onlyWhere }: Props) {
   const [span, setSpan] = useState(6);
   const find = useMemo(() => lookups(data.settings), [data.settings]);
   const months = monthsBetween(addMonths(month, 1 - span), month);
@@ -37,10 +37,7 @@ export function ExpenseMonthly({ data, ventureName, month, onMonth, onlyWhere }:
 
   return <div className="grid grid-cols-1 gap-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Select aria-label="Months shown" className={filterControl(false)} value={String(span)} onChange={(event) => setSpan(Number(event.target.value))}><option value="3">Last 3 months</option><option value="6">Last 6 months</option><option value="12">Last 12 months</option></Select>
-        <Select aria-label="Up to" className={filterControl(false)} value={month} onChange={(event) => onMonth(event.target.value)}>{monthsBetween(addMonths(month, -12), addMonths(month, 12)).map((one) => <option key={one} value={one}>Up to {monthLabel(one)}</option>)}</Select>
-      </div>
+      <Select aria-label="Months shown" className={filterControl(false)} value={String(span)} onChange={(event) => setSpan(Number(event.target.value))}><option value="3">3 months up to {monthLabel(month)}</option><option value="6">6 months up to {monthLabel(month)}</option><option value="12">12 months up to {monthLabel(month)}</option></Select>
       <button type="button" onClick={exportCsv} disabled={!keys.length} className={clsx(secondaryClass, "!min-h-9 !px-3 !text-xs")}><Download size={14} />Export CSV</button>
     </div>
 

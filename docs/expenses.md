@@ -49,7 +49,7 @@ The tracker has its own access list, under Settings. Each member has a **level**
 |---|---|
 | No access | Nothing. The page isn't in their sidebar, and every route answers "not found". |
 | View | See expenses and totals, and export a CSV. |
-| Edit | View, plus add, edit and delete expenses. |
+| Edit | View, plus add, edit and delete expenses, and start a group while adding one. |
 | Manage | Edit, plus categories, groups and the access list. |
 
 - **Restricted switch:** each member also has a switch for whether they see **restricted** categories (salary, EMI).
@@ -69,7 +69,13 @@ The tracker has its own access list, under Settings. Each member has a **level**
 
 ## Screens
 
-- **Expenses:** one month at a time, filtered by category, group, where it's charged, and one-time or repeating. Shows the total for what's listed and exports it as CSV.
+- **Month:** one month picker in the page header, before Refresh, sets the month for Expenses, Office and Monthly.
+- **Expenses:** one filter row (category, group, where it's charged, one-time or repeating) scopes everything below it.
+  - **Spending, month by month:** six months as columns. Hover shows where the money went; clicking or pressing Enter on a column opens that month.
+  - **By category:** the month's split as a ring, at most six slices with the rest folded into "Other". Hovering shows the amount, and clicking a slice or legend row filters to that category.
+  - The cards tilt toward the cursor for depth; the marks stay flat, so lengths and angles read true. Every value is also in the legend, the list or the Monthly tab.
+  - **The list:** the month's expenses with their total. Exports as CSV.
+- **Adding an expense:** "+ New group…" (Edit) and "+ New category…" (Manage) at the end of the lists add one without leaving the panel.
 - **Office:** the same list, limited to Office, with the Office's own monthly total.
 - **Monthly:** the last 3, 6 or 12 months for Office, Personal, each venture and overall, plus the chosen month by category. Exports as CSV.
 - **Subscriptions:**
@@ -91,5 +97,6 @@ The tracker has its own access list, under Settings. Each member has a **level**
 | PATCH / DELETE | `/v1/expenses/:id` | Edit |
 | POST | `/v1/expenses/:id/change` | Edit |
 | POST / PATCH | `/v1/expenses/settings/categories[/:id]` | Manage |
-| POST / PATCH | `/v1/expenses/settings/groups[/:id]` | Manage |
+| POST | `/v1/expenses/settings/groups` | Edit (start a group while adding an expense) |
+| PATCH | `/v1/expenses/settings/groups/:id` | Manage |
 | PUT | `/v1/expenses/settings/access/:userId` | Manage |

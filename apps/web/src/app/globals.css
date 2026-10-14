@@ -793,3 +793,8 @@ button {
   .vso-pop-wrap[data-hover] .vso-pop, .vso-pop-wrap[data-hover] .vso-pop-avatar { transform: none; }
   .vso-pop-wrap[data-hover] .vso-pop::after { animation: none; }
 }
+
+/* Expense tracker charts (components/expenses/expense-charts.tsx): one hue per category colour, validated for colour-blind separation
+   and contrast on the light and dark card surfaces; grey is the deliberate neutral. */
+:root { --expense-green: #2a9d5c; --expense-blue: #3b7dd8; --expense-amber: #c47f10; --expense-red: #d64560; --expense-purple: #8b5cf6; --expense-neutral: #7c8a82; }
+:root[data-theme="dark"] { --expense-green: #2f9a5c; --expense-blue: #4683d4; --expense-amber: #b67f22; --expense-red: #d9566e; --expense-purple: #8a6ae6; --expense-neutral: #8b978f; }

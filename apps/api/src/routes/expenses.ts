@@ -65,6 +65,19 @@ async function ensureSettings(db: AppDb, workspaceId: string): Promise<void> {
     if ((error as { code?: number }).code !== 11000) throw error;
   }
 }
+/**
+ * When no active member keeps Manage with restricted access (they left the workspace), the admin asking takes it back, recorded in the
+ * access list so the list shows what is true. Returns their access, changed or not.
+ */
+async function reclaimIfOrphaned(db: AppDb, workspaceId: string, settings: Settings, actor: NonNullable<Request["actor"]>): Promise<ExpenseAccess & { custom: boolean }> {
+  const mine = accessOf(settings, actor.id, actor.membership.role);
+  if (actor.membership.role !== "admin" || (mine.level === "manage" && mine.restricted) || (await keepersOf(db, workspaceId, settings)).keepers.length) return mine;
+  await db.collection(SETTINGS).updateOne({ _id: workspaceId as never }, { $set: { [`access.${actor.id}`]: { level: "manage", restricted: true }, updatedAt: new Date() } });
+  await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: "expense.access.reclaim", objectType: "expense_access", objectId: actor.id, result: "success" });
+  settings.access = { ...settings.access, [actor.id]: { level: "manage", restricted: true } };
+  return { level: "manage", restricted: true, custom: true };
+}
+
 /** The active members who keep Manage with restricted access. */
 async function keepersOf(db: AppDb, workspaceId: string, settings: Settings, session?: ClientSession) {
   const memberships = await db.collection("memberships").find({ workspaceId, status: "active" }, { session }).project({ userId: 1, role: 1 }).toArray();
@@ -91,9 +104,8 @@ export function expenseRoutes(database: Database): Router {
     const workspaceId = actor.membership.workspaceId;
     await ensureSettings(db, workspaceId);
     const settings = await loadSettings(db, workspaceId, session);
-    let me = accessOf(settings, actor.id, actor.membership.role);
-    // Nobody left who keeps Manage with restricted access (they left the workspace): any admin can take it back, so it is never locked.
-    if (actor.membership.role === "admin" && !(me.level === "manage" && me.restricted) && !(await keepersOf(db, workspaceId, settings, session)).keepers.length) me = { level: "manage", restricted: true, custom: me.custom };
+    // Nobody left who keeps Manage with restricted access (they left the workspace): an admin takes it back, so it is never locked.
+    const me = await reclaimIfOrphaned(db, workspaceId, settings, actor);
     if (!expenseAccessAtLeast(me.level, needed)) {
       await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: `expense.${needed}`, objectType: "expense", result: "denied" });
       if (me.level === "none") throw new AppError(404, "NOT_FOUND", "Not found");
@@ -131,9 +143,7 @@ export function expenseRoutes(database: Database): Router {
     if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
     const actor = req.actor!;
     await ensureSettings(db, actor.membership.workspaceId);
-    const settings = await loadSettings(db, actor.membership.workspaceId);
-    let { level, restricted } = accessOf(settings, actor.id, actor.membership.role);
-    if (actor.membership.role === "admin" && !(level === "manage" && restricted) && !(await keepersOf(db, actor.membership.workspaceId, settings)).keepers.length) ({ level, restricted } = { level: "manage", restricted: true });
+    const { level, restricted } = await reclaimIfOrphaned(db, actor.membership.workspaceId, await loadSettings(db, actor.membership.workspaceId), actor);
     res.json(ok({ level, restricted }));
   });
 
@@ -283,10 +293,11 @@ export function expenseRoutes(database: Database): Router {
     res.json(ok(updated));
   });
 
+  // Anyone who adds expenses may start a group while adding one (renaming and archiving stay with managers).
   router.post("/expenses/settings/groups", async (req, res) => {
     const input = expenseGroupInputSchema.parse(req.body ?? {});
     const created = await atomic(database, async (session) => {
-      const { workspaceId, settings, record } = await gate(req, "manage", session);
+      const { workspaceId, settings, record } = await gate(req, "edit", session);
       if (sameName(settings.groups, input.name)) throw new AppError(409, "CONFLICT", `There is already a group called ${input.name}`);
       if (settings.groups.length >= MAX_GROUPS) throw new AppError(409, "CONFLICT", `At most ${MAX_GROUPS} groups: archive one you no longer use`);
       const group: ExpenseGroup = { id: shortId(), ...input, archived: false };

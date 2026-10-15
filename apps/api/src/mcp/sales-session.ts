@@ -35,7 +35,7 @@ export async function requireSession(ctx: ToolContext, sessionId: string, mode?:
   const has = (found.mode ?? "work") as SessionMode;
   if (mode && has !== mode) {
     throw new ToolError(mode === "review"
-      ? "This conversation started as a work session, so it can't review drafts: reviews come from a different conversation. Open a new Claude conversation and call start_sales with mode review there."
+      ? "This conversation started as a work session, so it can't review drafts: reviews come from a different conversation. Open a new Claude conversation and call start_sales with mode review there (in a full run in Claude Code: start a fresh subagent that does only that)."
       : "This conversation started as a review session, so it only reviews drafts: it can't write drafts, verdicts or proposals, log replies or calls, or change, add or enrich leads. Open a new Claude conversation and call start_sales (mode work) there.", 409);
   }
 }

@@ -62,39 +62,72 @@ export function optionLabel(value: string, max = 40): string {
 
 /**
  * The research suggestion, by batch and never by total. `cities` is the busiest cities of all the new leads, biggest first.
- * Up to one batch: "Research the 4 new Raipur leads". More: "Research the newest leads: Indore (101), Raipur (94) or Nagpur (74). Say a city and I'll take the first 25".
+ * Up to one batch: "Research and judge the 4 new Raipur leads". More: "Research and judge the newest leads: Indore (101), Raipur (94) or Nagpur
+ * (74). Say a city and I'll take the first 25".
  */
 export function researchOption(total: number, cities: CityCount[] = []): string {
   const top = cities.map((row) => ({ ...row, city: optionLabel(row.city) })).filter((row) => row.city && row.count > 0).slice(0, 3);
   if (total <= BATCH) {
-    if (top.length === 1 && top[0]!.count >= total) return `Research the ${plural(total, `new ${top[0]!.city} lead`)}`;
-    if (top.length > 1) return `Research the ${plural(total, "new lead")} (${top.map((row) => `${row.city} ${row.count}`).join(", ")})`;
-    return `Research the ${plural(total, "new lead")}`;
+    if (top.length === 1 && top[0]!.count >= total) return `Research and judge the ${plural(total, `new ${top[0]!.city} lead`)}`;
+    if (top.length > 1) return `Research and judge the ${plural(total, "new lead")} (${top.map((row) => `${row.city} ${row.count}`).join(", ")})`;
+    return `Research and judge the ${plural(total, "new lead")}`;
   }
-  if (top.length > 1) return `Research the newest leads: ${orList(top.map((row) => `${row.city} (${row.count})`))}. Say a city and I'll take the first ${BATCH}`;
-  if (top.length === 1 && top[0]!.count >= total) return `Research ${batchOf(total, `new ${top[0]!.city} lead`)}`;
-  return `Research ${batchOf(total, "new lead")}`;
+  if (top.length > 1) return `Research and judge the newest leads: ${orList(top.map((row) => `${row.city} (${row.count})`))}. Say a city and I'll take the first ${BATCH}`;
+  if (top.length === 1 && top[0]!.count >= total) return `Research and judge ${batchOf(total, `new ${top[0]!.city} lead`)}`;
+  return `Research and judge ${batchOf(total, "new lead")}`;
 }
+
+/** The full run's prompt: find leads and take them all the way to drafts that passed an independent review (the skill's steps/full-run.md). */
+export const FULL_RUN_PROMPT = "find 10 <kind> in <place> and take them to ready drafts";
+/** The option that offers it, when nothing more urgent waits or a search has just found companies. */
+export const FULL_RUN_OPTION = "Find 10 leads and take them to ready drafts: tell me the kind of business and the place";
+
+/**
+ * The app's one-line "Ask Claude" prompts (the person copies one into Claude) and the whole step each one means, in start_sales' `askClaude`.
+ * The `next` options above and daybreak's plan use the same words, so the app and Claude speak the same language.
+ */
+export const ASK_CLAUDE: Readonly<Record<string, string>> = {
+  "run my morning": "daybreak, then its `then` plan in order, then the summary as one table.",
+  "draft replies to my inbox": "inbox (waiting), get_lead where needed, then one save_drafts call: purpose reply, inReplyTo each lead's latest message. Opt-outs and hostile replies get nothing; a message with no reply type is sorted by a person in the app's Inbox.",
+  "write first messages for my recommended leads": "find_leads (verdict recommend, stage approved_for_contact, owner me), get_offer, then save_drafts (purpose first_touch, 25 at a time); a lead with a first message already waiting is refused for that lead. A lead that opted in to WhatsApp also gets a WhatsApp version.",
+  "write the first message for <company>": "get_lead and get_offer, then save_draft (purpose first_touch), and a WhatsApp version too when the lead opted in.",
+  "write a WhatsApp version for <company>": "get_lead and get_offer, then save_draft with channel whatsapp and purpose first_touch, keeping the email version's opening signal and question. Only for a lead that opted in and whose first message is still due (nothing sent to it, nothing from it: a lead that wrote to us gets a reply).",
+  "fix the drafts that need changes": "list_drafts (status needs_changes, scope mine), then revise_draft each one with exactly the reviewer's issues; they go back to review in another chat.",
+  "review drafts": "Only in a new chat: start_sales with mode review, list_drafts (status in_review) with its sessionId, get_lead and get_offer per draft, then review_draft pass or fail with exact issues. Never rewrite a draft.",
+  "research and judge <company>": "get_lead, get_offer, read the company's own pages, then save_verdict: evidence with quotes first, the case against, decide last.",
+  "find <industry> companies in <city>": "The full run (below) unless the person says “just find”: then find_leads to skip known companies, search_companies, show the best few, and add_leads the ones the person picks (or plan_find_run for a bigger search).",
+  [FULL_RUN_PROMPT]: "The full run, one offer, never sending or approving: find (find_leads to skip known companies, search_companies, add_leads the best ones with their sources; or the find run the person asked for), research and judge each (get_offer, then save_verdicts with quoted evidence; holds and rejects keep their reasons), save_drafts the first messages of the recommended (email, and the WhatsApp version for opted-in leads), then an independent review: in Claude Code a fresh subagent starts start_sales mode review and passes or fails only this run's drafts; revise_draft what failed and review once more (two rounds at most); elsewhere end with “open a new chat and say review drafts”. Batches of 25, within the daily caps. End with one summary: found, recommended, hold, rejected, drafts ready, drafts that need the person, and the next step (approve and send in Review).",
+};
 
 /** `noOffer`: the person's ventures have no offer set up yet (docs/sales-offers.md), so setting one up is offered once nothing more urgent waits. */
 type StartInput = { mode: "work" | "review"; counts: Record<string, number>; stageCounts?: Record<string, number>; cities?: CityCount[]; newLeads?: number; noOffer?: boolean };
 
-/** The session's three options, tied to what is really waiting. The first is the suggestion. */
+/**
+ * The session's three options, tied to what is really waiting. The first is the suggestion. Each starts with the words the app's "Ask Claude"
+ * prompts use for that step ("Draft replies to my inbox", "Review drafts", "Fix the drafts that need changes", "Write a WhatsApp version for…",
+ * "Write first messages for my recommended leads", "Research and judge…"), so the app and Claude speak the same language; the count follows in
+ * brackets (a card's button leaves it out).
+ */
 export function startNext({ mode, counts, cities, newLeads, noOffer }: StartInput): string[] {
+  // Drafts waiting for Claude's review: `inReview` (the overview's `toReview` also holds drafts sent back and drafts waiting for a person).
+  const toReview = counts.inReview ?? counts.toReview ?? 0;
   if (mode === "review") {
-    if (counts.toReview) return [`Review ${theBatch(counts.toReview, "draft")} waiting`, "Look at the first draft before I review it", "See which of them are for the first batch of a play"];
+    if (toReview) return [`Review ${theBatch(toReview, "draft")} waiting`, "Look at the first draft before I review it", "See which of them are for the first batch of a play"];
     return ["Nothing is waiting for review yet: write some drafts in a work chat first", "See what is ready to send", "Go back to today's overview"];
   }
   const options: string[] = [];
-  if (counts.replies) options.push(`Sort ${theBatch(counts.replies, "reply", "replies")} waiting (warm replies are due within 2 working hours)`);
+  if (counts.replies) options.push(`Draft replies to my inbox (${batchOf(counts.replies, "reply", "replies")} waiting; warm ones are due within 2 working hours)`);
   if (counts.callsDue) options.push(counts.callsDue > BATCH ? `Plan the first ${BATCH} of today's ${counts.callsDue} calls` : `Plan today's ${plural(counts.callsDue, "call")}`);
-  if (counts.toReview) options.push(`Get ${theBatch(counts.toReview, "draft")} waiting reviewed (open a new chat and say “review drafts”)`);
+  if (toReview) options.push(`Review drafts: open a new chat and say “review drafts” (${batchOf(toReview, "draft")} waiting)`);
+  if (counts.needsChanges) options.push(`Fix the drafts that need changes (${batchOf(counts.needsChanges, "draft")} sent back)`);
   if (counts.followUpsDue) options.push(`Write the one follow-up for ${batchOf(counts.followUpsDue, "lead")} that went quiet`);
+  if (counts.whatsappVersionsToWrite) options.push(`Write a WhatsApp version for my opted-in leads (${batchOf(counts.whatsappVersionsToWrite, "lead")} with only an email first message)`);
+  if (counts.firstMessagesToWrite) options.push(`Write first messages for my recommended leads (${batchOf(counts.firstMessagesToWrite, "lead")} waiting)`);
   if (newLeads) options.push(researchOption(newLeads, cities));
   if (counts.needsYou) options.push(`Go through ${theBatch(counts.needsYou, "verdict")} that need your decision`);
   if (counts.wonToHandOver) options.push(`Hand over ${batchOf(counts.wonToHandOver, "won deal")} to delivery`);
   if (noOffer) options.push("Set up the first offer: tell me what you sell and who buys it");
-  for (const fallback of ["Find new leads: tell me the area and the kind of business", "Plan the next play", "Look at what is working this week"]) if (options.length < 3) options.push(fallback);
+  for (const fallback of [FULL_RUN_OPTION, "Plan the next play", "Look at what is working this week"]) if (options.length < 3) options.push(fallback);
   return options.slice(0, 3);
 }
 

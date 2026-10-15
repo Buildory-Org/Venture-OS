@@ -378,6 +378,32 @@ test("Daybreak: the morning list fills itself from follow-ups, stale verdicts, m
   expectStatus(await h.call("head", "POST", `/sales/drafts/${batchDraft.id}/review`, { result: "pass" }), 200);
   const unsure = await newLead(h, "venture-r4");
   await claudeVerdict(h, unsure.id, "hold", "medium");
+  // WhatsApp versions: a recommended lead that opted in and whose first message waits as an email only is listed; one that already has its
+  // WhatsApp version, one whose first message went out, and one that never opted in are not.
+  const optIn = { at: new Date(now - HOUR), by: "user-contrib", how: "yes_on_call" };
+  const emailOnly = await newLead(h, "venture-r4");
+  await claudeVerdict(h, emailOnly.id, "recommend", "medium");
+  const emailVersion = expectStatus(await h.call("contrib", "POST", `/sales/leads/${emailOnly.id}/drafts`, { channel: "email", subject: "Dealer orders", body: "Email version of the first message" }), 201).data;
+  const bothVersions = await newLead(h, "venture-r4");
+  await claudeVerdict(h, bothVersions.id, "recommend", "medium");
+  expectStatus(await h.call("contrib", "POST", `/sales/leads/${bothVersions.id}/drafts`, { channel: "email", subject: "Dealer orders", body: "Email version" }), 201);
+  const notOptedIn = await newLead(h, "venture-r4");
+  await claudeVerdict(h, notOptedIn.id, "recommend", "medium");
+  expectStatus(await h.call("contrib", "POST", `/sales/leads/${notOptedIn.id}/drafts`, { channel: "email", subject: "Dealer orders", body: "Email only, no opt-in" }), 201);
+  // ...nor one whose first message already went out while its email version stayed open (left from before versions closed each other),
+  // one that wrote to us first (it gets a reply), or one already written to.
+  const alreadySent = await newLead(h, "venture-r4");
+  await claudeVerdict(h, alreadySent.id, "recommend", "medium");
+  expectStatus(await h.call("contrib", "POST", `/sales/leads/${alreadySent.id}/drafts`, { channel: "email", subject: "Dealer orders", body: "Email version still open" }), 201);
+  const sentWhatsapp = expectStatus(await h.call("contrib", "POST", `/sales/leads/${alreadySent.id}/drafts`, { channel: "whatsapp", body: "WhatsApp version that went" }), 201).data;
+  await db.collection("sales_drafts").updateOne({ _id: sentWhatsapp.id }, { $set: { status: "sent", sentAt: new Date(now - HOUR) } });
+  const wroteFirst = await newLead(h, "venture-r4");
+  await claudeVerdict(h, wroteFirst.id, "recommend", "medium");
+  expectStatus(await h.call("contrib", "POST", `/sales/leads/${wroteFirst.id}/drafts`, { channel: "email", subject: "Dealer orders", body: "Email written before they wrote" }), 201);
+  await db.collection("sales_activities").insertOne({ _id: `wrote-first-${suffix}`, workspaceId: "workspace-a", ventureId: "venture-r4", leadId: wroteFirst.id, actorId: "user-contrib", via: "system", kind: "whatsapp", direction: "in", body: "Hi", at: new Date(now - DAY), handledAt: new Date(now - DAY), createdAt: new Date(now - DAY) });
+  await leads.updateMany({ _id: { $in: [emailOnly.id, bothVersions.id, followed.id, alreadySent.id, wroteFirst.id] } }, { $set: { whatsappOptIn: optIn } });
+  await leads.updateOne({ _id: wroteFirst.id }, { $set: { stage: "replied" } });
+  expectStatus(await h.call("contrib", "POST", `/sales/leads/${bothVersions.id}/drafts`, { channel: "whatsapp", body: "WhatsApp version" }), 201);
 
   const counts = async () => Object.fromEntries(await Promise.all(["opportunities", "sales_activities", "sales_drafts", "sales_verdicts", "sales_find_runs", "audit_events", "notification_outbox"].map(async (name) => [name, await db.collection(name).countDocuments()] as const)));
   const before = await counts();
@@ -420,8 +446,14 @@ test("Daybreak: the morning list fills itself from follow-ups, stale verdicts, m
   assert.deepEqual([email.used, email.cap, email.left], [sentToday, 20, 20 - sentToday]);
   assert.deepEqual(caps.channels.find((row) => row.channel === "call"), { channel: "call", used: 1, cap: null, left: null });
 
-  assert.deepEqual(d.counts, { followUpsDue: 2, staleVerdicts: 3, needsContacts: 2, callsToday: d.callsToday.length, repliesWaiting: 1, repliesOverSla: 1, draftsToApprove: 1, needsYou: 1 });
-  assert.match(d.summary, /^1 reply waiting over 2h, \d+ calls today, 2 follow-ups to draft, 1 draft to approve, 1 lead needs a decision, 3 verdicts to re-judge, 2 leads without contacts$/);
+  assert.deepEqual(d.whatsappVersions.map((item) => [item.id, item.optedIn.how, item.emailDraft.draftId, item.emailDraft.status, item.emailDraft.subject, item.emailDraft.body]), [[emailOnly.id, "yes_on_call", emailVersion.id, "in_review", "Dealer orders", "Email version of the first message"]]);
+
+  assert.deepEqual(d.counts, { followUpsDue: 2, staleVerdicts: 3, needsContacts: 2, callsToday: d.callsToday.length, repliesWaiting: 1, repliesOverSla: 1, draftsToApprove: 1, needsYou: 1, whatsappVersions: 1 });
+  assert.match(d.summary, /^1 reply waiting over 2h, \d+ calls today, 2 follow-ups to draft, 1 opted-in lead has no WhatsApp version, 1 draft to approve, 1 lead needs a decision, 3 verdicts to re-judge, 2 leads without contacts$/);
+  // A venture that doesn't use WhatsApp gets no WhatsApp versions to write.
+  expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-r4", { allowedChannels: ["call", "email"] }), 200);
+  assert.equal((await daybreak(h, "contrib", "ventureId=venture-r4")).counts.whatsappVersions, 0);
+  expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-r4", {}), 200);
 
   // Someone else's morning: a head with no leads of their own sees a clear morning; everyone's leads with owner=all.
   const headMorning = await daybreak(h, "head", "ventureId=venture-r4");

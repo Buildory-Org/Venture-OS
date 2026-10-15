@@ -10,8 +10,13 @@ const BAYER = [
   3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
 ].map((value) => (value + 0.5) / 64);
 
-/** Resolves any CSS color (including `var(--token)`) to RGB through the element's computed style. */
+/**
+ * Resolves any CSS color (including `var(--token)`) to RGB through the element's computed style. Transitions are off on the element first:
+ * with reduced motion every element transitions every property for 0.01ms (globals.css), and a color read in the middle of one is the old
+ * one (the inherited text color), which drew the whole fade in that color: a grey blob instead of the tone.
+ */
 function resolveColor(host: HTMLElement, value: string): [number, number, number] | null {
+  host.style.transitionProperty = "none";
   host.style.color = value;
   const match = /rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(getComputedStyle(host).color);
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;

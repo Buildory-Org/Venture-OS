@@ -32,7 +32,8 @@ You never need tool names or ids. Plain words work; say a company's name, not an
 |---|---|
 | **start sales** (or "start sales os") | Greets you, shows today (replies waiting, calls due, drafts to review) and offers three next steps. Say "yes" or a number. |
 | **run my morning** (or "daybreak") | Pulls the morning list (follow-ups due, leads without contacts, verdicts gone stale, today's calls, replies waiting and which are past the two-hour promise), then works it in order: drafts the follow-ups (each one refers back to the first message), asks the office PC to look up missing contacts, re-judges stale verdicts, and lists your calls and replies. Shows it as one table or artifact and asks what to do first. Nothing is sent. |
-| **find pump distributors in Indore** | Searches the web for real companies, leaves out the ones you already have and anyone on the do-not-contact list, shows the best few, and adds the ones you pick. |
+| **find 10 pump distributors in Indore** (or "find 10 leads and take them all the way") | The full run: searches the web for real companies (leaving out the ones you already have and anyone on the do-not-contact list), adds the best ones for the offer, researches and judges each with quoted evidence, writes the first messages for the recommended ones, has them checked by an independent reviewer, fixes what fails and has it checked once more, then shows one summary: how many were found, recommended, held and rejected, which drafts are ready and which need you. Nothing is sent or approved: you approve and send in Review. |
+| **just find pump distributors in Indore** | Only the search: shows the best few and adds the ones you pick. |
 | **research the new leads** | Reads each lead's own pages, writes the evidence with quotes and links, the case against, then recommends, holds or rejects. Low confidence is always a hold for you. |
 | **write first messages** | Writes a short message for each recommended lead, opening with the quoted signal. They wait for review: nothing is sent. |
 | **review drafts** (in a **new chat**) | A separate chat checks each draft against the rules and passes it or sends it back with the exact fixes. It never rewrites. |
@@ -73,7 +74,8 @@ shared notes.
 
 **Can't, by design:**
 
-- **Send anything.** You send from your own mail or phone, then mark it sent in the app.
+- **Send anything.** You send in the app: through your connected mailbox or the venture's WhatsApp number, or from your own
+  mail or phone and then mark it sent.
 - **Approve** a play, an offer, a shared note or a draft's first batch, **pause or archive** an offer, **override** a verdict, **confirm WhatsApp**, **mark a deal
   won**, reopen a lost lead, send a contacted lead back, or contact anyone on the do-not-contact list. These are
   people's decisions in the app: when Claude hits one it says so in one sentence and points you to the page.
@@ -84,15 +86,41 @@ shared notes.
 
 1. **Morning:** "run my morning". Claude drafts the follow-ups and queues missing contacts, then shows the replies (warm
    replies are due within two working hours) and the calls. "start sales" works too when you only want the overview.
-2. **Drafts:** "write first messages" for what is approved, then open a **new chat** and say "review drafts".
-3. **Send:** open Review in the app, send the ready drafts from your own mail or phone, and mark them sent. People get
+2. **Drafts:** "write first messages for my recommended leads", then open a **new chat** and say "review drafts". A lead that
+   said yes to WhatsApp (logged by you on the call, or they messaged us) gets a WhatsApp version of its first message next to the
+   email one ("write a WhatsApp version for <company>"): you pick which one to send, and sending one closes the other. Drafts sent
+   back by the review: "fix the drafts that need changes".
+3. **Send:** open Review in the app and send the ready drafts (one version per lead), through your connected account or by
+   hand and mark them sent. People get
    notified of replies, approvals and verdicts that need them.
-4. **After calls and replies:** tell Claude in one line ("log: ...", "I called ..."). It keeps the pipeline right.
-5. **New leads:** "find <kind of business> in <place>", then "research the new leads".
-6. **Friday:** "weekly review": the numbers, what is stuck, and up to three changes for you to agree to.
+4. **Replies:** answer them in the app's **Inbox**. A reply you write there is ready to send at once (your own reply needs no
+   review), or press "Ask Claude to check it first". Claude's replies ("draft replies to my inbox") are reviewed in a new chat,
+   then sent from the Inbox too. A reply that came to your phone or your own mail: log it with **They replied** on the lead.
+5. **After calls:** tell Claude in one line ("log: ...", "I called ..."). It keeps the pipeline right.
+6. **New leads:** "find 10 <industry> companies in <city>": Claude takes them all the way to drafts that passed review (below).
+7. **Friday:** "weekly review": the numbers, what is stuck, and up to three changes for you to agree to.
 
 Each venture has its own working days, daily caps, allowed channels and approval mode (a head sets them in the app);
 Claude reads them at the start and drafts within them.
+
+## The full run: from "find 10" to drafts ready to send
+
+Say what you want and where ("find 10 pump distributors in Indore"). Claude asks only what it can't decide (the place or the kind of
+business if you left them out, and which offer when the venture sells several), then works through every step without stopping:
+
+1. **Find**: real companies from the web that fit the offer, each with the page it came from and only the contacts the company
+   publishes. Companies you already have, and anyone on the do-not-contact list, are left out.
+2. **Judge**: each one against the offer's rules, with quotes and links. Holds and rejects are saved with the reason, so you can see
+   why.
+3. **Draft**: a first message for every recommended lead (and a WhatsApp version for a lead that already said yes to WhatsApp).
+4. **Independent review**: in Claude Code a fresh reviewer (a separate Claude that didn't write them) checks every draft and passes
+   it or sends it back with exact fixes; Claude fixes those and a new reviewer checks once more. On claude.ai the review can't run in
+   the same chat: Claude ends by asking you to open a new chat and say "review drafts".
+5. **One summary**: found, recommended, held, rejected, drafts ready and drafts that need you, with links, and how many you can
+   send today within the daily caps.
+
+Then open **Review** in the app, approve where your venture asks for it, and send. Claude never sends or approves anything. Say
+"just find" when you only want the companies.
 
 ## If something doesn't work
 

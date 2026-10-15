@@ -66,7 +66,9 @@ async function newLead(expect: ReturnType<typeof caller>["expect"], name: string
 }
 async function readyDraft(expect: ReturnType<typeof caller>["expect"], leadId: string, body: Record<string, unknown> = {}, author = "member") {
   const draft = (await expect(201, "POST", `/sales/leads/${leadId}/drafts`, author, { channel: "email", subject: "Orders on the phone", body: "Hello Asha, a short note about dealer orders.", ...body })).data;
-  await expect(200, "POST", `/sales/drafts/${draft.id}/review`, "member2", { result: "pass" });
+  // A reply a person writes to a message from the lead is ready at once (their own approval); everything else passes a review first.
+  if (body.purpose === "reply" && body.inReplyTo) assert.equal(draft.status, "ready", "a person's own reply is ready at once");
+  else { assert.equal(draft.status, "in_review"); await expect(200, "POST", `/sales/drafts/${draft.id}/review`, "member2", { result: "pass" }); }
   return draft;
 }
 const counter = async (db: any, channel: string, user = "user-member") => Number((await db.collection("sales_send_counters").findOne({ userId: user, channel }))?.count ?? 0);
@@ -469,4 +471,127 @@ test("one send at a time, the daily caps, mark sent by hand (with the account it
       assertNoSecrets(JSON.stringify(await db.collection("audit_events").find({}).toArray()), "the audit log");
     }, "channels_rules");
   } finally { email.restore(); whatsapp.restore(); instagram.restore(); }
+});
+
+test("versions through an account: sending one closes the lead's other versions, an unclear send stops them until it is settled, and settling it as sent closes them", { skip }, async () => {
+  const email = standIn("email");
+  const whatsapp = standIn("whatsapp");
+  try {
+    await withSalesApp(async ({ api, db }) => {
+      const { expect, texts } = caller(api);
+      account((await expect(201, "POST", "/sales/channels", "member", mailbox("member@acme.example"))).body);
+      const optIn = { at: new Date(), by: "user-member", how: "yes_on_call" };
+
+      // The email version goes out through the mailbox: the WhatsApp version of the same first message closes with it.
+      const lead = await newLead(expect, "Twin Pumps");
+      await db.collection("opportunities").updateOne({ _id: lead.id }, { $set: { whatsappOptIn: optIn } });
+      const mail = await readyDraft(expect, lead.id);
+      const chat = await readyDraft(expect, lead.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      const listed = (await expect(200, "GET", "/sales/drafts?status=ready", "member")).data as any[];
+      assert.deepEqual(listed.find((row) => row.id === mail.id).otherVersions, [{ id: chat.id, channel: "whatsapp", status: "ready" }]);
+      const sent = await expect(201, "POST", `/sales/drafts/${mail.id}/send`, "member", { requestId: "req-twin-0001" });
+      assert.equal(sent.data.draft.status, "sent");
+      const closed = (await db.collection("sales_drafts").findOne({ _id: chat.id }))!;
+      assert.deepEqual([closed.status, closed.closedReason, closed.sentVersion.draftId, closed.sentVersion.channel, closed.discardedReason], ["discarded", "sent_on_other_channel", mail.id, "email", "The email version of this first message was sent"]);
+      assert.deepEqual((await db.collection("audit_events").findOne({ action: "sales.draft.sent", objectId: mail.id }))?.metadata, { channel: "email", sentVia: "smtp", stageTo: "contacted", closedVersions: 1 });
+      await expect(409, "POST", `/sales/drafts/${chat.id}/sent`, "member", {});
+      const replayed = await expect(201, "POST", `/sales/drafts/${mail.id}/send`, "member", { requestId: "req-twin-0001" });
+      assert.equal(replayed.data.activity.id, sent.data.activity.id);
+      assert.equal(email.sends.length, 1);
+      assert.equal(await db.collection("audit_events").countDocuments({ action: "sales.draft.discard", objectId: chat.id }), 1);
+      assert.equal(whatsapp.sends.length, 0);
+
+      // An unclear send holds the other version back (by hand or through an account) until a person says whether it went.
+      const lead2 = await newLead(expect, "Twin Tiles");
+      await db.collection("opportunities").updateOne({ _id: lead2.id }, { $set: { whatsappOptIn: optIn } });
+      const mail2 = await readyDraft(expect, lead2.id);
+      const chat2 = await readyDraft(expect, lead2.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      email.state.answer = async () => ({ state: "uncertain", error: "The mail server stopped answering while the message was being sent" });
+      await expect(202, "POST", `/sales/drafts/${mail2.id}/send`, "member", { requestId: "req-twin-0002" });
+      assert.match((await expect(409, "POST", `/sales/drafts/${chat2.id}/sent`, "member", {})).body.error.message, /The email version of this first message is being sent \(or its send is unclear\): only one version goes out/);
+      assert.match((await expect(409, "POST", `/sales/drafts/${chat2.id}/send`, "member", { requestId: "req-twin-0003" })).body.error.message, /is being sent \(or its send is unclear\)/);
+      assert.equal((await db.collection("sales_drafts").findOne({ _id: chat2.id }))!.status, "ready");
+      // "It went out": recorded as sent, and the WhatsApp version closes.
+      await expect(201, "POST", `/sales/drafts/${mail2.id}/delivery`, "member", { outcome: "sent" });
+      const closed2 = (await db.collection("sales_drafts").findOne({ _id: chat2.id }))!;
+      assert.deepEqual([closed2.status, closed2.closedReason, closed2.sentVersion.draftId], ["discarded", "sent_on_other_channel", mail2.id]);
+
+      // "It didn't go": the other version is free again, and sending it by hand closes the email version.
+      const lead3 = await newLead(expect, "Twin Steel");
+      await db.collection("opportunities").updateOne({ _id: lead3.id }, { $set: { whatsappOptIn: optIn } });
+      const mail3 = await readyDraft(expect, lead3.id);
+      const chat3 = await readyDraft(expect, lead3.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      await expect(202, "POST", `/sales/drafts/${mail3.id}/send`, "member", { requestId: "req-twin-0004" });
+      await expect(200, "POST", `/sales/drafts/${mail3.id}/delivery`, "member", { outcome: "not_sent" });
+      await expect(201, "POST", `/sales/drafts/${chat3.id}/sent`, "member", {});
+      const closed3 = (await db.collection("sales_drafts").findOne({ _id: mail3.id }))!;
+      assert.deepEqual([closed3.status, closed3.closedReason, closed3.sentVersion.channel], ["discarded", "sent_on_other_channel", "whatsapp"]);
+      assert.equal(whatsapp.sends.length, 0);
+      for (const text of texts) assertNoSecrets(text, "an answer");
+    }, "channels_versions");
+  } finally { email.restore(); whatsapp.restore(); }
+});
+
+test("the version the person read, replies as versions and where a send goes: expectedUpdatedAt refuses a changed draft before anything is claimed, a refused claim gives the draft back with its updatedAt, sending one reply closes the others to that message, and sendTarget names the number the lead wrote from", { skip }, async () => {
+  const email = standIn("email");
+  const whatsapp = standIn("whatsapp");
+  try {
+    await withSalesApp(async ({ api, db }) => {
+      const { expect, texts } = caller(api);
+      account((await expect(201, "POST", "/sales/channels", "member", mailbox("member@acme.example"))).body);
+      const lead = await newLead(expect, "Version Pumps");
+      const inbound = (await expect(201, "POST", `/sales/leads/${lead.id}/activities`, "member", { kind: "email", direction: "in", body: "Send details" })).data.activity;
+      // A person's own reply (ready at once), opened, then edited by them (it stays ready): the version they read is gone.
+      const draft = await readyDraft(expect, lead.id, { purpose: "reply", inReplyTo: inbound.id, subject: "Re: details", body: "Details below." });
+      // A second reply to the same message, sent to Claude's check: a version of the same answer.
+      const checked = (await expect(201, "POST", `/sales/leads/${lead.id}/drafts`, "member", { channel: "email", purpose: "reply", inReplyTo: inbound.id, subject: "Re: details", body: "Details, checked first.", checkByClaude: true })).data;
+      assert.equal(checked.status, "in_review");
+      const seen = (await expect(200, "GET", `/sales/drafts/${draft.id}`, "member")).data;
+      assert.deepEqual(seen.sendTarget, { channel: "email", to: "asha@versionpumps.example" });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await expect(200, "PATCH", `/sales/drafts/${draft.id}`, "member", { body: "Details below, and a price range." });
+      const changed = await expect(409, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-seen-0001", expectedUpdatedAt: seen.updatedAt });
+      assert.deepEqual([changed.body.error.code, changed.body.error.message], ["DRAFT_CHANGED", "This draft changed since you opened it: read it again before sending"]);
+      assert.deepEqual([email.sends.length, await counter(db, "email")], [0, 0]);
+      const untouched = (await db.collection("sales_drafts").findOne({ _id: draft.id }))!;
+      assert.deepEqual([untouched.status, untouched.sendLock, untouched.delivery, untouched.sendAttempts], ["ready", undefined, undefined, undefined]);
+      // A claim refused after it was taken (here the day's cap) gives the draft back as it was, its updatedAt too: the version read can still go.
+      const read = (await expect(200, "GET", `/sales/drafts/${draft.id}`, "member")).data.updatedAt as string;
+      await expect(200, "PUT", "/sales/settings?ventureId=venture-a", "lead", { dailyCaps: { email: 0 } });
+      assert.match((await expect(409, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-seen-0002", expectedUpdatedAt: read })).body.error.message, /daily email limit/);
+      const givenBack = (await db.collection("sales_drafts").findOne({ _id: draft.id }))!;
+      assert.deepEqual([givenBack.status, givenBack.sendLock, givenBack.delivery, givenBack.updatedAt.toISOString()], ["ready", undefined, undefined, read]);
+      await expect(200, "PUT", "/sales/settings?ventureId=venture-a", "lead", {});
+      // The version read goes, with its text; the other reply to the same message closes with it.
+      const sent = await expect(201, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-seen-0003", expectedUpdatedAt: read });
+      assert.equal(sent.data.draft.status, "sent");
+      assert.equal(email.sends.at(-1)!.body, "Details below, and a price range.");
+      const closed = (await db.collection("sales_drafts").findOne({ _id: checked.id }))!;
+      assert.deepEqual([closed.status, closed.closedReason, closed.statusBeforeClose, closed.sentVersion.draftId, closed.sentVersion.channel], ["discarded", "other_reply_sent", "in_review", draft.id, "email"]);
+      assert.deepEqual((await db.collection("audit_events").findOne({ action: "sales.draft.sent", objectId: draft.id }))?.metadata?.closedVersions, 1);
+      // The same requestId repeats the first answer, although the draft's updatedAt moved on when it was sent.
+      assert.equal((await expect(201, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-seen-0003", expectedUpdatedAt: read })).data.activity.id, sent.data.activity.id);
+      assert.equal(email.sends.length, 1);
+      // Without expectedUpdatedAt a send works as before.
+      const plain = await readyDraft(expect, (await newLead(expect, "Plain Pumps")).id);
+      await expect(201, "POST", `/sales/drafts/${plain.id}/send`, "member", { requestId: "req-plain-0001" });
+
+      // Where a WhatsApp send would go: the lead's phone route, until a conversation links the number it wrote from on the venture's number.
+      const number = account((await expect(201, "POST", "/sales/channels", "lead", whatsappNumber())).body);
+      const linked = await newLead(expect, "Linked Tiles");
+      await db.collection("opportunities").updateOne({ _id: linked.id }, { $set: { whatsappOptIn: { at: new Date(), by: "user-member", how: "they_messaged" } } });
+      const chat = await readyDraft(expect, linked.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      const targetOf = async (id: string) => (await expect(200, "GET", `/sales/drafts/${id}`, "member")).data.sendTarget;
+      assert.deepEqual(await targetOf(chat.id), { channel: "whatsapp", to: "+919876543210" });
+      await db.collection("sales_channel_contacts").insertOne({ _id: "link-version-1", workspaceId: "workspace-a", accountId: number.id, externalUserId: "+447700900123", leadId: linked.id, ventureId: "venture-a", kind: "whatsapp", how: "linked", linkedBy: "user-member", createdAt: new Date(), updatedAt: new Date() } as never);
+      assert.deepEqual(await targetOf(chat.id), { channel: "whatsapp", to: "+447700900123" });
+      const listed = (await expect(200, "GET", "/sales/drafts?status=ready", "member")).data as any[];
+      assert.deepEqual(listed.find((row) => row.id === chat.id).sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      assert.deepEqual((await expect(200, "GET", `/sales/leads/${linked.id}`, "member")).data.drafts.find((row: any) => row.id === chat.id).sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      // ...and the send goes exactly there (with a template: they haven't written in the last 24 hours).
+      await expect(201, "POST", `/sales/drafts/${chat.id}/send`, "member", { requestId: "req-link-0001", template: { name: "hello", language: "en" } });
+      assert.equal(whatsapp.sends.at(-1)!.to, "+447700900123");
+      for (const text of texts) assertNoSecrets(text, "an answer");
+    }, "channels_expected");
+  } finally { email.restore(); whatsapp.restore(); }
 });

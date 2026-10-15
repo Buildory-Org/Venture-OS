@@ -5,6 +5,9 @@ import clsx from "clsx";
 
 export type SlidingTab = { key: string; label: React.ReactNode; badge?: number };
 
+/** The id of a tab in a set given `panelId`: the panel names the active one with `aria-labelledby={tabDomId(panelId, active)}`. */
+export const tabDomId = (panelId: string, key: string) => `${panelId}-tab-${key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
 /** Decision 2C: give the content under a set of tabs `vso-tab-enter` plus the direction of the switch (key the content by tab). */
 export function useTabMotion(active: string, keys: readonly string[]) {
   const [last, setLast] = useState({ active, dir: 0 });
@@ -20,6 +23,7 @@ export function SlidingTabs({
   className,
   fitContent = true,
   tone = "light",
+  panelId,
 }: {
   tabs: SlidingTab[];
   active: string;
@@ -29,6 +33,8 @@ export function SlidingTabs({
   fitContent?: boolean;
   /** "dark" sits on a dark header (document reader): white pill, light text. */
   tone?: "light" | "dark";
+  /** The id of the one tab panel these tabs show (`role="tabpanel"`): each tab gets an id and `aria-controls` pointing at it. */
+  panelId?: string;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
@@ -95,6 +101,7 @@ export function SlidingTabs({
       <span ref={indicatorRef} aria-hidden="true" className={clsx("vso-tab-indicator pointer-events-none absolute left-0 top-0 z-0 rounded-lg", tone === "dark" ? "bg-[#fff]" : "bg-primary-100")} />
       {tabs.map((tab) => (
         <button key={tab.key} type="button" role="tab" aria-selected={active === tab.key}
+          {...(panelId ? { id: tabDomId(panelId, tab.key), "aria-controls": panelId } : {})}
           tabIndex={active === tab.key ? 0 : -1} data-tab-key={tab.key}
           onClick={() => onChange(tab.key)}
           className={clsx("relative z-10 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg font-semibold",

@@ -108,9 +108,10 @@ export function approvalOf(draft: ReviewDraft, play: Play | undefined, settings:
     if (!draft.needsPersonApproval) return none;
     return { needed: true, reason: draft.approvalReason ?? (settings?.approvalMode === "person_approves_every_message" ? "every_message" : "first_batch") };
   }
-  // Any approval lets a message go where every message is approved; a play's first batch needs a head's (or admin's) approval.
+  // Any approval lets a message go where every message is approved; a play's first batch needs a head's (or admin's) approval. A person's
+  // own reply is approved by its author in either mode.
   if (settings?.approvalMode === "person_approves_every_message") return draft.channel === "call_opener" || draft.personApproval ? none : { needed: true, reason: "every_message" };
-  const headApproved = Boolean(draft.personApproval) && draft.personApproval?.byHead !== false;
+  const headApproved = Boolean(draft.personApproval) && (draft.personApproval?.byHead !== false || draft.personApproval?.own === true);
   return !headApproved && draft.playId && play && !play.firstBatchReviewed ? { needed: true, reason: "first_batch" } : none;
 }
 /** Who may approve: a venture head or admin for a play's first batch; also the lead's owner where every message is approved. */
@@ -228,7 +229,7 @@ export async function copyText(text: string, label = "Copied to clipboard") {
 }
 
 /** True while someone is typing or a dialog is open, so single-key shortcuts must not fire. */
-export const typingTarget = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || !!target.closest('[role="combobox"], [role="dialog"], [role="alertdialog"]'));
+export const typingTarget = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || !!target.closest('[role="combobox"], [role="dialog"], [role="alertdialog"], [role="menu"]'));
 
 // ---- Small visual pieces ---------------------------------------------------------------------------------
 

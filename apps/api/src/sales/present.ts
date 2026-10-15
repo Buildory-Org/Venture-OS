@@ -6,7 +6,7 @@ import { normalizeStage } from "./rules.js";
 import { FOLLOW_UP_WORKING_DAYS } from "./rules.js";
 import { workingDaysBetween, type WorkCalendar } from "./workdays.js";
 
-const INTERNAL_FIELDS = new Set(["deletedAt", "deletedBy", "suppressKeys", "suppressKeysV", "disqualifiedByVerdict", "approvedForContactBy", "payloadHash", "importUpdatedAt", "claimedBy", "key", "rawValue", "keyV", "sendLog"]);
+const INTERNAL_FIELDS = new Set(["deletedAt", "deletedBy", "suppressKeys", "suppressKeysV", "disqualifiedByVerdict", "approvedForContactBy", "payloadHash", "importUpdatedAt", "claimedBy", "key", "rawValue", "keyV", "sendLog", "statusBeforeClose"]);
 
 /** A stored row as API JSON. Fields the driver wrote as null (it turns undefined into null) read as absent. */
 export function present(doc: AppDocument): Record<string, unknown> {

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { REPORT_MIN_N, REPORT_SMALL_N, type Daybreak, type ReportRate, type ReportStat, type SalesReport } from "@venture-studio/contracts";
 import { clean, clip, compact, localTime, validTimeZone } from "./format.js";
 import { id, type Look, READ_ONLY, type Register, timezoneField, type ToolContext } from "./kit.js";
-import { BATCH, batchOf, guided, optionLabel, theBatch, viewHint } from "./sales-guided.js";
+import { BATCH, FULL_RUN_OPTION, batchOf, guided, optionLabel, theBatch, viewHint } from "./sales-guided.js";
 
 // The Dealflow Sales connector's two read-only accountability tools (docs/sales-reports-and-daybreak.md):
 // - weekly_report: GET /v1/sales/reports, compacted: funnel, sources, reply types, speed and the 2-hour promise, Claude's calibration with its
@@ -105,9 +105,10 @@ export function reportNext(report: SalesReport, range: ReportRangeName): string[
 // ---- Daybreak -------------------------------------------------------------------------------------------------------------
 
 /** One line on the morning, in the order the plan works: "3 follow-ups to draft, 12 leads without contacts, 2 replies waiting over 2h." */
-export function daybreakSay(counts: Daybreak["counts"], slaHours: number): string {
+export function daybreakSay(counts: Omit<Daybreak["counts"], "whatsappVersions"> & { whatsappVersions?: number }, slaHours: number): string {
   const parts = [
     counts.followUpsDue ? `${plural(counts.followUpsDue, "follow-up")} to draft` : "",
+    counts.whatsappVersions ? `${plural(counts.whatsappVersions, "opted-in lead has", "opted-in leads have")} no WhatsApp version` : "",
     counts.needsContacts ? `${plural(counts.needsContacts, "lead")} without contacts` : "",
     counts.staleVerdicts ? `${plural(counts.staleVerdicts, "verdict")} to re-judge` : "",
     counts.repliesWaiting ? (counts.repliesOverSla === counts.repliesWaiting ? `${plural(counts.repliesWaiting, "reply", "replies")} waiting over ${slaHours}h` : `${plural(counts.repliesWaiting, "reply", "replies")} waiting${counts.repliesOverSla ? ` (${counts.repliesOverSla} over ${slaHours}h)` : ""}`) : "",
@@ -131,15 +132,17 @@ export function daybreakWork(data: Pick<Daybreak, "counts" | "needsContacts" | "
 /** The plan Claude works through, in order. Every batch is at most 25 leads; nothing is sent, approved or confirmed. */
 export function daybreakPlan(data: Daybreak, slaHours: number): string[] {
   const follow = data.counts.followUpsDue;
+  const versions = data.counts.whatsappVersions ?? 0;
   const { enrich, pending, rejudge, personSet } = daybreakWork(data);
   const steps: string[] = [];
-  if (follow || rejudge || enrich) steps.push("If this chat has no sessionId yet, call start_sales (mode work) once and use its sessionId for save_drafts, enrich_lead and save_verdicts.");
+  if (follow || versions || rejudge || enrich) steps.push("If this chat has no sessionId yet, call start_sales (mode work) once and use its sessionId for save_drafts, enrich_lead and save_verdicts.");
   if (follow) steps.push(`Draft ${theBatch(follow, "follow-up")} due: read each lead's offer packet (get_offer: its message rules), then one save_drafts call (purpose follow_up) for the leads under followUpsDue. Each one refers back to that lead's firstTouch text in one short line (what we asked, not a repeat), adds no new pitch, no price and no link, and ends with one easy question. Use the first touch's channel; after a call, write an email if the lead has an email route, otherwise a call_opener. WhatsApp only where the lead opted in. They then wait for review in a separate chat.${follow > BATCH ? " Call daybreak again afterwards for the next 25." : ""}`);
+  if (versions) steps.push(`Write a WhatsApp version for ${theBatch(versions, "opted-in lead")} listed under whatsappVersions (${plural(versions, "lead has", "leads have")} no WhatsApp version: their first message waits as an email only): read each lead's offer packet (get_offer: its WhatsApp rules: short, plain text, the language the offer says), then one save_drafts call (channel whatsapp, purpose first_touch) that keeps the email's opening signal and its one question (emailDraft). The person chooses which version to send; sending one closes the other. They then wait for review in a separate chat.${versions > BATCH ? " Call daybreak again afterwards for the next 25." : ""}`);
   if (enrich) steps.push(`Queue contact look-ups for ${theBatch(enrich, "lead")} without contacts: one enrich_lead call with the leads listed under needsContacts (the list leaves out leads already queued; at most ${BATCH} per call). It only queues a run for the lead finder; nothing is sent from here.${pending ? ` ${plural(pending, "lead is", "leads are")} already queued: leave them.` : ""}${enrich > BATCH ? " Call daybreak again afterwards for the next 25." : ""}`);
   else if (pending) steps.push(`The ${plural(pending, "lead")} without contacts are already queued for the lead finder: nothing to do for them.`);
   if (rejudge) steps.push(`Re-judge ${theBatch(rejudge, "stale verdict")} listed under staleVerdicts (verdicts a person set are left out of that list): get_offer first (each lead is judged against its own offer's packet), then for each get_lead and re-read the company's own pages; save fresh verdicts with save_verdicts (at most ${BATCH} per call): new evidence with verbatim quotes and today's date, the case against, decide last. If the signal is gone, hold or reject.${rejudge > BATCH ? " Call daybreak again afterwards for the next 25." : ""}${personSet ? ` ${plural(personSet, "verdict was", "verdicts were")} set by a person: leave them and tell the person.` : ""}`);
   else if (personSet) steps.push(`${plural(personSet, "stale verdict was", "stale verdicts were")} set by a person: don't re-judge them; tell the person they may want another look.`);
-  steps.push(`Then list for the person, as one table: today's calls (company, why, the number, whether an opener draft exists) and the replies waiting (company, what they said, hours waiting, the ones over the ${slaHours}-hour promise first). Drafts to approve and verdicts that need a decision are theirs in the app: list them with their links. Never send, approve or confirm anything.`);
+  steps.push(`Then list for the person, as one table: today's calls (company, why, the number, whether an opener draft exists) and the replies waiting (company, what they said, hours waiting, the ones over the ${slaHours}-hour promise first). Offer to answer the replies next ("Draft replies to my inbox": save_drafts, purpose reply). Drafts to approve and verdicts that need a decision are theirs in the app: list them with their links. Never send, approve or confirm anything.`);
   return steps.map((step, index) => `${index + 1}. ${step}`);
 }
 
@@ -202,7 +205,7 @@ export function registerSalesReportTools(tool: Register, ctx: ToolContext, look:
 
   tool("daybreak", "sales:read", {
     title: "Daybreak", annotations: READ_ONLY,
-    description: "The morning work list: follow-ups due today (with the first message each one refers back to), leads without contact details, verdicts gone stale (older than 30 days, or a signal seen over 60 days ago), today's calls with their numbers, replies waiting (and which are past the reply promise), drafts and verdicts waiting for a person, and today's sends against the daily caps. `then` is the plan to work through in order: draft the follow-ups (save_drafts), queue contact look-ups (enrich_lead), re-judge stale verdicts (save_verdicts), then list calls and replies for the person. Lists hold at most 25 each. Read only: it writes, sends and approves nothing.",
+    description: "The morning work list: follow-ups due today (with the first message each one refers back to), opted-in leads whose first message has no WhatsApp version yet (with the email version to write it from), leads without contact details, verdicts gone stale (older than 30 days, or a signal seen over 60 days ago), today's calls with their numbers, replies waiting (and which are past the reply promise), drafts and verdicts waiting for a person, and today's sends against the daily caps. `then` is the plan to work through in order: draft the follow-ups (save_drafts), write the WhatsApp versions (save_drafts), queue contact look-ups (enrich_lead), re-judge stale verdicts (save_verdicts), then list calls and replies for the person. Lists hold at most 25 each. Read only: it writes, sends and approves nothing.",
     inputSchema: z.object({
       ventureId: id.optional().describe("Only this venture (list_ventures gives ids)"), owner: z.enum(["me", "all"]).default("me").describe("me: leads I own (default). all: every lead in my ventures"), timezone: timezoneField,
       offset: z.number().int().min(0).max(100).default(0).describe("Skip this many items of each list (leads you chose to leave this morning); work already done drops out of the lists by itself"),
@@ -216,18 +219,21 @@ export function registerSalesReportTools(tool: Register, ctx: ToolContext, look:
     const slaHours = data.replySlaHours ?? (data.workRules.length ? Math.min(...data.workRules.map((row) => row.replySlaHours)) : 2);
     const c = data.counts;
     const { enrich, rejudge } = daybreakWork(data);
-    const work = [c.followUpsDue && "follow-ups", enrich && "contacts", rejudge && "re-judging"].filter(Boolean) as string[];
+    const versions = c.whatsappVersions ?? 0;
+    const work = [c.followUpsDue && "follow-ups", versions && "WhatsApp versions", enrich && "contacts", rejudge && "re-judging"].filter(Boolean) as string[];
     const next = [
-      work.length > 1 ? `Run the morning plan in order: ${work.join(", ")}, then your calls and replies` : c.followUpsDue ? `Draft ${theBatch(c.followUpsDue, "follow-up")} due` : enrich ? `Queue contact look-ups for ${theBatch(enrich, "lead")} without contacts` : rejudge ? `Re-judge ${theBatch(rejudge, "stale verdict")}` : "",
-      c.repliesWaiting || c.callsToday ? "Show me the replies and calls first" : "",
+      work.length > 1 ? `Run the morning plan in order: ${work.join(", ")}, then your calls and replies` : c.followUpsDue ? `Draft ${theBatch(c.followUpsDue, "follow-up")} due` : versions ? `Write a WhatsApp version for my opted-in leads (${batchOf(versions, "lead")} with only an email first message)` : enrich ? `Queue contact look-ups for ${theBatch(enrich, "lead")} without contacts` : rejudge ? `Re-judge ${theBatch(rejudge, "stale verdict")}` : "",
+      c.repliesWaiting ? "Draft replies to my inbox" : "",
+      c.callsToday ? "Show me today's calls first" : "",
       c.draftsToApprove || c.needsYou ? "Show me what waits for my approval in the app" : "",
-      "Find new leads: tell me the area and the kind of business",
+      FULL_RUN_OPTION,
     ].filter(Boolean);
     const shown = (total: number, listed: number) => (total > listed || offset ? `showing ${listed ? `${offset + 1} to ${offset + listed}` : "none"} of ${total}` : undefined);
     // Each batch holds only what is still to do: work already done (a follow-up drafted, a lead queued for contacts, a verdict made fresh)
     // drops out of the route's lists, leads already queued for the office PC and verdicts a person set are left out here, then `offset` skips.
     const batch = <T>(rows: T[]) => rows.slice(offset, offset + BATCH);
     const followRows = batch(data.followUpsDue);
+    const versionRows = batch(data.whatsappVersions ?? []);
     const contactRows = batch(data.needsContacts.filter((lead) => !lead.enrichPending));
     const staleRows = batch(data.staleVerdicts.filter((lead) => lead.claudeCanRejudge));
     const callRows = batch(data.callsToday);
@@ -235,13 +241,18 @@ export function registerSalesReportTools(tool: Register, ctx: ToolContext, look:
     const names = new Map(await Promise.all(data.caps.map(async (row) => [row.ventureId, await ventureName(row.ventureId)] as const)));
     return guided(daybreakSay(c, slaHours), next, compact({
       today: data.today, timezone: tz, owner: owner === "me" ? "leads you own" : "every lead in your ventures", venture: await ventureName(ventureId),
-      counts: { followUpsDue: c.followUpsDue, needsContacts: c.needsContacts, staleVerdicts: c.staleVerdicts, callsToday: c.callsToday, repliesWaiting: c.repliesWaiting, repliesOverPromise: c.repliesOverSla, draftsToApprove: c.draftsToApprove, verdictsForYou: c.needsYou },
+      counts: { followUpsDue: c.followUpsDue, whatsappVersions: versions, needsContacts: c.needsContacts, staleVerdicts: c.staleVerdicts, callsToday: c.callsToday, repliesWaiting: c.repliesWaiting, repliesOverPromise: c.repliesOverSla, draftsToApprove: c.draftsToApprove, verdictsForYou: c.needsYou },
       then: daybreakPlan(data, slaHours),
       followUpsDue: followRows.map((lead) => compact({
         leadId: lead.id, company: clip(lead.companyName, 120), city: lead.city, due: localTime(lead.followUpDueAt, tz), channel: lead.channel, signal: clip(lead.signal, 300),
         firstTouch: lead.firstTouch ? compact({ channel: lead.firstTouch.channel, subject: clip(lead.firstTouch.subject, 200), text: text(lead.firstTouch.body, 600), at: localTime(lead.firstTouch.at, tz) }) : undefined, url: leadUrl(lead.id),
       })),
       followUpsShown: shown(c.followUpsDue, followRows.length),
+      whatsappVersions: versionRows.map((lead) => compact({
+        leadId: lead.id, company: clip(lead.companyName, 120), city: lead.city, optedIn: `${String(lead.optedIn.how).replaceAll("_", " ")}, ${localTime(lead.optedIn.at, tz)}`,
+        emailDraft: compact({ draftId: lead.emailDraft.draftId, status: lead.emailDraft.status.replaceAll("_", " "), subject: clip(lead.emailDraft.subject, 200), text: text(lead.emailDraft.body, 600) }), url: leadUrl(lead.id),
+      })),
+      whatsappVersionsShown: shown(versions, versionRows.length),
       needsContacts: contactRows.map((lead) => compact({ leadId: lead.id, company: clip(lead.companyName, 120), city: lead.city, website: clip(lead.website, 200), url: leadUrl(lead.id) })),
       needsContactsShown: shown(daybreakWork(data).enrich, contactRows.length),
       alreadyQueuedForContacts: daybreakWork(data).pending || undefined,
@@ -267,7 +278,7 @@ export function registerSalesReportTools(tool: Register, ctx: ToolContext, look:
         verdictsToDecide: data.approvalsWaiting.needsYou.slice(0, 10).map((lead) => compact({ leadId: lead.id, company: clip(lead.companyName, 120), why: clip(lead.why, 160), verdict: lead.verdict ? `${lead.verdict.decision}, ${lead.verdict.confidence}` : undefined, url: leadUrl(lead.id) })),
       }),
       sentToday: data.caps.map((row) => compact({ venture: names.get(row.ventureId) ?? row.ventureId, channels: row.channels.filter((item) => item.used || item.cap !== null).map((item) => `${item.channel} ${item.used}${item.cap !== null ? ` of ${item.cap}` : ""}`).join(", ") })),
-      batchNote: c.followUpsDue > BATCH || enrich > BATCH || rejudge > BATCH ? `Work ${BATCH} at a time: ${[c.followUpsDue > BATCH && batchOf(c.followUpsDue, "follow-up"), enrich > BATCH && batchOf(enrich, "lead without contacts", "leads without contacts"), rejudge > BATCH && batchOf(rejudge, "stale verdict")].filter(Boolean).join("; ")} now, then call daybreak again: what you finished drops out of the lists (pass offset only to skip ones you chose to leave).` : undefined,
+      batchNote: c.followUpsDue > BATCH || versions > BATCH || enrich > BATCH || rejudge > BATCH ? `Work ${BATCH} at a time: ${[c.followUpsDue > BATCH && batchOf(c.followUpsDue, "follow-up"), versions > BATCH && batchOf(versions, "WhatsApp version"), enrich > BATCH && batchOf(enrich, "lead without contacts", "leads without contacts"), rejudge > BATCH && batchOf(rejudge, "stale verdict")].filter(Boolean).join("; ")} now, then call daybreak again: what you finished drops out of the lists (pass offset only to skip ones you chose to leave).` : undefined,
       url: base, note: SALES_NOTE, view: viewHint(`Daybreak: ${data.today}`),
     }));
   });

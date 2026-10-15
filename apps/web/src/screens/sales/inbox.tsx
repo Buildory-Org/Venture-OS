@@ -13,6 +13,8 @@ import { ago, ChannelTile, kbdClass, ReplyTypeChip, Segmented, typingTarget, use
 import { useSalesShell } from "@/components/sales/sales-context";
 
 const preview = (item: InboxItem) => item.activity.body.replace(/\s+/g, " ").trim() || "(no text)";
+/** Replies that reach someone's phone or own mailbox never arrive here by themselves: a person logs them on the lead. */
+const OUTSIDE_REPLY = "Got a reply on your phone or in your own mail? Log it with They replied on the lead so it shows here.";
 
 /** Inbox: replies from people we contacted, unhandled first. Split view like Review. */
 export function InboxScreen() {
@@ -123,7 +125,7 @@ export function InboxScreen() {
 
   if (open.error && !loaded) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="error" title="Could not load the replies" body={open.error} action={{ label: open.busy ? "Trying again…" : "Try again", onClick: open.reload, disabled: open.busy }} /></Panel></>;
   if (!loaded) return <>{toolbar}<div role="status" aria-label="Loading replies" className="grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)]"><Panel className="space-y-3 p-4">{[0, 1, 2, 3].map((index) => <div key={index} className="flex items-center gap-3"><span className="vso-skeleton h-9 w-9 shrink-0 rounded-xl" /><span className="grid min-w-0 flex-1 gap-2"><span className="vso-skeleton h-3" style={{ width: `${70 - (index % 3) * 12}%` }} /><span className="vso-skeleton h-2.5 w-3/4" /></span></div>)}</Panel><Panel className="space-y-4 p-5 max-lg:hidden"><span className="vso-skeleton block h-5 w-1/3" /><span className="vso-skeleton block h-32 rounded-2xl" /></Panel></div></>;
-  if (flat.length === 0) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="card" tone="green" icon={mine ? Check : Inbox} title={showHandled ? "No replies yet" : mine ? "None of your leads are waiting on you" : "No replies waiting"} body={showHandled ? "When someone answers a message or a call-back request, it lands here." : "Every reply has been handled. New ones from email, WhatsApp, Instagram and LinkedIn show up here, sorted by what they mean."} action={mine ? { label: "Show everyone's replies", onClick: () => setMine(false) } : !showHandled ? { label: "Show handled replies", onClick: () => setShowHandled(true) } : undefined} /></Panel></>;
+  if (flat.length === 0) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="card" tone="green" icon={mine ? Check : Inbox} title={showHandled ? "No replies yet" : mine ? "None of your leads are waiting on you" : "No replies waiting"} body={<>{showHandled ? "When someone answers a message or a call-back request, it lands here." : "Every reply has been handled. New ones from email, WhatsApp, Instagram and LinkedIn show up here, sorted by what they mean."}<span className="mt-2 block">{OUTSIDE_REPLY}</span></>} action={mine ? { label: "Show everyone's replies", onClick: () => setMine(false) } : !showHandled ? { label: "Show handled replies", onClick: () => setShowHandled(true) } : undefined} /></Panel></>;
 
   return <>
     {!(selected && !desktop) && toolbar}

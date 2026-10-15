@@ -11,6 +11,7 @@ import { FindRunList, isLiveRun } from "@/components/sales/find-run-list";
 import { isLearner, useQueryParam, useSalesLoad } from "@/components/sales/draft-shared";
 import { useNow } from "@/components/sales/inbox-sla";
 import { useSalesShell } from "@/components/sales/sales-context";
+import { AskClaude } from "@/components/sales/ask-claude";
 
 /** Find leads: two ways to fill the pipeline (search for new companies, or fill in contacts of the ones we have), and what the lead finder is doing about them. */
 export function FindScreen() {
@@ -54,6 +55,8 @@ export function FindScreen() {
     {finder.data ? <FindFinderStrip status={finder.data} runs={everyRun.data ?? []} now={now} setupHref={session?.membership.role === "admin" ? `/sales/live/setup${ventureId ? `?venture=${encodeURIComponent(ventureId)}` : ""}` : undefined} />
       : finder.error && everyRun.data ? <FindEngineStrip runs={everyRun.data} now={now} /> : null}
 
+    {/* Claude finds, judges, drafts and reviews in one go: the leads arrive in Review as ready drafts. */}
+    {writer && <AskClaude prompt="find 10 hardware dealers in Raipur and take them to ready drafts" example note="use your own kind of company and city" className="mb-4" />}
     {writer
       ? <div className="grid items-stretch gap-4 lg:grid-cols-2">
         {waitingForPlay ? <Panel className="space-y-3 p-5"><span className="vso-skeleton block h-4 w-1/3" /><span className="vso-skeleton block h-24 rounded-xl" /></Panel>

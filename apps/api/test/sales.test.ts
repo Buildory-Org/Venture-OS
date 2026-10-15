@@ -506,7 +506,7 @@ test("outbound, inbound and reply-type activities move the lead as the spec says
   assert.equal(reply.data.lead.followUpDueAt, undefined);
   assert.equal(reply.data.lead.whatsappOptIn.how, "they_messaged");
   assert.equal((await h.database.db.collection("sales_drafts").findOne({ _id: followDraft.id }))?.status, "discarded");
-  assert.equal((await h.database.db.collection("sales_drafts").findOne({ _id: replyDraft.id }))?.status, "in_review");
+  assert.equal((await h.database.db.collection("sales_drafts").findOne({ _id: replyDraft.id }))?.status, "in_review"); // nothing to answer yet: reviewed
   // The reply waits in the Inbox until handled.
   const inbox = parse(successEnvelope(inboxItemSchema.array()), (await h.call("contrib", "GET", "/sales/inbox?handled=false&owner=me")).body).data;
   const item = inbox.find((entry) => entry.activity.id === reply.data.activity.id);
@@ -2776,4 +2776,367 @@ test("a do-not-contact lead is never moved into a contact stage by an edit; clos
   const twin = await newLead(h, "contrib");
   assert.match(expectStatus(await h.call("contrib", "PATCH", `/sales/leads/${twin.id}`, { stage: "approved_for_contact", contactRoutes: [{ kind: "email", value: email }] }), 409).body.error.message, /on the do-not-contact list/);
   assert.deepEqual([(await leadDoc(h, twin.id)).stage, (await leadDoc(h, twin.id)).doNotContact ?? false], ["identified", false]);
+});
+
+test("one message, several channels: a person's yes-to-WhatsApp call records the opt-in, and sending one version of a first message or follow-up closes the lead's other open versions, never other drafts", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const lead = async () => newLead(h, "contrib", { pipelineId: "pipeline-c" });
+  const draft = async (leadId: string, body: Record<string, unknown>) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${leadId}/drafts`, { body: "Hello there", ...body }), 201).data;
+  const pass = async (id: string) => expectStatus(await h.call("head", "POST", `/sales/drafts/${id}/review`, { result: "pass" }), 200).data;
+  const stored = async (id: string) => (await db.collection("sales_drafts").findOne({ _id: id }))!;
+  const detail = async (id: string) => parse(successEnvelope(leadDetailSchema), (await h.call("contrib", "GET", `/sales/leads/${id}`)).body).data;
+
+  // A person logs the call where the lead said yes to WhatsApp: that is the person's decision, so it records the opt-in (Claude's log does not).
+  const first = await lead();
+  const called = expectStatus(await log(h, "contrib", first.id, { kind: "call", direction: "out", callOutcome: "yes_whatsapp", body: "Said yes to WhatsApp" }), 201).data;
+  assert.deepEqual([called.lead.whatsappOptIn.how, called.lead.whatsappOptIn.by, called.lead.stage], ["yes_on_call", "user-contrib", "replied"]);
+  // An opt-in recorded earlier stays as it was.
+  const messaged = await lead();
+  expectStatus(await log(h, "contrib", messaged.id, { kind: "whatsapp", direction: "in", body: "Hi, send details here" }), 201);
+  assert.equal(expectStatus(await log(h, "contrib", messaged.id, { kind: "call", direction: "out", callOutcome: "yes_whatsapp" }), 201).data.lead.whatsappOptIn.how, "they_messaged");
+
+  // The first message in two versions (email and WhatsApp), a second WhatsApp one not submitted yet, a call opener, a follow-up, and another lead's draft.
+  const email = await draft(first.id, { channel: "email", subject: "Dealer orders", body: "Email version" });
+  const whatsapp = await draft(first.id, { channel: "whatsapp", body: "WhatsApp version" });
+  const spare = await draft(first.id, { channel: "whatsapp", body: "Another WhatsApp version", submit: false });
+  const opener = await draft(first.id, { channel: "call_opener", body: "Script: hello" });
+  const followUp = await draft(first.id, { channel: "email", purpose: "follow_up", subject: "Again", body: "A follow-up" });
+  const other = await lead();
+  const othersDraft = await draft(other.id, { channel: "email", subject: "Hi", body: "Someone else's first message" });
+  await pass(email.id);
+  await pass(whatsapp.id);
+
+  // Every open version names the others: in the Review list, one draft, the lead's detail and the Overview. A call opener and other purposes are not versions.
+  const listed = parse(successEnvelope(draftWithLeadSchema.array()), (await h.call("contrib", "GET", "/sales/drafts?status=draft,in_review,ready,needs_changes&limit=500")).body).data;
+  const row = listed.find((item) => item.id === whatsapp.id)!;
+  assert.deepEqual(row.otherVersions!.map((item) => [item.id, item.channel, item.status]).sort(), [[email.id, "email", "ready"], [spare.id, "whatsapp", "draft"]].sort());
+  assert.equal(listed.find((item) => item.id === opener.id)!.otherVersions, undefined);
+  assert.deepEqual(listed.find((item) => item.id === followUp.id)!.otherVersions, []);
+  assert.deepEqual([row.lead.whatsappOptIn?.how, row.lead.contactRoutes.some((route) => route.kind === "phone")], ["yes_on_call", true]);
+  assert.deepEqual(parse(successEnvelope(draftWithLeadSchema), (await h.call("contrib", "GET", `/sales/drafts/${email.id}`)).body).data.otherVersions!.map((item) => item.id).sort(), [whatsapp.id, spare.id].sort());
+  assert.equal((await detail(first.id)).drafts.find((item) => item.id === whatsapp.id)!.otherVersions!.length, 2);
+  assert.ok(parse(salesOverviewSchema, (await h.call("contrib", "GET", "/sales/overview?ventureId=venture-c&owner=me")).data).readyToSend.find((item) => item.id === email.id)!.otherVersions!.some((item) => item.id === whatsapp.id));
+
+  // A version being sent through an account stops the others until that send is settled.
+  await db.collection("sales_drafts").updateOne({ _id: email.id }, { $set: { sendLock: { requestId: "req-lock-0001", by: "user-contrib", at: new Date() }, delivery: { state: "sending", at: new Date() } } });
+  assert.match(expectStatus(await h.call("contrib", "POST", `/sales/drafts/${whatsapp.id}/sent`, {}), 409).body.error.message, /The email version of this first message is being sent/);
+  assert.equal((await stored(whatsapp.id)).status, "ready");
+  await db.collection("sales_drafts").updateOne({ _id: email.id }, { $unset: { sendLock: "", delivery: "" } });
+
+  // The WhatsApp version goes out: the other first-message versions close in the same step, saying why and which one went.
+  const sent = expectStatus(await h.call("contrib", "POST", `/sales/drafts/${whatsapp.id}/sent`, {}), 201).data;
+  assert.equal(sent.draft.status, "sent");
+  const closedEmail = await stored(email.id);
+  assert.deepEqual([closedEmail.status, closedEmail.closedReason, closedEmail.discardedReason, closedEmail.sentVersion.draftId, closedEmail.sentVersion.channel, closedEmail.discardedBy], ["discarded", "sent_on_other_channel", "The WhatsApp version of this first message was sent", whatsapp.id, "whatsapp", undefined]);
+  const closedSpare = await stored(spare.id);
+  assert.deepEqual([closedSpare.status, closedSpare.closedReason, closedSpare.discardedReason], ["discarded", "other_version_sent", "Another version of this first message was sent"]);
+  // ...the call opener, the follow-up and the other lead's draft are untouched.
+  assert.deepEqual([(await stored(opener.id)).status, (await stored(followUp.id)).status, (await stored(othersDraft.id)).status], ["in_review", "in_review", "in_review"]);
+  // The closed versions read with the contract, and the audit log has each one and the count on the send.
+  const shown = (await detail(first.id)).drafts.find((item) => item.id === email.id)!;
+  assert.deepEqual([shown.status, shown.closedReason, shown.sentVersion?.draftId, shown.sentVersion?.channel, Boolean(shown.discardedAt)], ["discarded", "sent_on_other_channel", whatsapp.id, "whatsapp", true]);
+  assert.deepEqual((await db.collection("audit_events").findOne({ action: "sales.draft.discard", objectId: email.id }))?.metadata, { reason: "sent_on_other_channel", sentDraftId: whatsapp.id, sentChannel: "whatsapp" });
+  assert.equal((await db.collection("audit_events").findOne({ action: "sales.draft.sent", objectId: whatsapp.id }))?.metadata?.closedVersions, 2);
+  assert.match(expectStatus(await h.call("contrib", "POST", `/sales/drafts/${email.id}/sent`, {}), 409).body.error.message, /passed review/);
+
+  // The one follow-up: two versions, one goes, the other closes. A check-back written after it was sent is a new message, not a version.
+  const quiet = await lead();
+  expectStatus(await log(h, "contrib", quiet.id, { kind: "whatsapp", direction: "in", body: "Hello" }), 201);
+  expectStatus(await log(h, "contrib", quiet.id, { kind: "email", direction: "out", body: "Our first note" }), 201);
+  const followEmail = await draft(quiet.id, { channel: "email", purpose: "follow_up", subject: "Following up", body: "Email follow-up" });
+  const followWhatsapp = await draft(quiet.id, { channel: "whatsapp", purpose: "follow_up", body: "WhatsApp follow-up" });
+  await pass(followEmail.id);
+  await pass(followWhatsapp.id);
+  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${followEmail.id}/sent`, {}), 201);
+  const closedFollow = await stored(followWhatsapp.id);
+  assert.deepEqual([closedFollow.status, closedFollow.closedReason, closedFollow.sentVersion.channel, closedFollow.discardedReason], ["discarded", "sent_on_other_channel", "email", "The email version of this follow-up was sent"]);
+  const checkBack = await draft(quiet.id, { channel: "email", purpose: "follow_up", subject: "Checking back", body: "Checking back after a while" });
+  await pass(checkBack.id);
+  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${checkBack.id}/sent`, {}), 201);
+
+  // Two versions marked sent at the same moment: exactly one is recorded, the other is refused and closed.
+  const race = await lead();
+  expectStatus(await log(h, "contrib", race.id, { kind: "whatsapp", direction: "in", body: "Hi" }), 201);
+  const raceEmail = await draft(race.id, { channel: "email", subject: "Hi", body: "Email version, raced" });
+  const raceWhatsapp = await draft(race.id, { channel: "whatsapp", body: "WhatsApp version, raced" });
+  await pass(raceEmail.id);
+  await pass(raceWhatsapp.id);
+  const raced = await Promise.all([raceEmail.id, raceWhatsapp.id].map((id) => h.call("contrib", "POST", `/sales/drafts/${id}/sent`, {})));
+  assert.deepEqual(raced.map((reply) => reply.status).sort(), [201, 409], JSON.stringify(raced.map((reply) => reply.body)));
+  assert.deepEqual((await Promise.all([raceEmail.id, raceWhatsapp.id].map(stored))).map((row) => row.status).sort(), ["discarded", "sent"]);
+  assert.equal(await db.collection("sales_activities").countDocuments({ leadId: race.id, direction: "out" }), 1);
+
+  // Versions left from before this rule (both open when one went out): the one still open can't go too.
+  const older = await lead();
+  expectStatus(await log(h, "contrib", older.id, { kind: "whatsapp", direction: "in", body: "Hi" }), 201);
+  const olderEmail = await draft(older.id, { channel: "email", subject: "Hi", body: "Old email version" });
+  const olderWhatsapp = await draft(older.id, { channel: "whatsapp", body: "Old WhatsApp version" });
+  await pass(olderWhatsapp.id);
+  await db.collection("sales_drafts").updateOne({ _id: olderEmail.id }, { $set: { status: "sent", sentAt: new Date(), sentBy: "user-contrib", sentVia: "manual" } });
+  await db.collection("sales_activities").insertOne({ _id: `old-send-${suffix}`, workspaceId: "workspace-a", ventureId: "venture-c", leadId: older.id, actorId: "user-contrib", via: "app", kind: "email", direction: "out", body: "Old email version", at: new Date(), draftId: olderEmail.id, createdAt: new Date() });
+  assert.match(expectStatus(await h.call("contrib", "POST", `/sales/drafts/${olderWhatsapp.id}/sent`, {}), 409).body.error.message, /The email version of this first message was already sent: only one version goes out, so discard this one\. If you sent this one by hand anyway, log it on the lead as a message/);
+});
+
+test("a person's own reply is ready at once, approved by its author; a person's edit keeps it ready; Claude's replies and other drafts keep the review", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  // A lead that was written to and answered: the reply waits in the Inbox.
+  const replied = async (extra: Record<string, unknown> = {}) => {
+    const lead = await newLead(h, "contrib", extra);
+    expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "out", body: "Intro", at: iso(ist("2026-10-09", 15)) }), 201);
+    const inbound = expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "in", replyType: "interested", body: "Yes, tell me more" }), 201).data.activity;
+    return { lead, inbound };
+  };
+  const reply = (leadId: string, extra: Record<string, unknown> = {}, who: Who = "contrib", options?: { via?: "claude" }) => h.call(who, "POST", `/sales/leads/${leadId}/drafts`, { channel: "email", purpose: "reply", subject: "Re: Orders", body: "Happy to. Tuesday or Wednesday at 11?", ...extra }, options);
+  const edit = (draftId: string, body: Record<string, unknown>, who: Who = "contrib", options?: { via?: "claude" }) => h.call(who, "PATCH", `/sales/drafts/${draftId}`, body, options);
+  const pick = (draft: { status: string; personApproval?: unknown }) => [draft.status, draft.personApproval];
+  // Marked sent for yesterday, so these tests never take from today's send cap.
+  const markSent = (draftId: string) => h.call("contrib", "POST", `/sales/drafts/${draftId}/sent`, { requestId: `own-${randomUUID()}`, at: new Date(Date.now() - 86_400_000).toISOString() });
+  // Leads made in venture-c are deleted at the end, so the Overview test there counts only its own.
+  const elsewhere: string[] = [];
+  try {
+    // Who may write one: the lead's owner, a head or an admin. Not a learner, not another contributor.
+    const first = await replied();
+    expectStatus(await reply(first.lead.id, { inReplyTo: first.inbound.id }, "learner"), 403);
+    expectStatus(await reply(first.lead.id, { inReplyTo: first.inbound.id }, "contrib2"), 403);
+    // Ready at once, with the author's own approval and no review; nothing waits for anyone.
+    const own = parse(draftSchema, expectStatus(await reply(first.lead.id, { inReplyTo: first.inbound.id }), 201).data);
+    assert.deepEqual([own.status, own.authorVia, own.authorId, own.review, own.personApproval?.by, own.personApproval?.byHead, own.personApproval?.own, own.needsPersonApproval, own.approvalReason], ["ready", "app", "user-contrib", undefined, "user-contrib", false, true, false, null]);
+    assert.equal((await db.collection("audit_events").findOne({ action: "sales.draft.create", objectId: own.id }))?.metadata.ownReply, true);
+    assert.equal(await db.collection("notification_outbox").countDocuments({ type: "sales_approval", resourceId: own.id }), 0);
+    assert.ok(parse(successEnvelope(salesOverviewSchema), (await h.call("contrib", "GET", "/sales/overview?ventureId=venture-a&owner=me")).body).data.readyToSend.some((item) => item.id === own.id));
+    // Sending it (marked sent by hand here) clears the reply from the Inbox.
+    expectStatus(await markSent(own.id), 201);
+    assert.ok((await db.collection("sales_activities").findOne({ _id: first.inbound.id }))?.handledAt);
+    assert.ok(!(await h.call("contrib", "GET", "/sales/inbox?handled=false&owner=me")).data.some((entry: any) => entry.activity.id === first.inbound.id));
+
+    // A second approval is refused: the author's is the approval.
+    const another = await replied();
+    const approvedOwn = expectStatus(await reply(another.lead.id, { inReplyTo: another.inbound.id }), 201).data;
+    assert.match(expectStatus(await h.call("head", "POST", `/sales/drafts/${approvedOwn.id}/approve`, {}), 409).body.error.message, /already approved by its author/);
+    // A "reply" with nothing to answer is a first message or a follow-up in disguise: no message named, or one we sent, keeps the review.
+    const outbound = (await db.collection("sales_activities").findOne({ leadId: another.lead.id, direction: "out" }))!;
+    for (const extra of [{}, { inReplyTo: String(outbound._id) }]) assert.deepEqual(pick(expectStatus(await reply(another.lead.id, extra), 201).data), ["in_review", undefined]);
+
+    // "Ask Claude to check it first" keeps today's review; an unsubmitted reply stays a draft.
+    const second = await replied();
+    const checked = expectStatus(await reply(second.lead.id, { inReplyTo: second.inbound.id, checkByClaude: true }), 201).data;
+    assert.deepEqual([checked.status, checked.personApproval, checked.needsPersonApproval], ["in_review", undefined, false]);
+    assert.match(expectStatus(await markSent(checked.id), 409).body.error.message, /passed review/);
+    assert.equal(expectStatus(await reply(second.lead.id, { submit: false }), 201).data.status, "draft");
+    // A person's first message and follow-up keep the review rule.
+    const fresh = await newLead(h, "contrib");
+    assert.equal(expectStatus(await reply(fresh.id, { purpose: "first_touch" }), 201).data.status, "in_review");
+    assert.equal(expectStatus(await reply(fresh.id, { purpose: "follow_up" }), 201).data.status, "in_review");
+    // Claude's reply is unchanged: written in one chat, reviewed in another, never self-approved (checkByClaude false changes nothing).
+    for (const extra of [{}, { checkByClaude: false }]) {
+      const claude = parse(draftSchema, expectStatus(await reply(second.lead.id, { inReplyTo: second.inbound.id, sessionId: "own-s1", ...extra }, "contrib", { via: "claude" }), 201).data);
+      assert.deepEqual([claude.status, claude.authorVia, claude.personApproval], ["in_review", "claude", undefined]);
+    }
+
+    // Edits. The author's edit keeps it ready (approved again, now); a head's edit too, and the head approves the new text.
+    const third = await replied();
+    const mine = expectStatus(await reply(third.lead.id, { inReplyTo: third.inbound.id }), 201).data;
+    const editedOwn = expectStatus(await edit(mine.id, { body: "Happy to. Tuesday at 11?" }), 200).data;
+    assert.deepEqual([editedOwn.status, editedOwn.body, editedOwn.personApproval.by, editedOwn.personApproval.own, editedOwn.review], ["ready", "Happy to. Tuesday at 11?", "user-contrib", true, undefined]);
+    assert.ok(editedOwn.personApproval.at >= mine.personApproval.at);
+    const byHead = expectStatus(await edit(mine.id, { subject: "Re: Orders, Tuesday" }, "head"), 200).data;
+    assert.deepEqual([byHead.status, byHead.subject, byHead.authorId, byHead.personApproval.by, byHead.personApproval.byHead, byHead.personApproval.own], ["ready", "Re: Orders, Tuesday", "user-head", "user-head", true, true]);
+    expectStatus(await edit(mine.id, { body: "Not my lead" }, "contrib2"), 403);
+    expectStatus(await edit(mine.id, { body: "Learners read" }, "learner"), 403);
+    // Claude's edit sends it to review and clears the approval; a person's edit of that Claude-written text goes back to review, as before.
+    const byClaude = expectStatus(await edit(mine.id, { body: "Claude's wording", sessionId: "own-s2" }, "contrib", { via: "claude" }), 200).data;
+    assert.deepEqual([byClaude.status, byClaude.authorVia, byClaude.personApproval], ["in_review", "claude", undefined]);
+    expectStatus(await h.call("reviewer", "POST", `/sales/drafts/${mine.id}/review`, { result: "pass" }), 200);
+    const personEdit = expectStatus(await edit(mine.id, { body: "My wording again" }), 200).data;
+    assert.deepEqual([personEdit.status, personEdit.personApproval, personEdit.review], ["in_review", undefined, undefined]);
+    // Editing a reviewed Claude reply sends it back to review too (never ready through an edit).
+    const claudeReply = expectStatus(await reply(third.lead.id, { inReplyTo: third.inbound.id, sessionId: "own-s1" }, "contrib", { via: "claude" }), 201).data;
+    expectStatus(await h.call("reviewer", "POST", `/sales/drafts/${claudeReply.id}/review`, { result: "pass" }), 200);
+    assert.equal(expectStatus(await edit(claudeReply.id, { body: "Tweaked" }), 200).data.status, "in_review");
+
+    // Approval modes (in another venture, so the settings tests read their own audit): where every message needs a person, the author's
+    // own approval lets their reply go.
+    expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-c", { approvalMode: "person_approves_every_message" }), 200);
+    const fourth = await replied({ pipelineId: "pipeline-c" });
+    elsewhere.push(fourth.lead.id);
+    const every = expectStatus(await reply(fourth.lead.id, { inReplyTo: fourth.inbound.id }), 201).data;
+    assert.deepEqual([every.status, every.needsPersonApproval], ["ready", false]);
+    expectStatus(await markSent(every.id), 201);
+    // A play whose first batch nobody has read: the reply goes, and an own reply is never a read of the batch (a head's neither).
+    expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-c", { approvalMode: "claude_review_enough" }), 200);
+    const play = expectStatus(await h.call("head", "POST", "/sales/plays", { ventureId: "venture-c", name: `Own replies ${suffix}`, batchSize: 2 }), 201).data;
+    const fifth = await replied({ pipelineId: "pipeline-c", playId: play.id });
+    elsewhere.push(fifth.lead.id);
+    const inPlay = expectStatus(await reply(fifth.lead.id, { inReplyTo: fifth.inbound.id }), 201).data;
+    assert.deepEqual([inPlay.playId, inPlay.status, inPlay.needsPersonApproval, inPlay.approvalReason], [play.id, "ready", false, null]);
+    expectStatus(await markSent(inPlay.id), 201);
+    const sixth = await replied({ pipelineId: "pipeline-c", playId: play.id });
+    elsewhere.push(sixth.lead.id);
+    const headsOwn = expectStatus(await reply(sixth.lead.id, { inReplyTo: sixth.inbound.id }, "head"), 201).data;
+    assert.deepEqual([headsOwn.status, headsOwn.personApproval.byHead, headsOwn.personApproval.own], ["ready", true, true]);
+    const firstLead = await newLead(h, "contrib", { pipelineId: "pipeline-c", playId: play.id });
+    elsewhere.push(firstLead.id);
+    const firstMessage = expectStatus(await h.call("contrib", "POST", `/sales/leads/${firstLead.id}/drafts`, { channel: "email", subject: "S", body: "Hello" }), 201).data;
+    assert.equal(firstMessage.status, "in_review");
+    expectStatus(await h.call("head", "POST", `/sales/drafts/${firstMessage.id}/review`, { result: "pass" }), 200);
+    expectStatus(await h.call("head", "POST", `/sales/drafts/${firstMessage.id}/approve`, {}), 200);
+    assert.equal((await db.collection("sales_plays").findOne({ _id: play.id }))?.firstBatchReviewed, false, "one head read of a batch of two: the head's own reply does not count");
+  } finally {
+    await db.collection("sales_settings").deleteMany({});
+    for (const leadId of elsewhere) await h.call("head", "DELETE", `/sales/leads/${leadId}`);
+  }
+});
+
+test("replies as versions: sending one reply closes the lead's other open replies to the same message (never replies to another message), and a reply can't go while a sibling is being sent or went out after it was written", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const stored = async (id: string) => (await db.collection("sales_drafts").findOne({ _id: id }))!;
+  const pass = async (id: string) => expectStatus(await h.call("head", "POST", `/sales/drafts/${id}/review`, { result: "pass" }), 200).data;
+  const yesterday = () => new Date(Date.now() - 86_400_000).toISOString();
+  const markSent = (id: string) => h.call("contrib", "POST", `/sales/drafts/${id}/sent`, { requestId: `rv-${randomUUID()}`, at: yesterday() });
+  const lead = await newLead(h, "contrib");
+  expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "out", body: "Intro", at: iso(ist("2026-10-09", 15)) }), 201);
+  const asked = expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "in", body: "Tell me more" }), 201).data.activity;
+  // A later WhatsApp message from them (a person logs it, so the lead is opted in): its replies are a separate answer.
+  const later = expectStatus(await log(h, "contrib", lead.id, { kind: "whatsapp", direction: "in", body: "And how long does it take?" }), 201).data.activity;
+  const reply = async (inReplyTo: string, extra: Record<string, unknown> = {}, options?: { via?: "claude" }) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${lead.id}/drafts`, { channel: "email", purpose: "reply", subject: "Re: details", body: "Happy to. Tuesday at 11?", inReplyTo, ...extra }, options), 201).data;
+  // Claude's email reply (reviewed: ready) and its WhatsApp reply (waiting for review) to the first message, Claude's reply to the later one,
+  // and the person's own reply to the first message (ready at once).
+  const claudeEmail = await reply(asked.id, { sessionId: "rv-s1" }, { via: "claude" });
+  await pass(claudeEmail.id);
+  const claudeWhatsapp = await reply(asked.id, { channel: "whatsapp", subject: undefined, body: "Happy to. Tuesday at 11?", sessionId: "rv-s1" }, { via: "claude" });
+  const otherMessage = await reply(later.id, { body: "About two weeks.", sessionId: "rv-s1" }, { via: "claude" });
+  const own = await reply(asked.id, { body: "Sure. Is Tuesday at 11 good?" });
+  assert.equal(own.status, "ready");
+
+  // One of them being sent through an account stops the others until it is settled.
+  await db.collection("sales_drafts").updateOne({ _id: claudeEmail.id }, { $set: { sendLock: { requestId: "rv-lock-0001", by: "user-contrib", at: new Date() }, delivery: { state: "sending", at: new Date() } } });
+  assert.match(expectStatus(await markSent(own.id), 409).body.error.message, /^The email reply to this message is being sent \(or its send is unclear\): only one reply goes out, so settle that one first\. If you sent this one by hand anyway, log it on the lead as a message$/);
+  await db.collection("sales_drafts").updateOne({ _id: claudeEmail.id }, { $unset: { sendLock: "", delivery: "" } });
+
+  // The person's reply goes: the other open replies to the same message close in the same step, keeping the status they had.
+  expectStatus(await markSent(own.id), 201);
+  const closedEmail = await stored(claudeEmail.id);
+  assert.deepEqual([closedEmail.status, closedEmail.closedReason, closedEmail.statusBeforeClose, closedEmail.sentVersion.draftId, closedEmail.sentVersion.channel, closedEmail.discardedReason], ["discarded", "other_reply_sent", "ready", own.id, "email", "Another reply to this message was sent"]);
+  const closedWhatsapp = await stored(claudeWhatsapp.id);
+  assert.deepEqual([closedWhatsapp.status, closedWhatsapp.closedReason, closedWhatsapp.statusBeforeClose, closedWhatsapp.discardedReason], ["discarded", "other_reply_sent", "in_review", "The email reply to this message was sent"]);
+  // ...the reply to the later message is untouched, and the closed ones read with the contract.
+  assert.equal((await stored(otherMessage.id)).status, "in_review");
+  const shown = parse(successEnvelope(leadDetailSchema), (await h.call("contrib", "GET", `/sales/leads/${lead.id}`)).body).data.drafts.find((item) => item.id === claudeEmail.id)!;
+  assert.deepEqual([shown.status, shown.closedReason, shown.sentVersion?.draftId], ["discarded", "other_reply_sent", own.id]);
+  assert.deepEqual((await db.collection("audit_events").findOne({ action: "sales.draft.discard", objectId: claudeWhatsapp.id }))?.metadata, { reason: "other_reply_sent", sentDraftId: own.id, sentChannel: "email" });
+  assert.equal((await db.collection("audit_events").findOne({ action: "sales.draft.sent", objectId: own.id }))?.metadata?.closedVersions, 2);
+
+  // Replies left open from before this rule: when one went out after the other was written, the other can't go too...
+  const first = await reply(later.id, { body: "Two weeks, roughly." });
+  const second = await reply(later.id, { body: "About two weeks, then a pilot." });
+  await db.collection("sales_drafts").updateOne({ _id: first.id }, { $set: { status: "sent", sentAt: new Date(), sentBy: "user-contrib", sentVia: "manual" } });
+  await db.collection("sales_activities").insertOne({ _id: `rv-old-send-${suffix}`, workspaceId: "workspace-a", ventureId: "venture-a", leadId: lead.id, actorId: "user-contrib", via: "app", kind: "whatsapp", direction: "out", body: "Two weeks, roughly.", at: new Date(), draftId: first.id, createdAt: new Date() });
+  assert.match(expectStatus(await markSent(second.id), 409).body.error.message, /^Another reply to this message \(WhatsApp\) was already sent: only one reply goes out, so discard this one/);
+  // ...but a reply written after that one went out is a new answer, and goes.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const afterwards = await reply(later.id, { body: "One more thing: we also do Android." });
+  expectStatus(await markSent(afterwards.id), 201);
+});
+
+test("the version the person read: a send with expectedUpdatedAt refuses a draft changed since it was opened (409 DRAFT_CHANGED), sends the version they read, and works as before without it", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const lead = await newLead(h, "contrib");
+  expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "out", body: "Intro", at: iso(ist("2026-10-09", 15)) }), 201);
+  const inbound = expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "in", body: "Sounds good" }), 201).data.activity;
+  const ownReply = async (body: string) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${lead.id}/drafts`, { channel: "email", purpose: "reply", subject: "Re: it", body, inReplyTo: inbound.id }), 201).data;
+  const open = async (id: string) => parse(successEnvelope(draftWithLeadSchema), (await h.call("contrib", "GET", `/sales/drafts/${id}`)).body).data;
+  const markSent = (id: string, extra: Record<string, unknown> = {}) => h.call("contrib", "POST", `/sales/drafts/${id}/sent`, { at: new Date(Date.now() - 86_400_000).toISOString(), ...extra });
+  const outbound = () => db.collection("sales_activities").countDocuments({ leadId: lead.id, direction: "out" });
+
+  // Opened, then edited (a person's edit of their own reply keeps it ready): the version they read is gone, so it is read again first.
+  const draft = await ownReply("Tuesday at 11?");
+  const seen = (await open(draft.id)).updatedAt;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expectStatus(await h.call("head", "PATCH", `/sales/drafts/${draft.id}`, { body: "Wednesday at 3 instead?" }), 200);
+  const before = await outbound();
+  const refused = expectStatus(await markSent(draft.id, { expectedUpdatedAt: seen }), 409);
+  assert.deepEqual([refused.body.error.code, refused.body.error.message], ["DRAFT_CHANGED", "This draft changed since you opened it: read it again before sending"]);
+  assert.deepEqual([(await db.collection("sales_drafts").findOne({ _id: draft.id }))!.status, await outbound()], ["ready", before]);
+  // Read again: the version they read now goes, with that text.
+  const fresh = await open(draft.id);
+  assert.equal(fresh.body, "Wednesday at 3 instead?");
+  const sent = expectStatus(await markSent(draft.id, { expectedUpdatedAt: fresh.updatedAt }), 201).data;
+  assert.match(sent.activity.body, /Wednesday at 3 instead\?/);
+  // Without expectedUpdatedAt a send works as before, edited or not.
+  const plain = await ownReply("Thursday then?");
+  expectStatus(await h.call("contrib", "PATCH", `/sales/drafts/${plain.id}`, { body: "Thursday at noon then?" }), 200);
+  expectStatus(await markSent(plain.id), 201);
+  // A draft being sent through an account can't be approved meanwhile (the send started on the version without that approval).
+  const reviewed = expectStatus(await h.call("contrib", "POST", `/sales/leads/${lead.id}/drafts`, { channel: "email", purpose: "follow_up", subject: "Again", body: "Checking in." }), 201).data;
+  expectStatus(await h.call("reviewer", "POST", `/sales/drafts/${reviewed.id}/review`, { result: "pass" }), 200);
+  await db.collection("sales_drafts").updateOne({ _id: reviewed.id }, { $set: { sendLock: { requestId: "ver-lock-0001", by: "user-contrib", at: new Date() }, delivery: { state: "sending", at: new Date() } } });
+  assert.match(expectStatus(await h.call("head", "POST", `/sales/drafts/${reviewed.id}/approve`, {}), 409).body.error.message, /being sent/);
+  assert.equal((await db.collection("sales_drafts").findOne({ _id: reviewed.id }))!.personApproval, undefined);
+  await db.collection("sales_drafts").updateOne({ _id: reviewed.id }, { $unset: { sendLock: "", delivery: "" } });
+  expectStatus(await h.call("head", "POST", `/sales/drafts/${reviewed.id}/approve`, {}), 200);
+  // A value that isn't a date with its offset is refused before anything happens.
+  const third = await ownReply("Friday?");
+  expectStatus(await markSent(third.id, { expectedUpdatedAt: "yesterday" }), 400);
+  assert.equal((await db.collection("sales_drafts").findOne({ _id: third.id }))!.status, "ready");
+});
+
+test("a person's own reply answers a message from the lead that waits in the Inbox, or their latest one: an older handled message, a meeting note or our own message go to review", skip, async () => {
+  const h = await getHarness();
+  const lead = await newLead(h, "contrib");
+  expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "out", body: "Intro", at: iso(ist("2026-10-09", 15)) }), 201);
+  const older = expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "in", body: "First question", at: iso(new Date(Date.now() - 3_600_000)) }), 201).data.activity;
+  const newer = expectStatus(await log(h, "contrib", lead.id, { kind: "email", direction: "in", body: "Second question" }), 201).data.activity;
+  const reply = async (inReplyTo: string) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${lead.id}/drafts`, { channel: "email", purpose: "reply", subject: "Re: q", body: "Here you go.", inReplyTo }), 201).data;
+  // Both wait in the Inbox: either can be answered at once.
+  assert.equal((await reply(older.id)).status, "ready");
+  // Once handled, the older one is no longer theirs to answer by itself (it goes to review); the latest still is, handled or not.
+  expectStatus(await h.call("contrib", "POST", `/sales/activities/${older.id}/handled`, {}), 200);
+  expectStatus(await h.call("contrib", "POST", `/sales/activities/${newer.id}/handled`, {}), 200);
+  const toOlder = await reply(older.id);
+  assert.deepEqual([toOlder.status, toOlder.personApproval], ["in_review", undefined]);
+  assert.equal((await reply(newer.id)).status, "ready");
+  // Their call to us counts as a message; a meeting note does not.
+  const called = expectStatus(await log(h, "contrib", lead.id, { kind: "call", direction: "in", body: "Rang to ask about the price" }), 201).data.activity;
+  assert.equal((await reply(called.id)).status, "ready");
+  const met = expectStatus(await log(h, "contrib", lead.id, { kind: "meeting", direction: "in", body: "Met at the expo" }), 201).data.activity;
+  assert.equal((await reply(met.id)).status, "in_review");
+});
+
+test("sendTarget: open email and WhatsApp drafts say where a send would go, in the lists, one draft, a lead's detail, the Overview and a write's answer; none without a route, for scripts or once sent", skip, async () => {
+  const h = await getHarness();
+  const lead = await newLead(h, "contrib", { pipelineId: "pipeline-c" });
+  const email = String(lead.contactRoutes.find((route) => route.kind === "email")!.value);
+  const phone = String(lead.contactRoutes.find((route) => route.kind === "phone")!.value);
+  // They wrote on WhatsApp (logged by a person, so the lead is opted in).
+  const wrote = expectStatus(await log(h, "contrib", lead.id, { kind: "whatsapp", direction: "in", body: "Hi" }), 201).data.activity;
+  const draft = async (leadId: string, body: Record<string, unknown>) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${leadId}/drafts`, { subject: "Hi", body: "Hello there", ...body }), 201).data;
+  const mail = await draft(lead.id, { channel: "email", purpose: "first_touch" });
+  assert.deepEqual(mail.sendTarget, { channel: "email", to: email }, "the answer of the write carries it");
+  const chat = await draft(lead.id, { channel: "whatsapp", purpose: "reply", inReplyTo: wrote.id, subject: undefined });
+  const opener = await draft(lead.id, { channel: "call_opener", subject: undefined });
+  const linkedin = await draft(lead.id, { channel: "linkedin", purpose: "follow_up", subject: undefined });
+  // A lead with no email address: its email draft has nowhere to go.
+  const bare = await newLead(h, "contrib", { pipelineId: "pipeline-c", contactRoutes: [{ kind: "phone", value: "+44 7700 900123" }] });
+  const nowhere = await draft(bare.id, { channel: "email" });
+  assert.equal(nowhere.sendTarget, undefined);
+
+  const listed = parse(successEnvelope(draftWithLeadSchema.array()), (await h.call("contrib", "GET", "/sales/drafts?status=draft,in_review,ready,needs_changes&limit=500")).body).data;
+  const target = (id: string) => listed.find((item) => item.id === id)?.sendTarget;
+  assert.deepEqual(target(mail.id), { channel: "email", to: email });
+  assert.deepEqual(target(chat.id), { channel: "whatsapp", to: `+91${phone.replace(/\D/g, "").slice(-10)}` }, "the phone route, normalised (India by default)");
+  assert.deepEqual([target(opener.id), target(linkedin.id), target(nowhere.id)], [undefined, undefined, undefined]);
+  assert.deepEqual(parse(successEnvelope(draftWithLeadSchema), (await h.call("contrib", "GET", `/sales/drafts/${chat.id}`)).body).data.sendTarget, target(chat.id));
+  const detail = parse(successEnvelope(leadDetailSchema), (await h.call("contrib", "GET", `/sales/leads/${lead.id}`)).body).data;
+  assert.deepEqual(detail.drafts.find((item) => item.id === chat.id)?.sendTarget, target(chat.id));
+  expectStatus(await h.call("head", "POST", `/sales/drafts/${mail.id}/review`, { result: "pass" }), 200);
+  const overview = parse(salesOverviewSchema, (await h.call("contrib", "GET", "/sales/overview?ventureId=venture-c&owner=me")).data);
+  assert.deepEqual(overview.readyToSend.find((item) => item.id === mail.id)?.sendTarget, { channel: "email", to: email });
+  // Once sent, nothing more goes anywhere: the delivery says where it went.
+  expectStatus(await h.call("contrib", "POST", `/sales/drafts/${mail.id}/sent`, { at: new Date(Date.now() - 86_400_000).toISOString() }), 201);
+  assert.equal(parse(successEnvelope(draftWithLeadSchema), (await h.call("contrib", "GET", `/sales/drafts/${mail.id}`)).body).data.sendTarget, undefined);
+  for (const id of [lead.id, bare.id]) await h.call("head", "DELETE", `/sales/leads/${id}`);
 });

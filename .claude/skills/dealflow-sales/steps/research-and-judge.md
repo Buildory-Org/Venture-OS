@@ -1,6 +1,6 @@
 # Research and judge a lead
 
-One lead, or a batch ("research the new leads"). For a batch take leads from `find_leads` (venture, `offer`, verdict `none`,
+One lead ("research and judge <company>"), or a batch ("research and judge the new leads"). For a batch take leads from `find_leads` (venture, `offer`, verdict `none`,
 sort `relevance`): one offer per batch, and skip any that already have a verdict. Read the leads' offer first with
 `get_offer` (who it is for, the gates with what a failure means, the signals, the exclusions and the scoring), the venture's
 shared notes with `get_brain`, and the venture settings line from `start_sales`. A lead is judged against its own offer:
@@ -41,3 +41,7 @@ verdict a person set or overrode is not replaced: tell them what you found inste
 
 For a batch, report a compact table (company, verdict, confidence, one reason) and the count left. Ask before judging more
 than 10 in one go.
+
+**In a full run** (`steps/full-run.md`) the person already asked for the whole batch: judge every lead the run added (up to 25
+per `save_verdicts` call) without asking, save holds and rejects with their reasons, keep the table for the final summary, and
+go straight on to `steps/draft.md` with the leads the verdicts left recommended and approved for contact.

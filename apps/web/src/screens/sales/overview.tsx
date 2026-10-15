@@ -9,6 +9,7 @@ import { StatCard } from "@/components/dashboard/stat-card";
 import { Badge, Notice, Panel, PanelHead, secondaryClass } from "@/components/studio/primitives";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { useSalesOverview } from "@/components/sales/overview-context";
+import { AskClaude } from "@/components/sales/ask-claude";
 import { buildQueue, KIND_META, QueueRow, type QueueKind } from "@/components/sales/overview-queue";
 import { OnTheGo } from "@/components/sales/overview-phone";
 import { OverviewPipeline } from "@/components/sales/overview-pipeline";
@@ -39,7 +40,7 @@ function BarRow({ label, value, max, tone, href, dim = false }: { label: string;
 
 /** Sales Overview: what needs you now, how the week went, and where the leads sit. Phones get "On the go". */
 export function OverviewScreen() {
-  const { refresh } = useSalesShell();
+  const { refresh, session } = useSalesShell();
   const { overview, loading, error, scope, setScope } = useSalesOverview();
   const [kind, setKind] = useState<QueueKind | "all">("all");
   const [expanded, setExpanded] = useState(false);
@@ -61,6 +62,7 @@ export function OverviewScreen() {
 
   return <div>
     <Notice tone="error" message={error} className="pb-4" />
+    {session?.membership.role !== "learner" && <AskClaude prompt="run my morning" className="mb-4" />}
     <div className="grid gap-4 md:hidden"><OnTheGo overview={overview} queue={queue} onChanged={refresh} /><OverviewPipeline scope={scope} /></div>
     <div className="hidden md:block">
       <div className="mb-3 flex items-center justify-between gap-3">

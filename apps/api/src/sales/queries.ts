@@ -2,13 +2,13 @@
 // the draft queues. Filters run in MongoDB; the few rules that need several collections (drafts and their plays) run in code.
 import type { Document } from "mongodb";
 import type { z } from "zod";
-import { EXIT_STAGES, SALES_STAGES, WON_STAGES, LEGACY_STAGE_MAP, type leadFacetsQuerySchema, type leadListQuerySchema } from "@venture-studio/contracts";
+import { EXIT_STAGES, PRE_CONTACT_STAGES, SALES_STAGES, VERSIONED_DRAFT_PURPOSES, WON_STAGES, LEGACY_STAGE_MAP, type leadFacetsQuerySchema, type leadListQuerySchema } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { canSeeVenture, ventureScope } from "./access.js";
 import type { SalesCtx } from "./ctx.js";
-import { approvalNeed, canSendNow, needsPersonApproval } from "./drafts.js";
-import { shownSendState } from "./channels/dispatch.js";
+import { MESSAGE_KINDS, OPEN_DRAFT_STATUSES, approvalNeed, canSendNow, needsPersonApproval } from "./drafts.js";
+import { sendTargetsFor, shownSendState } from "./channels/dispatch.js";
 import { settingsFor } from "./ctx.js";
 import { leadCard, leadJson, leadSummary, present, whyFor } from "./present.js";
 import { offerClause, offerNames } from "./offers.js";
@@ -188,8 +188,34 @@ export async function listInbox(ctx: SalesCtx, query: { ventureId?: string | und
 type DraftRow = AppDocument & { lead: AppDocument };
 
 type Approval = ReturnType<typeof approvalNeed>;
-/** A draft with its lead summary and whether it waits for a person's approval (computed here, so every screen shows Approve the same way). */
-export const draftWithLead = ({ lead, ...draft }: DraftRow, approval: Approval) => ({ ...present(draft as AppDocument), lead: leadSummary(lead), ...approval });
+type Extra = (draft: AppDocument) => Record<string, unknown>;
+/**
+ * A draft with its lead summary and whether it waits for a person's approval (computed here, so every screen shows Approve the same way), plus
+ * what the list worked out for it: its other versions, and where a send through an account would go (`sendTarget`).
+ */
+export const draftWithLead = ({ lead, ...draft }: DraftRow, approval: Approval, ...extras: (Extra | undefined)[]) => Object.assign({ ...present(draft as AppDocument), lead: leadSummary(lead), ...approval }, ...extras.map((extra) => extra?.(draft as AppDocument) ?? {}));
+/** `sendTarget` for a list of drafts joined to their leads (two queries at most for the whole list). */
+const targetsOf = (ctx: SalesCtx, rows: DraftRow[]) => sendTargetsFor(ctx, rows.map((row) => ({ draft: row, lead: row.lead })));
+
+type Version = { id: string; channel: string; status: string };
+/**
+ * For a list of drafts: each open first message or follow-up's other open versions (the same lead and purpose, call openers left out), as
+ * `otherVersions` (empty when there are none), so the Review list and the lead drawer can offer "send the email or the WhatsApp version" even
+ * when the list holds only one of them. Other drafts get nothing. One query for the whole list.
+ */
+export async function versionsOf(ctx: Pick<SalesCtx, "db" | "workspaceId">, rows: AppDocument[]): Promise<(draft: AppDocument) => { otherVersions?: Version[] }> {
+  const versioned = (draft: AppDocument) => (VERSIONED_DRAFT_PURPOSES as readonly unknown[]).includes(draft.purpose) && draft.channel !== "call_opener" && (OPEN_DRAFT_STATUSES as readonly unknown[]).includes(draft.status);
+  const leadIds = [...new Set(rows.filter(versioned).map((draft) => String(draft.leadId)))];
+  const open = leadIds.length ? await ctx.db.collection("sales_drafts").find(
+    { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, purpose: { $in: [...VERSIONED_DRAFT_PURPOSES] }, status: { $in: [...OPEN_DRAFT_STATUSES] }, channel: { $ne: "call_opener" } },
+    { projection: { leadId: 1, purpose: 1, channel: 1, status: 1, createdAt: 1 } },
+  ).sort({ createdAt: 1, _id: 1 }).toArray() : [];
+  const byMessage = new Map<string, AppDocument[]>();
+  for (const draft of open) { const key = `${String(draft.leadId)}:${String(draft.purpose)}`; byMessage.set(key, [...(byMessage.get(key) ?? []), draft]); }
+  return (draft) => versioned(draft)
+    ? { otherVersions: (byMessage.get(`${String(draft.leadId)}:${String(draft.purpose)}`) ?? []).filter((other) => String(other._id) !== String(draft._id)).map((other) => ({ id: String(other._id), channel: String(other.channel), status: String(other.status) })) }
+    : {};
+}
 
 /** The plays and venture settings the drafts' approval rules need, loaded once for a list. */
 async function approvalContext(ctx: SalesCtx, rows: AppDocument[]) {
@@ -211,8 +237,8 @@ export async function listDrafts(ctx: SalesCtx, query: { ventureId?: string | un
     { $match: { "lead.deletedAt": null, ...(owner ? { "lead.ownerId": owner } : {}) } },
     { $sort: { updatedAt: -1, _id: -1 } }, { $limit: query.limit },
   ]).toArray();
-  const { approval } = await approvalContext(ctx, rows);
-  return rows.map((row) => draftWithLead(row, approval(row)));
+  const [{ approval }, versions, targets] = await Promise.all([approvalContext(ctx, rows), versionsOf(ctx, rows), targetsOf(ctx, rows)]);
+  return rows.map((row) => draftWithLead(row, approval(row), versions, targets));
 }
 
 /** One draft as the lists show it (lead summary, approval need), for anyone who can open its venture; 404 when it is not theirs or its lead is deleted. */
@@ -224,13 +250,63 @@ export async function getDraftWithLead(ctx: SalesCtx, id: string) {
     { $match: { "lead.deletedAt": null } },
   ]).toArray() : [];
   if (!row || !canSeeVenture(ctx.actor, row.lead.ventureId)) throw new AppError(404, "NOT_FOUND", "Draft not found");
-  const { approval } = await approvalContext(ctx, [row]);
-  return draftWithLead(row, approval(row));
+  const [{ approval }, versions, targets] = await Promise.all([approvalContext(ctx, [row]), versionsOf(ctx, [row]), targetsOf(ctx, [row])]);
+  return draftWithLead(row, approval(row), versions, targets);
+}
+
+// ---- What Claude can write next -------------------------------------------------------------------------------------------
+
+/**
+ * Leads whose first message waits as an email only although they opted in to WhatsApp, so Claude writes the WhatsApp version for the person
+ * to choose from (sending one closes the other): an open email first message, no open WhatsApp one and no first message sent yet, on a lead
+ * Claude recommended (not waiting for a person's decision, not on the do-not-contact list) in a venture that uses WhatsApp, whose first message
+ * is still due (before first contact, or replied after a yes-to-WhatsApp call, with no message either way: firstMessageStillDue). `leadFilter`
+ * is the caller's filter on the leads (workspace, ventures, owner, offer). Opted-in leads are few, so they are read first and their drafts
+ * after (by the drafts' lead index). One row per lead, oldest email first; `total` counts them all. A lead whose only email bounced has moved
+ * to contacted and is not listed: Claude may still write it a new version (firstMessageStillDue), but the lists don't suggest it.
+ */
+export async function whatsappVersionsToWrite(ctx: SalesCtx, leadFilter: Document, limit: number): Promise<{ total: number; rows: { lead: AppDocument; draft: AppDocument }[] }> {
+  const leads = await ctx.db.collection("opportunities").find(
+    { ...leadFilter, whatsappOptIn: { $ne: null }, doNotContact: { $ne: true }, needsYou: { $ne: true }, "verdict.decision": "recommend", stage: { $in: [...PRE_CONTACT_STAGES, "replied"] } },
+    // Only what the lists show (Daybreak's brief and opt-in, the Overview's count): never the lead's evidence, routes or notes.
+    { projection: { ventureId: 1, offerId: 1, companyName: 1, contactName: 1, city: 1, stage: 1, ownerId: 1, whatsappOptIn: 1 } },
+  ).limit(5_000).toArray();
+  if (!leads.length) return { total: 0, rows: [] };
+  const leadIds = leads.map((lead) => String(lead._id));
+  const [drafts, talked] = await Promise.all([
+    ctx.db.collection("sales_drafts").find(
+      { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, purpose: "first_touch", status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } },
+      { projection: { leadId: 1, channel: 1, status: 1, subject: 1, body: 1, createdAt: 1 } },
+    ).sort({ createdAt: 1, _id: 1 }).toArray(),
+    // A message sent to the lead, or anything from it: the conversation has started, so the next message is not a first one.
+    ctx.db.collection("sales_activities").distinct("leadId", { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, $or: [{ direction: "in" }, { direction: "out", kind: { $in: [...MESSAGE_KINDS] } }] }),
+  ]);
+  const started = new Set(talked.map(String));
+  const byLead = new Map<string, AppDocument[]>();
+  for (const draft of drafts) byLead.set(String(draft.leadId), [...(byLead.get(String(draft.leadId)) ?? []), draft]);
+  const rows: { lead: AppDocument; draft: AppDocument }[] = [];
+  for (const lead of leads) {
+    const own = byLead.get(String(lead._id)) ?? [];
+    const email = own.find((draft) => draft.channel === "email" && draft.status !== "sent");
+    // A WhatsApp version already waiting, or a first message already sent (one goes out, ever): nothing to write.
+    if (!email || started.has(String(lead._id)) || own.some((draft) => draft.status === "sent" || draft.channel === "whatsapp")) continue;
+    if ((await settingsFor(ctx, String(lead.ventureId))).allowedChannels.includes("whatsapp")) rows.push({ lead, draft: email });
+  }
+  rows.sort((a, b) => new Date(a.draft.createdAt).getTime() - new Date(b.draft.createdAt).getTime() || String(a.draft._id).localeCompare(String(b.draft._id)));
+  return { total: rows.length, rows: rows.slice(0, limit) };
+}
+
+/** Recommended leads approved for contact (not waiting for a person, not on the do-not-contact list) with no first message written or sent yet (a call opener is a script, not a message). */
+async function firstMessagesToWrite(ctx: SalesCtx, base: Document): Promise<number> {
+  const leads = await ctx.db.collection("opportunities").find({ ...base, stage: "approved_for_contact", "verdict.decision": "recommend", needsYou: { $ne: true }, doNotContact: { $ne: true } }, { projection: { _id: 1 } }).limit(5_000).toArray();
+  if (!leads.length) return 0;
+  const written = await ctx.db.collection("sales_drafts").distinct("leadId", { workspaceId: ctx.workspaceId, leadId: { $in: leads.map((lead) => String(lead._id)) }, purpose: "first_touch", channel: { $ne: "call_opener" }, status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } });
+  return leads.length - written.length;
 }
 
 // ---- Overview -------------------------------------------------------------------------------------------------------------
 
-const emptyCounts = { replies: 0, callsDue: 0, followUpsDue: 0, toReview: 0, readyToSend: 0, needsYou: 0, wonToHandOver: 0, openLeads: 0, totalLeads: 0 };
+const emptyCounts = { replies: 0, callsDue: 0, followUpsDue: 0, toReview: 0, readyToSend: 0, needsYou: 0, wonToHandOver: 0, openLeads: 0, totalLeads: 0, inReview: 0, needsChanges: 0, firstMessagesToWrite: 0, whatsappVersionsToWrite: 0 };
 
 /** Today for one person or venture (optionally one offer, or `none`): what needs a person now, the stage counts and the last seven days. */
 export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string | undefined; owner?: string | undefined; offerId?: string | undefined; tz?: string | undefined }, now = new Date()) {
@@ -292,6 +368,7 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
     ]).toArray(),
     leads.countDocuments({ ...base, wonAt: { $gte: since } }),
   ]);
+  const [firstMessages, whatsappVersions] = await Promise.all([firstMessagesToWrite(ctx, base), whatsappVersionsToWrite(ctx, base, 0)]);
 
   for (const row of stageRows) {
     const stage = (LEGACY_STAGE_MAP[row._id] ?? row._id) as string;
@@ -304,19 +381,24 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
   const { plays, settings: settingsByVenture, approval } = await approvalContext(ctx, draftRows);
   const toReview = draftRows.filter((row) => row.status === "in_review" || row.status === "needs_changes" || needsPersonApproval(row, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
   const readyToSend = draftRows.filter((row) => canSendNow(row, row.lead, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
+  const shownRows = [...toReview.slice(0, LIST_LIMIT), ...readyToSend.slice(0, LIST_LIMIT)];
+  const [versions, targets] = await Promise.all([versionsOf(ctx, shownRows), targetsOf(ctx, shownRows)]);
 
   const replies = replyFacet[0];
   const week = weekFacet[0] ?? {};
   const size = (key: string) => week[key]?.length ?? 0;
   return {
-    counts: { replies: replies?.total[0]?.n ?? 0, callsDue: callCount, followUpsDue: followCount, toReview: toReview.length, readyToSend: readyToSend.length, needsYou: needsCount, wonToHandOver: wonCount, openLeads, totalLeads },
+    counts: {
+      replies: replies?.total[0]?.n ?? 0, callsDue: callCount, followUpsDue: followCount, toReview: toReview.length, readyToSend: readyToSend.length, needsYou: needsCount, wonToHandOver: wonCount, openLeads, totalLeads,
+      inReview: draftRows.filter((row) => row.status === "in_review").length, needsChanges: draftRows.filter((row) => row.status === "needs_changes").length, firstMessagesToWrite: firstMessages, whatsappVersionsToWrite: whatsappVersions.total,
+    },
     replies: (replies?.items ?? []).map(({ lead, ...activity }) => ({ activity: present(activity as AppDocument), lead: leadCard(lead, whyFor(lead, { kind: "reply", activity: activity as AppDocument, now })) })),
     callsDue: callRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "call", now, dayStart }))),
     followUpsDue: await Promise.all(followRows.map(async (lead) => { const settings = await settingsFor(ctx, String(lead.ventureId)); return leadCard(lead, whyFor(lead, { kind: "followUp", now, calendar: calendarOf(settings), followUpDays: settings.followUpAfterWorkingDays })); })),
     needsYou: needsRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "needsYou" }))),
     wonToHandOver: wonRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "won" }))),
     // A send that never got its answer (the server stopped mid-send) shows as unconfirmed, so a person can say whether it went.
-    toReview: toReview.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row)))), readyToSend: readyToSend.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row)))),
+    toReview: toReview.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row), versions, targets))), readyToSend: readyToSend.slice(0, LIST_LIMIT).map((row) => shownSendState(draftWithLead(row, approval(row), versions, targets))),
     stageCounts, week: { contacted: size("contacted"), replied: size("replied"), meetings: size("meetings"), proposals: size("proposals"), won: wonWeek },
   };
 }

@@ -63,12 +63,13 @@ try {
   await shot(page, "drawer-after-call");
   await page.keyboard.press("Escape"); await settle();
 
-  // 3. Review: mark the reviewed draft sent.
+  // 3. Review: mark the reviewed draft sent by hand (More, I sent it myself). Never the Send button: a connected mailbox would really send.
   await page.goto(`${base}/sales/live/review?draft=${draft.id}`, { waitUntil: "load" }); await settle();
   check("review opens the draft", await page.getByText("QA UI subject").locator("visible=true").first().isVisible().catch(() => false));
   await shot(page, "review");
-  await page.getByRole("button", { name: /^Mark sent/ }).locator("visible=true").first().click(); await page.waitForTimeout(500);
-  await page.getByRole("button", { name: /Confirm sent|Yes, I sent it/ }).locator("visible=true").first().click(); await page.waitForTimeout(1800);
+  await page.getByRole("button", { name: /^More/ }).locator("visible=true").first().click(); await page.waitForTimeout(400);
+  await page.getByRole("menuitem", { name: "I sent it myself" }).click(); await page.waitForTimeout(500);
+  await page.getByRole("button", { name: /Yes, mark it sent/ }).locator("visible=true").first().click(); await page.waitForTimeout(1800);
   const afterSend = await api(ME, "GET", `/sales/leads/${lead.id}`);
   check("draft marked sent", afterSend?.drafts?.find((d) => d.id === draft.id)?.status === "sent");
   await shot(page, "review-after-send");

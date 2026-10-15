@@ -1,9 +1,10 @@
 "use client";
 import { useMemo, useState } from "react";
 import clsx from "clsx";
-import { addMonths, expenseAccessAtLeast } from "@venture-studio/contracts";
+import { addMonths, EXPENSE_CURRENCIES, expenseAccessAtLeast, type ExpenseCurrency } from "@venture-studio/contracts";
 import { ChevronLeft, ChevronRight, LockKeyhole } from "@/components/ui/icons";
 import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
+import { Select } from "@/components/ui/select";
 import { Empty, HeaderActions, PageFrame, PageTitle, RefreshButton, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
 import { useStudio } from "@/lib/studio-store";
 import type { Expense } from "@/lib/expenses-api";
@@ -13,6 +14,7 @@ import { ExpenseMonthly } from "@/components/expenses/expense-monthly";
 import { ExpenseSettingsPanel } from "@/components/expenses/expense-settings";
 import { ExpenseSubscriptions } from "@/components/expenses/expense-subscriptions";
 import { monthLabel, thisMonth, useExpenseData } from "@/components/expenses/expense-shared";
+import { currencySign, MoneyProvider, useExpenseMoney, useShownCurrency } from "@/components/expenses/expense-money";
 
 // The expense tracker (docs/expenses.md): every expense by month, the Office on its own, month by month totals, what repeats, and
 // (for managers) categories, groups and access. Inside a venture (the sidebar scope) it shows that venture only.
@@ -22,6 +24,9 @@ type Tab = "expenses" | "office" | "monthly" | "repeating" | "settings";
 export function LiveExpensesScreen() {
   const { data: studio, activeVentureId } = useStudio();
   const { data, error, noAccess, busy, reload } = useExpenseData();
+  // The currency every total is shown in (rupees unless picked; remembered on this device), and the rates it needs.
+  const [shown, setShown] = useShownCurrency();
+  const { money, failed, estimated } = useExpenseMoney(data?.expenses, shown);
   const [tab, setTab] = useState<Tab>("expenses");
   const [month, setMonth] = useState(thisMonth());
   const [open, setOpen] = useState<{ expense?: Expense; where?: string } | null>(null);
@@ -45,11 +50,15 @@ export function LiveExpensesScreen() {
   const usesMonth = active === "expenses" || active === "office" || active === "monthly";
   return <PageFrame>
     <PageTitle title="Expenses" description={scoped ? `What ${scoped.name} spends, by month. Pick All ventures in the sidebar for everything.` : "What the studio spends: ventures, the Office and personal, by month."}
-      action={<HeaderActions>{usesMonth && <MonthPicker month={month} onMonth={setMonth} />}<RefreshButton busy={busy} onClick={reload} /></HeaderActions>} />
+      action={<HeaderActions>{usesMonth && <MonthPicker month={month} onMonth={setMonth} />}{active !== "settings" && <CurrencyPicker value={shown} onChange={setShown} />}<RefreshButton busy={busy} onClick={reload} /></HeaderActions>} />
     {error && !data && <div role="alert" className="flex flex-wrap items-center gap-2 rounded-xl bg-danger-surface p-3 text-sm font-semibold text-danger-text"><span className="min-w-0 flex-1">Could not load expenses: {error}</span><button type="button" onClick={reload} className={secondaryClass}>Try again</button></div>}
     {!data && !error && <SkeletonRows rows={6} label="Loading expenses" />}
     {data && <>
       <SlidingTabs tabs={tabs} active={active} onChange={(key) => setTab(key as Tab)} label="Expense views" className="mb-4" />
+      {!failed && estimated && active !== "settings" && <p role="status" className="mb-3 rounded-xl bg-warning-surface px-3 py-2 text-xs font-semibold text-warning-text">Couldn&apos;t load exchange rates just now, so repeating payments in other currencies count at their first payment&apos;s rupees. Try Refresh in a moment.</p>}
+      {failed && active !== "settings" && <p role="status" className="mb-3 rounded-xl bg-warning-surface px-3 py-2 text-xs font-semibold text-warning-text">Couldn&apos;t load exchange rates just now, so amounts are in rupees. Try Refresh in a moment.</p>}
+      {money.currency !== "INR" && active !== "settings" && <p className="mb-3 text-xs text-neutral-500">Amounts in {money.currency}: each payment at the European Central Bank&apos;s reference rate of its day, and exactly as paid when it was paid in {money.currency}.</p>}
+      <MoneyProvider value={money}>
       <div key={active} {...motion}>
         {active === "expenses" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere={onlyWhere} title={scoped?.name ?? "All"} canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({})} onTab={setTab} />}
         {active === "office" && <ExpenseList data={data} ventures={ventures} ventureName={ventureName} month={month} onMonth={setMonth} fixedWhere="office" title="Office" canEdit={canEdit} onOpen={(expense) => setOpen({ expense })} onAdd={() => setOpen({ where: "office" })} onTab={setTab} />}
@@ -57,9 +66,18 @@ export function LiveExpensesScreen() {
         {active === "repeating" && <ExpenseSubscriptions data={data} ventureName={ventureName} onlyWhere={onlyWhere} onOpen={(expense) => setOpen({ expense })} />}
         {active === "settings" && manage && <ExpenseSettingsPanel settings={data.settings} onChanged={reload} />}
       </div>
+      </MoneyProvider>
     </>}
     {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
   </PageFrame>;
+}
+
+/** The currency amounts are shown in: the rupee first, then the rest, with their signs. */
+function CurrencyPicker({ value, onChange }: { value: ExpenseCurrency; onChange: (currency: ExpenseCurrency) => void }) {
+  const label = (code: string) => { const sign = currencySign(code); return sign === code ? code : `${sign} ${code}`; };
+  return <Select aria-label="Show amounts in" value={value} onChange={(event) => onChange(event.target.value as ExpenseCurrency)} className="!min-h-10 rounded-xl border border-neutral-200 bg-white px-3 text-sm font-bold text-neutral-900">
+    {EXPENSE_CURRENCIES.map((code) => <option key={code} value={code}>{label(code)}</option>)}
+  </Select>;
 }
 
 /** Previous month, the month, next month, and back to this month: beside Refresh in the page header. */

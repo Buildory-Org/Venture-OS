@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import express, { Router, type Request } from "express";
 import type { ClientSession } from "mongodb";
 import {
-  addMonths, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema,
+  addMonths, currencyDigits, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema, expenseRatesQuerySchema, MAX_EXPENSE_PAISE, type ForeignAmount,
   expenseGroupUpdateSchema, expenseInputSchema, expenseUpdateSchema, idSchema, MAX_RECEIPT_BYTES, monthOf, occurrenceIn,
   type ExpenseAccess, type ExpenseAccessLevel, type ExpenseCategory, type ExpenseGroup, type ExpenseInput,
 } from "@venture-studio/contracts";
@@ -11,6 +11,7 @@ import { audit } from "../audit.js";
 import type { AppConfig } from "../config.js";
 import { atomic, type AppDb, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
+import { ratesBetween, rupeeRate } from "../exchange-rates.js";
 import { COMPANIES, fetchLogoInTurn, logoFromImage, logoVersion, resolveCompany } from "../expense-companies.js";
 import { prepareReceipt, readReceipt } from "../expense-receipts.js";
 import { jsonValue } from "../json.js";
@@ -269,6 +270,34 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     }));
   });
 
+  // ---- Exchange rates ----------------------------------------------------------------------------------------------------------
+
+  const rateSource = { url: config.EXCHANGE_RATES_URL };
+  /**
+   * The rupees an expense counts for: as typed, for one in rupees. For another currency: what the bank charged, when given; else the
+   * amount at the reference rate of the day it was paid (the latest published by then), kept with the rate and its day.
+   */
+  async function priced(input: { date: string; amountPaise?: number | undefined; foreign: ForeignAmount | null; chargedPaise: number | null; repeat: string }): Promise<{ amountPaise: number; rate: number | null; rateDate: string | null }> {
+    if (!input.foreign) return { amountPaise: input.amountPaise!, rate: null, rateDate: null };
+    if (input.chargedPaise) return { amountPaise: input.chargedPaise, rate: null, rateDate: null };
+    const { currency, amountMinor } = input.foreign;
+    const found = await rupeeRate(db, currency, input.date, rateSource);
+    if (!found) throw new AppError(503, "INTEGRATION_UNAVAILABLE", `Couldn't get the ${currency} rate for ${input.date} right now. Try again in a moment${input.repeat === "none" ? ", or enter what the bank charged in rupees" : ""}.`);
+    // The day has rates but none for this currency (before the source published it): trying again won't help.
+    if (found.rate === null) throw new AppError(400, "BAD_REQUEST", `There's no published ${currency} rate for ${input.date}: ${input.repeat === "none" ? "enter what the bank charged in rupees, or " : ""}enter the amount in rupees.`);
+    const rate = found.rate;
+    const amountPaise = Math.max(1, Math.round((amountMinor / 10 ** currencyDigits(currency)) * rate * 100));
+    if (amountPaise > MAX_EXPENSE_PAISE) throw new AppError(400, "BAD_REQUEST", "That amount is too large");
+    return { amountPaise, rate, rateDate: found.day };
+  }
+
+  // Rates for the screens to show totals in another currency, and repeating payments in another currency at each payment's rate.
+  router.get("/expenses/rates", async (req, res) => {
+    await gate(req, "view");
+    const { from, to, currencies } = expenseRatesQuerySchema.parse(req.query);
+    res.json(ok(await ratesBetween(db, from, to, currencies, rateSource)));
+  });
+
   // ---- Expenses ----------------------------------------------------------------------------------------------------------------
 
   // Every expense the person may see (restricted categories left out without restricted access), newest first. The screens work out
@@ -286,8 +315,9 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const { companyWebsite, ...input } = expenseInputSchema.parse(req.body ?? {});
     await checkInput(workspaceId, input, settings, me);
     const now = new Date();
+    const price = await priced(input);
     const company = await companyFor(workspaceId, actor.id, input.paidTo, input.receiptId, companyWebsite);
-    const doc = { _id: randomUUID(), workspaceId, ...input, companyId: company.id, startMonth: monthOf(input.date), createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
+    const doc = { _id: randomUUID(), workspaceId, ...input, ...price, companyId: company.id, startMonth: monthOf(input.date), createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {
       if (input.receiptId) await claimReceipt(workspaceId, actor.id, input.receiptId, doc._id, session);
       await companyStill(workspaceId, company.id, session);
@@ -304,16 +334,19 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const { expectedUpdatedAt, companyWebsite, ...change } = expenseUpdateSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
     sameVersion(current, expectedUpdatedAt);
-    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", receiptId: current.receiptId ?? null, ...change });
+    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", receiptId: current.receiptId ?? null, foreign: current.foreign ?? null, chargedPaise: current.chargedPaise ?? null, ...change });
     if (merged.repeat === "none") merged.endMonth = null;
+    // A foreign amount is priced again only when its amount, currency, bank amount or day changes; otherwise it keeps its rate.
+    const reprice = !merged.foreign || (["foreign", "chargedPaise", "date"] as const).some((key) => change[key] !== undefined);
     await checkInput(workspaceId, merged, settings, me, { categoryId: String(current.categoryId), groupId: (current.groupId as string | null) ?? null, scope: scopeKeyOf(current.scope) });
+    const price = reprice ? await priced(merged) : { amountPaise: Number(current.amountPaise), rate: (current.rate as number | null | undefined) ?? null, rateDate: (current.rateDate as string | null | undefined) ?? null };
     const now = new Date();
     // A new name, receipt or website may mean another company.
     const company = change.paidTo !== undefined || change.receiptId !== undefined || companyWebsite ? await companyFor(workspaceId, actor.id, merged.paidTo, merged.receiptId, companyWebsite, id) : null;
     await atomic(database, async (session) => {
       if (company) await companyStill(workspaceId, company.id, session);
       // A new date sets a new repeat day, so the copy's kept day goes.
-      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, ...(company ? { companyId: company.id } : {}), startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
+      const changed = await db.collection(EXPENSES).updateOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { $set: { ...merged, ...price, ...(company ? { companyId: company.id } : {}), startMonth: monthOf(merged.date), updatedBy: actor.id, updatedAt: now }, ...(change.date !== undefined && change.date !== current.date ? { $unset: { anchorDay: "" } } : {}) }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
       if (merged.receiptId !== (current.receiptId ?? null)) {
         if (typeof current.receiptId === "string") await releaseReceipt(workspaceId, current.receiptId, session);
@@ -361,10 +394,15 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const day = occurrenceIn({ date: String(current.date), repeat: current.repeat as "monthly" | "yearly", endMonth: (current.endMonth as string | null) ?? null, anchorDay }, input.fromMonth);
     if (!day) throw new AppError(400, "BAD_REQUEST", "Pick a month this expense is paid in");
     if (input.fromMonth <= monthOf(String(current.date))) throw new AppError(400, "BAD_REQUEST", "That is its first month: edit the expense instead");
+    // The new amount is in the expense's own currency; one in another currency is priced at the rate of its new first payment.
+    const foreign = (current.foreign as ForeignAmount | null | undefined) ?? null;
+    if (foreign ? input.amountMinor === undefined : input.amountPaise === undefined) throw new AppError(400, "BAD_REQUEST", foreign ? `Give the new amount in ${foreign.currency}` : "Give the new amount in rupees");
+    const newForeign = foreign ? { currency: foreign.currency, amountMinor: input.amountMinor! } : null;
+    const price = await priced({ date: day, amountPaise: input.amountPaise, foreign: newForeign, chargedPaise: null, repeat: String(current.repeat) });
     const now = new Date();
     // A new name from then on may be another company.
     const company = input.paidTo !== undefined && input.paidTo !== current.paidTo ? await companyFor(workspaceId, actor.id, input.paidTo, null, undefined) : null;
-    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay", "receiptId"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, amountPaise: input.amountPaise,
+    const next = { ...Object.fromEntries(Object.entries(current).filter(([key]) => !["_id", "createdAt", "createdBy", "continuesId", "anchorDay", "receiptId"].includes(key))), _id: randomUUID(), date: day, startMonth: input.fromMonth, ...price, foreign: newForeign, chargedPaise: null,
       ...(Number(day.slice(8, 10)) !== anchorDay ? { anchorDay } : {}),
       ...(input.paidTo !== undefined ? { paidTo: input.paidTo } : {}), ...(company ? { companyId: company.id } : {}), ...(input.note !== undefined ? { note: input.note } : {}), continuesId: id, createdBy: actor.id, updatedBy: actor.id, createdAt: now, updatedAt: now };
     await atomic(database, async (session) => {

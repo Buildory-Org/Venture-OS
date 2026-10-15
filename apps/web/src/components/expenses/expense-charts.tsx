@@ -1,14 +1,15 @@
 "use client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { addMonths, monthlyEquivalentPaise, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
+import { addMonths, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
 import { AutoHeight } from "@/components/ui/auto-height";
 import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
 import { prefersReducedMotion } from "@/lib/motion";
 import type { ExpenseCompany } from "@venture-studio/contracts";
 import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
 import { CompanyAvatar } from "./expense-company";
-import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, thisMonth, todayLocal } from "./expense-shared";
+import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, scopeKey, scopeLabel, thisMonth, todayLocal } from "./expense-shared";
+import { useMoney } from "./expense-money";
 
 // The expense dashboard above the list (after the reference designs): a dark "spent this month" card, a blue "repeating costs" card, the
 // month by category on a dial, a dark "recent expenses" card, and month-by-month columns. No hover effects on the cards: picking a month
@@ -19,16 +20,6 @@ import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabe
 type Lookup = (id: string) => ExpenseCategory | undefined;
 type Tab = "monthly" | "repeating";
 const fillOf = (color: ExpenseCategory["color"] | undefined) => `var(--expense-${color ?? "neutral"})`;
-
-/** ₹950 · ₹12.4K · ₹1.2L · ₹3.4Cr. */
-export function compactRupees(paise: number): string {
-  const value = paise / 100;
-  const trim = (number: number) => (number >= 100 ? number.toFixed(0) : number.toFixed(1).replace(/\.0$/, ""));
-  if (value >= 1e7) return `₹${trim(value / 1e7)}Cr`;
-  if (value >= 1e5) return `₹${trim(value / 1e5)}L`;
-  if (value >= 1e3) return `₹${trim(value / 1e3)}K`;
-  return `₹${Math.round(value)}`;
-}
 
 /** Counts up to `target` once (about a second, easing out); straight to it with reduced motion. */
 function useCountUp(target: number, durationMs = 950) {
@@ -48,12 +39,11 @@ function useCountUp(target: number, durationMs = 950) {
   return shown;
 }
 
-/** ₹94,500.00 with the paise dimmed, counting up. */
-function BigRupees({ paise, className, dim = "text-[rgb(var(--ink)/0.45)]" }: { paise: number; className?: string; dim?: string }) {
-  const shown = useCountUp(paise);
-  const whole = Math.floor(shown / 100).toLocaleString("en-IN");
-  const fraction = String(shown % 100).padStart(2, "0");
-  return <span className={clsx("font-extrabold tracking-[-0.02em]", className)} aria-label={rupees(paise)}><span aria-hidden="true">₹{whole}<span className={dim}>.{fraction}</span></span></span>;
+/** ₹94,500.00 (or $1,234.50) with the decimals dimmed, counting up. */
+function BigMoney({ minor, className, dim = "text-[rgb(var(--ink)/0.45)]" }: { minor: number; className?: string; dim?: string }) {
+  const money = useMoney();
+  const [whole, fraction] = money.split(useCountUp(minor));
+  return <span className={clsx("font-extrabold tracking-[-0.02em]", className)} aria-label={money.format(minor)}><span aria-hidden="true">{whole}<span className={dim}>{fraction}</span></span></span>;
 }
 
 /** The round arrow in a card's corner: white on the blue card, the card's ink (white on dark, near-black on white) elsewhere. */
@@ -105,18 +95,19 @@ export function ExpenseDashboard(props: DashboardProps) {
 // ---- Ink (white in the light theme, near-black in the dark): spent this month -----------------------------------------------------
 
 function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onTab }: DashboardProps) {
+  const money = useMoney();
   const rows = paidIn(matching, month);
-  const total = sumPaise(rows);
-  const repeating = sumPaise(rows.filter((row) => row.expense.repeat !== "none"));
-  const before = sumPaise(paidIn(matching, addMonths(month, -1)));
+  const total = money.sum(rows);
+  const repeating = money.sum(rows.filter((row) => row.expense.repeat !== "none"));
+  const before = money.sum(paidIn(matching, addMonths(month, -1)));
   const change = before ? Math.round(((total - before) / before) * 100) : null;
   // Where it went (or, on the Office tab, by category): the three biggest, the rest together.
   const buckets = new Map<string, { label: string; paise: number }>();
-  for (const { expense } of rows) {
+  for (const { expense, day } of rows) {
     const key = fixedWhere ? expense.categoryId : expense.scope.kind === "venture" ? "ventures" : expense.scope.kind;
     const label = fixedWhere ? findCategory(expense.categoryId)?.name ?? "Other" : expense.scope.kind === "venture" ? "Ventures" : expense.scope.kind === "office" ? "Office" : "Personal";
     const bucket = buckets.get(key) ?? { label, paise: 0 };
-    bucket.paise += expense.amountPaise;
+    bucket.paise += money.value(expense, day);
     buckets.set(key, bucket);
   }
   const sorted = [...buckets.values()].sort((a, b) => b.paise - a.paise);
@@ -131,16 +122,16 @@ function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onT
       <div><h3 className="text-lg font-semibold">Spent in {monthLabel(month)}</h3>{change !== null && <p className="mt-0.5 text-xs text-[rgb(var(--ink)/0.55)]">{change >= 0 ? "+" : ""}{change}% vs {monthLabel(addMonths(month, -1))}</p>}</div>
       <CornerButton label="Open the month by month view" onClick={() => onTab("monthly")} />
     </div>
-    <BigRupees paise={total} className="mt-5 block text-4xl" />
+    <BigMoney minor={total} className="mt-5 block text-4xl" />
     <div className="mt-5">
-      <div className="flex justify-end text-[11px] text-[rgb(var(--ink)/0.6)]"><span className="tabular-nums">{rupees(total)}</span></div>
-      <div className="vso-stripes-ink mt-1 h-3 overflow-hidden rounded-full bg-[rgb(var(--ink)/0.05)]" role="img" aria-label={`${rupees(repeating)} repeating, ${rupees(total - repeating)} one-time`}>
+      <div className="flex justify-end text-[11px] text-[rgb(var(--ink)/0.6)]"><span className="tabular-nums">{money.format(total)}</span></div>
+      <div className="vso-stripes-ink mt-1 h-3 overflow-hidden rounded-full bg-[rgb(var(--ink)/0.05)]" role="img" aria-label={`${money.format(repeating)} repeating, ${money.format(total - repeating)} one-time`}>
         <div className="vso-grow-x h-full rounded-full bg-gradient-to-r from-[#1d4ed8] to-[#3b82f6]" style={{ width: `${Math.max(repeatingShare * 100, repeating ? 4 : 0)}%`, "--delay": "250ms" } as React.CSSProperties} />
       </div>
-      <p className="mt-2 text-xs text-[rgb(var(--ink)/0.6)]"><span className="font-semibold tabular-nums text-[rgb(var(--ink))]">{rupees(repeating)}</span> repeating · <span className="tabular-nums">{rupees(total - repeating)}</span> one-time</p>
+      <p className="mt-2 text-xs text-[rgb(var(--ink)/0.6)]"><span className="font-semibold tabular-nums text-[rgb(var(--ink))]">{money.format(repeating)}</span> repeating · <span className="tabular-nums">{money.format(total - repeating)}</span> one-time</p>
     </div>
     <div className="mt-auto flex flex-wrap items-center gap-5 pt-6">
-      <svg viewBox="0 0 140 140" className="h-44 w-44 shrink-0" role="img" aria-label={parts.map((part) => `${part.label} ${rupees(part.paise)}`).join(", ") || "Nothing spent"}>
+      <svg viewBox="0 0 140 140" className="h-44 w-44 shrink-0" role="img" aria-label={parts.map((part) => `${part.label} ${money.format(part.paise)}`).join(", ") || "Nothing spent"}>
         <defs>
           <linearGradient id={`${gradientId}-blue`} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#60a5fa" /><stop offset="100%" stopColor="#1d4ed8" /></linearGradient>
           <pattern id={`${gradientId}-stripes`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="var(--card-stripe-bg)" /><rect width="2" height="6" fill="var(--card-stripe-line)" /></pattern>
@@ -148,7 +139,7 @@ function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onT
         {parts.length ? <Ring size={140} radius={52} width={26} gap={0.025} slices={parts.map((part, index) => ({ key: part.label, value: part.paise, stroke: strokes[index]!.replace("spent", gradientId) }))} /> : <circle cx={70} cy={70} r={52} fill="none" stroke="var(--card-track)" strokeWidth={26} />}
       </svg>
       <ul className="grid gap-2 text-sm">
-        {parts.map((part, index) => <li key={part.label} className="flex items-center gap-2"><span aria-hidden="true" className={clsx("h-2.5 w-2.5 rounded-full", index === 0 ? "bg-[#3b82f6]" : index === 1 ? "bg-[var(--card-slice)]" : "vso-stripes-ink bg-[rgb(var(--ink)/0.2)]")} /><span className="text-[rgb(var(--ink)/0.85)]">{part.label}</span><span className="tabular-nums text-[rgb(var(--ink)/0.5)]">{compactRupees(part.paise)}</span></li>)}
+        {parts.map((part, index) => <li key={part.label} className="flex items-center gap-2"><span aria-hidden="true" className={clsx("h-2.5 w-2.5 rounded-full", index === 0 ? "bg-[#3b82f6]" : index === 1 ? "bg-[var(--card-slice)]" : "vso-stripes-ink bg-[rgb(var(--ink)/0.2)]")} /><span className="text-[rgb(var(--ink)/0.85)]">{part.label}</span><span className="tabular-nums text-[rgb(var(--ink)/0.5)]">{money.compact(part.paise)}</span></li>)}
         {!parts.length && <li className="text-[rgb(var(--ink)/0.5)]">Nothing spent yet</li>}
         {!fixedWhere && ventureCount > 1 && <li className="text-[11px] text-[rgb(var(--ink)/0.4)]">{ventureCount} ventures</li>}
       </ul>
@@ -159,23 +150,25 @@ function SpentCard({ matching, month, findCategory, ventureName, fixedWhere, onT
 // ---- Blue: repeating costs --------------------------------------------------------------------------------------------------------
 
 function RepeatingCard({ scoped, onTab }: DashboardProps) {
+  const money = useMoney();
   const today = todayLocal();
   const running = scoped.filter((expense) => expense.repeat !== "none" && expense.date.slice(0, 7) <= thisMonth() && (!expense.endMonth || expense.endMonth >= thisMonth()));
-  const monthly = running.reduce((sum, expense) => sum + monthlyEquivalentPaise(expense), 0);
+  const monthly = running.reduce((sum, expense) => sum + money.monthly(expense, today), 0);
   const dueSoon = running.filter((expense) => { const next = nextOccurrence(expense, today); return next && Date.parse(`${next}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`) <= 7 * 86_400_000; }).length;
   return <section aria-label="Repeating costs" className="vso-card-blue vso-fade-up rounded-[1.75rem] p-5 shadow-e3 sm:p-6" style={{ "--delay": "80ms" } as React.CSSProperties}>
     <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Repeating costs</h3><CornerButton label="Open subscriptions" onClick={() => onTab("repeating")} onBlue /></div>
-    <p className="mt-3"><BigRupees paise={monthly} className="text-4xl" dim="text-white/60" /> <span className="text-lg font-semibold text-white/85">a month</span></p>
-    <p className="mt-2 text-sm text-white/85"><strong className="font-bold">{running.length}</strong> running · <strong className="font-bold">{dueSoon}</strong> due this week · <strong className="font-bold">{compactRupees(monthly * 12)}</strong> a year</p>
+    <p className="mt-3"><BigMoney minor={monthly} className="text-4xl" dim="text-white/60" /> <span className="text-lg font-semibold text-white/85">a month</span></p>
+    <p className="mt-2 text-sm text-white/85"><strong className="font-bold">{running.length}</strong> running · <strong className="font-bold">{dueSoon}</strong> due this week · <strong className="font-bold">{money.compact(monthly * 12)}</strong> a year</p>
   </section>;
 }
 
 // ---- White: the month by category, on a dial --------------------------------------------------------------------------------------
 
 function CategoryDial({ scoped, month, category, onCategory, findCategory }: DashboardProps) {
+  const money = useMoney();
   const rows = paidIn(scoped, month);
   const byCategory = new Map<string, number>();
-  for (const { expense } of rows) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + expense.amountPaise);
+  for (const { expense, day } of rows) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + money.value(expense, day));
   const sorted = [...byCategory].sort((a, b) => b[1] - a[1]);
   const slices = sorted.length > 5 ? [...sorted.slice(0, 4), ["__other", sorted.slice(4).reduce((sum, [, paise]) => sum + paise, 0)] as [string, number]] : sorted;
   const total = slices.reduce((sum, [, paise]) => sum + paise, 0);
@@ -188,7 +181,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
     <AutoHeight>
     <h3 className="text-base font-bold text-neutral-900">{monthLabel(month)} by category</h3>
     {!total ? <p className="mt-4 text-sm text-neutral-500">Nothing paid in {monthLabel(month)}.</p> : <>
-      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto mt-2 block h-auto w-full max-w-[15rem]" role="img" aria-label={slices.map(([id, paise]) => `${nameOf(id)} ${rupees(paise)}`).join(", ")}>
+      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto mt-2 block h-auto w-full max-w-[15rem]" role="img" aria-label={slices.map(([id, paise]) => `${nameOf(id)} ${money.format(paise)}`).join(", ")}>
         <Ring size={size} radius={88} width={20} cap="round" gap={0.03} track="var(--color-neutral-100)" slices={slices.map(([id, paise]) => ({ key: id, value: paise, stroke: colorOf(id) }))} />
         {ticks.map((tick) => {
           const angle = (tick / 60) * Math.PI * 2 - Math.PI / 2;
@@ -197,12 +190,12 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
           return <line key={tick} x1={center + outer * Math.cos(angle)} y1={center + outer * Math.sin(angle)} x2={center + inner * Math.cos(angle)} y2={center + inner * Math.sin(angle)} strokeWidth={long ? 2 : 1} strokeLinecap="round" className={long ? "stroke-neutral-700" : "stroke-neutral-300"} />;
         })}
         <text x={center} y={center - 8} textAnchor="middle" className="fill-neutral-500 text-[12px]">{shown ? nameOf(shown) : "Total spend"}</text>
-        <text x={center} y={center + 18} textAnchor="middle" className="fill-neutral-900 text-[24px] font-extrabold">{compactRupees(shown ? byCategory.get(shown)! : total)}</text>
+        <text x={center} y={center + 18} textAnchor="middle" className="fill-neutral-900 text-[24px] font-extrabold">{money.compact(shown ? byCategory.get(shown)! : total)}</text>
       </svg>
       <ul className="mt-3 flex flex-wrap justify-center gap-1.5" aria-label="Pick a category">{slices.map(([id, paise]) => <li key={id}>
         <button type="button" disabled={id === "__other"} aria-pressed={category === id} onClick={() => onCategory(category === id ? "" : id)}
           className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-default", category === id ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-200 text-neutral-700")}>
-          <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ background: colorOf(id) }} />{nameOf(id)}<span className={clsx("tabular-nums", category === id ? "text-white/70" : "text-neutral-400")}>{compactRupees(paise)}</span>
+          <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ background: colorOf(id) }} />{nameOf(id)}<span className={clsx("tabular-nums", category === id ? "text-white/70" : "text-neutral-400")}>{money.compact(paise)}</span>
         </button>
       </li>)}</ul>
     </>}
@@ -214,6 +207,7 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
 
 const PILL: Record<Expense["repeat"], string> = { none: "bg-neutral-300 text-neutral-900", monthly: "bg-[#2563eb] text-white", yearly: "bg-[#16a34a] text-white" };
 function RecentCard({ scoped, matching, month, findCategory, findCompany, ventureName, onOpen, onSeeAll }: DashboardProps) {
+  const money = useMoney();
   const today = todayLocal();
   // This month: what has been paid so far (what is still to come is under Repeating costs). Other months: all of it.
   const rows = paidIn(matching, month).filter((row) => month !== today.slice(0, 7) || row.day <= today);
@@ -223,7 +217,7 @@ function RecentCard({ scoped, matching, month, findCategory, findCompany, ventur
   const groups = latest.reduce<{ day: string; items: typeof latest }[]>((list, row) => { const last = list.at(-1); if (last && last.day === row.day) last.items.push(row); else list.push({ day: row.day, items: [row] }); return list; }, []);
   // The month's split by category as one segmented bar, the biggest named above it.
   const byCategory = new Map<string, number>();
-  for (const { expense } of paidIn(scoped, month)) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + expense.amountPaise);
+  for (const { expense, day } of paidIn(scoped, month)) byCategory.set(expense.categoryId, (byCategory.get(expense.categoryId) ?? 0) + money.value(expense, day));
   const segments = [...byCategory].sort((a, b) => b[1] - a[1]).slice(0, 4);
   const segmentTotal = segments.reduce((sum, [, paise]) => sum + paise, 0);
   const top = segments[0];
@@ -231,7 +225,7 @@ function RecentCard({ scoped, matching, month, findCategory, findCompany, ventur
     <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-semibold">Recent expenses</h3><CornerButton label="See every expense this month" onClick={onSeeAll} /></div>
     {top && <div className="mt-4">
       <p className="mb-2 inline-flex rounded-full bg-[rgb(var(--ink)/0.12)] px-3 py-1 text-xs font-semibold backdrop-blur">{findCategory(top[0])?.name ?? "Other"} · {Math.round((top[1] / (segmentTotal || 1)) * 100)}%</p>
-      <div className="flex h-5 gap-1.5" role="img" aria-label={segments.map(([id, paise]) => `${findCategory(id)?.name ?? "Other"} ${rupees(paise)}`).join(", ")}>
+      <div className="flex h-5 gap-1.5" role="img" aria-label={segments.map(([id, paise]) => `${findCategory(id)?.name ?? "Other"} ${money.format(paise)}`).join(", ")}>
         {segments.map(([id, paise], position) => <span key={id} className="vso-grow-x h-full min-w-5 rounded-full" style={{ flexGrow: paise, flexBasis: 0, background: fillOf(findCategory(id)?.color), "--delay": `${200 + position * 120}ms`, ...(position === 0 ? { boxShadow: "0 0 0 2px rgb(var(--ink) / 0.35)" } : {}) } as React.CSSProperties} />)}
       </div>
     </div>}
@@ -239,13 +233,15 @@ function RecentCard({ scoped, matching, month, findCategory, findCompany, ventur
       <p className="mb-1.5 text-xs text-[rgb(var(--ink)/0.5)]">{dayName(group.day)}</p>
       <ul className="grid gap-1">{group.items.map(({ expense }) => {
         const category = findCategory(expense.categoryId);
+        const amount = money.split(money.value(expense, group.day));
+        const paidAs = money.original(expense);
         const delay = 260 + latest.findIndex((row) => row.expense.id === expense.id && row.day === group.day) * 70;
         return <li key={`${expense.id}-${group.day}`} className="vso-fade-up" style={{ "--delay": `${delay}ms` } as React.CSSProperties}>
           <button type="button" onClick={() => onOpen(expense)} className="grid w-full grid-cols-[2.25rem_minmax(0,1fr)_auto] items-center gap-3 rounded-xl py-1.5 text-left sm:grid-cols-[2.25rem_minmax(0,1fr)_auto_auto] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--ink)/0.7)]">
             <CompanyAvatar company={findCompany(expense.companyId)} name={expense.paidTo} size={36} background={fillOf(category?.color)} />
             <span className="min-w-0"><span className="block truncate text-sm font-semibold">{expense.paidTo}</span><span className="block truncate text-xs text-[rgb(var(--ink)/0.5)]">{category?.name ?? "Other"} · {scopeLabel(expense.scope, ventureName)}</span></span>
             <span className={clsx("hidden rounded-full px-2.5 py-0.5 text-[11px] font-semibold sm:inline", PILL[expense.repeat])}>{REPEAT_LABEL[expense.repeat]}</span>
-            <span className="text-right text-sm font-bold tabular-nums">-₹{Math.floor(expense.amountPaise / 100).toLocaleString("en-IN")}<span className="text-[rgb(var(--ink)/0.45)]">.{String(expense.amountPaise % 100).padStart(2, "0")}</span></span>
+            <span className="text-right text-sm font-bold tabular-nums">−{amount[0]}<span className="text-[rgb(var(--ink)/0.45)]">{amount[1]}</span>{paidAs && <span className="block text-[11px] font-semibold text-[rgb(var(--ink)/0.5)]">{paidAs}</span>}</span>
           </button>
         </li>;
       })}</ul>
@@ -271,13 +267,14 @@ function axisFor(maxPaise: number): { top: number; step: number } {
 }
 
 function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: DashboardProps) {
+  const money = useMoney();
   const months = windowFor(month);
-  const totals = months.map((one) => ({ month: one, rows: paidIn(matching, one) })).map((item) => ({ ...item, total: sumPaise(item.rows) }));
+  const totals = months.map((one) => ({ month: one, rows: paidIn(matching, one) })).map((item) => ({ ...item, total: money.sum(item.rows) }));
   const maxTotal = Math.max(0, ...totals.map((item) => item.total));
   const { top, step } = axisFor(maxTotal);
   const ticks = maxTotal ? Array.from({ length: Math.round(top / step) + 1 }, (_, index) => index * step) : [0];
   const rows = paidIn(matching, month);
-  const part = (kind: string) => sumPaise(rows.filter((row) => (kind === "venture" ? row.expense.scope.kind === "venture" : scopeKey(row.expense.scope) === kind)));
+  const part = (kind: string) => money.sum(rows.filter((row) => (kind === "venture" ? row.expense.scope.kind === "venture" : scopeKey(row.expense.scope) === kind)));
   const tiles = [
     { label: "Office", paise: part("office"), icon: Home, tone: "bg-[#fdba74]" },
     { label: "Ventures", paise: part("venture"), icon: Layers3, tone: "bg-[#4ade80]" },
@@ -304,11 +301,11 @@ function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: Da
   // What the tooltip splits by: where it was charged, or (on the Office tab or one venture) the category.
   const splitOf = (items: typeof rows) => {
     const buckets = new Map<string, { label: string; paise: number }>();
-    for (const { expense } of items) {
+    for (const { expense, day } of items) {
       const key = fixedWhere ? expense.categoryId : expense.scope.kind;
       const label = fixedWhere ? findCategory(expense.categoryId)?.name ?? "Other" : expense.scope.kind === "venture" ? "Ventures" : expense.scope.kind === "office" ? "Office" : "Personal";
       const bucket = buckets.get(key) ?? { label, paise: 0 };
-      bucket.paise += expense.amountPaise;
+      bucket.paise += money.value(expense, day);
       buckets.set(key, bucket);
     }
     return [...buckets.values()].sort((a, b) => b.paise - a.paise).slice(0, 3);
@@ -318,7 +315,7 @@ function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: Da
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">{tiles.map((tile) => <div key={tile.label} className="rounded-2xl bg-neutral-50 p-4 shadow-[inset_0_0_0_1px_rgb(0_0_0/0.04)]">
       <span aria-hidden="true" className={clsx("grid h-9 w-9 place-items-center rounded-xl text-white shadow-sm", tile.tone)}><tile.icon size={17} /></span>
       <p className="mt-3 text-sm text-neutral-500">{tile.label} · {monthLabel(month)}</p>
-      <p className="text-xl font-extrabold text-neutral-900">{rupees(tile.paise)}</p>
+      <p className="text-xl font-extrabold text-neutral-900">{money.format(tile.paise)}</p>
     </div>)}</div>
 
     <div className="mt-5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -327,7 +324,7 @@ function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: Da
     </div>
     <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
       <div aria-hidden="true" className="relative h-44 min-w-8">
-        {ticks.map((tick) => <span key={tick} className="absolute right-0 translate-y-1/2 text-[11px] font-semibold tabular-nums text-neutral-400" style={{ bottom: `${heightOf(tick)}%` }}>{compactRupees(tick)}</span>)}
+        {ticks.map((tick) => <span key={tick} className="absolute right-0 translate-y-1/2 text-[11px] font-semibold tabular-nums text-neutral-400" style={{ bottom: `${heightOf(tick)}%` }}>{money.compact(tick)}</span>)}
       </div>
       <div ref={plotRef} className="relative h-44">
         {ticks.map((tick) => <span key={tick} aria-hidden="true" className={clsx("absolute inset-x-0 border-t", tick ? "border-neutral-100" : "border-neutral-200")} style={{ bottom: `${heightOf(tick)}%` }} />)}
@@ -335,19 +332,19 @@ function MonthColumns({ matching, month, onMonth, findCategory, fixedWhere }: Da
           {totals.map((item, position) => {
             const isChosen = item.month === month;
             const height = heightOf(item.total);
-            return <button key={item.month} type="button" aria-pressed={isChosen} aria-label={`${monthLabel(item.month)}: ${rupees(item.total)}`}
+            return <button key={item.month} type="button" aria-pressed={isChosen} aria-label={`${monthLabel(item.month)}: ${money.format(item.total)}`}
               onClick={() => onMonth(item.month)} onPointerEnter={() => setHovered(item.month)} onPointerLeave={(event) => { if (event.pointerType === "mouse") setHovered(null); }}
               onFocus={() => setHovered(item.month)} onBlur={() => setHovered(null)}
               className="relative flex h-full flex-1 items-end justify-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">
-              {isChosen && item.total > 0 && <span aria-hidden="true" className="vso-fade-up absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] font-bold tabular-nums text-[var(--bar-on-label)]" style={{ bottom: `calc(${height}% + 6px)`, "--delay": "700ms" } as React.CSSProperties}>{compactRupees(item.total)}</span>}
+              {isChosen && item.total > 0 && <span aria-hidden="true" className="vso-fade-up absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] font-bold tabular-nums text-[var(--bar-on-label)]" style={{ bottom: `calc(${height}% + 6px)`, "--delay": "700ms" } as React.CSSProperties}>{money.compact(item.total)}</span>}
               <span aria-hidden="true" className={clsx("vso-rise block w-[58%] max-w-[34px] rounded-[9px]", isChosen ? "bg-gradient-to-b from-[#5b7cff] to-[#2343e8] shadow-[0_6px_14px_rgb(35_67_232/0.28)]" : "bg-[linear-gradient(180deg,var(--bar-off-top),var(--bar-off-bottom))]")}
                 style={{ height: item.total ? `max(${height}%, 6px)` : "3px", "--delay": `${position * 70}ms` } as React.CSSProperties} />
             </button>;
           })}
         </div>
         {tip && <div ref={tipRef} role="tooltip" className="vso-bar-tip pointer-events-none absolute z-10 w-max min-w-[9rem] max-w-[min(15rem,100%)] rounded-xl bg-[#15171c] px-3 py-2 text-xs text-white shadow-e3 ring-1 ring-white/10">
-          <p className="flex items-baseline justify-between gap-3"><span className="font-semibold text-white/60">{monthLabel(tip.month)}</span><span className="text-sm font-extrabold tabular-nums">{rupees(tip.total)}</span></p>
-          <p className="mt-0.5 text-white/75">{tip.rows.length ? splitOf(tip.rows).map((bucket) => `${bucket.label} ${compactRupees(bucket.paise)}`).join(" · ") : "Nothing paid"}</p>
+          <p className="flex items-baseline justify-between gap-3"><span className="font-semibold text-white/60">{monthLabel(tip.month)}</span><span className="text-sm font-extrabold tabular-nums">{money.format(tip.total)}</span></p>
+          <p className="mt-0.5 text-white/75">{tip.rows.length ? splitOf(tip.rows).map((bucket) => `${bucket.label} ${money.compact(bucket.paise)}`).join(" · ") : "Nothing paid"}</p>
           {tip.rows.length > 0 && <p className="mt-0.5 text-[11px] text-white/45">{tip.rows.length} {tip.rows.length === 1 ? "expense" : "expenses"}{tip.month !== month ? " · click to show" : ""}</p>}
         </div>}
       </div>

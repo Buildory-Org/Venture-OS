@@ -23,15 +23,20 @@ function money(value: number, currency: string | null) {
 }
 const longDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
-/** A line that doesn't add up (within a rupee, for rounding): the items against the subtotal, or the subtotal, taxes and tip against the total. */
+/**
+ * A line that doesn't add up: the items against the subtotal, or the subtotal, taxes and tip against the total. Within a rupee for a
+ * rupee receipt (round-off), within a cent or two (or 0.2%) in another currency. Prices that include tax print a total equal to the
+ * subtotal, except when a tax is printed as added on top ("+18% VAT"): then the subtotal and that tax must make the total.
+ */
 function mismatch(data: ReceiptData): string | null {
-  const near = (a: number, b: number) => Math.abs(a - b) <= 1;
+  const slack = data.currency && data.currency !== "INR" ? Math.max(0.02, Math.abs(data.total ?? 0) * 0.002) : 1;
+  const near = (a: number, b: number) => Math.abs(a - b) <= slack;
   const items = data.items.reduce((sum, item) => sum + (item.amount ?? 0), 0);
   if (data.items.length && data.items.every((item) => item.amount !== null) && data.subtotal !== null && !near(items, data.subtotal)) return `The items add up to ${money(items, data.currency)}, not the subtotal of ${money(data.subtotal, data.currency)}.`;
   if (data.subtotal !== null && data.total !== null) {
     const expected = data.subtotal - (data.discount ?? 0) + data.taxes.reduce((sum, tax) => sum + tax.amount, 0) + (data.tip ?? 0) + (data.roundOff ?? 0);
-    // Prices that include tax print a total equal to the subtotal.
-    if (!near(expected, data.total) && !near(data.subtotal, data.total)) return `The subtotal, taxes and tip come to ${money(expected, data.currency)}, not the total of ${money(data.total, data.currency)}.`;
+    const addedOnTop = data.taxes.some((tax) => /^\s*\+|\b(add|added|plus)\b/i.test(tax.label));
+    if (!near(expected, data.total) && (addedOnTop || !near(data.subtotal, data.total))) return `The subtotal, taxes and tip come to ${money(expected, data.currency)}, not the total of ${money(data.total, data.currency)}.`;
   }
   return null;
 }

@@ -8,15 +8,25 @@ import { getExpenseSettings, listExpenses, type Expense, type ExpenseCategory, t
 // Shared by the expense tracker's tabs: labels, money, months and the data every tab reads.
 
 export const rupees = formatRupees;
-/** "1,700.50" typed by a person → paise; null when it isn't an amount. */
-export function paiseOf(text: string): number | null {
-  const clean = text.replace(/[₹,\s]/g, "");
-  if (!/^\d+(\.\d{1,2})?$/.test(clean)) return null;
-  const paise = Math.round(Number(clean) * 100);
-  return paise > 0 ? paise : null;
+/**
+ * "1,700.50", "1,23,456" or "€6.49" typed by a person → the currency's smallest unit (paise, cents; whole yen with no digits); null when
+ * it isn't an amount. Commas only group thousands (the last group has three digits), so "6,49" (a decimal comma) is refused, not 649;
+ * letters and minus signs are refused too.
+ */
+export function minorOf(text: string, digits = 2): number | null {
+  const raw = text.trim().replace(/[\s\p{Sc}]/gu, "");
+  if (!/^[\d.,]+$/.test(raw)) return null;
+  const whole = raw.split(".")[0]!;
+  if (whole.includes(",") && !/^\d{1,3}(,\d{2,3})*,\d{3}$/.test(whole)) return null;
+  const clean = raw.replace(/,/g, "");
+  if (!(digits ? new RegExp(`^\\d+(\\.\\d{1,${digits}})?$`) : /^\d+$/).test(clean)) return null;
+  const minor = Math.round(Number(clean) * 10 ** digits);
+  return minor > 0 ? minor : null;
 }
-/** Paise as the amount field shows it ("1700" or "1700.50"). */
-export const amountText = (paise: number) => (paise % 100 ? (paise / 100).toFixed(2) : String(paise / 100));
+export const paiseOf = (text: string) => minorOf(text, 2);
+/** An amount as the amount field shows it ("1700" or "1700.50"). */
+export const minorText = (minor: number, digits = 2) => (minor % 10 ** digits ? (minor / 10 ** digits).toFixed(digits) : String(minor / 10 ** digits));
+export const amountText = (paise: number) => minorText(paise, 2);
 /** Today on this device, YYYY-MM-DD. */
 export const todayLocal = () => new Date().toLocaleDateString("en-CA");
 export const thisMonth = () => todayLocal().slice(0, 7);
@@ -37,7 +47,6 @@ export const REPEAT_LABEL = { none: "One-time", monthly: "Monthly", yearly: "Yea
 export function paidIn(expenses: Expense[], month: string): { expense: Expense; day: string }[] {
   return expenses.flatMap((expense) => { const day = occurrenceIn(expense, month); return day ? [{ expense, day }] : []; }).sort((a, b) => b.day.localeCompare(a.day) || a.expense.paidTo.localeCompare(b.expense.paidTo));
 }
-export const sumPaise = (rows: { expense: Expense }[]) => rows.reduce((total, row) => total + row.expense.amountPaise, 0);
 
 /** Lookups by id, including archived categories and groups (old expenses keep theirs). */
 export function lookups(settings: ExpenseSettings) {

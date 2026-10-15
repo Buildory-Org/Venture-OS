@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { idSchema, isoDateSchema } from "./common.js";
 
-// The expense tracker (docs/expenses.md): what the studio spends, in rupees, charged to a venture, the Office or Personal, each in a
-// category and optionally a group (e.g. "AI subscriptions"). An expense is one-time, or repeats monthly or yearly from its first date
+// The expense tracker (docs/expenses.md): what the studio spends, charged to a venture, the Office or Personal, each in a category and
+// optionally a group (e.g. "AI subscriptions"). Every expense counts in rupees; one paid in another currency keeps that amount too, and
+// its rupee amount is what the bank charged (when given) or the amount at that day's reference rate. An expense is one-time, or repeats monthly or yearly from its first date
 // until the month it stops. Who may see, add or manage expenses is the tracker's own access list; restricted categories (salary, EMI)
 // are seen only by the people allowed to. Only amounts and labels are kept: no bank, card or account numbers. An expense may keep its
 // receipt: a small copy of the photo or the PDF, and what was read off it (card numbers cut to their last four digits).
@@ -26,6 +27,22 @@ export const expenseDaySchema = z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])-(0[1-
 export const expenseMonthSchema = z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/, "A month is YYYY-MM, from 2000 to 2099");
 /** At most ₹1,000 crore, in paise. */
 export const MAX_EXPENSE_PAISE = 10_000_000_000_00;
+
+/**
+ * The currencies an expense can be paid in: the rupee, and every currency the European Central Bank publishes a daily reference rate
+ * for (the rates the tracker converts with). ISO 4217 codes, the most used first.
+ */
+export const EXPENSE_CURRENCIES = ["INR", "USD", "EUR", "GBP", "SGD", "AUD", "CAD", "CHF", "JPY", "CNY", "HKD", "NZD", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "TRY", "ILS", "ZAR", "BRL", "MXN", "IDR", "MYR", "PHP", "THB", "KRW", "ISK"] as const;
+export type ExpenseCurrency = (typeof EXPENSE_CURRENCIES)[number];
+export const expenseCurrencySchema = z.enum(EXPENSE_CURRENCIES);
+/** Digits after the point: none for the yen, the won and the króna, two for the rest (ISO 4217). */
+export const currencyDigits = (currency: string) => (["JPY", "KRW", "ISK"].includes(currency) ? 0 : 2);
+/** Paid in another currency: which, and how much, in its smallest unit (cents for dollars). */
+export const foreignAmountSchema = z.object({
+  currency: expenseCurrencySchema.exclude(["INR"]),
+  amountMinor: z.number().int().positive("An amount is more than zero").max(10_000_000_000_000, "That amount is too large"),
+});
+export type ForeignAmount = z.infer<typeof foreignAmountSchema>;
 
 /**
  * What reads like an account, card or phone number, never kept: 9 or more digits in a row; a card's groups of four (4111 1111 1111 1111,
@@ -56,17 +73,28 @@ const expenseFields = {
   note: label(1_000, "A note"),
   /** The receipt kept with it (uploaded first, attached when the expense is saved), or none. */
   receiptId: idSchema.nullable(),
+  /** Paid in another currency: the rupee amount (amountPaise) is then worked out by the API, never sent. None for rupees. */
+  foreign: foreignAmountSchema.nullable(),
+  /** What the bank charged in rupees for a one-time payment in another currency, when known: counted exactly (card fees and all). */
+  chargedPaise: z.number().int().positive("An amount is more than zero").max(MAX_EXPENSE_PAISE, "That amount is too large").nullable(),
 };
+/** An amount in rupees, or one in another currency (and the bank's rupee amount only with a one-time one). */
+function amountRules(value: { amountPaise?: number | undefined; foreign?: ForeignAmount | null | undefined; chargedPaise?: number | null | undefined; repeat?: ExpenseRepeat | undefined }, ctx: z.RefinementCtx) {
+  if (!value.foreign && value.amountPaise === undefined) ctx.addIssue({ code: "custom", path: ["amountPaise"], message: "Enter the amount" });
+  if (value.chargedPaise != null && (!value.foreign || value.repeat !== "none")) ctx.addIssue({ code: "custom", path: ["chargedPaise"], message: "What the bank charged in rupees goes with a one-time payment in another currency" });
+}
 /** A brand-new company's website, given when its first expense is saved (for its logo); not kept on the expense. */
 const companyWebsite = z.string().trim().max(300).optional();
-export const expenseInputSchema = z.object({ ...expenseFields, groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null), companyWebsite });
+export const expenseInputSchema = z.object({ ...expenseFields, amountPaise: expenseFields.amountPaise.optional(), groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null), foreign: expenseFields.foreign.default(null), chargedPaise: expenseFields.chargedPaise.default(null), companyWebsite }).superRefine(amountRules);
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 /** An edit: only the fields sent change (no defaults, so leaving a field out never resets it). */
 /** The version an edit was made from (the expense's updatedAt as loaded): a change saved meanwhile refuses the edit instead of being undone. */
 const expectedUpdatedAt = isoDateSchema.optional();
 export const expenseUpdateSchema = z.object({ ...expenseFields, expectedUpdatedAt, companyWebsite }).partial().refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), "Nothing to change");
 /** A new amount (or other details) from a month on: the expense stops the month before and a copy starts that month, so past months keep what was paid. */
-export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amountPaise: expenseFields.amountPaise, paidTo: expenseFields.paidTo.optional(), note: expenseFields.note.optional(), expectedUpdatedAt });
+/** The new amount is in the expense's own currency: `amountPaise` for one in rupees, `amountMinor` for one in another currency. */
+export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amountPaise: expenseFields.amountPaise.optional(), amountMinor: foreignAmountSchema.shape.amountMinor.optional(), paidTo: expenseFields.paidTo.optional(), note: expenseFields.note.optional(), expectedUpdatedAt })
+  .refine((value) => (value.amountPaise === undefined) !== (value.amountMinor === undefined), "Give the new amount");
 
 export const expenseSchema = z.object({
   id: idSchema, workspaceId: idSchema, date: expenseDaySchema, amountPaise: z.number().int(), categoryId: idSchema, groupId: idSchema.nullable(),
@@ -78,6 +106,13 @@ export const expenseSchema = z.object({
   receiptId: idSchema.nullable().optional(),
   /** The company it was paid to (grouped by name, GSTIN or website; see companyKey). */
   companyId: idSchema.optional(),
+  /** Paid in another currency (amountPaise is then its rupee amount); none or null for rupees. */
+  foreign: z.object({ currency: z.string(), amountMinor: z.number().int() }).nullable().optional(),
+  /** The rupee amount the bank charged, when given (amountPaise is then exactly this). */
+  chargedPaise: z.number().int().nullable().optional(),
+  /** Otherwise the reference rate used (rupees for one unit) and the day it is from (the latest published by the day paid). */
+  rate: z.number().positive().nullable().optional(),
+  rateDate: expenseDaySchema.nullable().optional(),
   createdBy: idSchema, updatedBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
 });
 export type Expense = z.infer<typeof expenseSchema>;
@@ -92,6 +127,20 @@ export type ExpenseGroup = z.infer<typeof expenseGroupSchema>;
 const groupFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, note: label(300, "A note") };
 export const expenseGroupInputSchema = z.object({ ...groupFields, color: groupFields.color.default("neutral"), note: groupFields.note.default("") });
 export const expenseGroupUpdateSchema = z.object({ ...groupFields, archived: z.boolean() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
+
+// ---- Exchange rates -----------------------------------------------------------------------------------------------------------
+
+/** GET /v1/expenses/rates: a span of days (at most about three years) and the currencies wanted. */
+export const expenseRatesQuerySchema = z.object({
+  from: expenseDaySchema, to: expenseDaySchema,
+  currencies: z.string().transform((value) => [...new Set(value.split(",").map((code) => code.trim().toUpperCase()).filter(Boolean))]).pipe(z.array(expenseCurrencySchema.exclude(["INR"])).min(1).max(EXPENSE_CURRENCIES.length)),
+}).refine((value) => value.from <= value.to, "from comes before to").refine((value) => Date.parse(`${value.to}T00:00:00Z`) - Date.parse(`${value.from}T00:00:00Z`) <= 1_100 * 86_400_000, "At most about three years at a time");
+/**
+ * The reference rate on each working day in the span (and the one before it, for the days up to the first): rupees for one unit of
+ * each currency asked for, oldest first. `unavailable` when none could be had (the screens then show rupees).
+ */
+export const expenseRatesSchema = z.object({ source: z.string(), days: z.array(z.object({ day: expenseDaySchema, rupees: z.record(z.string(), z.number().positive()) })), unavailable: z.boolean() });
+export type ExpenseRates = z.infer<typeof expenseRatesSchema>;
 
 // ---- Receipts ---------------------------------------------------------------------------------------------------------------
 

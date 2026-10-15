@@ -1,12 +1,12 @@
 # Expense tracker
 
-What the studio spends, in rupees: for each venture, the Office and Personal. It lives in Studio at **Expenses** (`/expenses/live`), and the API is under `/v1/expenses`. The data rules and the repeat logic are shared in `packages/contracts/src/expenses.ts`.
+What the studio spends, counted in rupees (and shown in any currency): for each venture, the Office and Personal. It lives in Studio at **Expenses** (`/expenses/live`), and the API is under `/v1/expenses`. The data rules and the repeat logic are shared in `packages/contracts/src/expenses.ts`.
 
 ## What an expense is
 
 - **Fields:**
   - the date paid;
-  - the amount in paise (at most ₹1,000 crore);
+  - the amount: in rupees (paise, at most ₹1,000 crore), or in another currency (see [Currencies](#currencies));
   - a category;
   - an optional group;
   - who it was paid to;
@@ -33,6 +33,17 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
   - Deleting the copy a price change made **undoes** that change: the original carries on as before.
 - **Version check:** an edit, a price change or a delete sends the version it was made from (`expectedUpdatedAt`). A change saved in the meantime refuses it (409) instead of being overwritten, and the form sends only the fields that changed.
 
+## Currencies
+
+- **Paid in:** the rupee, or one of the ~30 currencies the European Central Bank publishes a daily reference rate for (`EXPENSE_CURRENCIES`: USD, EUR, GBP, SGD, AUD, CAD, CHF, JPY, …; no AED). The amount is kept in that currency's smallest unit (`foreign.amountMinor`; none for the yen, the won and the króna).
+- **What it counts as in rupees** (`amountPaise`, which every total reads):
+  - **What the bank charged**, when given ("Charged in ₹", one-time payments only): counted exactly, card markup and GST on forex included (`chargedPaise`).
+  - **Otherwise the day's rate:** the amount at the reference rate of the day it was paid, or the latest published before it (a weekend's is the Friday's; a day still to come takes the latest). The rate and its day are kept (`rate`, `rateDate`), so a past month's total never changes.
+  - **Repeating** payments in another currency convert at each payment's own day's rate (their first at the saved rate). "Price changed?" takes the new amount in the expense's own currency.
+  - Editing the amount, currency, bank figure or date prices it again; other edits keep its rate.
+- **Shown in:** the picker at the top of the page ("Show amounts in", rupees by default, remembered on this device) shows every total, chart, list, the Monthly table and the CSVs in that currency: each payment at its own day's rate, and one paid in that very currency exactly as paid. Rows paid in another currency also show what was paid ("paid €6.49").
+- **Rates:** the API asks Frankfurter (`EXCHANGE_RATES_URL`, the European Central Bank's reference rates, no key) for each working day once and keeps it (`exchange_rates`; the span kept is in `exchange_rate_coverage`, its latest days asked for again every six hours). Only dates and currency codes go out. When the source can't be reached it isn't asked again for ten minutes: the screens use the kept rates (or fall back to rupees and say so), and a new expense in another currency asks for the bank's figure or a moment's wait (503).
+
 ## Receipts
 
 - **Adding one:** the receipt column of the add or edit popup offers **Take a photo** (a phone or tablet opens its own camera app, rear camera, for full resolution, focus and flash; a computer opens its webcam in the popup, with a frame to fit the receipt in, a shutter that waits for a real picture, and a switch when there are several cameras; blocked or missing cameras say so and leave Upload) and **Upload** (or drop a file). Either takes a photo (JPG, PNG, WebP, GIF or HEIC; never SVG) or a PDF, up to 10 MB (`MAX_RECEIPT_BYTES`; the web app's proxy copies at most 10 MB of a request, so keep the two equal). The browser first shrinks a big phone photo, gently (at most 3200 px either way, quality 0.92, unlike chat photos), so it uploads quickly; the server then keeps:
@@ -45,8 +56,8 @@ What the studio spends, in rupees: for each venture, the Office and Personal. It
   - the currency, how it was paid (card with only its last four digits), the footer;
   - the category it most likely belongs to, among those the person may use.
 - **Tidying:** the server caps lengths, keeps a date only when it is a real one, and matches the category by name. Card numbers (four groups of four however they're spaced, Amex's 4-6-5, or 13 to 19 digits in a row) keep only their last four digits in every field but the receipt number and tax ID, and so does any run of 9 or more digits (a bank account) in "billed to" and the footer. Date ranges such as 01/10/2026 - 31/10/2026 are left alone.
-- **Filling in the form:** only what's still empty when the reading finishes (the form stays editable meanwhile): who it was paid to, the amount (only when the receipt is in rupees: Haiku takes the currency from the symbol, or from where the merchant is when none is printed), the date (for a new expense) and the category (until one is picked). A line says what was filled in. A receipt in another currency says so, and asks for the rupee amount.
-- **The digital receipt:** the panel shows what was read as a paper receipt. "Original" shows the kept photo or PDF above it (fetched only then), with "Open in a new tab". It warns when the items don't add up to the subtotal, or the subtotal, taxes and tip don't add up to the total.
+- **Filling in the form:** only what's still empty when the reading finishes (the form stays editable meanwhile): who it was paid to, the amount in the receipt's own currency (Haiku takes the currency from the symbol, or from where the merchant is when none is printed; the day's rate in rupees shows under it), the date (for a new expense) and the category (until one is picked). A line says what was filled in. A receipt in a currency the tracker can't convert (such as AED) says so and asks for the rupee amount; one in another currency suggests adding what the bank charged.
+- **The digital receipt:** the panel shows what was read as a paper receipt. "Original" shows the kept photo or PDF above it (fetched only then), with "Open in a new tab". It warns when the items don't add up to the subtotal, or the subtotal, taxes and tip don't add up to the total: within a rupee on a rupee receipt (round-off), within a cent or two in another currency. A total equal to the subtotal passes as prices that include tax, unless a tax is printed as added on top ("+18% VAT").
 - **When it can't be read** (no key set, the reader is busy, refused or too slow, an unclear photo, a long or damaged PDF): the receipt is still kept and its photo shown, and the details are typed in.
 - **Who sees it:** whoever sees its expense, so a receipt on a restricted category stays hidden with it. Until the expense is saved, only the person who uploaded it. The category it suggested shows only to people who can see that category. Anyone with Edit may upload, up to 40 an hour. Only image and PDF bodies are accepted, so a plain cross-site form can't post one.
 - **Letting go:** removing or replacing a receipt (and saving), or deleting its expense, lets it go: nobody sees or attaches it again, not even who uploaded it. A receipt attached to nothing for a day (also one whose form was closed unsaved) is deleted, with its copy, the next time someone opens Expenses or adds a receipt. It is recorded before its copy is stored, so a failure partway never leaves a copy behind. A new amount from a month on doesn't take the receipt along.
@@ -140,6 +151,7 @@ The tracker has its own access list, under Settings. Each member has a **level**
 | POST | `/v1/expenses` | Edit |
 | PATCH / DELETE | `/v1/expenses/:id` | Edit |
 | POST | `/v1/expenses/:id/change` | Edit |
+| GET | `/v1/expenses/rates?from&to&currencies` | View (rupees for one unit, each working day; at most about three years) |
 | POST | `/v1/expenses/receipts` (the photo or PDF as the body) | Edit |
 | GET | `/v1/expenses/receipts/:id[/file]` | View, and seeing its expense (before it's attached: the uploader) |
 | GET | `/v1/expenses/companies/:id/logo` | View, and seeing one of its expenses |

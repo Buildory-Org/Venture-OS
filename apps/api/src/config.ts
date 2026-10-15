@@ -27,6 +27,9 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
   // Expense companies' logos from their websites (the icon the site names, fetched once with the lead finder's safety checks). off: only uploaded logos.
   COMPANY_LOGO_FETCH: z.enum(["on", "off"]).default("on"),
+  // Daily reference exchange rates for expenses paid in another currency (the European Central Bank's, served by Frankfurter; no key).
+  // Only dates and currency codes are sent. Kept in the database, so each day is fetched once.
+  EXCHANGE_RATES_URL: z.url().default("https://api.frankfurter.dev/v1"),
   // The built-in lead finder (sales/finder): works queued find-leads and enrich runs in this API process. It waits while a workspace has no search key.
   SALES_FINDER: z.enum(["on", "off"]).default("on"),
   // Reads connected mailboxes (IMAP) every few minutes in this API process and files replies from leads (sales/channels/email). Never under tests.

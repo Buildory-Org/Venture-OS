@@ -8,7 +8,8 @@ import { Badge, Empty, filterControl, Panel, primaryClass, secondaryClass } from
 import type { Expense } from "@/lib/expenses-api";
 import { ExpenseDashboard } from "./expense-charts";
 import { CompanyAvatar } from "./expense-company";
-import { dayLabel, downloadCsv, lookups, monthLabel, paidIn, REPEAT_LABEL, rupees, scopeKey, scopeLabel, sumPaise, type ExpenseData } from "./expense-shared";
+import { dayLabel, downloadCsv, lookups, monthLabel, paidIn, REPEAT_LABEL, scopeKey, scopeLabel, type ExpenseData } from "./expense-shared";
+import { formatMoney, useMoney } from "./expense-money";
 
 type Props = {
   data: ExpenseData; ventures: { id: string; name: string }[]; ventureName: (id: string) => string;
@@ -28,17 +29,19 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
   const [kind, setKind] = useState<"" | "one" | "repeat">("");
   const [company, setCompany] = useState("");
   const find = useMemo(() => lookups(data.settings), [data.settings]);
+  const money = useMoney();
   const scopeTo = fixedWhere ?? where;
   // Every filter but the category scopes the category ring (it shows them all, and picks one); the rest also take the category.
   const scoped = data.expenses.filter((expense) => (!group || (group === "none" ? !expense.groupId : expense.groupId === group)) && (!company || expense.companyId === company)
     && (!scopeTo || scopeKey(expense.scope) === scopeTo) && (!kind || (kind === "one" ? expense.repeat === "none" : expense.repeat !== "none")));
   const matching = category ? scoped.filter((expense) => expense.categoryId === category) : scoped;
   const rows = paidIn(matching, month);
-  const total = sumPaise(rows);
-  const repeating = sumPaise(rows.filter((row) => row.expense.repeat !== "none"));
+  const total = money.sum(rows);
+  const repeating = money.sum(rows.filter((row) => row.expense.repeat !== "none"));
   const filtered = Boolean(category || group || (!fixedWhere && where) || kind || company);
-  const exportCsv = () => downloadCsv(`expenses-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${month}.csv`, ["Date", "Paid to", "Company", "Amount (INR)", "Category", "Group", "Charged to", "Repeats", "Note"],
-    rows.map(({ expense, day }) => [day, expense.paidTo, find.company(expense.companyId)?.name ?? "", (expense.amountPaise / 100).toFixed(2), find.category(expense.categoryId)?.name ?? "", find.group(expense.groupId)?.name ?? "", scopeLabel(expense.scope, ventureName), REPEAT_LABEL[expense.repeat], expense.note]));
+  // The amount in the shown currency, and what was paid when it was another currency (with the bank's rupees, when given).
+  const exportCsv = () => downloadCsv(`expenses-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${month}.csv`, ["Date", "Paid to", "Company", `Amount (${money.currency})`, "Paid in", "Amount paid", "Bank charged (INR)", "Category", "Group", "Charged to", "Repeats", "Note"],
+    rows.map(({ expense, day }) => [day, expense.paidTo, find.company(expense.companyId)?.name ?? "", money.plain(money.value(expense, day)), expense.foreign?.currency ?? "INR", expense.foreign ? formatMoney(expense.foreign.amountMinor, expense.foreign.currency) : formatMoney(expense.amountPaise, "INR"), expense.chargedPaise ? (expense.chargedPaise / 100).toFixed(2) : "", find.category(expense.categoryId)?.name ?? "", find.group(expense.groupId)?.name ?? "", scopeLabel(expense.scope, ventureName), REPEAT_LABEL[expense.repeat], expense.note]));
 
   return <div className="grid grid-cols-1 gap-4">
     <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filters">
@@ -68,7 +71,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
       : <Panel className="scroll-mt-4 overflow-hidden">
           <div id="expense-month-list" className="flex flex-wrap items-baseline justify-between gap-2 border-b border-neutral-100 px-4 py-3 sm:px-5">
             <h3 className="text-sm font-bold text-neutral-900">{filtered ? "Matching expenses" : `${title} expenses`} · {monthLabel(month)}</h3>
-            <span className="text-xs font-semibold text-neutral-500"><span className="tabular-nums text-neutral-800">{rupees(total)}</span> · {rows.length} {rows.length === 1 ? "expense" : "expenses"}{repeating ? <> · repeating <span className="tabular-nums">{rupees(repeating)}</span></> : null}</span>
+            <span className="text-xs font-semibold text-neutral-500"><span className="tabular-nums text-neutral-800">{money.format(total)}</span> · {rows.length} {rows.length === 1 ? "expense" : "expenses"}{repeating ? <> · repeating <span className="tabular-nums">{money.format(repeating)}</span></> : null}</span>
           </div>
           <ul className="divide-y divide-neutral-100">{rows.map(({ expense, day }) => {
             const cat = find.category(expense.categoryId);
@@ -86,7 +89,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
                   {expense.receiptId && <span className="inline-flex items-center gap-1 text-xs text-neutral-500"><Paperclip size={12} aria-hidden="true" />Receipt</span>}
                 </span>
               </span>
-              <span className="tabular-nums text-sm font-extrabold text-neutral-900">{rupees(expense.amountPaise)}</span>
+              <span className="text-right"><span className="block tabular-nums text-sm font-extrabold text-neutral-900">{money.format(money.value(expense, day))}</span>{money.original(expense) && <span className="block text-[11px] font-semibold tabular-nums text-neutral-500">paid {money.original(expense)}</span>}</span>
             </button></li>;
           })}</ul>
         </Panel>}

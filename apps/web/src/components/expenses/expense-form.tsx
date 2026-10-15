@@ -1,15 +1,16 @@
 "use client";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { addMonths, companyKey, expenseAccessAtLeast, LONG_NUMBER, MAX_LOGO_BYTES, websiteHost, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
+import { addMonths, companyKey, currencyDigits, EXPENSE_CURRENCIES, expenseAccessAtLeast, LONG_NUMBER, MAX_LOGO_BYTES, websiteHost, monthOf, nextPaidMonthAfter, type ExpenseAccessLevel, type ExpenseCurrency, type ExpenseInput, type ExpenseReceipt, type ExpenseScope } from "@venture-studio/contracts";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
 import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, refreshSoon, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
+import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, getExpenseRates, refreshSoon, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
 import { CompanyAvatar } from "./expense-company";
 import { ReceiptSection } from "./expense-receipt";
-import { amountText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
+import { amountText, dayLabel, minorOf, minorText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
+import { currencySign, formatMoney } from "./expense-money";
 
 type Venture = { id: string; name: string };
 type Props = {
@@ -24,6 +25,13 @@ type Props = {
 };
 const NEW = "__new__";
 
+const isCurrency = (code: string | null | undefined): code is ExpenseCurrency => (EXPENSE_CURRENCIES as readonly string[]).includes(code ?? "");
+/** "€1 = ₹106.60"; per 100 or 1,000 units for a small currency ("Rp1,000 = ₹5.27"). */
+function unitRate(currency: string, rupeesPerUnit: number) {
+  const units = rupeesPerUnit < 0.1 ? 1_000 : rupeesPerUnit < 1 ? 100 : 1;
+  return `${formatMoney(units * 10 ** currencyDigits(currency), currency)} = ${rupees(Math.round(units * rupeesPerUnit * 100))}`;
+}
+const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 const whereOf = (key: string): ExpenseScope => key === "office" ? { kind: "office" } : key === "personal" ? { kind: "personal" } : { kind: "venture", ventureId: key.slice("venture:".length) };
 
 /**
@@ -40,7 +48,14 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const canAddCategory = level === "manage";
   const [creating, setCreating] = useState<{ kind: "category" | "group"; name: string } | null>(null);
   const [paidTo, setPaidTo] = useState(expense?.paidTo ?? "");
-  const [amount, setAmount] = useState(expense ? amountText(expense.amountPaise) : "");
+  // The amount in the currency it was paid in (rupees unless picked); for another currency, optionally what the bank charged in rupees.
+  const initialCurrency: ExpenseCurrency = expense?.foreign && isCurrency(expense.foreign.currency) ? expense.foreign.currency : "INR";
+  const initialAmount = expense ? (expense.foreign ? minorText(expense.foreign.amountMinor, currencyDigits(expense.foreign.currency)) : amountText(expense.amountPaise)) : "";
+  const initialCharged = expense?.chargedPaise ? amountText(expense.chargedPaise) : "";
+  const [currency, setCurrency] = useState<ExpenseCurrency>(initialCurrency);
+  const [amount, setAmount] = useState(initialAmount);
+  const [charged, setCharged] = useState(initialCharged);
+  const digits = currencyDigits(currency);
   const [date, setDate] = useState(expense?.date ?? todayLocal());
   const [categoryId, setCategoryId] = useState(expense?.categoryId ?? usableCategories[0]?.id ?? "");
   // A receipt fills in only what is still empty (and the category, until one is picked).
@@ -67,7 +82,31 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   // A price change starts in a month the expense is paid in: the next one after this month (for a yearly one, its next renewal).
   const [changeMonth, setChangeMonth] = useState(() => (expense && expense.repeat !== "none" ? nextPaidMonthAfter(expense, monthOf(expense.date) > thisMonth() ? monthOf(expense.date) : thisMonth()) : null) ?? addMonths(thisMonth(), 1));
   const [changeAmount, setChangeAmount] = useState("");
-  const dirty = Boolean(paidTo !== (expense?.paidTo ?? "") || amount !== (expense ? amountText(expense.amountPaise) : "") || note !== (expense?.note ?? "") || receiptId !== (expense?.receiptId ?? null));
+  const dirty = Boolean(paidTo !== (expense?.paidTo ?? "") || amount !== initialAmount || currency !== initialCurrency || charged !== initialCharged || note !== (expense?.note ?? "") || receiptId !== (expense?.receiptId ?? null));
+  // The day's rate for another currency, to show what it comes to in rupees (looked up a moment after the currency or day changes).
+  const [rate, setRate] = useState<{ key: string; rupees: number | null; day: string | null }>({ key: "", rupees: null, day: null });
+  const rateKey = currency === "INR" ? "" : `${currency}|${date}`;
+  useEffect(() => {
+    if (!rateKey || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      getExpenseRates(shiftDay(date, -10), date, [currency]).then((rates) => {
+        const known = rates.days.filter((day) => day.day <= date && day.rupees[currency]).at(-1) ?? rates.days.at(-1);
+        if (active) setRate({ key: rateKey, rupees: known?.rupees[currency] ?? null, day: known?.day ?? null });
+      }, () => { if (active) setRate({ key: rateKey, rupees: null, day: null }); });
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+    // The key holds the currency and the day.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rateKey]);
+  const typedMinor = minorOf(amount, digits);
+  const chargedPaise = currency !== "INR" && repeat === "none" ? paiseOf(charged) : null;
+  const rateNow = rate.key === rateKey ? rate : null;
+  const inRupees = currency === "INR" ? null
+    : chargedPaise ? `Counts as ${rupees(chargedPaise)}, what the bank charged.`
+    : !rateNow ? "Looking up the day's rate…"
+    : !rateNow.rupees ? `Couldn't get the ${currency} rate just now: ${repeat === "none" ? "enter what the bank charged in rupees, or " : ""}try again in a moment.`
+    : `${typedMinor ? `≈ ${rupees(Math.round((typedMinor / 10 ** digits) * rateNow.rupees * 100))} ` : ""}at the ${dayLabel(rateNow.day!)} rate (${unitRate(currency, rateNow.rupees)})${repeat !== "none" ? "; each later payment at its own day's rate" : ""}.`;
   const fixedVenture = fixedVentureId ? ventures.find((venture) => venture.id === fixedVentureId) : undefined;
   const readOnly = !canEdit;
 
@@ -80,33 +119,40 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     const filled: string[] = [];
     if (!paidTo.trim() && data.merchant) { setPaidTo(data.merchant.slice(0, 120)); filled.push("paid to"); }
     if (!companyWebsite.trim() && data.website) setCompanyWebsite(data.website);
-    // The amount is filled in only for a receipt in rupees: one in another currency, or with none known, asks for the rupee amount.
-    const inRupees = data.currency === "INR";
-    if (!amount.trim() && data.total && inRupees) { setAmount(amountText(Math.round(data.total * 100))); filled.push("amount"); }
+    // The amount, in the receipt's own currency when it is one the tracker knows (with the day's rate shown); otherwise it asks.
+    const known = isCurrency(data.currency) ? data.currency : null;
+    if (!amount.trim() && data.total && known) { setCurrency(known); setAmount(minorText(Math.round(data.total * 10 ** currencyDigits(known)), currencyDigits(known))); filled.push("amount"); }
     if (!expense && data.date && date === todayLocal()) { setDate(data.date); filled.push("date"); }
     if (!categoryPicked && data.categoryId && usableCategories.some((category) => category.id === data.categoryId)) { setCategoryId(data.categoryId); filled.push("category"); }
-    const foreign = data.total && !inRupees ? (data.currency ? ` It's in ${data.currency} (${data.total.toFixed(2)}): enter what was charged in rupees.` : ` It doesn't say which currency its total of ${data.total.toFixed(2)} is in: enter the amount in rupees.`) : "";
+    // What to know about its currency: one it can't convert, none printed, or (when its amount was filled in) the bank's figure. An
+    // amount typed before it was read keeps its own currency, so the receipt's is mentioned.
+    const filledAmount = filled.includes("amount");
+    const foreign = data.total && !known ? (data.currency ? ` It's in ${data.currency} (${data.total.toFixed(2)}), which the tracker can't convert: enter what was charged in rupees.` : ` It doesn't say which currency its total of ${data.total.toFixed(2)} is in: enter the amount and pick its currency.`)
+      : known && !filledAmount && data.total && known !== currency ? ` The receipt is in ${known} (${formatMoney(Math.round(data.total * 10 ** currencyDigits(known)), known)}).`
+      : known && filledAmount && known !== "INR" && repeat === "none" ? " If you know what the bank charged in rupees, add it for the exact amount." : "";
     setReceiptNote(filled.length ? `Filled in ${filled.join(", ").replace(/, ([^,]*)$/, " and $1")} from the receipt: check them before saving.${foreign}` : foreign.trim());
   }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    const paise = paiseOf(amount);
-    if (!paise) { setError("Enter an amount in rupees, like 1700 or 1700.50."); return; }
+    const minor = minorOf(amount, digits);
+    if (!minor) { setError(currency === "INR" ? "Enter an amount in rupees, like 1700 or 1700.50." : `Enter the amount in ${currency}, like ${digits ? "12.50" : "1500"}.`); return; }
+    if (currency !== "INR" && repeat === "none" && charged.trim() && !chargedPaise) { setError("Enter what the bank charged in rupees, like 1700.50, or leave it empty."); return; }
     if (LONG_NUMBER.test(paidTo) || LONG_NUMBER.test(note)) { setError("Leave out account, card and phone numbers: only amounts and labels are kept."); return; }
     if (repeat !== "none" && endMonth && endMonth < monthOf(date)) { setError("The last month can't be before the first payment."); return; }
     if (newCompany && companyWebsite.trim() && !websiteHost(companyWebsite)) { setError("Enter the company's website like godaddy.com, or leave it empty."); return; }
-    const input: ExpenseInput = { date, amountPaise: paise, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId, ...(newCompany && companyWebsite.trim() ? { companyWebsite: companyWebsite.trim() } : {}) };
+    const priced = currency === "INR" ? { amountPaise: minor, foreign: null, chargedPaise: null } : { foreign: { currency, amountMinor: minor }, chargedPaise };
+    const input: ExpenseInput = { date, ...priced, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId, ...(newCompany && companyWebsite.trim() ? { companyWebsite: companyWebsite.trim() } : {}) };
     setBusy("save"); setError("");
     let saved: Expense;
     try {
       if (expense) {
         // Only what changed is sent, with the version it was changed from.
-        const before: ExpenseInput = { date: expense.date, amountPaise: expense.amountPaise, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, receiptId: expense.receiptId ?? null };
+        const before: ExpenseInput = { date: expense.date, ...(expense.foreign ? {} : { amountPaise: expense.amountPaise }), foreign: expense.foreign ? { currency: expense.foreign.currency as Exclude<ExpenseCurrency, "INR">, amountMinor: expense.foreign.amountMinor } : null, chargedPaise: expense.chargedPaise ?? null, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, receiptId: expense.receiptId ?? null };
         const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key as keyof ExpenseInput])));
         saved = Object.keys(changed).length ? await updateExpense(expense.id, { ...changed, expectedUpdatedAt: expense.updatedAt }) : expense;
       } else saved = await createExpense(input);
-      toast({ title: expense ? "Expense updated" : "Expense added", body: `${input.paidTo} · ${rupees(paise)}` });
+      toast({ title: expense ? "Expense updated" : "Expense added", body: `${input.paidTo} · ${formatMoney(minor, currency)}${currency !== "INR" ? ` (${rupees(saved.amountPaise)})` : ""}` });
       // The new company's logo goes on once the expense (and so the company) exists; the expense stays saved either way.
       if (logoFile && newCompany && saved.companyId) await uploadCompanyLogo(saved.companyId, logoFile).catch(() => toast({ title: "Logo not saved", body: "The expense is saved. Add the logo in Settings → Companies." }));
       // A new company's website: its logo is looked for now, and the page reads it in a few seconds.
@@ -141,12 +187,13 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   }
   async function changeFrom() {
     if (!expense) return;
-    const paise = paiseOf(changeAmount);
-    if (!paise) { setError("Enter the new amount in rupees."); return; }
+    const own = expense.foreign?.currency ?? "INR";
+    const newMinor = minorOf(changeAmount, currencyDigits(own));
+    if (!newMinor) { setError(`Enter the new amount in ${own === "INR" ? "rupees" : own}.`); return; }
     setBusy("change"); setError("");
     try {
-      await changeExpenseFrom(expense.id, { fromMonth: changeMonth, amountPaise: paise, expectedUpdatedAt: expense.updatedAt });
-      toast({ title: "New amount saved", body: `${rupees(paise)} from ${monthLabel(changeMonth)}; earlier months keep ${rupees(expense.amountPaise)}.` });
+      await changeExpenseFrom(expense.id, { fromMonth: changeMonth, ...(expense.foreign ? { amountMinor: newMinor } : { amountPaise: newMinor }), expectedUpdatedAt: expense.updatedAt });
+      toast({ title: "New amount saved", body: `${formatMoney(newMinor, own)} from ${monthLabel(changeMonth)}; earlier months keep ${expense.foreign ? formatMoney(expense.foreign.amountMinor, own) : rupees(expense.amountPaise)}.` });
       onSaved(); onClose();
     } catch (cause) { setError(describeError(cause, "Could not change the amount. Try again.")); }
     finally { setBusy(null); }
@@ -184,9 +231,17 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
           <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" tabIndex={-1} aria-hidden="true" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; if (file.size > MAX_LOGO_BYTES) { setError("Pick a logo image under 2 MB."); return; } setLogoFile(file); }} />
         </div>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Amount (₹)"><input required inputMode="decimal" className={inputClass} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="1700" /></Field>
+          <Field label={`Amount (${currencySign(currency)})`}><div className="flex min-w-0 gap-2">
+            {/* Its own width (the shared input style would make it take the whole row). */}
+            <Select aria-label="Currency" value={currency} onChange={(event) => setCurrency(event.target.value as ExpenseCurrency)} className="min-h-11 w-[6.5rem] shrink-0 rounded-xl border border-neutral-200 bg-white px-3 text-sm font-semibold text-neutral-800">{EXPENSE_CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}</Select>
+            <input required inputMode="decimal" aria-label={`Amount in ${currency}`} className={clsx(inputClass, "min-w-0 flex-1")} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={currency === "INR" ? "1700" : digits ? "12.50" : "1500"} />
+          </div></Field>
           <Field label={repeat === "none" ? "Date paid" : "First payment"}><input required type="date" className={inputClass} value={date} onChange={(event) => setDate(event.target.value)} /></Field>
         </div>
+        {inRupees && <div className="-mt-2 grid gap-3">
+          <p role="status" className="text-xs leading-5 text-neutral-500">{inRupees}</p>
+          {repeat === "none" && <Field label="Charged in ₹ (optional)"><input inputMode="decimal" className={inputClass} value={charged} onChange={(event) => setCharged(event.target.value)} placeholder="From your bank statement, e.g. 702.40" /></Field>}
+        </div>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Category"><Select aria-label="Category" className={inputClass} value={categoryId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "category", name: "" }); else { setCategoryId(event.target.value); setCategoryPicked(true); } }}>{usableCategories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.restricted ? " (restricted)" : ""}{category.archived ? " · archived" : ""}</option>)}{canAddCategory && <option value={NEW}>+ New category…</option>}</Select></Field>
           <Field label="Group (optional)"><Select aria-label="Group" className={inputClass} value={groupId} onChange={(event) => { if (event.target.value === NEW) setCreating({ kind: "group", name: "" }); else setGroupId(event.target.value); }}><option value="">No group</option>{usableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.archived ? " · archived" : ""}</option>)}{canAddGroup && <option value={NEW}>+ New group…</option>}</Select></Field>
@@ -211,10 +266,10 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
       <Notice tone="error" message={error} onDismiss={() => setError("")} />
     </form>
     {expense && expense.repeat !== "none" && !readOnly && <section aria-label="New amount from a month" className="grid grid-cols-1 gap-3 rounded-2xl border border-neutral-200 p-4">
-      <div><h3 className="text-sm font-bold text-neutral-900">Price changed?</h3><p className="mt-1 text-xs leading-5 text-neutral-500">Set the new amount from a month on. Earlier months keep {rupees(expense.amountPaise)}; editing the amount above would change every month.</p></div>
+      <div><h3 className="text-sm font-bold text-neutral-900">Price changed?</h3><p className="mt-1 text-xs leading-5 text-neutral-500">Set the new amount from a month on. Earlier months keep {expense.foreign ? formatMoney(expense.foreign.amountMinor, expense.foreign.currency) : rupees(expense.amountPaise)}; editing the amount above would change every month.</p></div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <Field label="From"><input type="month" className={inputClass} value={changeMonth} min={addMonths(monthOf(expense.date), 1)} onChange={(event) => setChangeMonth(event.target.value)} /></Field>
-        <Field label="New amount (₹)"><input inputMode="decimal" className={inputClass} value={changeAmount} onChange={(event) => setChangeAmount(event.target.value)} placeholder="1900" /></Field>
+        <Field label={`New amount (${currencySign(expense.foreign?.currency ?? "INR")})`}><input inputMode="decimal" className={inputClass} value={changeAmount} onChange={(event) => setChangeAmount(event.target.value)} placeholder={expense.foreign ? "25" : "1900"} /></Field>
         <button type="button" onClick={changeFrom} disabled={busy !== null || !changeAmount.trim()} className={clsx(secondaryClass, "!min-h-11")}><ActionLabel busy={busy === "change"} idle="Save new amount" /></button>
       </div>
     </section>}

@@ -247,7 +247,8 @@ try {
     await drawer.locator(`a[href*="draft=${bothWa.id}"]`).first().click(); await page.waitForTimeout(1500);
     check("drawer link opens that version in Review", page.url().includes(`draft=${bothWa.id}`) && await page.getByRole("tab", { name: /WhatsApp/, selected: true }).count() === 1);
 
-    // Ask Claude on Inbox, Overview and Find.
+    // Ask Claude on Inbox, Overview and Find. Pages now load more per visit (expenses, focus, celebrations), so wait out the read limit first.
+    await pause();
     await go(page, "/sales/live/inbox");
     check("Inbox: Ask Claude to draft replies", await visible(page.getByText("draft replies to my inbox")).isVisible().catch(() => false));
     await shot(page, "inbox-desktop-ask-claude");

@@ -69,7 +69,14 @@ export const notificationSchema = z.object({
   reminderId: idSchema.optional(),
   readAt: isoDateSchema.optional(),
   createdAt: isoDateSchema,
+  /** A reminder's rings share one row: how many times it has rung in all (absent: once), and when it first rang. */
+  repeats: z.number().int().positive().optional(),
+  firstAt: isoDateSchema.optional(),
+  /** A task's "Start:" reminder whose task this person can start now (it waits in accepted or to do). */
+  startable: z.boolean().optional(),
 });
+/** Every time a stacked reminder rang, newest first (the newest 100; `repeats` counts them all). */
+export const notificationHistorySchema = z.object({ id: idSchema, repeats: z.number().int().positive(), firstAt: isoDateSchema, rungAt: z.array(isoDateSchema) });
 /**
  * How one channel notifies one person: every message, only messages that @mention them (the default), or nothing.
  * Direct messages always notify, subject to the account-wide "Direct messages" preference.

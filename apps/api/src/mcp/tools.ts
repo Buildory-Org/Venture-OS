@@ -332,7 +332,11 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     if (all) return { read: (await ctx.api<{ read: number }>("POST", "/notifications/read", {})).read };
     if (!notificationIds?.length) throw new ToolError("Pass notificationIds, or all=true.");
     let read = 0;
-    for (const id of notificationIds) { await ctx.api("POST", `/notifications/${encodeURIComponent(id)}/read`, {}); read++; }
+    // A reminder's row is replaced each time it rings again: an id from an earlier whats_new may be gone, which is nothing to do.
+    for (const id of notificationIds) {
+      try { await ctx.api("POST", `/notifications/${encodeURIComponent(id)}/read`, {}); read++; }
+      catch (error) { if (!(error instanceof ToolError && error.status === 404)) throw error; }
+    }
     return { read };
   });
 

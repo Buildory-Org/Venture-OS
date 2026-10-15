@@ -495,12 +495,9 @@ export function workRoutes(database: Database): Router {
       const task = await db.collection("tasks").findOne({ _id: reminder.taskId, workspaceId: actor.membership.workspaceId });
       if (task?.startedAt || task?.completedAt || ["done", "cancelled"].includes(String(task?.status))) throw new AppError(409, "CONFLICT", "A reminder for started or terminal work cannot be snoozed");
     }
-    // A repeating reminder is rescheduled one repeat ahead right after delivery; snoozing then counts from now, not from that slot.
-    const snoozedAt = new Date();
-    const nextSlot = reminder.scheduledAt ? new Date(reminder.scheduledAt as Date | string).getTime() : Number.NaN;
-    // The two-minute margin absorbs clock skew between the worker that set the slot and this API.
-    const farAhead = Number.isFinite(nextSlot) && nextSlot - snoozedAt.getTime() > Number(reminder.repeatMinutes ?? 0) * 60_000 + 120_000;
-    const scheduledAt = snoozeReminder(snoozedAt, minutes, farAhead ? reminder.scheduledAt as Date | string : undefined);
+    // Counted from the next ring: a repeating reminder that has just rung is already one repeat away, so "10 min" right after a
+    // ring means the ring after 20 minutes, never no change at all. A delivered one-time reminder (its time passed) counts from now.
+    const scheduledAt = snoozeReminder(new Date(), minutes, reminder.scheduledAt as Date | string | undefined);
     const allowedStates = reminder.state === "completed" ? ["completed"] : ["scheduled"];
     const update = scheduledAt
       ? { $set: { scheduledAt, state: "scheduled", updatedAt: new Date() }, $unset: { leaseUntil: "", claimedBy: "", completionReason: "" }, $inc: { sequence: 1 } }

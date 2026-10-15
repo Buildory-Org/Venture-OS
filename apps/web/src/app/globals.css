@@ -285,6 +285,11 @@
 .vso-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: opacity 120ms ease-out, grid-template-rows 180ms var(--ease-snappy) 120ms, visibility 0s linear 300ms; }
 .vso-collapse[data-open="true"] { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows 220ms var(--ease-snappy), opacity 160ms ease-out, visibility 0s; }
 .vso-collapse > * { min-height: 0; overflow: hidden; }
+/* Rows that swipe away or open on a hold (components/ui/use-swipe-row.ts): vertical drags still scroll, sideways ones are the row's;
+   a slight press-in while a hold is being felt. */
+[data-swipe-row] { touch-action: pan-y; -webkit-touch-callout: none; }
+[data-swipe-row][data-pressing] { transform: scale(0.985); transition: transform 150ms ease-out; }
+@media (prefers-reduced-motion: reduce) { [data-swipe-row][data-pressing] { transform: none; } }
 
 /* "Just changed": a brief tint that fades, so a new or updated item is easy to find. */
 @keyframes vso-flash { 0%, 15% { background-color: var(--color-primary-100); } 100% { background-color: transparent; } }

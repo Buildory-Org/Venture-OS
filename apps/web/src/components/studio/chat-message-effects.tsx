@@ -67,6 +67,74 @@ function playAlert(context: AudioContext) {
   }
 }
 
+/** Sound is on here but the browser holds it back until someone clicks or types on the page. */
+export function isChatSoundBlocked() {
+  return !muted && audio?.state !== "running";
+}
+
+/**
+ * Alarms, for what needs doing rather than reading. A task notice beeps twice, twice over (about a second). A reminder rings like an
+ * alarm clock, bursts of four beeps, until someone clicks or presses a key on the page, or for ten seconds at most. The whole alarm is
+ * scheduled on the audio clock and silenced through one gain, so a busy page can neither stretch nor stutter it.
+ */
+export type Alarm = "task" | "reminder";
+let ringing: { gain: GainNode; timer: number } | null = null;
+
+export function stopAlarm() {
+  const current = ringing;
+  if (!current) return;
+  ringing = null;
+  window.clearTimeout(current.timer);
+  window.removeEventListener("pointerdown", stopAlarm, true);
+  window.removeEventListener("keydown", stopAlarm, true);
+  try {
+    const now = current.gain.context.currentTime;
+    current.gain.gain.cancelScheduledValues(now);
+    current.gain.gain.setValueAtTime(current.gain.gain.value, now);
+    current.gain.gain.linearRampToValueAtTime(0, now + 0.04);
+  } catch { /* Already silent. */ }
+  window.setTimeout(() => { try { current.gain.disconnect(); } catch { /* Already gone. */ } }, 120);
+}
+
+function beep(context: AudioContext, out: AudioNode, start: number, frequency: number, length: number) {
+  // A bright triangle with a quiet octave above: the edge of an alarm clock without its harshness.
+  for (const [type, pitch, level] of [["triangle", frequency, 0.16], ["sine", frequency * 2, 0.035]] as const) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(pitch, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(level, start + 0.006);
+    gain.gain.setValueAtTime(level, start + length - 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + length);
+    oscillator.connect(gain).connect(out);
+    oscillator.start(start);
+    oscillator.stop(start + length + 0.01);
+  }
+}
+
+/** Plays an alarm when sound is on and allowed here; returns whether it could. A new alarm replaces one still ringing. */
+export function playAlarm(kind: Alarm): boolean {
+  if (muted || !audio || audio.state !== "running") return false;
+  stopAlarm();
+  try {
+    const context = audio;
+    const gain = context.createGain();
+    gain.connect(context.destination);
+    const start = context.currentTime + 0.02;
+    if (kind === "task") {
+      for (const pair of [0, 0.5]) for (const [index, offset] of [0, 0.15].entries()) beep(context, gain, start + pair + offset, index ? 1318.5 : 1046.5, 0.1);
+    } else {
+      for (let burst = 0; burst < 10; burst++) for (let index = 0; index < 4; index++) beep(context, gain, start + burst + index * 0.13, 988, 0.08);
+      // Anyone at the page stops it: any click or key.
+      window.addEventListener("pointerdown", stopAlarm, true);
+      window.addEventListener("keydown", stopAlarm, true);
+    }
+    ringing = { gain, timer: window.setTimeout(stopAlarm, (kind === "task" ? 1.1 : 10.1) * 1000) };
+    return true;
+  } catch { return false; }
+}
+
 export function playChatSound(kind: Sound) {
   if (muted || !audio || audio.state !== "running") return;
   if (kind === "alert") { try { playAlert(audio); } catch { /* Sound is optional. */ } return; }

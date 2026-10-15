@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Membership } from "@venture-studio/contracts";
-import { can, createPat, dmKey, eventReminderId, eventReminderStillDue, eventReminderText, findOccurrence, hasDeadlineRisk, isTrustedPushEndpoint, isTimeZone, matchesPat, occurrences, occurrenceStartsAt, parseCommand, planReminders, previewCommand, recurrenceProblem, seriesEndsAt, snoozeReminder, validateMembershipSubset, type CalendarTiming, type ReminderEvent } from "../src/index.js";
+import { can, createPat, dmKey, eventReminderId, eventReminderStillDue, eventReminderText, findOccurrence, hasDeadlineRisk, isTrustedPushEndpoint, isTimeZone, matchesPat, occurrences, occurrenceStartsAt, parseCommand, planReminders, previewCommand, recurrenceProblem, seriesEndsAt, snoozeReminder, stackRings, validateMembershipSubset, type CalendarTiming, type ReminderEvent } from "../src/index.js";
 
 test("push endpoints are limited to HTTPS browser push providers", () => {
   for (const endpoint of ["https://fcm.googleapis.com/fcm/send/token", "https://updates.push.services.mozilla.com/wpush/v2/token", "https://web.push.apple.com/abc", "https://db3.notify.windows.com/?token=abc"]) assert.equal(isTrustedPushEndpoint(endpoint), true);
@@ -51,9 +51,27 @@ test("reminders and PATs use deterministic boundary rules", () => {
   // Snoozing a reminder that is still weeks away postpones it from its own time instead of pulling it earlier.
   assert.equal(snoozeReminder(now, 30, "2026-10-25T10:30:00.000Z")?.toISOString(), "2026-10-25T11:00:00.000Z");
   assert.equal(snoozeReminder(now, 30, new Date("2026-09-01T00:00:00.000Z"))?.toISOString(), "2026-09-23T10:30:00.000Z");
+  // Just after a ring at 10:00 the next one is at 10:10: "10 min" puts it at 10:20, "30 min" at 10:40.
+  assert.equal(snoozeReminder(now, 10, "2026-09-23T10:10:00.000Z")?.toISOString(), "2026-09-23T10:20:00.000Z");
+  assert.equal(snoozeReminder(now, 30, "2026-09-23T10:10:00.000Z")?.toISOString(), "2026-09-23T10:40:00.000Z");
   const pat = createPat();
   assert.equal(matchesPat(pat.token, pat.hash), true);
   assert.equal(matchesPat(`${pat.token}x`, pat.hash), false);
+});
+
+test("a reminder's rings stack into one row: every ring time once, newest first, the total count, and the first ring", () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 15, 12, minute));
+  // Two rows from before stacking (one ring each) and a stacked row of three: the new ring takes them all over.
+  const earlier = [{ createdAt: at(10) }, { createdAt: at(0) }, { createdAt: at(30), rungAt: [at(30), at(20), at(10)], repeats: 3, firstAt: at(10) }];
+  const stacked = stackRings(at(40), earlier);
+  assert.deepEqual(stacked.rungAt.map((time) => time.getUTCMinutes()), [40, 30, 20, 10, 0]);
+  assert.equal(stacked.repeats, 6);
+  assert.equal(stacked.firstAt.toISOString(), at(0).toISOString());
+  assert.deepEqual(stackRings(at(5), []), { rungAt: [at(5)], repeats: 1, firstAt: at(5) });
+  // Only the newest ring times are kept; the count goes on.
+  const long = stackRings(at(0), [{ createdAt: at(0), rungAt: Array.from({ length: 150 }, (_, index) => new Date(at(0).getTime() - (index + 1) * 600_000)), repeats: 150 }]);
+  assert.equal(long.rungAt.length, 100);
+  assert.equal(long.repeats, 151);
 });
 
 test("calendar: repeats keep their local time across zones and DST, honour weekdays, ends, counts, and skips", () => {

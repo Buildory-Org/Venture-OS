@@ -47,6 +47,12 @@
   - **When the site is closed**, Web Push shows the banner. The push carries only the notice id; the notification worker reads the text with the browser's own sign-in, so another account on a shared browser sees only a generic notice.
   - **Settings:** sound, banners, and push are per-device choices.
   - **Instant delivery:** the API nudges a person's open tabs the moment the worker adds to their inbox (a change stream on `notifications`), so alerts don't wait for the poll.
+- Reminder stacks and alarms (decided 2026-10-15):
+  - **One row per reminder:** a reminder that rings again takes over its earlier inbox row (ring times and count carried over) and arrives on top, unread, as a new row (a new id, so it pops up and alerts). The worker folds at delivery; the API folds rows from before at start.
+  - **Removing is not stopping:** a swiped-away (dismissed) row is hidden, not deleted, and comes back on top when its reminder rings again. Mark read doesn't stop a reminder either; snooze, cancel, or starting the task does.
+  - **Nagging only while waiting:** a task's "Start:" reminder rings every 10 minutes only while the task waits to be started (proposed, accepted or to do); in review, blocked, parked, backlog or draft it stays quiet and checks again a repeat later.
+  - **Snooze counts from the next ring:** "10 minutes" right after a ring means the ring after 20 minutes; a future reminder only ever moves later.
+  - **Sounds:** messages and news chime; task notices beep briefly; reminders ring like an alarm until someone clicks or presses a key on the page (ten seconds at most). All are synthesised in the page, and play only once the browser allows sound (after a click on the page); the pop-up says when it held one back.
 - The sample-data prototype under `/demo` is a development aid (decided 2026-10-04): production builds redirect `/demo` to the connected dashboard and hide demo links unless `NEXT_PUBLIC_ENABLE_DEMO=true` is set at build time.
 - Calendar (decided 2026-10-08):
   - **Storage:** a repeating event is stored once, with its rule, its skipped dates, and a wall-clock time in its own time zone. It is expanded into dates when read. Changing one date splits that date off as a separate event.

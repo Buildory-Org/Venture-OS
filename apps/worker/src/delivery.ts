@@ -1,13 +1,14 @@
 import webpush from "web-push";
 import { createHash } from "node:crypto";
-import type { Db } from "mongodb";
+import type { ClientSession, Db } from "mongodb";
 import type { WorkerConfig } from "./config.js";
 import { eventAudience } from "./event-audience.js";
-import { isTrustedPushEndpoint, readableSensitivities, sharesKnowledge } from "@venture-studio/core";
+import { isTrustedPushEndpoint, readableSensitivities, sharesKnowledge, stackRings } from "@venture-studio/core";
 
 export class Delivery {
   readonly mode: "local" | "live";
-  constructor(private readonly db: Db, private readonly config: WorkerConfig) {
+  /** `transaction` runs work atomically (the worker's replica-set transactions); without it, steps run one by one. */
+  constructor(private readonly db: Db, private readonly config: WorkerConfig, private readonly transaction: (work: (session?: ClientSession) => Promise<void>) => Promise<void> = (work) => work()) {
     this.mode = config.RESEND_API_KEY || (config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY) ? "live" : "local";
     if (config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY) webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY, config.VAPID_PRIVATE_KEY);
   }
@@ -77,9 +78,12 @@ export class Delivery {
       return;
     }
     if (!item.delivery?.inAppAt) {
-      await this.db.collection("notifications").updateOne({ outboxId: item._id }, { $setOnInsert: { _id: item._id, outboxId: item._id, workspaceId: item.workspaceId, userId: item.userId, type: item.type, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.chatKind && item.chatId ? { chatKind: item.chatKind, chatId: item.chatId } : {}), ...(item.reminderId ? { reminderId: item.reminderId } : {}), createdAt: new Date() } }, { upsert: true });
-      await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.inAppAt": new Date() } });
+      const folded = item.reminderId ? await this.stack(item) : (await this.db.collection("notifications").updateOne({ outboxId: item._id }, { $setOnInsert: this.row(item) }, { upsert: true }), false);
+      await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.inAppAt": new Date(), ...(folded ? { "delivery.foldedAt": new Date() } : {}) } });
+      if (folded) return;
     }
+    // A late ring went into a newer row that already rang: no push or email for it (it has no row of its own to open).
+    if (item.delivery?.foldedAt) return;
     if (this.mode === "local") { console.info(JSON.stringify({ level: "info", adapter: "local", event: "notification", outboxId: item._id, userId: item.userId, type: item.type })); return; }
     // Following a channel's every message would mean an email per message: those stay in the inbox and push.
     if (this.config.RESEND_API_KEY && preferences.email && user.email && !item.delivery?.emailAt && item.type !== "channel_message") {
@@ -114,5 +118,38 @@ export class Delivery {
       const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failed) throw failed.reason;
     }
+  }
+
+  /** The inbox row for an outbox item. */
+  private row(item: Record<string, any>) {
+    return { _id: item._id, outboxId: item._id, workspaceId: item.workspaceId, userId: item.userId, type: item.type, title: item.title, body: item.body, resourceType: item.resourceType, resourceId: item.resourceId, ...(item.chatKind && item.chatId ? { chatKind: item.chatKind, chatId: item.chatId } : {}), ...(item.reminderId ? { reminderId: item.reminderId } : {}), createdAt: new Date() };
+  }
+
+  /**
+   * A reminder's rings share one inbox row. A new ring takes over the rows before it (their ring times and count carry over, even
+   * from a row that was hidden) and arrives on top, unread, as a new row: a new id, so it pops up and alerts like any new notice.
+   * A ring delivered after a newer one (a retry) only adds its time to the newer row, and says so (true). One transaction: the new row
+   * and the rows it replaces change together, so a crash or a second worker never counts a ring twice, and two rings at once never
+   * make two rows (the second retries and finds the first).
+   */
+  private async stack(item: Record<string, any>): Promise<boolean> {
+    const notifications = this.db.collection("notifications");
+    const firedAt = item.createdAt instanceof Date ? item.createdAt : new Date();
+    const scope = { workspaceId: item.workspaceId, userId: item.userId, reminderId: item.reminderId };
+    let folded = false;
+    await this.transaction(async (session) => {
+      folded = false;
+      const earlier = await notifications.find({ ...scope, _id: { $ne: item._id } }, { session }).sort({ createdAt: -1, _id: -1 }).toArray();
+      const newest = earlier[0];
+      if (newest && new Date(newest.rungAt?.[0] ?? newest.createdAt).getTime() > firedAt.getTime()) {
+        folded = true;
+        // Set once: a repeat finds this ring time already there and changes nothing.
+        await notifications.updateOne({ _id: newest._id, rungAt: { $ne: firedAt } }, { $set: stackRings(firedAt, [newest as never]) }, { session });
+        return;
+      }
+      await notifications.updateOne({ outboxId: item._id }, { $setOnInsert: { ...this.row(item), ...stackRings(firedAt, earlier as never) } }, { upsert: true, session });
+      if (earlier.length) await notifications.deleteMany({ ...scope, _id: { $in: earlier.map((row) => row._id) } }, { session });
+    });
+    return folded;
   }
 }

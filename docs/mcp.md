@@ -83,12 +83,12 @@ Only for keys with **Include expenses** ticked on the Connect Claude page (`expe
 
 | Tool | Kind | Purpose |
 |---|---|---|
-| `expense_options` | read | My access, categories, groups, companies, where to charge (Office, Personal, ventures), currencies |
-| `expense_report` | read | A month (or 3/6/12 months): total, repeating vs one-time, by where, by category, top companies, change from the month before, in any currency |
-| `list_expenses` | read | Expenses paid in a month or span (filters, words in payee or note), or one in full with its receipt's details |
+| `expense_options` | read | My access, categories, groups, companies, tags in use, where to charge (Office, Personal, ventures), currencies |
+| `expense_report` | read | A month (or 3/6/12 months): total, repeating vs one-time, by where, by category, by tag, top companies, change from the month before, in any currency; a `tag` filter (what was spent on a person) |
+| `list_expenses` | read | Expenses paid in a month or span (filters including a tag, words in payee, note or tags), or one in full with its receipt's details |
 | `list_subscriptions` | read | What repeats: a month's and a year's cost, next payments, due soon, starting later, stopped |
-| `add_expenses` | write | 1 to 25 expenses in any currency (the bank's rupees for a one-time foreign one), a repeat and last month; may start a group; replay-safe |
-| `update_expense` | write | Change only the fields given; stop a subscription with `lastMonth`; refused if it changed since the `expectedUpdatedAt` read |
+| `add_expenses` | write | 1 to 25 expenses in any currency (the bank's rupees for a one-time foreign one), a repeat and last month, tags (spelled like the tags in use); may start a group; replay-safe |
+| `update_expense` | write | Change only the fields given (`tags` replaces them all); stop a subscription with `lastMonth`; refused if it changed since the `expectedUpdatedAt` read |
 | `change_expense_price` | write | A repeating expense's new amount from a month on, in its own currency; optional `expectedUpdatedAt` |
 | `delete_expense` | write (destructive) | Delete for good, with `confirm: true` only after the person says yes in the conversation, and the `expectedUpdatedAt` they were shown (a change since is refused) |
 

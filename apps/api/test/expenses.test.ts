@@ -192,3 +192,32 @@ test("expenses: categories and groups, input checks, a new amount from a month o
     assert.ok(await db.collection("audit_events").findOne({ action: "expense.delete", objectId: once.body.data.id }));
   }, "expenses_records");
 });
+
+test("tags: kept tidy and once each, refused with long numbers, commas or more than ten; edits keep them unless sent; a price change carries them on", { skip }, async () => {
+  await withSalesApp(async ({ api, db }) => {
+    const call = async (method: string, path: string, handle: string, body?: unknown) => read(await api(method, path, handle, body));
+    const shirts = await call("POST", "/expenses", "boss", { ...base, paidTo: "Zara", categoryId: "subscription", date: "2026-10-02", tags: ["  #Rahul ", "rahul", "Clothes"] });
+    assert.equal(shirts.status, 201, shirts.text);
+    assert.deepEqual(shirts.body.data.tags, ["Rahul", "Clothes"], "spaces and # dropped, one Rahul");
+    assert.deepEqual((await call("POST", "/expenses", "boss", { ...base, date: "2026-10-03" })).body.data.tags, [], "none by default");
+    assert.deepEqual((await call("POST", "/expenses", "boss", { ...base, date: "2026-10-04", tags: ["Asha​", "asha", "‮luhar"] })).body.data.tags, ["Asha", "luhar"], "invisible and direction characters dropped, so look-alikes are one");
+    assert.equal((await call("POST", "/expenses", "boss", { ...base, tags: ["​"] })).status, 400, "a tag of only invisible characters is empty");
+    for (const [tags, why] of [[["Card 4111 1111 1111 1111"], "a card number"], [["a, b"], "a comma"], [Array.from({ length: 11 }, (_, index) => `t${index}`), "eleven tags"], [["x".repeat(31)], "a long tag"]] as const) {
+      assert.equal((await call("POST", "/expenses", "boss", { ...base, tags })).status, 400, why);
+    }
+    assert.equal((await db.collection("audit_events").findOne({ action: "expense.create", objectId: shirts.body.data.id }))?.metadata?.tags, 2, "the audit counts them, never names them");
+    // An edit of something else keeps them; sending them replaces them (an empty list clears them).
+    const noted = await call("PATCH", `/expenses/${shirts.body.data.id}`, "boss", { note: "Two shirts" });
+    assert.deepEqual(noted.body.data.tags, ["Rahul", "Clothes"]);
+    assert.deepEqual((await call("PATCH", `/expenses/${shirts.body.data.id}`, "boss", { tags: ["Rahul", "Diwali"] })).body.data.tags, ["Rahul", "Diwali"]);
+    assert.ok(String((await db.collection("audit_events").find({ action: "expense.update", objectId: shirts.body.data.id }).sort({ _id: -1 }).toArray()).map((event) => event.metadata?.fields).join("|")).includes("tags"));
+    assert.deepEqual((await call("PATCH", `/expenses/${shirts.body.data.id}`, "boss", { tags: [] })).body.data.tags, []);
+    // A repeating one's new amount from a month on keeps its tags.
+    const gym = await call("POST", "/expenses", "boss", { ...base, paidTo: "Cult.fit", categoryId: "subscription", repeat: "monthly", date: "2026-08-05", tags: ["Asha", "Health"] });
+    const changed = await call("POST", `/expenses/${gym.body.data.id}/change`, "boss", { fromMonth: "2026-10", amountPaise: 200_000 });
+    assert.equal(changed.status, 201, changed.text);
+    assert.deepEqual(changed.body.data.continued.tags, ["Asha", "Health"]);
+    const listed = expenseListSchema.parse((await call("GET", "/expenses", "boss")).body.data).items;
+    assert.deepEqual(listed.find((item) => item.id === changed.body.data.continued.id)?.tags, ["Asha", "Health"], "the list (as the web reads it) has them");
+  }, "expenses_tags");
+});

@@ -11,6 +11,16 @@ import { idSchema, isoDateSchema } from "./common.js";
 export const EXPENSE_ACCESS_LEVELS = ["none", "view", "edit", "manage"] as const;
 export const expenseAccessLevelSchema = z.enum(EXPENSE_ACCESS_LEVELS);
 export type ExpenseAccessLevel = z.infer<typeof expenseAccessLevelSchema>;
+/**
+ * A person's access: what a manager set for them, else admins manage (without restricted categories) and everyone else has none.
+ * Shared by the API and the worker (which sends upcoming payments to the people who manage expenses).
+ */
+export function expenseAccessFor(access: Record<string, { level: ExpenseAccessLevel; restricted: boolean }>, userId: string, role: string): { level: ExpenseAccessLevel; restricted: boolean; custom: boolean } {
+  // Its own entry only (never an inherited key), and only a level the tracker knows.
+  const set = Object.hasOwn(access, userId) ? access[userId] : undefined;
+  if (set && (EXPENSE_ACCESS_LEVELS as readonly string[]).includes(set.level)) return { level: set.level, restricted: set.restricted === true, custom: true };
+  return role === "admin" ? { level: "manage", restricted: false, custom: false } : { level: "none", restricted: false, custom: false };
+}
 /** True when `level` allows at least `needed` (none < view < edit < manage). */
 export const expenseAccessAtLeast = (level: ExpenseAccessLevel, needed: ExpenseAccessLevel) => EXPENSE_ACCESS_LEVELS.indexOf(level) >= EXPENSE_ACCESS_LEVELS.indexOf(needed);
 
@@ -122,6 +132,15 @@ export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 const categoryFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, restricted: z.boolean() };
 export const expenseCategoryInputSchema = z.object({ ...categoryFields, color: categoryFields.color.default("neutral"), restricted: categoryFields.restricted.default(false) });
 export const expenseCategoryUpdateSchema = z.object({ ...categoryFields, archived: z.boolean() }).partial().refine((value) => Object.keys(value).length > 0, "Nothing to change");
+/** The categories a workspace starts with. Salary and Personal EMI are restricted. */
+export const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
+  { id: "subscription", name: "Subscription", color: "blue", restricted: false, archived: false },
+  { id: "domain", name: "Domain", color: "purple", restricted: false, archived: false },
+  { id: "ai-tools", name: "AI tools", color: "green", restricted: false, archived: false },
+  { id: "hosting", name: "Hosting", color: "amber", restricted: false, archived: false },
+  { id: "personal-emi", name: "Personal EMI", color: "red", restricted: true, archived: false },
+  { id: "salary", name: "Salary", color: "neutral", restricted: true, archived: false },
+];
 export const expenseGroupSchema = z.object({ id: idSchema, name: z.string(), color: expenseColorSchema, note: z.string(), archived: z.boolean() });
 export type ExpenseGroup = z.infer<typeof expenseGroupSchema>;
 const groupFields = { name: label(60, "A name").pipe(z.string().min(1, "Give it a name")), color: expenseColorSchema, note: label(300, "A note") };
@@ -305,6 +324,18 @@ export function nextPaidMonthAfter(expense: Repeating, month: string): string | 
   }
   return null;
 }
+// ---- Upcoming payments ------------------------------------------------------------------------------------------------------
+
+/** A repeating expense's heads-up comes this many days before each payment, at 10:00 India time (expense days are Indian days). */
+export const EXPENSE_DUE_DAYS_BEFORE = 3;
+/** When the heads-up for a payment on `day` (YYYY-MM-DD) is sent: 10:00 IST, three days before. */
+export function expenseDueNoticeAt(day: string): Date {
+  const before = new Date(Date.parse(`${day}T00:00:00Z`) - EXPENSE_DUE_DAYS_BEFORE * 86_400_000).toISOString().slice(0, 10);
+  return new Date(`${before}T10:00:00+05:30`);
+}
+/** Today in India, YYYY-MM-DD. */
+export const indiaDay = (now: Date) => new Date(now.getTime() + 330 * 60_000).toISOString().slice(0, 10);
+
 /** "₹1,23,456.50" (Indian grouping; paise only when there are any). */
 export function formatRupees(paise: number): string {
   const rupees = paise / 100;

@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
-import { ArrowUpRight, Bell, BellRing, Check, Clock3, Play, X } from "@/components/ui/icons";
+import { ArrowUpRight, Bell, BellRing, Check, Clock3, Play, Square, X } from "@/components/ui/icons";
 import { Select } from "@/components/ui/select";
 import { useSwipeRow } from "@/components/ui/use-swipe-row";
 import { Badge, DetailDrawer } from "@/components/studio/primitives";
 import { getLiveNotificationHistory, listLiveNotifications } from "@/lib/studio-api";
 import { describeError } from "@/lib/errors";
-import { noticeReminderId, notificationHref, rangText } from "@/lib/notification-events";
+import { noticeReminderId, notificationHref, rangText, stopExpenseHref } from "@/lib/notification-events";
 
 export type Notice = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 export type SnoozeChoice = 10 | 20 | 30 | "never";
@@ -55,6 +55,7 @@ export function NotificationRow({ item, leaving, busy, onRead, onRemove, onSnooz
       <div className="flex shrink-0 basis-full items-center gap-1.5 pl-12 sm:basis-auto sm:pl-0">
         {item.startable && <button type="button" disabled={busy} onClick={onStart} aria-label="Start the task" title="Start the task (stops this reminder)" className={startButton}><Play size={15} aria-hidden="true" /></button>}
         {open.href !== "/notifications/live" && <Link href={open.href} aria-label={open.label} title={open.label} className={iconButton}><ArrowUpRight size={16} aria-hidden="true" /></Link>}
+        {item.type === "expense_due" && <Link href={stopExpenseHref(item.resourceId)} aria-label="Stop after this payment" title="Stop after this payment (you confirm in the expense)" className={iconButton}><Square size={14} aria-hidden="true" /></Link>}
         {!item.readAt && <button type="button" disabled={busy} onClick={onRead} aria-label="Mark read" title="Mark read" className={iconButton}><Check size={16} aria-hidden="true" /></button>}
         {reminderId && <SnoozeMenu label={`Snooze ${item.body || item.title}`} disabled={busy} onChoose={onSnooze} />}
         <button type="button" disabled={busy} onClick={onRemove} aria-label="Remove from inbox" title="Remove (or swipe it away)" className="grid h-9 w-7 shrink-0 place-items-center rounded-lg text-neutral-400 transition-[background-color,color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-700 active:scale-[0.94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:opacity-40"><X size={15} aria-hidden="true" /></button>

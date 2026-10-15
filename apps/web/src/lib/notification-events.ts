@@ -27,6 +27,7 @@ export function notificationHref(item: Linkable): { href: string; label: string 
   if (item.resourceType === "activity") return { href: `/sales/live/inbox?reply=${encodeURIComponent(item.resourceId)}`, label: "Open reply" };
   if (item.resourceType === "event") return { href: `/calendar/live?event=${encodeURIComponent(item.resourceId)}`, label: "Open event" };
   if (item.resourceType === "document") return { href: `/knowledge/live?doc=${encodeURIComponent(item.resourceId)}`, label: "Open document" };
+  if (item.resourceType === "expense") return { href: `/expenses/live?expense=${encodeURIComponent(item.resourceId)}`, label: "Open expense" };
   return { href: "/notifications/live", label: "Open inbox" };
 }
 
@@ -38,8 +39,11 @@ export function noticeReminderId(item: { type: string; reminderId?: string; reso
 /** What a notice sounds like: reminders ring like an alarm, task notices beep, messages and news chime. */
 export function noticeSound(item: { type: string; resourceType: string }): "message" | "task" | "reminder" {
   if (item.type === "reminder") return "reminder";
-  return item.type === "assignment" || item.type === "deadline_warning" || item.resourceType === "task" ? "task" : "message";
+  return item.type === "assignment" || item.type === "deadline_warning" || item.type === "expense_due" || item.resourceType === "task" ? "task" : "message";
 }
+
+/** An upcoming payment's shortcut: its expense opened with its last month set to this payment's, to save and stop it. */
+export const stopExpenseHref = (expenseId: string) => `/expenses/live?expense=${encodeURIComponent(expenseId)}&stop=1`;
 
 /** "Rang 3 times" for a stacked reminder; empty for a single notice. */
 export const rangText = (repeats?: number) => (repeats && repeats > 1 ? `Rang ${repeats} times` : "");

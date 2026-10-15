@@ -5,6 +5,7 @@ import { eventAudience } from "./event-audience.js";
 import type { WorkerConfig } from "./config.js";
 import { Delivery } from "./delivery.js";
 import { reminderTransition } from "./rules.js";
+import { planExpenseReminders, processExpenseReminder } from "./expense-reminders.js";
 
 // How long a reminder or notice for an archived venture waits before it is checked again.
 const HOLD_MS = 6 * 60 * 60_000;
@@ -22,6 +23,8 @@ export class Worker {
     if (now.getTime() - this.plannedAt >= PLAN_EVERY_MS) {
       this.plannedAt = now.getTime();
       await this.planEventReminders(now).catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "worker.calendar_plan.failed", error: error instanceof Error ? error.message : "unknown" })));
+      // Upcoming payments of repeating expenses, planned from the expenses themselves (edits, stops and access changes followed).
+      await planExpenseReminders(this.db, now).catch((error: unknown) => console.error(JSON.stringify({ level: "error", event: "worker.expense_plan.failed", error: error instanceof Error ? error.message : "unknown" })));
     }
     const reminder = await this.claim("reminders", { $or: [{ state: "scheduled", scheduledAt: { $lte: now }, $or: [{ leaseUntil: { $exists: false } }, { leaseUntil: { $lte: now } }] }, { state: "claimed", leaseUntil: { $lte: now } }] }, now);
     if (reminder) { await this.processReminder(reminder, now); return true; }
@@ -36,6 +39,8 @@ export class Worker {
     if (!this.transactions) return work();
     await this.client.withSession((session) => session.withTransaction(() => work(session)));
   }
+  /** Plans upcoming-payment notices now (the loop does it every few minutes); returns how many it changed. */
+  planExpenses(now: Date): Promise<number> { return planExpenseReminders(this.db, now); }
   /**
    * Writes the reminders that events due in the next few days need, for the people who can still open them. Ids are stable
    * per occurrence, person, and offset, so this is safe to repeat (and to run on several workers): existing reminders,
@@ -93,6 +98,7 @@ export class Worker {
 
   private async processReminder(reminder: Record<string, any>, now: Date): Promise<void> {
     if (reminder.kind === "event") return this.processEventReminder(reminder, now);
+    if (reminder.kind === "expense_due") return processExpenseReminder(this.db, reminder, now, this.config.WORKER_ID, (work) => this.transaction(work));
     await this.transaction(async (session) => {
       const task = reminder.taskId ? await this.db.collection("tasks").findOne({ _id: reminder.taskId, workspaceId: reminder.workspaceId }, { session }) : null;
       // Hold reminders of archived ventures: re-check later, and restoring the venture re-arms them (heldForArchive).

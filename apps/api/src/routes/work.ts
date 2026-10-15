@@ -512,12 +512,16 @@ export function workRoutes(database: Database): Router {
   return router;
 }
 
-/** Reminders of archived ventures (by their task, or the channel venture of a /remind) stay hidden and frozen until restore. */
+/**
+ * The reminders a person lists, opens and snoozes: none of archived ventures (by their task, or the channel venture of a /remind;
+ * hidden and frozen until restore), and not the expense tracker's upcoming-payment notices
+ * (the worker plans those from the expenses; they arrive in the inbox and are stopped by stopping the expense).
+ */
 async function notArchivedReminders(db: AppDb, actor: NonNullable<Express.Request["actor"]>): Promise<Record<string, unknown>> {
   const archived = actor.membership.archivedVentureIds ?? [];
-  if (!archived.length) return {};
+  if (!archived.length) return { kind: { $ne: "expense_due" } };
   const tasks = await db.collection("tasks").find({ workspaceId: actor.membership.workspaceId, ventureId: { $in: archived } }, { projection: { _id: 1 } }).toArray();
-  return { taskId: { $nin: tasks.map((task) => task._id) }, ventureId: { $nin: archived } };
+  return { kind: { $ne: "expense_due" }, taskId: { $nin: tasks.map((task) => task._id) }, ventureId: { $nin: archived } };
 }
 
 async function accessibleTask(db: AppDb, actor: NonNullable<Express.Request["actor"]>, id: string) {

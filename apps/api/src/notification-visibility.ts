@@ -1,4 +1,5 @@
 import type { AppDb } from "./db.js";
+import { DEFAULT_EXPENSE_CATEGORIES, expenseAccessAtLeast, expenseAccessFor, type ExpenseCategory } from "@venture-studio/contracts";
 import { authorizedDocumentFilter } from "./document-access.js";
 
 type Actor = NonNullable<Express.Request["actor"]>;
@@ -42,6 +43,18 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
     const draftLeads = waitingDrafts.length ? await db.collection("opportunities").find({ _id: { $in: [...new Set(waitingDrafts.map((draft) => String(draft.leadId)))] }, workspaceId: actor.membership.workspaceId, deletedAt: null }).project({ _id: 1, ventureId: 1 }).toArray() : [];
     const openLeadIds = new Set(draftLeads.filter((lead) => !archived.includes(String(lead.ventureId)) && (actor.membership.role === "admin" || actor.membership.ventureIds.includes(String(lead.ventureId)))).map((lead) => String(lead._id)));
     const waitingDraftIds = new Set(waitingDrafts.filter((draft) => openLeadIds.has(String(draft.leadId))).map((draft) => String(draft._id)));
+    // Upcoming-payment notices only while the expense exists and the expense tracker still shows it to this member (its category too).
+    const expenseIds = [...new Set(page.filter((item) => item.resourceType === "expense").map((item) => String(item.resourceId)))];
+    const seenExpenseIds = new Set<string>();
+    if (expenseIds.length) {
+      const settings = await db.collection("expense_settings").findOne({ _id: actor.membership.workspaceId as never });
+      const access = expenseAccessFor((settings?.access ?? {}) as never, actor.id, actor.membership.role);
+      if (expenseAccessAtLeast(access.level, "view")) {
+        const categories = (Array.isArray(settings?.categories) ? settings.categories : DEFAULT_EXPENSE_CATEGORIES) as ExpenseCategory[];
+        const hidden = access.restricted ? [] : categories.filter((category) => category.restricted).map((category) => category.id);
+        for (const expense of await db.collection("expenses").find({ _id: { $in: expenseIds as never[] }, workspaceId: actor.membership.workspaceId, ...(hidden.length ? { categoryId: { $nin: hidden } } : {}) }).project({ _id: 1 }).toArray()) seenExpenseIds.add(String(expense._id));
+      }
+    }
     for (const item of page) {
       const legacy = !item.chatKind && item.resourceType === "message" ? messageById.get(String(item.resourceId)) : undefined;
       if (!item.chatKind && item.resourceType === "message" && !legacy) continue;
@@ -52,6 +65,7 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
       if (item.resourceType === "document" && !readableDocumentIds.has(String(item.resourceId))) continue;
       if (item.resourceType === "opportunity" && !openOpportunityIds.has(String(item.resourceId))) continue;
       if (item.resourceType === "sales_draft" && !waitingDraftIds.has(String(item.resourceId))) continue;
+      if (item.resourceType === "expense" && !seenExpenseIds.has(String(item.resourceId))) continue;
       visible.push(item);
       if (visible.length === limit) break;
     }

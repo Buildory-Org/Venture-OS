@@ -305,8 +305,8 @@ test("real Mongo replica-set smoke: auth boundary, tenancy, and atomic task fan-
     assert.deepEqual(((await (await fetch(`${origin}/v1/members?groupId=group-a&handle=peer`, { headers })).json()) as any).data.items.map((item: any) => item.name), ["Peer User"]);
     assert.equal((await fetch(`${origin}/v1/members?groupId=group-hidden`, { headers })).status, 404);
     assert.equal(((await (await fetch(`${origin}/v1/members?handle=b`, { headers })).json()) as any).data.items[0].name, "Venture B User");
-    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true });
-    const changedPreferences = { email: false, webPush: false, mentions: true, messages: true, assignments: true, reminders: true, calendar: false };
+    assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true, payments: true });
+    const changedPreferences = { email: false, webPush: false, mentions: true, messages: true, assignments: true, reminders: true, calendar: false, payments: false };
     assert.equal((await fetch(`${origin}/v1/notification-preferences`, { method: "PUT", headers, body: JSON.stringify(changedPreferences) })).status, 200);
     assert.deepEqual(((await (await fetch(`${origin}/v1/notification-preferences`, { headers })).json()) as any).data, changedPreferences);
     const hidden = await fetch(`${origin}/v1/tasks/task-hidden`, { headers });

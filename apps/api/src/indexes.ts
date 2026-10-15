@@ -219,6 +219,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_verdicts").createIndex({ leadId: 1, createdAt: -1 }),
     // Reports and Daybreak read a venture's verdicts by date (Claude's calibration, stale signals).
     db.collection("sales_verdicts").createIndex({ workspaceId: 1, ventureId: 1, createdAt: -1 }),
+    // The worker's planner reads a workspace's upcoming-payment notices (one per repeating expense and manager).
+    db.collection("reminders").createIndex({ workspaceId: 1, kind: 1, expenseId: 1 }, { partialFilterExpression: { kind: "expense_due" } }),
     // A lead's next-action reminder is looked up on every lead edit; reports ask how leads without an import reference were made.
     db.collection("reminders").createIndex({ workspaceId: 1, leadId: 1 }, { partialFilterExpression: { leadId: { $exists: true } } }),
     db.collection("audit_events").createIndex({ workspaceId: 1, objectId: 1 }, { partialFilterExpression: { action: "sales.lead.create" } }),

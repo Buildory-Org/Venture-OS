@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { notificationHistorySchema, notificationSchema, successEnvelope } from "@venture-studio/contracts";
 import { stackReminderNotifications } from "../src/notification-stacks.js";
-import { withSalesApp } from "./mcp-sales-harness.js";
+import { mcpTool, STUDIO, withSalesApp } from "./mcp-sales-harness.js";
 
 // Stacked reminders in the inbox (routes/notifications.ts, notification-stacks.ts, the snooze in routes/work.ts): one row per
 // reminder with its count, its ring times on request, removing a row without stopping the reminder, the Start button's flag, and
@@ -99,4 +99,36 @@ test("rows from before stacking fold into one per reminder and person, the newes
     assert.equal(await stackReminderNotifications(database), 0);
     assert.equal((await db.collection("notifications").findOne({ _id: "a3" as never }))?.repeats, 3);
   }, "stack-backfill");
+});
+
+test("upcoming payments in the inbox: only while the expense is there and open to the person (restricted ones too), never to Claude, never among reminders", { skip }, async () => {
+  await withSalesApp(async ({ db, api, origin, tokenFor }) => {
+    const now = new Date();
+    // The member only views expenses; the admin (boss) manages them without restricted categories.
+    await db.collection("expense_settings").insertOne({ _id: "workspace-a", categories: [{ id: "hosting", name: "Hosting", color: "amber", restricted: false, archived: false }, { id: "salary", name: "Salary", color: "neutral", restricted: true, archived: false }], groups: [], access: { "user-member": { level: "view", restricted: false } } } as never);
+    await db.collection("expenses").insertMany([
+      { _id: "hosting-1", workspaceId: "workspace-a", categoryId: "hosting", paidTo: "Contabo", date: "2026-08-05", repeat: "monthly", amountPaise: 110_000 },
+      { _id: "salary-1", workspaceId: "workspace-a", categoryId: "salary", paidTo: "Ramesh", date: "2026-08-07", repeat: "monthly", amountPaise: 5_000_000 },
+    ] as never[]);
+    const row = (id: string, userId: string, expenseId: string) => ({ _id: id, outboxId: id, workspaceId: "workspace-a", userId, type: "expense_due", title: "Payment due", body: `${expenseId} due`, resourceType: "expense", resourceId: expenseId, reminderId: `r-${id}`, createdAt: now });
+    await db.collection("notifications").insertMany([row("boss-hosting", "user-boss", "hosting-1"), row("boss-salary", "user-boss", "salary-1"), row("member-hosting", "user-member", "hosting-1"), row("member-gone", "user-member", "deleted-expense"), row("lead-hosting", "user-lead", "hosting-1")] as never[]);
+    const ids = async (handle: string) => ((await read(await api("GET", "/notifications", handle))).body.data as { id: string }[]).map((item) => item.id).sort();
+    assert.deepEqual(await ids("boss"), ["boss-hosting"], "no salary without restricted access");
+    assert.deepEqual(await ids("member"), ["member-hosting"], "not for an expense that's gone");
+    assert.deepEqual(await ids("lead"), [], "not without access to expenses");
+    // Claude connections never see expenses, nor their notices.
+    const token = await tokenFor("boss");
+    const fromClaude = await mcpTool(origin, token, "whats_new", {}, STUDIO);
+    assert.equal(fromClaude.isError, false, fromClaude.text);
+    assert.doesNotMatch(String(fromClaude.text), /hosting-1 due|Payment due/);
+    // Nor does Claude's "mark all read" touch them: the person still sees them unread.
+    const marked = await mcpTool(origin, token, "mark_notifications_read", { all: true }, STUDIO);
+    assert.equal(marked.isError, false, marked.text);
+    assert.equal((await db.collection("notifications").findOne({ _id: "boss-hosting" as never }))?.readAt, undefined);
+    // The planner's reminders aren't listed, opened or snoozed as the person's own reminders.
+    await db.collection("reminders").insertOne({ _id: "r-plan", workspaceId: "workspace-a", userId: "user-boss", kind: "expense_due", expenseId: "hosting-1", occurrenceDay: "2026-11-05", scheduledAt: new Date(now.getTime() + 86_400_000), state: "scheduled", repeatMinutes: null, sequence: 0, message: "", createdAt: now, updatedAt: now } as never);
+    assert.deepEqual((await read(await api("GET", "/reminders?limit=50", "boss"))).body.data.items.map((item: { id: string }) => item.id), []);
+    assert.equal((await api("GET", "/reminders/r-plan", "boss")).status, 404);
+    assert.equal((await api("POST", "/reminders/r-plan/snooze", "boss", { minutes: 10 })).status, 404);
+  }, "stack-payments");
 });

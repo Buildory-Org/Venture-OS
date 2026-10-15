@@ -53,7 +53,8 @@ test("expenses through Claude: the tick, the access list, never salaries; report
       assert.deepEqual([...internalScopes({ [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_SCOPES_HEADER]: "expenses:read" })], []);
       assert.deepEqual([...internalScopes({ [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_KEY_HEADER]: "not-the-key", [INTERNAL_SCOPES_HEADER]: "expenses:read" })], []);
       assert.deepEqual([...internalScopes(internalHeaders("user-boss", ["expenses:read"]))], ["expenses:read"]);
-      for (const headers of [{ [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_SCOPES_HEADER]: "expenses:read" }, { [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_KEY_HEADER]: "not-the-key", [INTERNAL_SCOPES_HEADER]: "expenses:read" }]) {
+      const forged: Record<string, string>[] = [{ [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_SCOPES_HEADER]: "expenses:read" }, { [INTERNAL_USER_HEADER]: "user-boss", [INTERNAL_KEY_HEADER]: "not-the-key", [INTERNAL_SCOPES_HEADER]: "expenses:read" }];
+      for (const headers of forged) {
         assert.equal((await fetch(`${origin}/v1/expenses`, { headers })).status, 401, "a forged scopes header is no way in");
       }
       // A receipt on a salary is not found through Claude (it is in the app); receipt files and the access list stay in the app.

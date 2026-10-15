@@ -5,17 +5,17 @@ export class ToolError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
 }
 
-export type Api = <T = any>(method: "GET" | "POST" | "PATCH" | "PUT", path: string, body?: unknown) => Promise<T>;
+export type Api = <T = any>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown) => Promise<T>;
 
 /**
  * Calls the product API in-process as `userId`, so every permission, archive, and side-effect rule is the app's own.
  * `base` is this server's own loopback address.
  */
-export function apiClient(base: string, userId: string): Api {
+export function apiClient(base: string, userId: string, scopes?: Iterable<string>): Api {
   return async (method, path, body) => {
     const response = await fetch(`${base}/v1${path}`, {
       method,
-      headers: { ...internalHeaders(userId), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...internalHeaders(userId, scopes), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(15_000),
     });

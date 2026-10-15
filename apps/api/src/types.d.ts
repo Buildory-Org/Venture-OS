@@ -8,6 +8,8 @@ declare global {
       actor?: { id: string; email: string; name: string; membership: Membership };
       auditWorkspaceId?: string;
       interfaceChannel: "api" | "mcp" | "engine";
+      /** A Claude connection's token scopes (empty otherwise), for routes that check them too. */
+      mcpScopes?: Set<string>;
     }
   }
 }

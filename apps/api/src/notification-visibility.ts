@@ -7,8 +7,9 @@ type Actor = NonNullable<Express.Request["actor"]>;
 /**
  * Read only notices whose current channel scope remains visible to this member, leaving out the ones they removed from their inbox.
  * A stacked reminder's ring times stay out unless asked for (`withRings`): the inbox is polled often and only shows the count.
+ * For Claude (`viaClaude`), expense notices about restricted categories (salaries, EMIs) stay out whatever the person may see.
  */
-export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: Record<string, unknown> = {}, limit = 100, withRings = false) {
+export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: Record<string, unknown> = {}, limit = 100, withRings = false, viaClaude = false) {
   const visible: Record<string, any>[] = [];
   let before: { createdAt: Date; _id: string } | null = null;
   const archived = actor.membership.archivedVentureIds ?? [];
@@ -51,7 +52,7 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
       const access = expenseAccessFor((settings?.access ?? {}) as never, actor.id, actor.membership.role);
       if (expenseAccessAtLeast(access.level, "view")) {
         const categories = (Array.isArray(settings?.categories) ? settings.categories : DEFAULT_EXPENSE_CATEGORIES) as ExpenseCategory[];
-        const hidden = access.restricted ? [] : categories.filter((category) => category.restricted).map((category) => category.id);
+        const hidden = access.restricted && !viaClaude ? [] : categories.filter((category) => category.restricted).map((category) => category.id);
         for (const expense of await db.collection("expenses").find({ _id: { $in: expenseIds as never[] }, workspaceId: actor.membership.workspaceId, ...(hidden.length ? { categoryId: { $nin: hidden } } : {}) }).project({ _id: 1 }).toArray()) seenExpenseIds.add(String(expense._id));
       }
     }

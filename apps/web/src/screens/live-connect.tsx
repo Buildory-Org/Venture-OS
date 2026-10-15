@@ -4,7 +4,7 @@ import { describeError } from "@/lib/errors";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { PAT_DIRECT_MESSAGE_SCOPES, PAT_ENGINE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
+import { PAT_DIRECT_MESSAGE_SCOPES, PAT_ENGINE_SCOPES, PAT_EXPENSE_SCOPES, PAT_READ_SCOPES, PAT_WRITE_SCOPES } from "@venture-studio/contracts";
 import { BookOpenText, Check, Clock3, Copy, KeyRound, LockKeyhole, Plus, ShieldCheck, Sparkles, X } from "@/components/ui/icons";
 import { Dither } from "@/components/ui/dither";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -32,6 +32,8 @@ const CONNECTORS = {
 const connectorOf = (pat: { scopes: string[] }): Connector => pat.scopes.includes("sales:engine") ? "engine" : pat.scopes.some(isSalesScope) && !pat.scopes.includes("tasks:read") ? "sales" : "studio";
 // Direct messages are opt-in per key: reading only with Read only, reading and sending with Read and update.
 const directScopes = (access: Access) => access === "update" ? [...PAT_DIRECT_MESSAGE_SCOPES] : [PAT_DIRECT_MESSAGE_SCOPES[0]];
+// Expenses are opt-in per key too: reports and lists with Read only; also adding, changing and deleting with Read and update.
+const expenseScopes = (access: Access) => access === "update" ? [...PAT_EXPENSE_SCOPES] : [PAT_EXPENSE_SCOPES[0]];
 const DAY = 86_400_000;
 const accessOf = (pat: Pat): Access => pat.scopes.some((scope) => scope.endsWith(":write")) ? "update" : "read";
 const accessLabel = { update: "Read and update", read: "Read only" } as const;
@@ -172,6 +174,7 @@ function KeyCard({ pat, now, onRevoked }: { pat: Pat; now: number; onRevoked: ()
           <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">{CONNECTORS[connectorOf(pat)].title}</span>
           <span className={clsx("vso-role inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold", access === "update" ? "vso-role-head" : "vso-role-review")}>{accessLabel[access]}</span>
           {pat.scopes.includes("direct_messages:read") && <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">+ direct messages</span>}
+          {pat.scopes.includes("expenses:read") && <span className="inline-flex rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-semibold text-neutral-600">+ expenses</span>}
         </div>
       </div>
       {!confirming && <button type="button" onClick={() => setConfirming(true)} className="min-h-8 shrink-0 rounded-lg px-2.5 text-xs font-semibold text-danger-text transition-[background-color,transform] duration-150 hover:bg-danger-surface active:scale-[0.97]">Revoke</button>}
@@ -200,6 +203,7 @@ function CreateKeyDialog({ origin, initial, onClose, onCreated }: { origin: stri
   // Read only by default: text Claude reads (files, messages) is written by others, so changing data is opted into.
   const [access, setAccess] = useState<Access>("read");
   const [directMessages, setDirectMessages] = useState(false);
+  const [expenses, setExpenses] = useState(false);
   const [days, setDays] = useState("90");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -222,7 +226,7 @@ function CreateKeyDialog({ origin, initial, onClose, onCreated }: { origin: stri
     if (busy) return;
     setBusy(true); setError("");
     try {
-      const scopes = connector === "engine" ? ENGINE_SCOPES : connector === "sales" ? SALES_SCOPES : [...(access === "update" ? UPDATE : READ), ...(directMessages ? directScopes(access) : [])];
+      const scopes = connector === "engine" ? ENGINE_SCOPES : connector === "sales" ? SALES_SCOPES : [...(access === "update" ? UPDATE : READ), ...(directMessages ? directScopes(access) : []), ...(expenses ? expenseScopes(access) : [])];
       const result = await createLivePat({ name: name.trim() || "Claude", scopes, expiresInDays: Number(days) });
       setCreated({ token: result.token, name: result.pat.name, connector }); onCreated();
     } catch (cause) { setError(describeError(cause, "Could not create the key.")); }
@@ -282,7 +286,10 @@ function CreateKeyDialog({ origin, initial, onClose, onCreated }: { origin: stri
           <label className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-neutral-200 p-3 transition-colors duration-150 hover:bg-neutral-50 has-[:checked]:border-primary-300 has-[:checked]:bg-primary-50">
             <input type="checkbox" checked={directMessages} onChange={(event) => setDirectMessages(event.target.checked)} className="mt-0.5 accent-[var(--color-primary-600)]" />
             <span><span className="block text-sm font-semibold text-neutral-800">Include my direct messages</span><span className="mt-0.5 block text-xs leading-5 text-neutral-500">{access === "update" ? "Claude can read your private conversations and send messages as you, labelled “via Claude”." : "Claude can read your private conversations."} Off unless you tick it.</span></span>
-          </label></>}
+          </label>
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-2xl border border-neutral-200 p-3 transition-colors duration-150 hover:bg-neutral-50 has-[:checked]:border-primary-300 has-[:checked]:bg-primary-50">
+            <input type="checkbox" checked={expenses} onChange={(event) => setExpenses(event.target.checked)} className="mt-0.5 accent-[var(--color-primary-600)]" />
+            <span><span className="block text-sm font-semibold text-neutral-800">Include expenses</span><span className="mt-0.5 block text-xs leading-5 text-neutral-500">{access === "update" ? "Claude can read the expenses you can see and add, change and delete them (asking you before deleting). Never salaries or EMIs." : "Claude can read the expenses you can see: reports, lists and subscriptions. Never salaries or EMIs."}</span></span></label></>}
           <Field label="Expires after"><Select aria-label="Expires after" className={inputClass} value={days} onChange={(event) => setDays(event.target.value)}><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="366">1 year</option></Select></Field>
           <Notice tone="error" message={error} onDismiss={() => setError("")} />
         </div>

@@ -81,7 +81,7 @@ export function mcpRouter(db: AppDb, config: AppConfig): Router {
       // Loopback to this same process: the tools use the product API as the token's owner.
       const base = `http://127.0.0.1:${req.socket.localPort}`;
       const toolContext: ToolContext = {
-        api: apiClient(base, grant.userId), db, userId: grant.userId, workspaceId: grant.workspaceId, patId: grant.patId, scopes: grant.scopes,
+        api: apiClient(base, grant.userId, grant.scopes), db, userId: grant.userId, workspaceId: grant.workspaceId, patId: grant.patId, scopes: grant.scopes,
         writesEnabled: config.MCP_WRITES_ENABLED, origin: appOrigin, searchKeys: () => resolveSearchKeys(db, grant.workspaceId, config),
         writeBudget: async () => { const seconds = await overLimit(db, `mcp-write:${grant.patId}`, WRITES_PER_MINUTE); if (seconds) throw new ToolError(`Too many changes in a minute from this token; retry in ${seconds} s.`, 429); },
         toolBudget: async (tool, perMinute) => { const seconds = await overLimit(db, `mcp-tool:${tool}:${grant.patId}`, perMinute); if (seconds) throw new ToolError(`Too many ${tool.replaceAll("_", " ")} calls in a minute; retry in ${seconds} s.`, 429); },
@@ -122,6 +122,12 @@ const MCP_ROUTES: [string, RegExp][] = [
   ["GET", /^\/v1\/documents\/[A-Za-z0-9_-]+$/], ["GET", /^\/v1\/channels\/[A-Za-z0-9_-]+\/messages$/],
   ["GET", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders$/], ["POST", /^\/v1\/reminders\/[A-Za-z0-9_-]+\/snooze$/],
   ["GET", /^\/v1\/notifications$/], ["POST", /^\/v1\/notifications\/read$/], ["POST", /^\/v1\/notifications\/[A-Za-z0-9_-]+\/read$/],
+  // Expenses, for keys with them ticked (the expense routes check the key's scopes again, and never show salaries or EMIs to Claude):
+  // reading, adding, changing, a new price from a month, deleting (after the person says yes), starting a group, a receipt's details.
+  // The access list, categories, companies and receipt files stay in the app.
+  ["GET", /^\/v1\/expenses$/], ["GET", /^\/v1\/expenses\/(settings|rates)$/], ["GET", /^\/v1\/expenses\/receipts\/[A-Za-z0-9_-]+$/],
+  ["POST", /^\/v1\/expenses$/], ["GET", /^\/v1\/expenses\/[A-Za-z0-9_-]+$/], ["PATCH", /^\/v1\/expenses\/[A-Za-z0-9_-]+$/], ["DELETE", /^\/v1\/expenses\/[A-Za-z0-9_-]+$/],
+  ["POST", /^\/v1\/expenses\/[A-Za-z0-9_-]+\/change$/], ["POST", /^\/v1\/expenses\/settings\/groups$/],
   // Knowledge documents and files (approving a document stays in the app).
   ["GET", /^\/v1\/documents$/], ["POST", /^\/v1\/documents$/], ["PUT", /^\/v1\/documents\/[A-Za-z0-9_-]+$/],
   ["GET", /^\/v1\/files$/], ["GET", /^\/v1\/files\/[A-Za-z0-9_-]+\/text$/], ["POST", /^\/v1\/uploads$/], ["POST", /^\/v1\/uploads\/[A-Za-z0-9_-]+\/complete$/],

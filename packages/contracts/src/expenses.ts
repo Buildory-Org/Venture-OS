@@ -341,3 +341,65 @@ export function formatRupees(paise: number): string {
   const rupees = paise / 100;
   return `₹${rupees.toLocaleString("en-IN", { minimumFractionDigits: paise % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 }
+
+// ---- Money in a chosen currency (the screens and Claude's tools work out every total the same way) ------------------------------
+
+type Converted = Pick<Expense, "date" | "repeat" | "amountPaise"> & { foreign?: { currency: string; amountMinor: number } | null; chargedPaise?: number | null; rateDate?: string | null };
+const tenDaysBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 10 * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * Payments in the currency `shown` (rupees when its rates couldn't be had), each in that currency's smallest unit. In rupees, an
+ * expense counts as saved: the bank's figure or the amount at the rate of the day it was paid; a repeating one in another currency at
+ * each payment's day's rate (its first as saved, when it was priced on its day). In another currency, each payment converts at its own
+ * day's rate (the oldest kept for one before the rates kept), and one paid in that very currency is exactly what was paid.
+ */
+export function expenseConverter(shown: string, rates: ExpenseRates | null, today: string) {
+  // Per currency, its days (oldest first) and rates, searched by halves: thousands of payments are looked up.
+  const byCurrency = new Map<string, { days: string[]; rates: number[] }>();
+  for (const entry of rates?.days ?? []) for (const [currency, rate] of Object.entries(entry.rupees)) {
+    const list = byCurrency.get(currency) ?? { days: [], rates: [] };
+    list.days.push(entry.day); list.rates.push(rate);
+    byCurrency.set(currency, list);
+  }
+  /** Rupees for one unit on a day: the latest on or before it, none before the first kept. */
+  const rate = (currency: string, day: string): number | null => {
+    if (currency === "INR") return 1;
+    const list = byCurrency.get(currency);
+    if (!list?.days.length) return null;
+    let low = 0; let high = list.days.length - 1; let found = -1;
+    while (low <= high) { const middle = (low + high) >> 1; if (list.days[middle]! <= day) { found = middle; low = middle + 1; } else high = middle - 1; }
+    return found >= 0 ? list.rates[found]! : null;
+  };
+  const earliest = (currency: string): number | null => (currency === "INR" ? 1 : byCurrency.get(currency)?.rates[0] ?? null);
+  const currency = shown === "INR" || rate(shown, today) !== null ? shown : "INR";
+  const digits = currencyDigits(currency);
+  /** One payment in rupees (paise). */
+  const rupees = (expense: Converted, day: string) => {
+    const foreign = expense.foreign;
+    const pricedOnItsDay = !expense.rateDate || expense.rateDate >= tenDaysBefore(expense.date);
+    if (!foreign || expense.repeat === "none" || expense.chargedPaise || (day === expense.date && pricedOnItsDay)) return expense.amountPaise;
+    const perUnit = rate(foreign.currency, day);
+    return perUnit ? Math.round((foreign.amountMinor / 10 ** currencyDigits(foreign.currency)) * perUnit * 100) : expense.amountPaise;
+  };
+  /** One payment in the shown currency. */
+  const value = (expense: Converted, day: string) => {
+    if (currency === "INR") return rupees(expense, day);
+    if (expense.foreign?.currency === currency) return expense.foreign.amountMinor;
+    const perUnit = rate(currency, day) ?? earliest(currency)!;
+    return Math.round((rupees(expense, day) / 100 / perUnit) * 10 ** digits);
+  };
+  return { currency, digits, rupees, value };
+}
+
+const moneyFormats = new Map<string, Intl.NumberFormat>();
+/** An amount in a currency's smallest unit: "₹1,23,456.50", "$20", "€6.49", "¥1,500" (whole amounts without ".00"). */
+export function formatMoneyIn(minor: number, currency: string): string {
+  const digits = currencyDigits(currency);
+  const scale = 10 ** digits;
+  const whole = minor % scale === 0;
+  // Two formatters per currency (with and without decimals), made once: long lists and charts format thousands of amounts.
+  const key = `${currency}:${whole}`;
+  let format = moneyFormats.get(key);
+  if (!format) { format = new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", { style: "currency", currency, minimumFractionDigits: whole ? 0 : digits, maximumFractionDigits: digits }); moneyFormats.set(key, format); }
+  return format.format(minor / scale);
+}

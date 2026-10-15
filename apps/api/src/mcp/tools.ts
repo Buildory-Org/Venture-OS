@@ -7,6 +7,7 @@ import { id, lookups, once, OPEN, type Register, requestIdField, taskLink, taskR
 import { registerKnowledgeTools } from "./tools-knowledge.js";
 import { registerTeamTools } from "./tools-team.js";
 import { registerCalendarTools } from "./tools-calendar.js";
+import { registerExpenseTools } from "./tools-expenses.js";
 import { registerLookupTools } from "./tools-lookup.js";
 import { CARD_TOOL_META, chatDrawsCards, withCard, type CardBuilder } from "./sales-cards.js";
 import { CONTEXT_REMINDER, readContextRecently, registerContextTools } from "./tools-context.js";
@@ -64,7 +65,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   tool("whats_new", "notifications:read", {
     title: "What's new", annotations: read,
-    description: "New notifications (assignments, @mentions, messages in channels I follow, direct messages without their text, reminders, deadline warnings, calendar changes) and reviews waiting on me since `cursor`. Store the returned cursor and pass it next time; `changed:false` means nothing happened. Without a cursor it returns unread items. Does not mark anything read.",
+    description: "New notifications (assignments, @mentions, messages in channels I follow, direct messages without their text, reminders, deadline warnings, calendar changes, and upcoming expense payments when this key has expenses) and reviews waiting on me since `cursor`. Store the returned cursor and pass it next time; `changed:false` means nothing happened. Without a cursor it returns unread items. Does not mark anything read.",
     inputSchema: z.object({ cursor: z.string().max(200).optional(), timezone: timezoneField }),
   }, async ({ cursor, timezone }) => {
     const timeZone = validTimeZone(timezone);
@@ -84,7 +85,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     const items: Record<string, unknown>[] = [];
     for (const item of notifications) {
       if (!fresh(item.createdAt) || (since === undefined && item.readAt)) continue;
-      const url = item.resourceType === "task" ? taskLink(ctx, String(item.resourceId)) : item.chatKind === "channel" ? `${ctx.origin}/channels/live?channel=${encodeURIComponent(item.chatId)}` : `${ctx.origin}/notifications/live`;
+      const url = item.resourceType === "task" ? taskLink(ctx, String(item.resourceId)) : item.resourceType === "expense" ? `${ctx.origin}/expenses/live?expense=${encodeURIComponent(item.resourceId)}` : item.chatKind === "channel" ? `${ctx.origin}/channels/live?channel=${encodeURIComponent(item.chatId)}` : `${ctx.origin}/notifications/live`;
       // Direct messages stay out of MCP: say one arrived, without its text. Channel notices carry message text (and the
       // sender), so without messages:read they only say that something arrived.
       const direct = item.chatKind === "direct";
@@ -343,6 +344,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   registerKnowledgeTools(tool, ctx, look);
   registerTeamTools(tool, ctx, look);
   registerCalendarTools(tool, ctx, look);
+  registerExpenseTools(tool, ctx, look);
   registerContextTools(tool, ctx, look);
 }
 

@@ -1,15 +1,26 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { AppDb } from "../db.js";
-import { idSchema, markNotificationsReadSchema, notificationPreferencesSchema } from "@venture-studio/contracts";
+import { DEFAULT_EXPENSE_CATEGORIES, idSchema, markNotificationsReadSchema, notificationPreferencesSchema, type ExpenseCategory } from "@venture-studio/contracts";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 import { can, isTrustedPushEndpoint, STARTABLE_TASK_STATUSES } from "@venture-studio/core";
 import { listVisibleNotifications } from "../notification-visibility.js";
 
 const defaultPreferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, payments: true };
-// Expenses are never shown to Claude connections, so neither are their notices (upcoming payments), nor marked read by them.
-const channelFilter = (req: Express.Request): Record<string, unknown> => (req.interfaceChannel === "api" ? {} : { resourceType: { $ne: "expense" } });
+// Expense notices (upcoming payments) reach a Claude connection only when its key has expenses ticked, and never those about salaries
+// or EMIs (the inbox's own check, told it's Claude); without the tick they are neither shown to Claude nor marked read by it.
+const channelFilter = (req: Express.Request): Record<string, unknown> => (req.interfaceChannel === "api" || req.mcpScopes?.has("expenses:read") ? {} : { resourceType: { $ne: "expense" } });
+const viaClaude = (req: Express.Request) => req.interfaceChannel !== "api";
+/** What Claude may mark read: never an expense notice it can't see (all without the tick; salaries' and EMIs' with it). */
+async function readableByChannel(db: AppDb, req: Express.Request, workspaceId: string): Promise<Record<string, unknown>> {
+  if (!viaClaude(req)) return {};
+  if (!req.mcpScopes?.has("expenses:read")) return { resourceType: { $ne: "expense" } };
+  const settings = await db.collection("expense_settings").findOne({ _id: workspaceId as never });
+  const restricted = ((Array.isArray(settings?.categories) ? settings.categories : DEFAULT_EXPENSE_CATEGORIES) as ExpenseCategory[]).filter((category) => category.restricted).map((category) => category.id);
+  const hidden = restricted.length ? (await db.collection("expenses").find({ workspaceId, categoryId: { $in: restricted } }).project({ _id: 1 }).toArray()).map((expense) => String(expense._id)) : [];
+  return hidden.length ? { $nor: [{ resourceType: "expense", resourceId: { $in: hidden } }] } : {};
+}
 const subscriptionSchema = z.object({ endpoint: z.url().refine(isTrustedPushEndpoint, "Unsupported push service endpoint").transform((value) => new URL(value).href), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }) });
 const subscriptionEndpointSchema = subscriptionSchema.pick({ endpoint: true });
 
@@ -39,13 +50,13 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   });
   router.get("/notifications", async (req, res) => {
     const actor = req.actor!;
-    res.json({ ok: true, data: jsonValue(await withStartable(db, actor, await listVisibleNotifications(db, actor, channelFilter(req)))) });
+    res.json({ ok: true, data: jsonValue(await withStartable(db, actor, await listVisibleNotifications(db, actor, channelFilter(req), 100, false, viaClaude(req)))) });
   });
   // One notice, under the inbox's visibility rules: the browser's notification worker reads it to show who wrote what,
   // so a push never carries message text and a browser signed in as someone else only gets a generic alert.
   router.get("/notifications/:id", async (req, res) => {
     const actor = req.actor!;
-    const [item] = await listVisibleNotifications(db, actor, { _id: idSchema.parse(req.params.id), ...channelFilter(req) }, 1);
+    const [item] = await listVisibleNotifications(db, actor, { _id: idSchema.parse(req.params.id), ...channelFilter(req) }, 1, false, viaClaude(req));
     if (!item) throw new AppError(404, "NOT_FOUND", "Notification not found");
     res.json({ ok: true, data: jsonValue(item) });
   });
@@ -68,12 +79,12 @@ export function notificationRoutes(db: AppDb, vapidPublicKey?: string): Router {
   router.post("/notifications/read", async (req, res) => {
     const actor = req.actor!;
     const { chatKind, chatId } = markNotificationsReadSchema.parse(req.body ?? {});
-    const result = await db.collection("notifications").updateMany({ workspaceId: actor.membership.workspaceId, userId: actor.id, readAt: { $exists: false }, ...(chatKind ? { chatKind, chatId } : {}), ...channelFilter(req) }, { $set: { readAt: new Date() } });
+    const result = await db.collection("notifications").updateMany({ workspaceId: actor.membership.workspaceId, userId: actor.id, readAt: { $exists: false }, ...(chatKind ? { chatKind, chatId } : {}), ...await readableByChannel(db, req, actor.membership.workspaceId) }, { $set: { readAt: new Date() } });
     res.json({ ok: true, data: { read: result.modifiedCount } });
   });
   router.post("/notifications/:id/read", async (req, res) => {
     const actor = req.actor!;
-    const result = await db.collection("notifications").updateOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, userId: actor.id, ...channelFilter(req) }, { $set: { readAt: new Date() } });
+    const result = await db.collection("notifications").updateOne({ _id: idSchema.parse(req.params.id), workspaceId: actor.membership.workspaceId, userId: actor.id, ...await readableByChannel(db, req, actor.membership.workspaceId) }, { $set: { readAt: new Date() } });
     if (!result.matchedCount) throw new AppError(404, "NOT_FOUND", "Notification not found");
     res.json({ ok: true, data: { read: true } });
   });

@@ -59,7 +59,7 @@ export const notificationSchema = z.object({
   id: idSchema,
   workspaceId: idSchema,
   userId: idSchema,
-  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "channel_message", "member_joined", "event_invite", "event_update", "event_response", "knowledge_request", "knowledge_result", "sales_won", "sales_reply", "sales_approval", "sales_needs_you"]),
+  type: z.enum(["mention", "assignment", "reminder", "deadline_warning", "message", "channel_message", "member_joined", "event_invite", "event_update", "event_response", "knowledge_request", "knowledge_result", "sales_won", "sales_reply", "sales_approval", "sales_needs_you", "expense_due"]),
   title: z.string(),
   body: z.string(),
   resourceType: z.string(),
@@ -85,6 +85,6 @@ export const CHANNEL_NOTIFICATION_LEVELS = ["all", "mentions", "off"] as const;
 export const channelNotificationLevelSchema = z.object({ level: z.enum(CHANNEL_NOTIFICATION_LEVELS) });
 export type ChannelNotificationLevel = (typeof CHANNEL_NOTIFICATION_LEVELS)[number];
 // `calendar` (invitations, changes, and replies) arrived later: older saved preferences read as on.
-export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean(), calendar: z.boolean().default(true) });
+export const notificationPreferencesSchema = z.object({ email: z.boolean(), webPush: z.boolean(), mentions: z.boolean(), messages: z.boolean(), assignments: z.boolean(), reminders: z.boolean(), calendar: z.boolean().default(true), payments: z.boolean().default(true) });
 
 export type Message = z.infer<typeof messageSchema>;

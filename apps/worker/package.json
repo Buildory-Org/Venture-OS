@@ -12,6 +12,7 @@
     "test": "node --import tsx --test test/worker.test.ts"
   },
   "dependencies": {
+    "@venture-studio/contracts": "0.1.0",
     "@venture-studio/core": "0.1.0",
     "mongodb": "^6.21.0",
     "web-push": "^3.6.7"

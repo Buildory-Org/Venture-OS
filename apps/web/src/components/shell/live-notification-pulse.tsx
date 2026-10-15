@@ -5,10 +5,10 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import { ArrowUpRight, Bell, BellRing, Check, Play, VolumeX, X } from "@/components/ui/icons";
+import { ArrowUpRight, Bell, BellRing, Check, Play, Square, VolumeX, X } from "@/components/ui/icons";
 import { dismissToast, toast as showToast } from "@/components/ui/toast";
 import { listLiveNotifications, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder, StudioApiError, updateLiveTask } from "@/lib/studio-api";
-import { getNotificationUnread, noticeReminderId, noticeSound, notificationHref, notificationRefreshEvent, publishNotificationSnapshot, rangText, subscribeNotificationSnapshot } from "@/lib/notification-events";
+import { getNotificationUnread, noticeReminderId, noticeSound, notificationHref, notificationRefreshEvent, publishNotificationSnapshot, rangText, stopExpenseHref, subscribeNotificationSnapshot } from "@/lib/notification-events";
 import { isActiveChat } from "@/lib/chat-presence";
 import { raiseAlert } from "@/lib/device-alerts";
 import { useNotificationNudges } from "@/lib/use-live-realtime";
@@ -231,7 +231,7 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
       {toast.blocked && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-[var(--color-neutral-500)]"><VolumeX size={13} aria-hidden="true" className="mt-px shrink-0" />Your browser held back the sound because nothing on this page had been clicked yet. Click anywhere on the page once to hear the next one.</p>}
       {actionError && <p role="alert" className="vso-fade-enter mt-3 text-xs text-red-700">{actionError}</p>}
       {snoozed ? <p role="status" className="vso-fade-enter mt-3 inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-[var(--color-success-surface)] px-3 text-[11px] font-semibold text-[var(--color-success-text)]">✓ {snoozed}</p>
-        : <div className="mt-3 flex flex-wrap items-center gap-1.5">{toast.item.startable && <button type="button" disabled={busy} onClick={() => void start(toast.item)} aria-label="Start the task" title="Start the task (stops this reminder)" className={startButton}><Play size={15} aria-hidden="true" /></button>}<Link href={open.href} onClick={dismiss} aria-label={open.label} title={open.label} className={iconButton}><ArrowUpRight size={16} aria-hidden="true" /></Link>{reminderId(toast.item) && <SnoozeMenu label={`Snooze ${toast.item.body || toast.item.title}`} disabled={busy} onChoose={(minutes) => void snooze(toast.item, minutes)} />}<button type="button" disabled={busy} onClick={() => void markRead(toast.item)} aria-label="Mark read" title="Mark read" className={iconButton}><Check size={16} aria-hidden="true" /></button></div>}
+        : <div className="mt-3 flex flex-wrap items-center gap-1.5">{toast.item.startable && <button type="button" disabled={busy} onClick={() => void start(toast.item)} aria-label="Start the task" title="Start the task (stops this reminder)" className={startButton}><Play size={15} aria-hidden="true" /></button>}<Link href={open.href} onClick={dismiss} aria-label={open.label} title={open.label} className={iconButton}><ArrowUpRight size={16} aria-hidden="true" /></Link>{toast.item.type === "expense_due" && <Link href={stopExpenseHref(toast.item.resourceId)} onClick={dismiss} aria-label="Stop after this payment" title="Stop after this payment (you confirm in the expense)" className={iconButton}><Square size={14} aria-hidden="true" /></Link>}{reminderId(toast.item) && <SnoozeMenu label={`Snooze ${toast.item.body || toast.item.title}`} disabled={busy} onChoose={(minutes) => void snooze(toast.item, minutes)} />}<button type="button" disabled={busy} onClick={() => void markRead(toast.item)} aria-label="Mark read" title="Mark read" className={iconButton}><Check size={16} aria-hidden="true" /></button></div>}
     </aside> });
   });
 

@@ -67,12 +67,13 @@ export class Delivery {
       }
     }
     const storedPreferences = await this.db.collection("notification_preferences").findOne({ workspaceId: item.workspaceId, userId: item.userId });
-    const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true, ...storedPreferences };
+    const preferences = { email: false, webPush: true, mentions: true, messages: true, assignments: true, reminders: true, calendar: true, payments: true, ...storedPreferences };
     // "Someone accepted your invitation" has no preference switch of its own, so it always arrives in the inbox; nor do
     // knowledge requests and their results, since muting them would leave a request waiting unseen.
     // Calendar invitations, changes, and replies have their own switch; calendar reminders follow the reminders switch.
     // A channel followed for every message has no account-wide switch: the per-channel choice is the switch.
-    const category = item.type === "member_joined" || item.type === "channel_message" || String(item.type).startsWith("knowledge_") ? null : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" || String(item.type).startsWith("sales_") ? "assignments" : "reminders";
+    // Upcoming payments of repeating expenses have their own switch.
+    const category = item.type === "member_joined" || item.type === "channel_message" || String(item.type).startsWith("knowledge_") ? null : item.type === "expense_due" ? "payments" : String(item.type).startsWith("event_") ? "calendar" : item.type === "mention" ? "mentions" : item.type === "message" ? "messages" : item.type === "assignment" || item.type === "deadline_warning" || String(item.type).startsWith("sales_") ? "assignments" : "reminders";
     if (category && preferences[category] === false) {
       await this.db.collection("notification_outbox").updateOne({ _id: item._id }, { $set: { "delivery.categorySkippedAt": new Date() } });
       return;

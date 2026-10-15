@@ -1,5 +1,7 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { toast } from "@/components/ui/toast";
 import clsx from "clsx";
 import { addMonths, EXPENSE_CURRENCIES, expenseAccessAtLeast, type ExpenseCurrency } from "@venture-studio/contracts";
 import { ChevronLeft, ChevronRight, LockKeyhole } from "@/components/ui/icons";
@@ -29,10 +31,44 @@ export function LiveExpensesScreen() {
   const { money, failed, estimated } = useExpenseMoney(data?.expenses, shown);
   const [tab, setTab] = useState<Tab>("expenses");
   const [month, setMonth] = useState(thisMonth());
-  const [open, setOpen] = useState<{ expense?: Expense; where?: string } | null>(null);
+  const [open, setOpen] = useState<{ expense?: Expense; where?: string; stop?: boolean } | null>(null);
   const ventures = useMemo(() => studio.ventures.map((venture) => ({ id: venture.id, name: venture.name })), [studio.ventures]);
   const ventureName = (id: string) => ventures.find((venture) => venture.id === id)?.name ?? "A venture no longer listed";
   const scoped = activeVentureId ? ventures.find((venture) => venture.id === activeVentureId) : undefined;
+  // A notice's link (?expense=…, with &stop=1 for "stop after this payment"): that expense opens once the list is in, also when the
+  // page is already open (only the address changes then), and the address goes back to the page's own so Refresh doesn't open it again.
+  const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const linkedId = params.get("expense");
+  const linkedStop = params.get("stop") === "1";
+  // The address goes back first (through the router), and the popup opens once it has: the popup then adds its own step on top, so
+  // Back closes it and leaves the page as it was. Each link opens once (a reload of the list never reopens it); clicked again, again.
+  const handledLink = useRef("");
+  const reloadedFor = useRef("");
+  const pendingLink = useRef<{ expense: Expense | undefined; stop: boolean } | null>(null);
+  useEffect(() => {
+    if (linkedId) {
+      const key = `${linkedId}|${linkedStop}`;
+      if (!data || handledLink.current === key) return;
+      const expense = data.expenses.find((item) => item.id === linkedId);
+      // One added since the page loaded (its notice arrived meanwhile): the list is read again before it counts as gone.
+      if (!expense && reloadedFor.current !== key) { reloadedFor.current = key; reload(); return; }
+      handledLink.current = key;
+      pendingLink.current = { expense, stop: linkedStop };
+      router.replace(pathname, { scroll: false });
+      return;
+    }
+    handledLink.current = "";
+    reloadedFor.current = "";
+    const pending = pendingLink.current;
+    if (!pending) return;
+    pendingLink.current = null;
+    queueMicrotask(() => {
+      if (pending.expense) setOpen({ expense: pending.expense, stop: pending.stop });
+      else toast({ tone: "info", title: "That expense isn't here any more", body: "It may have been deleted, or you no longer have access to it." });
+    });
+  }, [data, linkedId, linkedStop, router, pathname, reload]);
   const level = data?.settings.me.level ?? "none";
   const canEdit = expenseAccessAtLeast(level, "edit");
   const manage = level === "manage";
@@ -68,7 +104,7 @@ export function LiveExpensesScreen() {
       </div>
       </MoneyProvider>
     </>}
-    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
+    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} stopAfterNext={open.stop} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
   </PageFrame>;
 }
 

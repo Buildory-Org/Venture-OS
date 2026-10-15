@@ -224,6 +224,116 @@ test("a reminder's rings stack into one inbox row: newest on top and unread, wit
   }
 });
 
+test("upcoming payments: three days ahead at 10:00 IST to each manager, restricted ones only to those who see them, stacked monthly, stopped with the expense or the access", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const client = new MongoClient(process.env.TEST_MONGODB_URI!);
+  await client.connect();
+  const dbName = `venture_studio_worker_test_${process.pid}_${Date.now()}_payments`;
+  assert.match(dbName, /^venture_studio_worker_test_/);
+  const db = client.db(dbName);
+  const collection = (name: string) => db.collection<Record<string, any> & { _id: string }>(name);
+  const config = { APP_MODE: "local" as const, MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, WORKER_ID: "worker-payments", POLL_MS: 100, EMAIL_FROM: "Venture Studio <noreply@example.invalid>", VAPID_SUBJECT: "mailto:admin@example.invalid" };
+  const at = (iso: string) => new Date(iso);
+  const drain = async (worker: Worker, now: Date) => { let turns = 0; while (await worker.tick(now) && turns < 50) turns++; };
+  const rowsFor = (userId: string) => collection("notifications").find({ userId, type: "expense_due" }).toArray();
+  try {
+    await collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true });
+    await collection("notifications").createIndex({ outboxId: 1 }, { unique: true });
+    // An admin (Manage by default, no restricted categories), a lead set to Manage with restricted, a member who only views.
+    for (const [handle, role] of [["boss", "admin"], ["lead", "venture_head"], ["member", "contributor"]] as const) {
+      await collection("users").insertOne({ _id: `user-${handle}`, workspaceId: "workspace-a", status: "active", email: `${handle}@example.invalid` });
+      await collection("memberships").insertOne({ _id: `membership-${handle}`, workspaceId: "workspace-a", userId: `user-${handle}`, role, status: "active", ventureIds: [], groupIds: [] });
+    }
+    await collection("expense_settings").insertOne({ _id: "workspace-a", access: { "user-lead": { level: "manage", restricted: true }, "user-member": { level: "view", restricted: false } } });
+    await collection("exchange_rates").insertOne({ _id: "2026-09-30", rates: { INR: 100, USD: 1.25, EUR: 1 } });
+    const expense = (id: string, extra: Record<string, unknown>) => ({ _id: id, workspaceId: "workspace-a", categoryId: "ai-tools", groupId: null, scope: { kind: "office" }, note: "", endMonth: null, ...extra });
+    await collection("expenses").insertMany([
+      expense("anthropic", { paidTo: "Anthropic", date: "2026-08-05", repeat: "monthly", amountPaise: 1_600_00, foreign: { currency: "USD", amountMinor: 2_000 } }),
+      expense("salary", { paidTo: "Ramesh", date: "2026-08-07", repeat: "monthly", categoryId: "salary", amountPaise: 50_000_00 }),
+      expense("once", { paidTo: "A laptop", date: "2026-10-03", repeat: "none", amountPaise: 90_000_00 }),
+      expense("stopped", { paidTo: "Old tool", date: "2026-01-04", repeat: "monthly", endMonth: "2026-09", amountPaise: 999_00 }),
+    ]);
+    const worker = new Worker(client, db, config, true);
+
+    // 1 Oct, 10:30 IST: planned for the next payments (the notice three days before at 10:00 IST); twice changes nothing.
+    await worker.planExpenses(at("2026-10-01T05:00:00Z"));
+    const planned = await collection("reminders").find({ kind: "expense_due" }).sort({ expenseId: 1, userId: 1 }).toArray();
+    assert.deepEqual(planned.map((item) => [item.expenseId, item.userId, item.occurrenceDay, item.scheduledAt.toISOString()]), [
+      ["anthropic", "user-boss", "2026-10-05", "2026-10-02T04:30:00.000Z"],
+      ["anthropic", "user-lead", "2026-10-05", "2026-10-02T04:30:00.000Z"],
+      ["salary", "user-lead", "2026-10-07", "2026-10-04T04:30:00.000Z"],
+    ]);
+    assert.equal(await worker.planExpenses(at("2026-10-01T05:05:00Z")), 0);
+
+    // 2 Oct, just after 10:00 IST: both managers hear about Anthropic, in dollars and about how much in rupees.
+    await drain(worker, at("2026-10-02T04:31:00Z"));
+    const [bossRow] = await rowsFor("user-boss");
+    assert.equal(bossRow?.body, "Anthropic: $20 due on Mon, 5 Oct (about ₹1,600)");
+    assert.deepEqual([bossRow?.title, bossRow?.resourceType, bossRow?.resourceId], ["Payment due", "expense", "anthropic"]);
+    assert.equal((await rowsFor("user-lead")).length, 1);
+    assert.equal((await rowsFor("user-member")).length, 0);
+    assert.equal((await collection("reminders").findOne({ expenseId: "anthropic", userId: "user-boss" }))?.occurrenceDay, "2026-11-05");
+
+    // The worker away until 2 Nov: October's salary notice is past its day and skipped (on to November's); November's Anthropic
+    // notice stacks onto October's row.
+    await drain(worker, at("2026-11-02T04:31:00Z"));
+    const bossRows = await rowsFor("user-boss");
+    assert.deepEqual([bossRows.length, bossRows[0]?.repeats], [1, 2]);
+    assert.equal((await collection("notifications").countDocuments({ userId: "user-lead", resourceId: "salary" })), 0);
+    assert.equal((await collection("reminders").findOne({ expenseId: "salary" }))?.occurrenceDay, "2026-11-07");
+    await drain(worker, at("2026-11-04T04:31:00Z"));
+    // A salary's notice leaves its amount out (it may show on a lock screen or in an e-mail).
+    assert.equal((await collection("notifications").findOne({ userId: "user-lead", resourceId: "salary" }))?.body, "Ramesh: payment due on Sat, 7 Nov");
+    assert.equal(await collection("notifications").countDocuments({ userId: "user-boss", resourceId: "salary" }), 0, "salaries only to those who see restricted categories");
+
+    // Anthropic stops after November; the lead no longer manages: their reminders go.
+    await collection("expenses").updateOne({ _id: "anthropic" }, { $set: { endMonth: "2026-11" } });
+    await collection("expense_settings").updateOne({ _id: "workspace-a" }, { $set: { "access.user-lead": { level: "view", restricted: true } } });
+    await worker.planExpenses(at("2026-11-06T05:00:00Z"));
+    const after = await collection("reminders").find({ kind: "expense_due" }).toArray();
+    assert.deepEqual(after.map((item) => item.state).sort(), ["cancelled", "cancelled", "cancelled"]);
+    // Five were sent (October's two, November's two, the lead's salary); December sends none.
+    assert.equal(await collection("notification_outbox").countDocuments({ type: "expense_due" }), 5);
+    await drain(worker, at("2026-12-02T04:31:00Z"));
+    assert.equal(await collection("notification_outbox").countDocuments({ type: "expense_due" }), 5, "nothing more sent");
+  } finally {
+    await db.dropDatabase();
+    await client.close();
+  }
+});
+
+test("upcoming payments: one recorded inside its three days (or on the day paid) gets no heads-up for that payment, only the next", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const client = new MongoClient(process.env.TEST_MONGODB_URI!);
+  await client.connect();
+  const dbName = `venture_studio_worker_test_${process.pid}_${Date.now()}_fresh`;
+  assert.match(dbName, /^venture_studio_worker_test_/);
+  const db = client.db(dbName);
+  const collection = (name: string) => db.collection<Record<string, any> & { _id: string }>(name);
+  const config = { APP_MODE: "local" as const, MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, WORKER_ID: "worker-fresh", POLL_MS: 100, EMAIL_FROM: "Venture Studio <noreply@example.invalid>", VAPID_SUBJECT: "mailto:admin@example.invalid" };
+  const now = new Date("2026-10-01T05:00:00Z");
+  try {
+    await collection("users").insertOne({ _id: "user-boss", workspaceId: "workspace-a", status: "active" });
+    await collection("memberships").insertOne({ _id: "membership-boss", workspaceId: "workspace-a", userId: "user-boss", role: "admin", status: "active", ventureIds: [], groupIds: [] });
+    await collection("expense_settings").insertOne({ _id: "workspace-a", access: {} });
+    const expense = (id: string, date: string, createdAt: Date) => ({ _id: id, workspaceId: "workspace-a", categoryId: "hosting", paidTo: id, date, repeat: "monthly", endMonth: null, amountPaise: 1_100_00, createdAt });
+    await collection("expenses").insertMany([
+      // Recorded just now, paid tomorrow and on the 1st: neither payment is announced, the next ones are.
+      expense("tomorrow", "2026-10-02", now), expense("today", "2026-10-01", now),
+      // Recorded months ago, paid tomorrow: announced now (its notice time has passed, but it was known well before).
+      expense("known", "2026-08-02", new Date("2026-08-01T00:00:00Z")),
+    ]);
+    await new Worker(client, db, config, true).planExpenses(now);
+    const planned = await collection("reminders").find({ kind: "expense_due" }).sort({ expenseId: 1 }).toArray();
+    assert.deepEqual(planned.map((item) => [item.expenseId, item.occurrenceDay, item.scheduledAt.toISOString()]), [
+      ["known", "2026-10-02", now.toISOString()],
+      ["today", "2026-11-01", "2026-10-29T04:30:00.000Z"],
+      ["tomorrow", "2026-11-02", "2026-10-30T04:30:00.000Z"],
+    ]);
+  } finally {
+    await db.dropDatabase();
+    await client.close();
+  }
+});
+
 test("calendar reminders: planned ahead, kept through small edits, never repeated, dropped when the date moves or access ends", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   const client = new MongoClient(process.env.TEST_MONGODB_URI!);
   await client.connect();

@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import express, { Router, type Request } from "express";
 import type { ClientSession } from "mongodb";
 import {
-  addMonths, currencyDigits, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema, expenseRatesQuerySchema, MAX_EXPENSE_PAISE, type ForeignAmount,
+  addMonths, currencyDigits, DEFAULT_EXPENSE_CATEGORIES, expenseAccessFor, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema, expenseRatesQuerySchema, MAX_EXPENSE_PAISE, type ForeignAmount,
   expenseGroupUpdateSchema, expenseInputSchema, expenseUpdateSchema, idSchema, MAX_RECEIPT_BYTES, monthOf, occurrenceIn,
   type ExpenseAccess, type ExpenseAccessLevel, type ExpenseCategory, type ExpenseGroup, type ExpenseInput,
 } from "@venture-studio/contracts";
@@ -36,15 +36,8 @@ const MAX_GROUPS = 100;
 const MAX_LISTED = 20_000;
 const ok = (data: unknown) => ({ ok: true, data });
 
-/** The categories a workspace starts with. Salary and Personal EMI are restricted. */
-export const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
-  { id: "subscription", name: "Subscription", color: "blue", restricted: false, archived: false },
-  { id: "domain", name: "Domain", color: "purple", restricted: false, archived: false },
-  { id: "ai-tools", name: "AI tools", color: "green", restricted: false, archived: false },
-  { id: "hosting", name: "Hosting", color: "amber", restricted: false, archived: false },
-  { id: "personal-emi", name: "Personal EMI", color: "red", restricted: true, archived: false },
-  { id: "salary", name: "Salary", color: "neutral", restricted: true, archived: false },
-];
+// The categories a workspace starts with (shared with the worker, which reads the settings for upcoming payments).
+export { DEFAULT_EXPENSE_CATEGORIES };
 
 type Settings = { categories: ExpenseCategory[]; groups: ExpenseGroup[]; access: Record<string, ExpenseAccess> };
 type Membership = NonNullable<Request["actor"]>["membership"];
@@ -58,11 +51,7 @@ async function loadSettings(db: AppDb, workspaceId: string, session?: ClientSess
   };
 }
 /** A person's access: what a manager set for them, else admins manage (without restricted categories) and everyone else has none. */
-export function accessOf(settings: Settings, userId: string, role: string): ExpenseAccess & { custom: boolean } {
-  const set = settings.access[userId];
-  if (set) return { level: set.level, restricted: set.restricted, custom: true };
-  return role === "admin" ? { level: "manage", restricted: false, custom: false } : { level: "none", restricted: false, custom: false };
-}
+export const accessOf = (settings: Settings, userId: string, role: string): ExpenseAccess & { custom: boolean } => expenseAccessFor(settings.access, userId, role);
 
 /**
  * The tracker's settings document, made on first use with the admins of that moment holding Manage with restricted access (so an admin

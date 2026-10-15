@@ -1,5 +1,5 @@
 const opaqueId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const ALLOWED_PATHS = ["/tasks/live", "/notifications/live", "/messages/live", "/channels/live", "/calendar/live"];
+const ALLOWED_PATHS = ["/tasks/live", "/notifications/live", "/messages/live", "/channels/live", "/calendar/live", "/expenses/live"];
 /** Sales opens on its own screens: /sales/live and every tab under it (review, inbox, leads, calls…). */
 const isSalesPath = (pathname) => pathname === "/sales/live" || /^\/sales\/live\/[a-z-]+$/.test(pathname);
 const allowedPath = (pathname) => ALLOWED_PATHS.includes(pathname) || isSalesPath(pathname);
@@ -16,7 +16,7 @@ function salesUrl(value) {
 self.addEventListener("install", () => { self.skipWaiting(); });
 self.addEventListener("activate", (event) => { event.waitUntil(self.clients.claim()); });
 
-/** Where a notice opens: its conversation, task, event, or Sales screen (lead, draft, reply); otherwise the inbox. */
+/** Where a notice opens: its conversation, task, event, Sales screen (lead, draft, reply) or expense; otherwise the inbox. */
 function noticeUrl(notice) {
   const sales = salesUrl(notice?.url);
   if (sales) return sales;
@@ -27,6 +27,7 @@ function noticeUrl(notice) {
   if (notice?.resourceType === "opportunity" && opaqueId(notice.resourceId)) return `/sales/live/leads?lead=${encodeURIComponent(notice.resourceId)}`;
   if ((notice?.resourceType === "draft" || notice?.resourceType === "sales_draft") && opaqueId(notice.resourceId)) return `/sales/live/review?draft=${encodeURIComponent(notice.resourceId)}`;
   if (notice?.resourceType === "activity" && opaqueId(notice.resourceId)) return `/sales/live/inbox?reply=${encodeURIComponent(notice.resourceId)}`;
+  if (notice?.resourceType === "expense" && opaqueId(notice.resourceId)) return `/expenses/live?expense=${encodeURIComponent(notice.resourceId)}`;
   return "/notifications/live";
 }
 

@@ -18,7 +18,7 @@ type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
 type Preferences = Awaited<ReturnType<typeof getLiveNotificationPreferences>>;
 type Reminder = Awaited<ReturnType<typeof listLiveReminders>>["items"][number];
 const stamp = (value: string) => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-const preferenceLabels: Record<keyof Preferences, string> = { email: "Email delivery", webPush: "Push when the site is closed", mentions: "@mentions in channels", messages: "Direct messages", assignments: "Assignments", reminders: "Reminders", calendar: "Calendar invitations and changes" };
+const preferenceLabels: Record<keyof Preferences, string> = { email: "Email delivery", webPush: "Push when the site is closed", mentions: "@mentions in channels", messages: "Direct messages", assignments: "Assignments", reminders: "Reminders", calendar: "Calendar invitations and changes", payments: "Upcoming payments (expenses)" };
 const UNDO_MS = 5000;
 const snoozeText = (value: SnoozeChoice) => value === "never" ? "Reminder cancelled" : `Snoozed: ${value} more minutes of quiet`;
 // The notice went while this waited (a reminder rang again, and its new row took this one's place): nothing left to do.

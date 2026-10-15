@@ -159,6 +159,26 @@ test("expenses through Claude: the tick, the access list, never salaries; report
       assert.equal((await db.collection("notifications").findOne({ _id: "due-salary" as never }))?.readAt, undefined);
       assert.ok((await db.collection("notifications").findOne({ _id: "due-openai" as never }))?.readAt);
 
+      // Tags: who it was for, spelled like the tag in use, filtered and totalled by, searched, listed, and replaced.
+      const tagged = await ok(writer, "add_expenses", { expenses: [
+        { paidTo: "Zara", amount: 2_500, category: "subscription", chargedTo: "Office", date: "2026-10-08", tags: ["Rahul", "Clothes"] },
+        { paidTo: "Bata", amount: 1_200, category: "subscription", chargedTo: "Office", date: "2026-10-09", tags: ["rahul"] },
+      ], requestId: "add-expenses-tags" });
+      assert.deepEqual(tagged.added.map((item: any) => item.tags), [["Rahul", "Clothes"], ["Rahul"]], "rahul joins Rahul");
+      const forRahul = await ok(reader, "expense_report", { month: "2026-10", tag: "RAHUL" });
+      assert.deepEqual([forRahul.total, forRahul.payments], ["₹3,700", 2]);
+      assert.deepEqual((await ok(reader, "expense_report", { month: "2026-10" })).byTag.map((item: any) => [item.tag, item.amount]), [["Rahul", "₹3,700"], ["Clothes", "₹2,500"]]);
+      assert.match(String((await tool(reader, "expense_report", { month: "2026-10", tag: "Nobody" })).text), /No expense has the tag "Nobody"/);
+      assert.deepEqual((await ok(reader, "list_expenses", { month: "2026-10", search: "cloth" })).expenses.map((item: any) => [item.paidTo, item.tags]), [["Zara", ["Rahul", "Clothes"]]]);
+      // A tag used only on a salary is never known through Claude: not listed, not totalled, not a filter.
+      assert.equal((await call("PATCH", `/expenses/${salary.id}`, "boss", { tags: ["Ramesh"] })).status, 200);
+      assert.deepEqual((await ok(reader, "expense_options")).tags, [{ tag: "Rahul", expenses: 2 }, { tag: "Clothes", expenses: 1 }]);
+      assert.match(String((await tool(reader, "expense_report", { month: "2026-10", tag: "Ramesh" })).text), /No expense has the tag "Ramesh"/);
+      assert.match(String((await tool(reader, "list_expenses", { month: "2026-10", tag: "#" })).text), /Give a tag/, "a tag that is nothing once tidied isn't ignored");
+      const retagged = await ok(writer, "update_expense", { expenseId: tagged.added[1].expenseId, tags: ["Rahul", "Shoes"], requestId: "update-tags-0001" });
+      assert.deepEqual([retagged.updated.tags, retagged.changed], [["Rahul", "Shoes"], ["tags"]]);
+      assert.match(String((await tool(writer, "update_expense", { expenseId: tagged.added[1].expenseId, tags: ["rahul", " Shoes", "RAHUL"], requestId: "update-tags-0002" })).text), /Nothing to change/, "the same tags, however written, are no change");
+
       // Two ventures whose names differ only in case stay apart in a report, and charging "Alpha" asks which.
       await db.collection("ventures").updateOne({ _id: "venture-b" as never }, { $set: { name: "ALPHA" } });
       await add({ date: "2026-10-20", amountPaise: 500_00, categoryId: "hosting", paidTo: "Hetzner", scope: { kind: "venture", ventureId: "venture-b" } });

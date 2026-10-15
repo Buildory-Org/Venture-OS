@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  addMonths, currencyDigits, EXPENSE_CURRENCIES, expenseConverter, expenseCurrencySchema, formatMoneyIn, indiaDay, monthOf, monthsBetween, nextOccurrence, occurrenceIn,
+  addMonths, currencyDigits, EXPENSE_CURRENCIES, expenseConverter, expenseHasTag, expenseTagKey, expenseTagsIn, expenseTagsSchema, expenseCurrencySchema, formatMoneyIn, indiaDay, monthOf, monthsBetween, nextOccurrence, occurrenceIn,
   type Expense, type ExpenseCategory, type ExpenseCompany, type ExpenseGroup, type ExpenseRates, type ExpenseScope,
 } from "@venture-studio/contracts";
 import { clip, compact, ToolError, UNTRUSTED_NOTE } from "./format.js";
@@ -18,6 +18,8 @@ const DAY = /^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const monthField = z.string().regex(MONTH, "A month is YYYY-MM");
 const currencyField = expenseCurrencySchema.default("INR").describe("Show amounts in this currency (each payment at the European Central Bank rate of its day); INR by default");
 const whereField = z.string().trim().min(1).max(120).describe('"Office", "Personal", or a venture (its name, or its id when two share a name)');
+const tagField = z.string().trim().min(1).max(60).describe("A tag (who or what an expense was for, e.g. a person's name); any case");
+const tagsField = z.array(z.string().trim().min(1).max(60)).max(10).describe("Tags: who or what it was for (a person's name, an event, a project), up to 10, of up to 30 characters, no commas");
 const nameOrId = (what: string) => z.string().trim().min(1).max(120).describe(`A ${what}: its name or id`);
 const RESTRICTED_NOTE = "Salaries and EMIs (restricted categories) are never shown or counted through Claude: see them in the app.";
 const monthLabel = (month: string) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" });
@@ -80,13 +82,16 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     return found;
   }
   /** Expenses narrowed by the filters every read tool shares. */
-  async function filtered(items: Expense[], settings: Settings, input: { where?: string; category?: string; group?: string; company?: string; kind?: "one-time" | "repeating" }) {
+  async function filtered(items: Expense[], settings: Settings, input: { where?: string; category?: string; group?: string; company?: string; kind?: "one-time" | "repeating"; tag?: string }) {
     const inWhere = await scopeMatches(input.where);
+    const tag = input.tag === undefined ? undefined : expenseTagKey(input.tag);
+    if (tag === "") throw new ToolError("Give a tag, like Rahul.");
+    if (tag && !items.some((item) => expenseHasTag(item, tag))) throw new ToolError(`No expense has the tag "${clip(input.tag, 40)}": expense_options lists the tags in use.`);
     const category = input.category ? pick(settings.categories, input.category, "category").id : undefined;
     const group = input.group ? pick(settings.groups, input.group, "group").id : undefined;
     const company = input.company ? pick(settings.companies, input.company, "company").id : undefined;
     return items.filter((item) => inWhere(item) && (!category || item.categoryId === category) && (!group || item.groupId === group) && (!company || item.companyId === company)
-      && (!input.kind || (input.kind === "one-time" ? item.repeat === "none" : item.repeat !== "none")));
+      && (!tag || expenseHasTag(item, tag)) && (!input.kind || (input.kind === "one-time" ? item.repeat === "none" : item.repeat !== "none")));
   }
   const paidIn = (items: Expense[], month: string): Row[] => items.flatMap((expense) => { const day = occurrenceIn(expense, month); return day ? [{ expense, day }] : []; }).sort((a, b) => b.day.localeCompare(a.day));
   const notes = (settings: Settings, truncated: boolean, asked: string, shown: string, ratesFailed: boolean) => ({
@@ -103,16 +108,18 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
 
   tool("expense_options", "expenses:read", {
     title: "Expense options", annotations: READ_ONLY,
-    description: "What adding or filtering expenses can use: my access (view, edit or manage), the categories, groups and companies, where an expense can be charged (Office, Personal, my ventures), and the currencies. Call it before add_expenses so names match.",
+    description: "What adding or filtering expenses can use: my access (view, edit or manage), the categories, groups, companies and tags in use, where an expense can be charged (Office, Personal, my ventures), and the currencies. Call it before add_expenses so names match.",
     inputSchema: z.object({}),
   }, async () => {
-    const [settings, ventures] = await Promise.all([settingsOf(), ventureNames()]);
+    const [settings, ventures, list] = await Promise.all([settingsOf(), ventureNames(), expensesOf()]);
     return compact({
       access: settings.me.level, canChange: settings.me.level === "edit" || settings.me.level === "manage",
       categories: settings.categories.filter((category) => !category.archived).map((category) => compact({ id: category.id, name: clip(category.name, 80) })),
       groups: settings.groups.filter((group) => !group.archived).map((group) => compact({ id: group.id, name: clip(group.name, 80), note: clip(group.note, 160) || undefined })),
       companies: [...settings.companies].sort((a, b) => (b.expenses ?? 0) - (a.expenses ?? 0)).slice(0, 150).map((company) => compact({ id: company.id, name: clip(company.name, 120), website: clip(company.website, 200), expenses: company.expenses })),
       moreCompanies: settings.companies.length > 150 ? `${settings.companies.length - 150} more, with fewer expenses: name them in a filter all the same` : undefined,
+      tags: expenseTagsIn(list.items).sort((a, b) => b.expenses - a.expenses).slice(0, 100).map((tag) => ({ tag: clip(tag.tag, 30), expenses: tag.expenses })),
+      moreTags: expenseTagsIn(list.items).length > 100 ? `${expenseTagsIn(list.items).length - 100} more, on fewer expenses: filter by them all the same` : undefined,
       chargeTo: ["Office", "Personal", ...[...ventures].map(([ventureId]) => whereOf({ kind: "venture", ventureId }, ventures))],
       currencies: [...EXPENSE_CURRENCIES], restricted: settings.hiddenRestricted ? RESTRICTED_NOTE : undefined, link: `${ctx.origin}/expenses/live`,
     });
@@ -120,10 +127,10 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
 
   tool("expense_report", "expenses:read", {
     title: "Expense report", annotations: READ_ONLY,
-    description: "Spending for a month (the default, this month) or month by month over several: the total, repeating vs one-time, by where it was charged (Office, Personal, each venture), by category, the top companies, and the change from the month before. Narrow by where, category, group, company or one-time/repeating; any currency.",
+    description: "Spending for a month (the default, this month) or month by month over several: the total, repeating vs one-time, by where it was charged (Office, Personal, each venture), by category, by tag, the top companies, and the change from the month before. Narrow by where, category, group, company, tag or one-time/repeating; any currency. For what was spent on a person, filter by their tag.",
     inputSchema: z.object({
       month: monthField.optional().describe("YYYY-MM; this month (India time) by default"), months: z.union([z.literal(1), z.literal(3), z.literal(6), z.literal(12)]).default(1).describe("1 for that month alone, or 3, 6 or 12 months up to it"),
-      currency: currencyField, where: whereField.optional(), category: nameOrId("category").optional(), group: nameOrId("group").optional(), company: nameOrId("company").optional(), kind: z.enum(["one-time", "repeating"]).optional(),
+      currency: currencyField, where: whereField.optional(), category: nameOrId("category").optional(), group: nameOrId("group").optional(), company: nameOrId("company").optional(), kind: z.enum(["one-time", "repeating"]).optional(), tag: tagField.optional(),
     }),
   }, async (input) => {
     const [settings, list, ventures] = await Promise.all([settingsOf(), expensesOf(), ventureNames()]);
@@ -145,6 +152,10 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     const byWhere = (rows: Row[]) => group(rows, (row) => whereKey(row.expense.scope), (row) => whereOf(row.expense.scope, ventures));
     const categoryName = (row: Row) => settings.categories.find((category) => category.id === row.expense.categoryId)?.name ?? "Other";
     const companyName = (row: Row) => settings.companies.find((company) => company.id === row.expense.companyId)?.name ?? row.expense.paidTo;
+    // Per tag (an expense with two counts under both), spelled as most expenses spell it.
+    const tagNames = new Map(expenseTagsIn(list.items).map((tag) => [tag.key, tag.tag]));
+    const byTag = new Map<string, number>();
+    for (const row of rowsBySpan) for (const key of new Set((row.expense.tags ?? []).map(expenseTagKey))) byTag.set(key, (byTag.get(key) ?? 0) + money.value(row.expense, row.day));
     const before = input.months === 1 ? sum(paidIn(items, addMonths(last, -1))) : null;
     return compact({
       period: input.months === 1 ? monthLabel(last) : `${monthLabel(span[0]!)} to ${monthLabel(last)}`, currency: money.currency,
@@ -155,6 +166,8 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       averagePerMonth: input.months > 1 ? show(Math.round(total / span.length)) : undefined,
       byWhere: byWhere(rowsBySpan).map(([where, value]) => ({ where, amount: show(value), share: percent(value, total) })),
       byCategory: group(rowsBySpan, (row) => row.expense.categoryId, categoryName).map(([category, value]) => ({ category, amount: show(value), share: percent(value, total) })),
+      byTag: byTag.size ? [...byTag].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([key, value]) => ({ tag: clip(tagNames.get(key) ?? key, 30), amount: show(value), share: percent(value, total) })) : undefined,
+      tagNote: byTag.size > 1 ? "An expense with two tags counts under both, so tags can add up to more than the total." : undefined,
       topCompanies: group(rowsBySpan, (row) => row.expense.companyId ?? `paid:${row.expense.paidTo.trim().toLowerCase()}`, companyName).slice(0, 8).map(([company, value]) => ({ company: clip(company, 80), amount: show(value) })),
       ...notes(settings, list.truncated, input.currency, money.currency, rates.failed), note: rowsBySpan.length ? UNTRUSTED_NOTE : undefined,
       hint: rowsBySpan.length ? undefined : "Nothing was paid in this period with these filters.", link: `${ctx.origin}/expenses/live`,
@@ -163,11 +176,11 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
 
   tool("list_expenses", "expenses:read", {
     title: "List expenses", annotations: READ_ONLY,
-    description: "The expenses paid in a month (this month by default) or a span of months, newest first, each with its amount as paid and in the chosen currency; narrow by where, category, group, company, one-time/repeating, or words in who it was paid to or its note. With expenseId: that one expense in full, with what was read off its receipt.",
+    description: "The expenses paid in a month (this month by default) or a span of months, newest first, each with its amount as paid and in the chosen currency; narrow by where, category, group, company, tag, one-time/repeating, or words in who it was paid to, its note or tags. With expenseId: that one expense in full, with what was read off its receipt.",
     inputSchema: z.object({
       expenseId: id.optional(), month: monthField.optional().describe("YYYY-MM (default this month); the last month of a span with fromMonth"), fromMonth: monthField.optional().describe("First month of a span (at most 24 months)"),
       where: whereField.optional(), category: nameOrId("category").optional(), group: nameOrId("group").optional(), company: nameOrId("company").optional(), kind: z.enum(["one-time", "repeating"]).optional(),
-      search: z.string().trim().min(2).max(80).optional().describe("Words in who it was paid to or its note"), currency: currencyField, limit: z.number().int().min(1).max(200).default(50),
+      tag: tagField.optional(), search: z.string().trim().min(2).max(80).optional().describe("Words in who it was paid to, its note or its tags"), currency: currencyField, limit: z.number().int().min(1).max(200).default(50),
     }),
   }, async (input) => {
     const [settings, ventures] = await Promise.all([settingsOf(), ventureNames()]);
@@ -191,7 +204,7 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       return compact({
         id: expense.id, paidTo: clip(expense.paidTo, 120), company: companyName(expense.companyId), amount: paidAs(expense), countsAs: countsAs(expense),
         date: expense.date, repeats: expense.repeat === "none" ? "one-time" : expense.repeat, nextPayment: expense.repeat !== "none" ? nextOccurrence(expense, indiaDay(new Date())) ?? "stopped" : undefined, lastMonth: expense.endMonth ?? undefined,
-        category: categoryName(expense.categoryId), group: groupName(expense.groupId), chargedTo: whereOf(expense.scope, ventures), note: clip(expense.note, 1000) || undefined,
+        category: categoryName(expense.categoryId), group: groupName(expense.groupId), chargedTo: whereOf(expense.scope, ventures), note: clip(expense.note, 1000) || undefined, tags: expense.tags?.length ? expense.tags.map((tag) => clip(tag, 30)) : undefined,
         priceChangeOf: continues, updatedAt: expense.updatedAt,
         receipt: data ? receiptOf(data) : expense.receiptId ? "kept (couldn't be read)" : undefined,
         caution: UNTRUSTED_NOTE, link: link(expense.id),
@@ -199,7 +212,7 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     }
     const list = await expensesOf();
     let items = await filtered(list.items, settings, input);
-    if (input.search) { const words = input.search.toLowerCase(); items = items.filter((item) => item.paidTo.toLowerCase().includes(words) || item.note.toLowerCase().includes(words)); }
+    if (input.search) { const words = input.search.toLowerCase(); items = items.filter((item) => item.paidTo.toLowerCase().includes(words) || item.note.toLowerCase().includes(words) || (item.tags ?? []).some((tag) => tag.toLowerCase().includes(words))); }
     const last = input.month ?? indiaDay(new Date()).slice(0, 7);
     const first = input.fromMonth ?? last;
     if (first > last) throw new ToolError("fromMonth comes before month.");
@@ -215,7 +228,7 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       expenses: shown.map(({ expense, day }) => compact({
         expenseId: expense.id, day, paidTo: clip(expense.paidTo, 120), company: companyName(expense.companyId), amount: formatMoneyIn(money.value(expense, day), money.currency),
         paid: expense.foreign && expense.foreign.currency !== money.currency ? paidAs(expense) : undefined, category: categoryName(expense.categoryId), group: groupName(expense.groupId),
-        chargedTo: whereOf(expense.scope, ventures), repeats: expense.repeat === "none" ? undefined : expense.repeat, receipt: expense.receiptId ? true : undefined, link: link(expense.id),
+        chargedTo: whereOf(expense.scope, ventures), repeats: expense.repeat === "none" ? undefined : expense.repeat, tags: expense.tags?.length ? expense.tags.map((tag) => clip(tag, 30)) : undefined, receipt: expense.receiptId ? true : undefined, link: link(expense.id),
       })),
       more: rows.length > shown.length ? rows.length - shown.length : undefined, ...notes(settings, list.truncated, input.currency, money.currency, rates.failed), note: rows.length ? UNTRUSTED_NOTE : undefined,
       hint: rows.length ? undefined : "No expenses in this period with these filters.",
@@ -242,7 +255,7 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     const row = (expense: Expense) => compact({
       expenseId: expense.id, paidTo: clip(expense.paidTo, 120), paid: paidAs(expense), repeats: expense.repeat, perMonth: show(perMonth(expense)),
       next: nextOccurrence(expense, today) ?? undefined, lastMonth: expense.endMonth ?? undefined, category: settings.categories.find((category) => category.id === expense.categoryId)?.name,
-      group: expense.groupId ? settings.groups.find((group) => group.id === expense.groupId)?.name : undefined, chargedTo: whereOf(expense.scope, ventures), link: link(expense.id),
+      group: expense.groupId ? settings.groups.find((group) => group.id === expense.groupId)?.name : undefined, chargedTo: whereOf(expense.scope, ventures), tags: expense.tags?.length ? expense.tags.map((tag) => clip(tag, 30)) : undefined, link: link(expense.id),
     });
     const monthly = running.reduce((sum, expense) => sum + perMonth(expense), 0);
     const horizon = new Date(Date.parse(`${today}T00:00:00Z`) + input.dueWithinDays * 86_400_000).toISOString().slice(0, 10);
@@ -265,13 +278,15 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     date: z.string().regex(DAY, "A date is YYYY-MM-DD").optional().describe("The day paid (the first payment for a repeating one); today (India time) by default"),
     category: nameOrId("category"), group: nameOrId("group").optional(), newGroup: z.boolean().default(false).describe("Start the group named in group when there's none by that name"),
     chargedTo: whereField, repeat: z.enum(["none", "monthly", "yearly"]).default("none"), lastMonth: monthField.optional().describe("A repeating one's last month (YYYY-MM), if it stops"),
-    note: z.string().trim().max(1000).optional(), website: z.string().trim().max(300).optional().describe("A company seen for the first time: its website, for its logo"),
+    note: z.string().trim().max(1000).optional(), tags: tagsField.optional(), website: z.string().trim().max(300).optional().describe("A company seen for the first time: its website, for its logo"),
   });
   const versionField = z.iso.datetime({ offset: true }).describe("The updatedAt that list_expenses (with expenseId) showed, so nothing changed since is overwritten");
   /** Refused when the expense changed after the person saw it: what they agreed to is no longer what's there. */
   function unchangedSince(current: Expense, expected: string | undefined) {
     if (expected && Date.parse(expected) !== Date.parse(current.updatedAt)) throw new ToolError(`This expense was changed since you read it (now ${paidAs(current)} to ${clip(current.paidTo, 80)}): read it again with list_expenses (expenseId) and check with the person before trying again.`, 409);
   }
+  /** Tags as given, each spelled like a tag already in use when it matches one ("rahul" joins "Rahul"). */
+  const spelled = (tags: string[], known: { key: string; tag: string }[]) => tags.map((tag) => known.find((one) => one.key === expenseTagKey(tag))?.tag ?? tag);
   const readExpense = (expenseId: string) => ctx.api<Expense>("GET", `/expenses/${encodeURIComponent(expenseId)}`);
   /** The rupee or foreign amount of an expense (in its currency's smallest unit), as the tracker takes it. */
   function amountFields(minor: number, currency: string, chargedPaise: number | null, repeat: string) {
@@ -279,14 +294,15 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
     if (chargedPaise && repeat !== "none") throw new ToolError("chargedInr goes with a one-time payment: a repeating one converts at each payment's rate.");
     return { foreign: { currency, amountMinor: minor }, chargedPaise };
   }
-  const saved = (expense: Expense, ventures: Map<string, { name: string }>) => compact({ expenseId: expense.id, paidTo: clip(expense.paidTo, 120), amount: paidAs(expense), countsAs: countsAs(expense), date: expense.date, repeats: expense.repeat === "none" ? undefined : expense.repeat, lastMonth: expense.endMonth ?? undefined, chargedTo: whereOf(expense.scope, ventures), link: link(expense.id), updatedAt: expense.updatedAt });
+  const saved = (expense: Expense, ventures: Map<string, { name: string }>) => compact({ expenseId: expense.id, paidTo: clip(expense.paidTo, 120), amount: paidAs(expense), countsAs: countsAs(expense), date: expense.date, repeats: expense.repeat === "none" ? undefined : expense.repeat, lastMonth: expense.endMonth ?? undefined, chargedTo: whereOf(expense.scope, ventures), tags: expense.tags?.length ? expense.tags.map((tag) => clip(tag, 30)) : undefined, link: link(expense.id), updatedAt: expense.updatedAt });
 
   tool("add_expenses", "expenses:write", {
     title: "Add expenses", annotations: writes(false),
-    description: "Record 1 to 25 expenses (one bill, a month's subscriptions, lines from a statement): who was paid, the amount in its currency (rupees by default), the day, category, where it's charged, and optionally a group, a repeat (monthly or yearly, with a last month), a note, and for a one-time payment in another currency what the bank charged in rupees. Each comes back with what it counts as in rupees. Say what you're about to add, and read the result back. Names come from expense_options.",
+    description: "Record 1 to 25 expenses (one bill, a month's subscriptions, lines from a statement): who was paid, the amount in its currency (rupees by default), the day, category, where it's charged, and optionally a group, a repeat (monthly or yearly, with a last month), a note, tags (who or what it was for, e.g. the person something was bought for: reuse the spelling of tags in use), and for a one-time payment in another currency what the bank charged in rupees. Each comes back with what it counts as in rupees. Say what you're about to add, and read the result back. Names come from expense_options.",
     inputSchema: z.object({ expenses: z.array(itemSchema).min(1).max(25), requestId: requestIdField }),
   }, async (input) => {
-    const [settings, ventures] = await Promise.all([settingsOf(), ventureNames()]);
+    const anyTags = input.expenses.some((item: { tags?: string[] }) => item.tags?.length);
+    const [settings, ventures, knownTags] = await Promise.all([settingsOf(), ventureNames(), anyTags ? expensesOf().then((list) => expenseTagsIn(list.items)) : [] as ReturnType<typeof expenseTagsIn>]);
     const today = indiaDay(new Date());
     return once(ctx, "add_expenses", input.requestId, input.expenses, async () => {
       const added: unknown[] = []; const failed: { item: number; paidTo?: string; error: string }[] = [];
@@ -307,9 +323,12 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
           const amount = amountFields(minorOf(item.amount, item.currency), item.currency, item.chargedInr ? minorOf(item.chargedInr, "INR") : null, item.repeat);
           const body = {
             date: item.date ?? today, categoryId: category.id, groupId, paidTo: item.paidTo, scope: await scopeOf(item.chargedTo), repeat: item.repeat, endMonth: item.repeat === "none" ? null : item.lastMonth ?? null,
-            note: item.note ?? "", receiptId: null, ...amount, ...(item.website ? { companyWebsite: item.website } : {}),
+            note: item.note ?? "", tags: spelled(item.tags ?? [], knownTags), receiptId: null, ...amount, ...(item.website ? { companyWebsite: item.website } : {}),
           };
-          added.push(saved(await ctx.api<Expense>("POST", "/expenses", body), ventures));
+          const made = await ctx.api<Expense>("POST", "/expenses", body);
+          // A tag new to the tracker keeps this spelling for the rest of the batch too.
+          for (const tag of made.tags ?? []) if (!knownTags.some((one) => one.key === expenseTagKey(tag))) knownTags.push({ key: expenseTagKey(tag), tag, expenses: 1 });
+          added.push(saved(made, ventures));
         } catch (error) {
           // The app refusing one: nothing saved for it, so the rest carry on.
           if (error instanceof ToolError && error.status < 500 && error.status !== 408) { failed.push({ item: index + 1, paidTo: clip(item.paidTo, 80), error: error.message }); continue; }
@@ -340,11 +359,11 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       expenseId: id, expectedUpdatedAt: versionField.optional(), paidTo: z.string().trim().min(1).max(120).optional(), amount: z.number().positive().max(1e12).optional(), currency: expenseCurrencySchema.optional().describe("With amount: the currency it's in"),
       chargedInr: z.number().positive().max(1e12).nullable().optional().describe("A one-time payment in another currency: what the bank charged in rupees; null to count it at the day's rate. A new amount drops the old figure unless given again"),
       date: z.string().regex(DAY, "A date is YYYY-MM-DD").optional(), category: nameOrId("category").optional(), group: nameOrId("group").nullable().optional(),
-      chargedTo: whereField.optional(), repeat: z.enum(["none", "monthly", "yearly"]).optional(), lastMonth: monthField.nullable().optional(), note: z.string().trim().max(1000).optional(), requestId: requestIdField,
+      chargedTo: whereField.optional(), repeat: z.enum(["none", "monthly", "yearly"]).optional(), lastMonth: monthField.nullable().optional(), note: z.string().trim().max(1000).optional(), tags: tagsField.optional().describe("Replaces all its tags ([] clears them): send the ones to keep too"), requestId: requestIdField,
     }),
   }, async (input) => {
     const { requestId, ...asked } = input;
-    const [settings, ventures] = await Promise.all([settingsOf(), ventureNames()]);
+    const [settings, ventures, knownTags] = await Promise.all([settingsOf(), ventureNames(), input.tags?.length ? expensesOf().then((list) => expenseTagsIn(list.items)) : [] as ReturnType<typeof expenseTagsIn>]);
     // Read inside the claim, so a retry of a change that went through replays it instead of meeting the newer version.
     return once(ctx, "update_expense", requestId, asked, async () => {
       const current = await readExpense(input.expenseId);
@@ -353,6 +372,11 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       if (input.paidTo !== undefined) change.paidTo = input.paidTo;
       if (input.date !== undefined) change.date = input.date;
       if (input.note !== undefined) change.note = input.note;
+      if (input.tags !== undefined) {
+        const tidy = expenseTagsSchema.safeParse(spelled(input.tags, knownTags));
+        if (!tidy.success) throw new ToolError(tidy.error.issues.map((issue) => issue.message).join("; "));
+        change.tags = tidy.data;
+      }
       if (input.category !== undefined) change.categoryId = pick(settings.categories.filter((one) => !one.archived || one.id === current.categoryId), input.category, "category").id;
       if (input.group !== undefined) change.groupId = input.group === null ? null : pick(settings.groups.filter((one) => !one.archived || one.id === current.groupId), input.group, "group").id;
       if (input.chargedTo !== undefined) change.scope = await scopeOf(input.chargedTo);
@@ -373,7 +397,7 @@ export function registerExpenseTools(tool: Register, ctx: ToolContext, look: Loo
       }
       const canonical = (value: unknown) => JSON.stringify(value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value ?? null);
       const labels: Record<string, string> = { categoryId: "category", groupId: "group", scope: "chargedTo", endMonth: "lastMonth", amountPaise: "amount", foreign: "amount", chargedPaise: "chargedInr" };
-      const changed = [...new Set(Object.keys(change).filter((key) => canonical(change[key]) !== canonical((current as unknown as Record<string, unknown>)[key])).map((key) => labels[key] ?? key))];
+      const changed = [...new Set(Object.keys(change).filter((key) => canonical(change[key]) !== canonical(key === "tags" ? current.tags ?? [] : (current as unknown as Record<string, unknown>)[key])).map((key) => labels[key] ?? key))];
       if (!changed.length) throw new ToolError("Nothing to change: it already has these values.");
       const updated = await ctx.api<Expense>("PATCH", `/expenses/${encodeURIComponent(input.expenseId)}`, { ...change, expectedUpdatedAt: current.updatedAt });
       return compact({ updated: saved(updated, ventures), changed });

@@ -12,8 +12,9 @@ What the studio spends, counted in rupees (and shown in any currency): for each 
   - who it was paid to;
   - where it's charged (a venture, Office or Personal);
   - an optional note;
+  - optional tags (see [Tags](#tags));
   - an optional receipt (see [Receipts](#receipts)).
-- **No numbers that could identify an account.** Labels (who it was paid to, notes, category and group names) refuse what reads like an account, card or phone number (`LONG_NUMBER`):
+- **No numbers that could identify an account.** Labels (who it was paid to, notes, tags, category and group names) refuse what reads like an account, card or phone number (`LONG_NUMBER`):
   - 9 or more digits in a row;
   - a card's groups of four;
   - a phone number in two groups of five or three groups.
@@ -57,7 +58,7 @@ What the studio spends, counted in rupees (and shown in any currency): for each 
 
 - **Opt in per key:** on the Connect Claude page, **Include expenses** on a Venture Studio key: reports, lists and subscriptions with Read only; also adding, changing, repricing and deleting with Read and update. Without the tick Claude can't reach expenses at all (the expense routes check the key's scopes too).
 - **Same rules as the app:** the access list applies to the key's owner. **Salaries and EMIs never go through Claude**, even for people who see them in the app: reports and lists leave them out (and say so), and they can't be added, read or marked read.
-- **The tools:** `expense_options`, `expense_report`, `list_expenses`, `list_subscriptions`, `add_expenses`, `update_expense`, `change_expense_price`, `delete_expense` (docs/mcp.md#expenses). Totals use the same conversion as the page. Deleting needs the person's yes in the conversation and the version they were shown (a change since is refused); every change is audited as made through Claude.
+- **The tools:** `expense_options`, `expense_report`, `list_expenses`, `list_subscriptions`, `add_expenses`, `update_expense`, `change_expense_price`, `delete_expense` (docs/mcp.md#expenses). Tags work there too: added with the spelling in use, a `tag` filter on reports and lists, and each tag's total in a report ("how much went on Rahul this month?"). Totals use the same conversion as the page. Deleting needs the person's yes in the conversation and the version they were shown (a change since is refused); every change is audited as made through Claude.
 - **Receipts:** Claude reads a receipt pasted into the chat itself and adds the expense; the original file is attached from the expense's link in the app.
 - **App only:** the access list, categories, company merges, renames and logos.
 
@@ -107,6 +108,16 @@ What the studio spends, counted in rupees (and shown in any currency): for each 
 - **Groups:** your own bundles, for example "AI subscriptions" or "Domains". Each shows its cost a month and a year on the Subscriptions tab.
 - **Storage:** both live in `expense_settings`, one document per workspace, created from the defaults on the first change.
 
+## Tags
+
+- **What for:** words of your own on an expense, to filter and total by: most often who it was for (an Office purchase for a person, like "Rahul"), or an event or a project. An expense with "Rahul" and "Clothes" counts under both.
+- **Rules:** up to 10 an expense, of up to 30 characters, no commas and no long numbers. Spaces are tidied and a leading # dropped; tags are told apart without case ("rahul" is "Rahul"), and each is kept once.
+- **Adding them:** the Tags field in the expense popup. Press Enter (or type a comma) after each; Backspace in the empty box takes the last one back to edit. Tags used before are offered as you type (with nothing typed, the most used), and a typed one that matches takes its spelling.
+- **Filtering:** a Tag filter on the Expenses and Office tabs (with how many expenses carry each), shown once any expense has a tag.
+- **Totals:** a "<month> by tag" card under the dashboard cards: each tag's total for the month, biggest first, and what wasn't tagged. Click a tag to filter to it. It follows the other filters, so on the Office tab it is what each person or thing cost the Office.
+- **Who sees them:** tags come only from expenses the reader can see, so a tag used only on salaries stays unknown to someone who can't see salaries. The audit counts tags but never records them.
+- **Elsewhere:** the CSV has a Tags column; a new amount from a month on keeps the tags; editing an expense keeps them unless they're changed. Through Claude, see [Claude](#claude).
+
 ## Who can see and change what
 
 The tracker has its own access list, under Settings. Each member has a **level**:
@@ -136,12 +147,13 @@ The tracker has its own access list, under Settings. Each member has a **level**
 ## Screens
 
 - **Month:** one month picker in the page header, before Refresh, sets the month for Expenses, Office and Monthly.
-- **Expenses:** one filter row (category, group, where it's charged, one-time or repeating) scopes everything below it.
+- **Expenses:** one filter row (category, tag, group, company, where it's charged, one-time or repeating) scopes everything below it.
   - **Dashboard cards:**
     - **Spent this month** (dark card): the total, with the change against last month; a bar of repeating against one-time; a ring of Office, Personal and ventures (by category on the Office tab).
     - **Repeating costs** (blue card): cost a month, how many are running and due this week, and the cost a year.
     - **By category:** a dial for the month. Click a legend chip to filter to that category.
     - **Recent expenses** (dark card): the month's split by category as a segmented bar, then the latest expenses by day. In the current month it shows only what has been paid so far.
+    - **By tag** (once tags are used): each tag's total for the month as bars, and what wasn't tagged; click one to filter to it.
     - **Month by month:** Office, ventures and Personal for the month as tiles, and seven months as columns on a rupee axis (34px bars at most, 11px labels, like the dashboard's other bar charts). Point at a column, or focus it, for a tooltip with the month's total, where it went (or its categories on the Office tab) and how many expenses; click it, or press Enter, to open that month. The open month is the blue column, with its total above it.
   - **No hover effects on the cards:** picking a category is a click; only the month columns show a tooltip.
   - **Animations:** everything animates in once when the page opens (columns rise, rings sweep, totals count up), and stays still for people who ask for reduced motion.

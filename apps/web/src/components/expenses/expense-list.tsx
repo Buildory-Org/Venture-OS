@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import clsx from "clsx";
+import { expenseHasTag, expenseTagsIn } from "@venture-studio/contracts";
 import { Download, Paperclip, Plus, Repeat } from "@/components/ui/icons";
 import { AutoHeight } from "@/components/ui/auto-height";
 import { Select } from "@/components/ui/select";
@@ -8,6 +9,7 @@ import { Badge, Empty, filterControl, Panel, primaryClass, secondaryClass } from
 import type { Expense } from "@/lib/expenses-api";
 import { ExpenseDashboard } from "./expense-charts";
 import { CompanyAvatar } from "./expense-company";
+import { TagChip } from "./expense-tags";
 import { dayLabel, downloadCsv, lookups, monthLabel, paidIn, REPEAT_LABEL, scopeKey, scopeLabel, type ExpenseData } from "./expense-shared";
 import { formatMoney, useMoney } from "./expense-money";
 
@@ -21,36 +23,44 @@ type Props = {
   onTab: (tab: "monthly" | "repeating") => void;
 };
 
-/** One month's expenses: one filter row that scopes the charts and the list, the month by month chart, the month by category, and the list. */
+/** One month's expenses: one filter row that scopes the charts and the list, the month by month chart, the month by category and by tag, and the list. */
 export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixedWhere, title, canEdit, onOpen, onAdd, onTab }: Props) {
   const [category, setCategory] = useState("");
   const [group, setGroup] = useState("");
   const [where, setWhere] = useState("");
   const [kind, setKind] = useState<"" | "one" | "repeat">("");
   const [company, setCompany] = useState("");
+  const [tag, setTag] = useState("");
+  // The tags on the expenses this person sees here (on the Office tab, the Office's); a picked tag no longer on any of them (its last
+  // one was edited) counts as none.
+  const knownTags = useMemo(() => expenseTagsIn(fixedWhere ? data.expenses.filter((expense) => scopeKey(expense.scope) === fixedWhere) : data.expenses), [data.expenses, fixedWhere]);
+  const tagOn = knownTags.some((item) => item.key === tag) ? tag : "";
   const find = useMemo(() => lookups(data.settings), [data.settings]);
   const money = useMoney();
   const scopeTo = fixedWhere ?? where;
-  // Every filter but the category scopes the category ring (it shows them all, and picks one); the rest also take the category.
-  const scoped = data.expenses.filter((expense) => (!group || (group === "none" ? !expense.groupId : expense.groupId === group)) && (!company || expense.companyId === company)
+  // The category ring shows every category under the other filters (and picks one), the tag totals every tag; the rest take them all.
+  const base = data.expenses.filter((expense) => (!group || (group === "none" ? !expense.groupId : expense.groupId === group)) && (!company || expense.companyId === company)
     && (!scopeTo || scopeKey(expense.scope) === scopeTo) && (!kind || (kind === "one" ? expense.repeat === "none" : expense.repeat !== "none")));
+  const scoped = tagOn ? base.filter((expense) => expenseHasTag(expense, tagOn)) : base;
+  const tagged = category ? base.filter((expense) => expense.categoryId === category) : base;
   const matching = category ? scoped.filter((expense) => expense.categoryId === category) : scoped;
   const rows = paidIn(matching, month);
   const total = money.sum(rows);
   const repeating = money.sum(rows.filter((row) => row.expense.repeat !== "none"));
-  const filtered = Boolean(category || group || (!fixedWhere && where) || kind || company);
+  const filtered = Boolean(category || tagOn || group || (!fixedWhere && where) || kind || company);
   // The amount in the shown currency, and what was paid when it was another currency (with the bank's rupees, when given).
-  const exportCsv = () => downloadCsv(`expenses-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${month}.csv`, ["Date", "Paid to", "Company", `Amount (${money.currency})`, "Paid in", "Amount paid", "Bank charged (INR)", "Category", "Group", "Charged to", "Repeats", "Note"],
-    rows.map(({ expense, day }) => [day, expense.paidTo, find.company(expense.companyId)?.name ?? "", money.plain(money.value(expense, day)), expense.foreign?.currency ?? "INR", expense.foreign ? formatMoney(expense.foreign.amountMinor, expense.foreign.currency) : formatMoney(expense.amountPaise, "INR"), expense.chargedPaise ? (expense.chargedPaise / 100).toFixed(2) : "", find.category(expense.categoryId)?.name ?? "", find.group(expense.groupId)?.name ?? "", scopeLabel(expense.scope, ventureName), REPEAT_LABEL[expense.repeat], expense.note]));
+  const exportCsv = () => downloadCsv(`expenses-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${month}.csv`, ["Date", "Paid to", "Company", `Amount (${money.currency})`, "Paid in", "Amount paid", "Bank charged (INR)", "Category", "Group", "Tags", "Charged to", "Repeats", "Note"],
+    rows.map(({ expense, day }) => [day, expense.paidTo, find.company(expense.companyId)?.name ?? "", money.plain(money.value(expense, day)), expense.foreign?.currency ?? "INR", expense.foreign ? formatMoney(expense.foreign.amountMinor, expense.foreign.currency) : formatMoney(expense.amountPaise, "INR"), expense.chargedPaise ? (expense.chargedPaise / 100).toFixed(2) : "", find.category(expense.categoryId)?.name ?? "", find.group(expense.groupId)?.name ?? "", (expense.tags ?? []).join(", "), scopeLabel(expense.scope, ventureName), REPEAT_LABEL[expense.repeat], expense.note]));
 
   return <div className="grid grid-cols-1 gap-4">
     <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filters">
       <Select aria-label="Category" className={filterControl(Boolean(category))} value={category} onChange={(event) => setCategory(event.target.value)}><option value="">All categories</option>{data.settings.categories.map((item) => <option key={item.id} value={item.id}>{item.name}{item.archived ? " · archived" : ""}</option>)}</Select>
+      {knownTags.length > 0 && <Select aria-label="Tag" className={filterControl(Boolean(tagOn))} value={tagOn} onChange={(event) => setTag(event.target.value)}><option value="">All tags</option>{knownTags.map((item) => <option key={item.key} value={item.key}>{item.tag} ({item.expenses})</option>)}</Select>}
       {data.settings.groups.length > 0 && <Select aria-label="Group" className={filterControl(Boolean(group))} value={group} onChange={(event) => setGroup(event.target.value)}><option value="">All groups</option><option value="none">No group</option>{data.settings.groups.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>}
       {data.settings.companies.length > 1 && <Select aria-label="Company" className={filterControl(Boolean(company))} value={company} onChange={(event) => setCompany(event.target.value)}><option value="">All companies</option>{data.settings.companies.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.expenses})</option>)}</Select>}
       {!fixedWhere && <Select aria-label="Charged to" className={filterControl(Boolean(where))} value={where} onChange={(event) => setWhere(event.target.value)}><option value="">Everywhere</option><option value="office">Office</option><option value="personal">Personal</option>{ventures.map((venture) => <option key={venture.id} value={`venture:${venture.id}`}>{venture.name}</option>)}</Select>}
       <Select aria-label="One-time or repeating" className={filterControl(Boolean(kind))} value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="">One-time and repeating</option><option value="one">One-time only</option><option value="repeat">Repeating only</option></Select>
-      {filtered && <button type="button" onClick={() => { setCategory(""); setGroup(""); setWhere(""); setKind(""); setCompany(""); }} className="min-h-9 rounded-lg px-2 text-xs font-semibold text-primary-700 hover:text-primary-800">Clear filters</button>}
+      {filtered && <button type="button" onClick={() => { setCategory(""); setTag(""); setGroup(""); setWhere(""); setKind(""); setCompany(""); }} className="min-h-9 rounded-lg px-2 text-xs font-semibold text-primary-700 hover:text-primary-800">Clear filters</button>}
       <span className="ml-auto flex flex-wrap items-center gap-2">
         <button type="button" onClick={exportCsv} disabled={!rows.length} className={clsx(secondaryClass, "!min-h-9 !px-3 !text-xs")}><Download size={14} />Export CSV</button>
         {canEdit && <button type="button" onClick={onAdd} className={clsx(primaryClass, "!min-h-9 !px-3 !text-xs")}><Plus size={14} />Add expense</button>}
@@ -58,6 +68,7 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
     </div>
 
     <ExpenseDashboard key={`${fixedWhere ?? "all"}-${data.expenses.length}`} scoped={scoped} matching={matching} month={month} onMonth={onMonth} category={category} onCategory={setCategory}
+      tagged={tagged} tag={tagOn} onTag={setTag} tagName={(key) => knownTags.find((item) => item.key === key)?.tag ?? key}
       findCategory={find.category} findCompany={find.company} ventureName={ventureName} fixedWhere={fixedWhere} onOpen={onOpen} onTab={onTab}
       onSeeAll={() => document.getElementById("expense-month-list")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
     {(data.hiddenRestricted || data.truncated) && <div className="grid gap-1 text-xs leading-5">
@@ -84,6 +95,8 @@ export function ExpenseList({ data, ventures, ventureName, month, onMonth, fixed
                 <span className="mt-1 flex flex-wrap items-center gap-1.5">
                   {cat && <Badge tone={cat.color}>{cat.name}</Badge>}
                   {grp && <Badge tone={grp.color}>{grp.name}</Badge>}
+                  {(expense.tags ?? []).slice(0, 3).map((item) => <TagChip key={item} tag={item} />)}
+                  {(expense.tags?.length ?? 0) > 3 && <span className="text-xs text-neutral-500">+{expense.tags!.length - 3}</span>}
                   {!fixedWhere && <span className="text-xs text-neutral-500">{scopeLabel(expense.scope, ventureName)}</span>}
                   {expense.repeat !== "none" && <span className="inline-flex items-center gap-1 text-xs text-neutral-500"><Repeat size={12} aria-hidden="true" />{REPEAT_LABEL[expense.repeat]}</span>}
                   {expense.receiptId && <span className="inline-flex items-center gap-1 text-xs text-neutral-500"><Paperclip size={12} aria-hidden="true" />Receipt</span>}

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "@/components/ui/toast";
 import clsx from "clsx";
-import { addMonths, EXPENSE_CURRENCIES, expenseAccessAtLeast, type ExpenseCurrency } from "@venture-studio/contracts";
+import { addMonths, EXPENSE_CURRENCIES, expenseAccessAtLeast, expenseTagsIn, type ExpenseCurrency } from "@venture-studio/contracts";
 import { ChevronLeft, ChevronRight, LockKeyhole } from "@/components/ui/icons";
 import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import { Select } from "@/components/ui/select";
@@ -104,7 +104,7 @@ export function LiveExpensesScreen() {
       </div>
       </MoneyProvider>
     </>}
-    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} stopAfterNext={open.stop} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
+    {open && data && <ExpenseForm settings={data.settings} ventures={ventures} expense={open.expense} stopAfterNext={open.stop} fixedVentureId={scoped?.id} defaultWhere={open.where} canEdit={canEdit} level={level} knownTags={expenseTagsIn(data.expenses)} onClose={() => setOpen(null)} onSaved={reload} onSettingsChanged={reload} />}
   </PageFrame>;
 }
 

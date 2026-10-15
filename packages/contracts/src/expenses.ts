@@ -62,6 +62,44 @@ export type ForeignAmount = z.infer<typeof foreignAmountSchema>;
 export const LONG_NUMBER = /\d{9,}|\d{4}[\s./_-]+\d{4}[\s./_-]+\d{4}|\d{5}[\s./_-]+\d{5}|\d{3,5}[\s.-]\d{3,4}[\s.-]\d{3,4}/;
 const label = (max: number, what: string) => z.string().trim().max(max).refine((value) => !LONG_NUMBER.test(value), `${what} can't hold account, card or other long numbers`);
 
+/**
+ * Tags: words of one's own on an expense, to filter and total by — who it was for ("Rahul"), an event, a project. Up to 10 an expense,
+ * of up to 30 characters each, without commas (typed lists split on them).
+ */
+export const MAX_EXPENSE_TAGS = 10;
+/**
+ * A tag as it is kept: control characters as spaces; invisible ones (zero-width, direction overrides) dropped, so two tags that look
+ * alike are one and none reads backwards; spaces trimmed and collapsed; a leading # dropped ("  #Team   lunch " → "Team lunch").
+ */
+export const expenseTagText = (text: string) => text.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").replace(/[­​-‏‪-‮⁠-⁩﻿]/g, "")
+  .replace(/\s+/g, " ").trim().replace(/^#+\s*/, "");
+/** One tag however it is spelled: tags are told apart without case ("Rahul" and "rahul" are one). */
+export const expenseTagKey = (text: string) => expenseTagText(text).toLowerCase();
+const tagSchema = z.string().transform(expenseTagText).pipe(z.string().min(1, "A tag can't be empty").max(30, "A tag is at most 30 characters")
+  .refine((tag) => !LONG_NUMBER.test(tag), "A tag can't hold account, card or other long numbers").refine((tag) => !tag.includes(","), "A tag can't hold a comma"));
+/** An expense's tags, each once (the first spelling kept). */
+export const expenseTagsSchema = z.array(tagSchema).max(MAX_EXPENSE_TAGS, `At most ${MAX_EXPENSE_TAGS} tags`)
+  .transform((tags) => tags.filter((tag, index) => tags.findIndex((other) => expenseTagKey(other) === expenseTagKey(tag)) === index));
+/**
+ * The tags in use on these expenses (only ones the reader can see, so a tag used only on salaries stays unknown to someone who can't see
+ * them): each once, spelled the way most expenses spell it, with how many expenses carry it; by name.
+ */
+export function expenseTagsIn(expenses: readonly { tags?: readonly string[] | undefined }[]): { key: string; tag: string; expenses: number }[] {
+  const byKey = new Map<string, { expenses: number; spellings: Map<string, number> }>();
+  for (const expense of expenses) for (const tag of expense.tags ?? []) {
+    const key = expenseTagKey(tag);
+    if (!key) continue;
+    const entry = byKey.get(key) ?? { expenses: 0, spellings: new Map<string, number>() };
+    entry.expenses += 1;
+    entry.spellings.set(tag, (entry.spellings.get(tag) ?? 0) + 1);
+    byKey.set(key, entry);
+  }
+  return [...byKey].map(([key, entry]) => ({ key, tag: [...entry.spellings].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0], expenses: entry.expenses }))
+    .sort((a, b) => a.tag.localeCompare(b.tag, undefined, { sensitivity: "base" }));
+}
+/** Whether an expense carries a tag (by its key). */
+export const expenseHasTag = (expense: { tags?: readonly string[] | undefined }, key: string) => (expense.tags ?? []).some((tag) => expenseTagKey(tag) === key);
+
 export const expenseScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("venture"), ventureId: idSchema }),
   z.object({ kind: z.literal("office") }),
@@ -81,6 +119,7 @@ const expenseFields = {
   /** The last month a repeating expense is paid (included); none while it keeps repeating. */
   endMonth: expenseMonthSchema.nullable(),
   note: label(1_000, "A note"),
+  tags: expenseTagsSchema,
   /** The receipt kept with it (uploaded first, attached when the expense is saved), or none. */
   receiptId: idSchema.nullable(),
   /** Paid in another currency: the rupee amount (amountPaise) is then worked out by the API, never sent. None for rupees. */
@@ -95,7 +134,7 @@ function amountRules(value: { amountPaise?: number | undefined; foreign?: Foreig
 }
 /** A brand-new company's website, given when its first expense is saved (for its logo); not kept on the expense. */
 const companyWebsite = z.string().trim().max(300).optional();
-export const expenseInputSchema = z.object({ ...expenseFields, amountPaise: expenseFields.amountPaise.optional(), groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), receiptId: expenseFields.receiptId.default(null), foreign: expenseFields.foreign.default(null), chargedPaise: expenseFields.chargedPaise.default(null), companyWebsite }).superRefine(amountRules);
+export const expenseInputSchema = z.object({ ...expenseFields, amountPaise: expenseFields.amountPaise.optional(), groupId: expenseFields.groupId.default(null), repeat: expenseFields.repeat.default("none"), endMonth: expenseFields.endMonth.default(null), note: expenseFields.note.default(""), tags: expenseFields.tags.default([]), receiptId: expenseFields.receiptId.default(null), foreign: expenseFields.foreign.default(null), chargedPaise: expenseFields.chargedPaise.default(null), companyWebsite }).superRefine(amountRules);
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 /** An edit: only the fields sent change (no defaults, so leaving a field out never resets it). */
 /** The version an edit was made from (the expense's updatedAt as loaded): a change saved meanwhile refuses the edit instead of being undone. */
@@ -109,6 +148,8 @@ export const expenseChangeSchema = z.object({ fromMonth: expenseMonthSchema, amo
 export const expenseSchema = z.object({
   id: idSchema, workspaceId: idSchema, date: expenseDaySchema, amountPaise: z.number().int(), categoryId: idSchema, groupId: idSchema.nullable(),
   paidTo: z.string(), scope: expenseScopeSchema, repeat: expenseRepeatSchema, endMonth: expenseMonthSchema.nullable(), note: z.string(),
+  /** Its tags (none on expenses saved before tags existed). */
+  tags: z.array(z.string()).optional(),
   /** Set on the copy that "a new amount from a month" made: the expense it continues. */
   continuesId: idSchema.optional(),
   /** The day of the month it repeats on, when that differs from `date`'s day (a copy that starts in a shorter month): the 31st stays the 31st. */

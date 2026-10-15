@@ -326,7 +326,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
       if (input.receiptId) await claimReceipt(workspaceId, actor.id, input.receiptId, doc._id, session);
       await companyStill(workspaceId, company.id, session);
       await db.collection(EXPENSES).insertOne(doc as never, { session });
-      await record("expense.create", "expense", doc._id, { categoryId: input.categoryId, repeat: input.repeat, receipt: Boolean(input.receiptId) }, session);
+      await record("expense.create", "expense", doc._id, { categoryId: input.categoryId, repeat: input.repeat, receipt: Boolean(input.receiptId), tags: input.tags.length }, session);
     });
     if (company.websiteAdded) fetchLogoLater(company.id, actor.id);
     res.status(201).json(ok(json(doc)));
@@ -338,7 +338,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const { expectedUpdatedAt, companyWebsite, ...change } = expenseUpdateSchema.parse(req.body ?? {});
     const current = await visibleExpense(workspaceId, id, settings, me);
     sameVersion(current, expectedUpdatedAt);
-    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", receiptId: current.receiptId ?? null, foreign: current.foreign ?? null, chargedPaise: current.chargedPaise ?? null, ...change });
+    const merged = expenseInputSchema.parse({ date: current.date, amountPaise: current.amountPaise, categoryId: current.categoryId, groupId: current.groupId ?? null, paidTo: current.paidTo, scope: current.scope, repeat: current.repeat, endMonth: current.endMonth ?? null, note: current.note ?? "", tags: Array.isArray(current.tags) ? current.tags : [], receiptId: current.receiptId ?? null, foreign: current.foreign ?? null, chargedPaise: current.chargedPaise ?? null, ...change });
     if (merged.repeat === "none") merged.endMonth = null;
     // A foreign amount is priced again only when its amount, currency, bank amount or day changes; otherwise it keeps its rate.
     const reprice = !merged.foreign || (["foreign", "chargedPaise", "date"] as const).some((key) => change[key] !== undefined);

@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { addMonths, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
+import { addMonths, expenseTagKey, monthsBetween, nextOccurrence } from "@venture-studio/contracts";
 import { AutoHeight } from "@/components/ui/auto-height";
-import { ArrowUpRight, Home, Layers3, Wallet } from "@/components/ui/icons";
+import { ArrowUpRight, Hash, Home, Layers3, Wallet } from "@/components/ui/icons";
 import { prefersReducedMotion } from "@/lib/motion";
 import type { ExpenseCompany } from "@venture-studio/contracts";
 import type { Expense, ExpenseCategory } from "@/lib/expenses-api";
@@ -12,7 +12,7 @@ import { dayLabel, monthLabel, paidIn, REPEAT_LABEL, scopeKey, scopeLabel, thisM
 import { useMoney } from "./expense-money";
 
 // The expense dashboard above the list (after the reference designs): a dark "spent this month" card, a blue "repeating costs" card, the
-// month by category on a dial, a dark "recent expenses" card, and month-by-month columns. No hover effects on the cards: picking a month
+// month by category on a dial, a dark "recent expenses" card, the month by tag (when tags are used), and month-by-month columns. No hover effects on the cards: picking a month
 // or a category is a click (or Enter); only the month columns show a tooltip when pointed at or focused. Everything animates in once
 // when the page opens (bars rise, rings sweep, numbers count up) and stays still for people who ask for reduced motion. Every value is
 // also in the list below or on the Monthly tab.
@@ -73,6 +73,8 @@ export type DashboardProps = {
   /** Expenses after every filter but the category (the dial shows them all), and with it. */
   scoped: Expense[]; matching: Expense[];
   month: string; onMonth: (month: string) => void; category: string; onCategory: (id: string) => void;
+  /** Expenses after every filter but the tag (the tag totals show them all), the tag picked (its key), picking one, and a tag's name. */
+  tagged: Expense[]; tag: string; onTag: (key: string) => void; tagName: (key: string) => string;
   findCategory: Lookup; findCompany: (id: string | null | undefined) => ExpenseCompany | undefined; ventureName: (id: string) => string;
   /** The Office tab (or one venture): the dark card splits by category instead of by where. */
   fixedWhere?: string; onOpen: (expense: Expense) => void; onTab: (tab: Tab) => void; onSeeAll: () => void;
@@ -88,6 +90,7 @@ export function ExpenseDashboard(props: DashboardProps) {
       </div>
       <RecentCard {...props} />
     </div>
+    <TagTotals {...props} />
     <MonthColumns {...props} />
   </div>;
 }
@@ -200,6 +203,48 @@ function CategoryDial({ scoped, month, category, onCategory, findCategory }: Das
       </li>)}</ul>
     </>}
     </AutoHeight>
+  </section>;
+}
+
+// ---- White: the month by tag ------------------------------------------------------------------------------------------------------
+
+/**
+ * What each tag came to in the month (who or what it was for), biggest first, as bars on one scale; picking one filters by it. An
+ * expense with two tags counts under both, so the rows can add up to more than the month. Shown once an expense here has a tag.
+ */
+function TagTotals({ tagged, month, tag, onTag, tagName }: DashboardProps) {
+  const money = useMoney();
+  if (!tagged.some((expense) => expense.tags?.length)) return null;
+  const byTag = new Map<string, number>();
+  let untagged = 0;
+  for (const { expense, day } of paidIn(tagged, month)) {
+    const value = money.value(expense, day);
+    const keys = [...new Set((expense.tags ?? []).map(expenseTagKey))];
+    if (!keys.length) untagged += value;
+    for (const key of keys) byTag.set(key, (byTag.get(key) ?? 0) + value);
+  }
+  const sorted = [...byTag].sort((a, b) => b[1] - a[1] || tagName(a[0]).localeCompare(tagName(b[0])));
+  const shown = sorted.slice(0, 10);
+  const max = Math.max(1, ...shown.map(([, paise]) => paise));
+  const more = sorted.length - shown.length;
+  return <section aria-label={`${monthLabel(month)} by tag`} className="vso-fade-up rounded-[1.75rem] border border-neutral-200 bg-white p-5 shadow-card sm:p-6" style={{ "--delay": "180ms" } as React.CSSProperties}>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+      <h3 className="text-base font-bold text-neutral-900">{monthLabel(month)} by tag</h3>
+      <p className="text-xs text-neutral-500">Pick a tag to see only its expenses. One with two tags counts under both.</p>
+    </div>
+    {!shown.length ? <p className="mt-4 text-sm text-neutral-500">No tagged expenses in {monthLabel(month)}.</p>
+      : <ul className="mt-3 grid grid-cols-1 gap-x-8 md:grid-cols-2" aria-label="Pick a tag">{shown.map(([key, paise], index) => <li key={key}>
+        <button type="button" aria-pressed={tag === key} onClick={() => onTag(tag === key ? "" : key)}
+          className={clsx("grid min-h-11 w-full grid-cols-[minmax(0,9rem)_minmax(0,1fr)_minmax(4.5rem,auto)] items-center gap-3 rounded-xl px-2 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600", tag === key ? "bg-primary-50" : "hover:bg-neutral-50")}>
+          <span className="flex min-w-0 items-center gap-1 text-sm font-semibold text-neutral-800"><Hash size={12} aria-hidden="true" className="shrink-0 text-neutral-400" /><span className="truncate">{tagName(key)}</span></span>
+          <span aria-hidden="true" className="h-2 overflow-hidden rounded-full bg-neutral-100"><span className="vso-grow-x block h-full rounded-full bg-primary-600" style={{ width: `${Math.max(2, (paise / max) * 100)}%`, "--delay": `${200 + index * 40}ms` } as React.CSSProperties} /></span>
+          <span className="text-right tabular-nums text-sm font-bold text-neutral-900">{money.format(paise)}</span>
+        </button>
+      </li>)}</ul>}
+    {(more > 0 || untagged > 0) && <p className="mt-3 text-xs text-neutral-500">
+      {more > 0 && <>{more} more {more === 1 ? "tag" : "tags"} in the Tag filter. </>}
+      {untagged > 0 && <>Not tagged: <span className="font-semibold tabular-nums text-neutral-700">{money.format(untagged)}</span>.</>}
+    </p>}
   </section>;
 }
 

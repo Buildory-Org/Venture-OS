@@ -9,6 +9,7 @@ import { ActionLabel, DetailDrawer, Field, inputClass, Notice, primaryClass, sec
 import { changeExpenseFrom, createCategory, createExpense, createGroup, deleteExpense, getExpenseRates, refreshSoon, updateExpense, uploadCompanyLogo, type Expense, type ExpenseCategory, type ExpenseGroup, type ExpenseSettings } from "@/lib/expenses-api";
 import { CompanyAvatar } from "./expense-company";
 import { ReceiptSection } from "./expense-receipt";
+import { type KnownTag, TagInput, withTyped } from "./expense-tags";
 import { amountText, dayLabel, minorOf, minorText, monthLabel, paiseOf, rupees, scopeKey, thisMonth, todayLocal } from "./expense-shared";
 import { currencySign, formatMoney } from "./expense-money";
 
@@ -21,6 +22,8 @@ type Props = {
   stopAfterNext?: boolean;
   /** The person's access: Edit may add a group from here, Manage a category too. */
   level: ExpenseAccessLevel;
+  /** The tags already in use (on the expenses this person sees), offered as they type. */
+  knownTags: KnownTag[];
   onClose: () => void; onSaved: () => void;
   /** A category or group was added from the form: the page reads the settings again. */
   onSettingsChanged: () => void;
@@ -40,7 +43,7 @@ const whereOf = (key: string): ExpenseScope => key === "office" ? { kind: "offic
  * Add or edit one expense, in a popup (full screen on phones): the receipt on the left on wide screens, the details on the right, Save
  * pinned at the bottom. People who can only view see it read-only.
  */
-export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defaultWhere, canEdit, stopAfterNext, level, onClose, onSaved, onSettingsChanged }: Props) {
+export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defaultWhere, canEdit, stopAfterNext, level, knownTags, onClose, onSaved, onSettingsChanged }: Props) {
   // Ones added from this form show at once, before the page has read the settings again.
   const [added, setAdded] = useState<{ categories: ExpenseCategory[]; groups: ExpenseGroup[] }>({ categories: [], groups: [] });
   const withAdded = <T extends { id: string }>(list: T[], extra: T[]) => [...list, ...extra.filter((item) => !list.some((one) => one.id === item.id))];
@@ -80,13 +83,16 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   const stopDay = stopAfterNext && expense && expense.repeat !== "none" && canEdit ? nextOccurrence(expense, todayLocal()) : null;
   const [endMonth, setEndMonth] = useState(stopDay ? monthOf(stopDay) : expense?.endMonth ?? "");
   const [note, setNote] = useState(expense?.note ?? "");
+  const [tags, setTags] = useState<string[]>(expense?.tags ?? []);
+  // A tag still being typed counts: saving adds it.
+  const [tagText, setTagText] = useState("");
   const [busy, setBusy] = useState<"save" | "delete" | "change" | "create" | null>(null);
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   // A price change starts in a month the expense is paid in: the next one after this month (for a yearly one, its next renewal).
   const [changeMonth, setChangeMonth] = useState(() => (expense && expense.repeat !== "none" ? nextPaidMonthAfter(expense, monthOf(expense.date) > thisMonth() ? monthOf(expense.date) : thisMonth()) : null) ?? addMonths(thisMonth(), 1));
   const [changeAmount, setChangeAmount] = useState("");
-  const dirty = Boolean(endMonth !== (expense?.endMonth ?? "") || paidTo !== (expense?.paidTo ?? "") || amount !== initialAmount || currency !== initialCurrency || charged !== initialCharged || note !== (expense?.note ?? "") || receiptId !== (expense?.receiptId ?? null));
+  const dirty = Boolean(endMonth !== (expense?.endMonth ?? "") || paidTo !== (expense?.paidTo ?? "") || amount !== initialAmount || currency !== initialCurrency || charged !== initialCharged || note !== (expense?.note ?? "") || JSON.stringify(tags) !== JSON.stringify(expense?.tags ?? []) || Boolean(tagText.trim()) || receiptId !== (expense?.receiptId ?? null));
   // The day's rate for another currency, to show what it comes to in rupees (looked up a moment after the currency or day changes).
   const [rate, setRate] = useState<{ key: string; rupees: number | null; day: string | null }>({ key: "", rupees: null, day: null });
   const rateKey = currency === "INR" ? "" : `${currency}|${date}`;
@@ -145,14 +151,17 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
     if (LONG_NUMBER.test(paidTo) || LONG_NUMBER.test(note)) { setError("Leave out account, card and phone numbers: only amounts and labels are kept."); return; }
     if (repeat !== "none" && endMonth && endMonth < monthOf(date)) { setError("The last month can't be before the first payment."); return; }
     if (newCompany && companyWebsite.trim() && !websiteHost(companyWebsite)) { setError("Enter the company's website like godaddy.com, or leave it empty."); return; }
+    const tagged = withTyped(tags, tagText, knownTags);
+    if (tagged.problem) { setError(tagged.problem); return; }
+    setTags(tagged.tags); setTagText("");
     const priced = currency === "INR" ? { amountPaise: minor, foreign: null, chargedPaise: null } : { foreign: { currency, amountMinor: minor }, chargedPaise };
-    const input: ExpenseInput = { date, ...priced, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), receiptId, ...(newCompany && companyWebsite.trim() ? { companyWebsite: companyWebsite.trim() } : {}) };
+    const input: ExpenseInput = { date, ...priced, categoryId, groupId: groupId || null, paidTo: paidTo.trim(), scope: whereOf(where), repeat, endMonth: repeat === "none" ? null : endMonth || null, note: note.trim(), tags: tagged.tags, receiptId, ...(newCompany && companyWebsite.trim() ? { companyWebsite: companyWebsite.trim() } : {}) };
     setBusy("save"); setError("");
     let saved: Expense;
     try {
       if (expense) {
         // Only what changed is sent, with the version it was changed from.
-        const before: ExpenseInput = { date: expense.date, ...(expense.foreign ? {} : { amountPaise: expense.amountPaise }), foreign: expense.foreign ? { currency: expense.foreign.currency as Exclude<ExpenseCurrency, "INR">, amountMinor: expense.foreign.amountMinor } : null, chargedPaise: expense.chargedPaise ?? null, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, receiptId: expense.receiptId ?? null };
+        const before: ExpenseInput = { date: expense.date, ...(expense.foreign ? {} : { amountPaise: expense.amountPaise }), foreign: expense.foreign ? { currency: expense.foreign.currency as Exclude<ExpenseCurrency, "INR">, amountMinor: expense.foreign.amountMinor } : null, chargedPaise: expense.chargedPaise ?? null, categoryId: expense.categoryId, groupId: expense.groupId, paidTo: expense.paidTo, scope: expense.scope, repeat: expense.repeat, endMonth: expense.endMonth, note: expense.note, tags: expense.tags ?? [], receiptId: expense.receiptId ?? null };
         const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key as keyof ExpenseInput])));
         saved = Object.keys(changed).length ? await updateExpense(expense.id, { ...changed, expectedUpdatedAt: expense.updatedAt }) : expense;
       } else saved = await createExpense(input);
@@ -265,6 +274,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
         </div>
         {stopDay && endMonth === monthOf(stopDay) && <p role="status" className="-mt-2 rounded-xl bg-primary-50 px-3 py-2 text-xs font-semibold leading-5 text-primary-900">Set to stop after the {dayLabel(stopDay)} payment. Save to confirm, or change the last month.</p>}
         {repeat !== "none" && <p className="-mt-2 text-xs leading-5 text-neutral-500">{endMonth ? `Paid ${repeat === "monthly" ? "every month" : "every year"} until ${monthLabel(endMonth)}, then it stops.` : `Keeps repeating until you set a last month. Earlier months always keep what was paid.`}</p>}
+        <TagInput tags={tags} onChange={setTags} known={knownTags} pending={tagText} onPending={setTagText} readOnly={readOnly} />
         <Field label="Note (optional)"><textarea maxLength={1_000} rows={3} className={clsx(inputClass, "py-2.5")} value={note} onChange={(event) => setNote(event.target.value)} placeholder="Plan, seats, what it is for" /></Field>
       </fieldset>
       {expense?.continuesId && confirmDelete && <p className="text-xs leading-5 text-neutral-600">This amount came from a price change. Deleting it undoes the change: the earlier amount carries on as before.</p>}

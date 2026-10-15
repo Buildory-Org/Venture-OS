@@ -22,7 +22,8 @@ import { fileStoreFor } from "./files.js";
 // The expense tracker (docs/expenses.md). Its own access list decides who sees, adds or manages expenses: nobody but admins until a
 // manager adds them, and restricted categories (salary, EMI) only for the people allowed to see them. The admins there are when the
 // tracker is first opened get Manage with restricted access; admins made later get Manage only, until someone with restricted access
-// lets them see it. Claude connections never reach these routes. Every change is audited without amounts. A receipt is uploaded (and
+// lets them see it. Claude reaches the listing, reading and changing routes only with a key that has expenses ticked, never salaries
+// or EMIs, and never the managing ones (categories, companies, access) or receipt files (docs/expenses.md#claude). Every change is audited without amounts. A receipt is uploaded (and
 // read) before its expense is saved, then attached; it is seen by whoever sees its expense, and until then only by who uploaded it.
 // One that ends up attached to nothing (the form was closed, or its expense deleted or given another receipt) goes after a day.
 
@@ -99,24 +100,37 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
   const db = database.db;
   const router = Router();
 
-  /** The signed-in person, their settings and access; refused below `needed` (as not found when they have no access at all). */
+  /**
+   * The signed-in person, their settings and access; refused below `needed` (as not found when they have no access at all). Through
+   * Claude only with a key that has expenses ticked (reading, or changing), and never restricted categories (salaries, EMIs), whatever
+   * the person may see in the app; other machine connections never.
+   */
   async function gate(req: Request, needed: ExpenseAccessLevel, session?: ClientSession) {
-    if (req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to Claude connections");
+    const viaClaude = req.interfaceChannel === "mcp";
+    // Managing (categories, companies, the access list) stays in the app whatever the key, besides the MCP route list.
+    if (viaClaude && needed === "manage") throw new AppError(403, "FORBIDDEN", "Managing expenses is only in the app");
+    if (viaClaude && !req.mcpScopes?.has(needed === "view" ? "expenses:read" : "expenses:write")) throw new AppError(403, "FORBIDDEN", `This Claude key can't ${needed === "view" ? "read" : "change"} expenses: create a key with Expenses ticked on the Connect Claude page`);
+    if (!viaClaude && req.interfaceChannel !== "api") throw new AppError(403, "FORBIDDEN", "Expenses are not available to this connection");
     const actor = req.actor!;
     const workspaceId = actor.membership.workspaceId;
     await ensureSettings(db, workspaceId);
     const settings = await loadSettings(db, workspaceId, session);
     // Nobody left who keeps Manage with restricted access (they left the workspace): an admin takes it back, so it is never locked.
-    const me = await reclaimIfOrphaned(db, workspaceId, settings, actor);
+    // (Only in the app: Claude never changes the access list.)
+    const me = viaClaude ? { ...accessOf(settings, actor.id, actor.membership.role), restricted: false } : await reclaimIfOrphaned(db, workspaceId, settings, actor);
+    const channel = viaClaude ? "mcp" : "api";
     if (!expenseAccessAtLeast(me.level, needed)) {
-      await audit(db, { workspaceId, actorId: actor.id, channel: "api", action: `expense.${needed}`, objectType: "expense", result: "denied" });
+      await audit(db, { workspaceId, actorId: actor.id, channel, action: `expense.${needed}`, objectType: "expense", result: "denied" });
       if (me.level === "none") throw new AppError(404, "NOT_FOUND", "Not found");
       throw new AppError(403, "FORBIDDEN", needed === "manage" ? "Only people who manage expenses can change categories, groups and access" : "You can view expenses but not change them");
     }
     const record = (action: string, objectType: string, objectId: string, metadata?: Record<string, string | number | boolean | null>, s?: ClientSession) =>
-      audit(db, { workspaceId, actorId: actor.id, channel: "api", action, objectType, objectId, result: "success", ...(metadata ? { metadata } : {}) }, s);
+      audit(db, { workspaceId, actorId: actor.id, channel, action, objectType, objectId, result: "success", ...(metadata ? { metadata } : {}) }, s);
     return { actor, workspaceId, settings, me, record };
   }
+
+  /** Refused through Claude whatever the key: uploading receipts and their files stay in the app (Claude reads what was read off them). */
+  const appOnly = (req: Request, message: string) => { if (req.interfaceChannel === "mcp") throw new AppError(403, "FORBIDDEN", message); };
 
   /** An expense the person may see (one in a restricted category only with restricted access), or not found. */
   async function visibleExpense(workspaceId: string, id: string, settings: Settings, me: ExpenseAccess, session?: ClientSession) {
@@ -246,7 +260,8 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const { workspaceId, settings, me } = await gate(req, "view");
     const hidden = !me.restricted && restrictedIds(settings).length > 0;
     let access: unknown;
-    if (me.level === "manage") {
+    // The access list (who sees what, salaries included) is for managers in the app, never sent to Claude.
+    if (me.level === "manage" && req.interfaceChannel !== "mcp") {
       const memberships = await db.collection("memberships").find({ workspaceId, status: "active" }).project({ userId: 1, role: 1 }).toArray();
       const users = new Map((await db.collection("users").find({ _id: { $in: memberships.map((item) => item.userId) as never[] } }).project({ name: 1 }).toArray()).map((user) => [String(user._id), String(user.name ?? "")]));
       access = memberships.map((item) => ({ userId: String(item.userId), name: users.get(String(item.userId)) || "Unnamed member", role: String(item.role), ...accessOf(settings, String(item.userId), String(item.role)) }))
@@ -360,8 +375,9 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
       const removed = await db.collection(EXPENSES).deleteOne({ _id: id as never, workspaceId, updatedAt: current.updatedAt }, { session });
       if (!removed.deletedCount) throw new AppError(409, "CONFLICT", "Someone changed this expense meanwhile: reload it and try again");
       if (typeof current.receiptId === "string") await releaseReceipt(workspaceId, current.receiptId, session);
+      // Never one this person can't see (moved into a restricted category since): it is left as it is, and not mentioned.
       if (typeof current.continuesId === "string") {
-        const before = await db.collection(EXPENSES).updateOne({ _id: current.continuesId as never, workspaceId, endMonth: addMonths(monthOf(String(current.date)), -1) }, { $set: { endMonth: current.endMonth ?? null, updatedBy: actor.id, updatedAt: new Date() } }, { session });
+        const before = await db.collection(EXPENSES).updateOne({ _id: current.continuesId as never, workspaceId, endMonth: addMonths(monthOf(String(current.date)), -1), ...(me.restricted ? {} : { categoryId: { $nin: restrictedIds(settings) } }) },{ $set: { endMonth: current.endMonth ?? null, updatedBy: actor.id, updatedAt: new Date() } }, { session });
         if (before.modifiedCount) reopened = current.continuesId;
       }
       await record("expense.delete", "expense", id, { categoryId: String(current.categoryId), repeat: String(current.repeat), ...(reopened ? { reopened } : {}) }, session);
@@ -410,6 +426,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
   // form can fill itself in. Kept even when it can't be read. Anyone who adds expenses may upload, up to RECEIPTS_PER_HOUR an hour.
   // Only image and PDF bodies are read, so a plain cross-site form can't post one (those types need the browser's CORS check first).
   router.post("/expenses/receipts", express.raw({ type: ["image/*", "application/pdf", "application/octet-stream"], limit: MAX_RECEIPT_BYTES }), async (req, res) => {
+    appOnly(req, "Receipts are added in the app");
     const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
     const wait = await overLimit(db, `expense-receipts:${actor.id}`, RECEIPTS_PER_HOUR, 3_600_000);
     if (wait) { res.setHeader("retry-after", wait); throw new AppError(429, "RATE_LIMITED", "That's a lot of receipts for one hour: type the details in, or try again later"); }
@@ -438,6 +455,7 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
 
   // The kept copy itself (a WebP or the PDF), sent by the API so it never needs a public link.
   router.get("/expenses/receipts/:id/file", async (req, res) => {
+    appOnly(req, "Receipt files open in the app");
     const { actor, workspaceId, settings, me } = await gate(req, "view");
     const doc = await visibleReceipt(workspaceId, idSchema.parse(req.params.id), actor.id, settings, me);
     const fileStore = fileStoreFor(doc, store, localStore);
@@ -633,5 +651,10 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     res.json(ok(result));
   });
 
+  // One expense (Claude reads it before changing it). Last, so the named paths above (settings, rates, companies…) win.
+  router.get("/expenses/:id", async (req, res) => {
+    const { workspaceId, settings, me } = await gate(req, "view");
+    res.json(ok(json(await visibleExpense(workspaceId, idSchema.parse(req.params.id), settings, me))));
+  });
   return router;
 }

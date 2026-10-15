@@ -11,7 +11,7 @@ import type { Auth } from "./auth.js";
 import { AppError } from "./errors.js";
 import { audit } from "./audit.js";
 import { withArchiveScope } from "./archive-scope.js";
-import { internalUserId } from "./internal-auth.js";
+import { internalScopes, internalUserId } from "./internal-auth.js";
 
 type Actor = { id: string; email: string; name: string; membership: Membership };
 
@@ -70,6 +70,7 @@ export function requireIdentity(resolveIdentity: ReturnType<typeof createIdentit
 export function requestContext(req: Request, res: Response, next: NextFunction): void {
   req.id = typeof req.headers["x-request-id"] === "string" ? req.headers["x-request-id"].slice(0, 100) : randomUUID();
   req.interfaceChannel = internalUserId(req.headers) ? "mcp" : "api";
+  req.mcpScopes = internalScopes(req.headers);
   res.setHeader("x-request-id", req.id);
   const startedAt = Date.now();
   res.on("finish", () => console.info(JSON.stringify({ level: "info", requestId: req.id, method: req.method, path: req.path.replace(/\/local-objects\/[^/]+/i, "/local-objects/[redacted]").replace(/\/calendar\/feed\/[^/]+/i, "/calendar/feed/[redacted]"), status: res.statusCode, durationMs: Date.now() - startedAt })));

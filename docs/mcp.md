@@ -75,7 +75,24 @@ Token presets on the Connect Claude page: Studio (read only, or read and update)
 
 Prompts (slash commands in Claude Code): `today`, `standup`, `triage`.
 
-Not exposed here: deleting or archiving anything, membership and admin changes, DMs without their scope, and anything sales (that is the Dealflow Sales connector).
+Not exposed here: deleting or archiving anything (except an expense, after the person says yes; below), membership and admin changes, DMs without their scope, and anything sales (that is the Dealflow Sales connector).
+
+### Expenses (2026-10-15)
+
+Only for keys with **Include expenses** ticked on the Connect Claude page (`expenses:read`, and `expenses:write` with Read and update). The scopes are in neither preset, like direct messages. The expense routes check them again: internal calls carry the token's scopes (`x-vso-internal-scopes`, trusted only with the per-process internal credential), and a call without them is refused. The tracker's access list applies to the key's owner (view reads, edit changes, none sees nothing), and **salaries and EMIs (restricted categories) are never shown, counted, written or marked read through Claude**, whatever the person sees in the app. Every change is audited with channel `mcp`.
+
+| Tool | Kind | Purpose |
+|---|---|---|
+| `expense_options` | read | My access, categories, groups, companies, where to charge (Office, Personal, ventures), currencies |
+| `expense_report` | read | A month (or 3/6/12 months): total, repeating vs one-time, by where, by category, top companies, change from the month before, in any currency |
+| `list_expenses` | read | Expenses paid in a month or span (filters, words in payee or note), or one in full with its receipt's details |
+| `list_subscriptions` | read | What repeats: a month's and a year's cost, next payments, due soon, starting later, stopped |
+| `add_expenses` | write | 1 to 25 expenses in any currency (the bank's rupees for a one-time foreign one), a repeat and last month; may start a group; replay-safe |
+| `update_expense` | write | Change only the fields given; stop a subscription with `lastMonth`; refused if it changed since the `expectedUpdatedAt` read |
+| `change_expense_price` | write | A repeating expense's new amount from a month on, in its own currency; optional `expectedUpdatedAt` |
+| `delete_expense` | write (destructive) | Delete for good, with `confirm: true` only after the person says yes in the conversation, and the `expectedUpdatedAt` they were shown (a change since is refused) |
+
+With `expenses:read`, `whats_new` also includes upcoming-payment notices (not salaries' or EMIs'). The access list, categories, company merges, renames and logos, receipt uploads and receipt files stay in the app: the expense routes refuse anything at Manage level, and the receipt upload and file routes, to Claude whatever the key. A batch of `add_expenses` that loses its answer partway stops there and says which one is unknown and which weren't tried.
 
 ## Supporting API changes
 

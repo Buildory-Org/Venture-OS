@@ -51,7 +51,15 @@ What the studio spends, counted in rupees (and shown in any currency): for each 
 - **One row per subscription:** each month's notice joins the same inbox row (its count and the dates it came), and comes back on top.
 - **Actions:** ↗ opens the expense; ■ "Stop after this payment" opens it with its last month set to that payment's month (saving confirms it).
 - **How it is kept in step:** the worker plans one reminder per expense and manager (kind `expense_due`) from the expenses every few minutes, so new subscriptions, edits, stops, deletions and access changes are followed without the API doing anything. Before sending it checks again: the expense still repeats and is paid that day, the person still manages expenses and may see it, and the day hasn't passed (a worker that was away skips to the next payment). Each notice has its own idempotency key (reminder and payment day), so a retry never sends it twice.
-- **Never to Claude:** expense notices are left out of everything Claude connections read (like the expenses themselves), and out of "Your reminders" and snooze; the inbox shows one only while its expense exists and is open to the reader.
+- **Claude:** a key with expenses ticked sees these notices in `whats_new` and can mark them read, never those about salaries or EMIs; a key without the tick sees none. They stay out of "Your reminders" and snooze. The inbox shows one only while its expense exists and is open to the reader.
+
+## Claude
+
+- **Opt in per key:** on the Connect Claude page, **Include expenses** on a Venture Studio key: reports, lists and subscriptions with Read only; also adding, changing, repricing and deleting with Read and update. Without the tick Claude can't reach expenses at all (the expense routes check the key's scopes too).
+- **Same rules as the app:** the access list applies to the key's owner. **Salaries and EMIs never go through Claude**, even for people who see them in the app: reports and lists leave them out (and say so), and they can't be added, read or marked read.
+- **The tools:** `expense_options`, `expense_report`, `list_expenses`, `list_subscriptions`, `add_expenses`, `update_expense`, `change_expense_price`, `delete_expense` (docs/mcp.md#expenses). Totals use the same conversion as the page. Deleting needs the person's yes in the conversation and the version they were shown (a change since is refused); every change is audited as made through Claude.
+- **Receipts:** Claude reads a receipt pasted into the chat itself and adds the expense; the original file is attached from the expense's link in the app.
+- **App only:** the access list, categories, company merges, renames and logos.
 
 ## Receipts
 
@@ -122,7 +130,7 @@ The tracker has its own access list, under Settings. Each member has a **level**
   - If that person leaves the workspace, any admin regains Manage with restricted access.
   - Entries for people no longer in the workspace are removed the next time the list is saved.
 - **Enforced on the server:** the API applies every rule (`routes/expenses.ts`). The screens only hide what the API would refuse anyway.
-- **No Claude access:** Claude connections can't reach these routes.
+- **Claude:** only with a key that has expenses ticked (the scopes are checked again here), never salaries or EMIs, and never the managing routes (categories, companies, access), receipt uploads or receipt files. See [Claude](#claude).
 - **Audit:** every change is audited (`expense.*`) with the category, the repeat and the fields changed, never an amount. Refusals are audited too.
 
 ## Screens

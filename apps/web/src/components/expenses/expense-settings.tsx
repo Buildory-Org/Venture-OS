@@ -75,8 +75,10 @@ function AccessPanel({ settings, onChanged }: { settings: ExpenseSettings; onCha
               title={!settings.me.restricted ? "Only people who see salaries and EMI can change this" : person.level === "none" ? "Give access first" : undefined}
               onClick={() => void save(person, person.level, !person.restricted)}
               className="inline-flex min-h-8 items-center gap-2 rounded-lg pr-1 text-xs font-semibold text-neutral-700 disabled:cursor-not-allowed disabled:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">
-              <span aria-hidden="true" className={clsx("relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150", person.level !== "none" && person.restricted ? "bg-primary-700" : "bg-neutral-200")}>
-                <span className={clsx("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-150", person.level !== "none" && person.restricted ? "translate-x-[18px]" : "translate-x-0.5")} />
+              {/* The knob is pinned to the left (the button centres its text, which would otherwise start it mid-track) and stays white
+                  in the dark theme, like the app's other switches; dimmed when this person can't change it. */}
+              <span aria-hidden="true" className={clsx("relative h-5 w-9 shrink-0 rounded-full transition-colors duration-150", person.level !== "none" && person.restricted ? "bg-primary-700" : "bg-[#a3a3a3]", !canRestrict && "opacity-50")}>
+                <span className={clsx("absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[#fff] shadow-sm transition-transform duration-150", person.level !== "none" && person.restricted ? "translate-x-4" : "translate-x-0")} />
               </span>
               <LockKeyhole size={13} aria-hidden="true" className="md:hidden" /><span className="md:hidden">Salaries &amp; EMI</span><span className="hidden md:inline">{person.level !== "none" && person.restricted ? "Sees them" : "Hidden"}</span>
             </button>

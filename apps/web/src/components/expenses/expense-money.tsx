@@ -1,6 +1,6 @@
 "use client";
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { currencyDigits, EXPENSE_CURRENCIES, type ExpenseCurrency, type ExpenseRates } from "@venture-studio/contracts";
+import { EXPENSE_CURRENCIES, expenseConverter, formatMoneyIn, type ExpenseCurrency, type ExpenseRates } from "@venture-studio/contracts";
 import { getExpenseRates, type Expense } from "@/lib/expenses-api";
 import { todayLocal } from "./expense-shared";
 
@@ -46,11 +46,7 @@ function numberFormat(currency: string, digits: number, fraction: boolean, compa
   return format;
 }
 /** An amount in a currency's smallest unit, formatted ("€6.49"; whole amounts without ".00"). */
-export function formatMoney(minor: number, currency: string) {
-  const digits = currencyDigits(currency);
-  const scale = 10 ** digits;
-  return numberFormat(currency, digits, minor % scale !== 0).format(minor / scale);
-}
+export const formatMoney = formatMoneyIn;
 /** "₹" for INR, "$" for USD, "CHF" where there is no sign. */
 export function currencySign(currency: string) {
   return numberFormat(currency, 0, false).formatToParts(0).find((part) => part.type === "currency")?.value ?? currency;
@@ -64,50 +60,10 @@ function compactRupees(paise: number) {
   return `₹${Math.round(value)}`;
 }
 
-/** A day's rates (rupees for one unit) looked up as the latest on or before a day (none before the first kept), and the first kept. */
-function rateTable(rates: ExpenseRates | null) {
-  // Per currency, its days (oldest first) and rates, searched by halves: the charts look up thousands of payments.
-  const byCurrency = new Map<string, { days: string[]; rates: number[] }>();
-  for (const entry of rates?.days ?? []) for (const [currency, rate] of Object.entries(entry.rupees)) {
-    const list = byCurrency.get(currency) ?? { days: [], rates: [] };
-    list.days.push(entry.day); list.rates.push(rate);
-    byCurrency.set(currency, list);
-  }
-  const rate = (currency: string, day: string): number | null => {
-    if (currency === "INR") return 1;
-    const list = byCurrency.get(currency);
-    if (!list?.days.length) return null;
-    let low = 0; let high = list.days.length - 1; let found = -1;
-    while (low <= high) { const middle = (low + high) >> 1; if (list.days[middle]! <= day) { found = middle; low = middle + 1; } else high = middle - 1; }
-    return found >= 0 ? list.rates[found]! : null;
-  };
-  const earliest = (currency: string): number | null => (currency === "INR" ? 1 : byCurrency.get(currency)?.rates[0] ?? null);
-  return { rate, earliest };
-}
-const tenDaysBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 10 * 86_400_000).toISOString().slice(0, 10);
-
-/** The money view for the shown currency (rupees when its rates couldn't be had). */
+/** The money view for the shown currency (rupees when its rates couldn't be had): the shared converter, with this page's formats. */
 export function moneyFor(shown: ExpenseCurrency, rates: ExpenseRates | null): Money {
-  const { rate, earliest } = rateTable(rates);
-  const usable = shown === "INR" || rate(shown, todayLocal()) !== null ? shown : "INR";
-  const digits = currencyDigits(usable);
-  const rupeesOf = (expense: Expense, day: string) => {
-    const foreign = expense.foreign;
-    // As saved: rupees, the bank's figure, a one-time payment's rate, a repeating one's first payment when it was priced at its day
-    // (one saved ahead of its day was priced at that day's latest rate: it converts like the payments after it). Days before the rates
-    // kept (over about three years back) count as saved too.
-    const pricedOnItsDay = !expense.rateDate || expense.rateDate >= tenDaysBefore(expense.date);
-    if (!foreign || expense.repeat === "none" || expense.chargedPaise || (day === expense.date && pricedOnItsDay)) return expense.amountPaise;
-    const perUnit = rate(foreign.currency, day);
-    return perUnit ? Math.round((foreign.amountMinor / 10 ** currencyDigits(foreign.currency)) * perUnit * 100) : expense.amountPaise;
-  };
-  const value = (expense: Expense, day: string) => {
-    if (usable === "INR") return rupeesOf(expense, day);
-    if (expense.foreign?.currency === usable) return expense.foreign.amountMinor;
-    // A payment before the rates kept (over about three years back) converts at the oldest kept rate.
-    const perUnit = rate(usable, day) ?? earliest(usable)!;
-    return Math.round((rupeesOf(expense, day) / 100 / perUnit) * 10 ** digits);
-  };
+  const { currency, digits, value } = expenseConverter(shown, rates, todayLocal());
+  const usable = currency as ExpenseCurrency;
   return {
     currency: usable, digits, value,
     sum: (rows) => rows.reduce((total, row) => total + value(row.expense, row.day), 0),

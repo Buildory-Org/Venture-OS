@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { isChatAudioReady, playChatSound, prepareChatAudio } from "@/components/studio/chat-message-effects";
+import { isChatAudioReady, playAlarm, playChatSound, prepareChatAudio, type Alarm } from "@/components/studio/chat-message-effects";
 
 /**
  * WhatsApp-style alerts while Venture Studio is open: a sound, and a system banner (Windows, macOS, Linux) when the tab
@@ -15,7 +15,13 @@ const listeners = new Set<() => void>();
 let banners = (() => { try { return typeof window !== "undefined" && window.localStorage.getItem(BANNERS_KEY) === "on"; } catch { return false; } })();
 
 export type AlertPermission = NotificationPermission | "unsupported";
-export type DeviceAlert = { id: string; title: string; body: string; href: string };
+/** What it sounds like: the soft chime for messages and news, an alarm for tasks and reminders. */
+export type AlertSound = "message" | Alarm;
+export type DeviceAlert = { id: string; title: string; body: string; href: string; sound?: AlertSound };
+
+function playFor(sound: AlertSound = "message") {
+  if (sound === "message") playChatSound("alert"); else playAlarm(sound);
+}
 
 export function notificationsSupported() {
   return typeof window !== "undefined" && "Notification" in window && window.isSecureContext;
@@ -94,13 +100,13 @@ async function claim(id: string, front: boolean): Promise<boolean> {
 export async function raiseAlert(alert: DeviceAlert, open: (href: string) => void): Promise<void> {
   const front = document.visibilityState === "visible" && document.hasFocus();
   if (!await claim(alert.id, front)) return;
-  if (front) { playChatSound("alert"); return; }
+  if (front) { playFor(alert.sound); return; }
   const banner = banners && notificationPermission() === "granted";
   const registration = await notificationWorker();
   // With banners off here but push on, push shows the banner with its own sound: give it a moment, then stay quiet if it did.
   if (!banner && registration && await registration.pushManager.getSubscription().catch(() => null)) await new Promise((resolve) => window.setTimeout(resolve, 1500));
   if (await alreadyShown(registration, alert.id)) return;
-  playChatSound("alert");
+  playFor(alert.sound);
   if (!banner) return;
   // The page's own sound plays when it can; the system sound is only used when this tab can't play one yet.
   const options: NotificationOptions = { body: alert.body, tag: alert.id, icon: "/brand/icon-192.png", badge: "/brand/badge-96.png", silent: isChatAudioReady(), data: { url: alert.href } };
@@ -112,6 +118,12 @@ export async function raiseAlert(alert: DeviceAlert, open: (href: string) => voi
     const shown = new Notification(alert.title, options);
     shown.onclick = () => { window.focus(); shown.close(); open(alert.href); };
   } catch { /* The tab title count and the inbox still show it. */ }
+}
+
+/** Plays one of the sounds from the settings, so each can be heard before it's needed. */
+export async function previewSound(sound: AlertSound) {
+  await prepareChatAudio();
+  playFor(sound);
 }
 
 /** A test alert from the settings: the sound and a banner, even with the tab in front. */

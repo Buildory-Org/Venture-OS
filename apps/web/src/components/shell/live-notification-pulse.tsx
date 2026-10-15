@@ -1,24 +1,25 @@
 "use client";
 import { describeError } from "@/lib/errors";
 
-import { Select } from "@/components/ui/select";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import { Bell, X } from "@/components/ui/icons";
+import { ArrowUpRight, Bell, BellRing, Check, Play, VolumeX, X } from "@/components/ui/icons";
 import { dismissToast, toast as showToast } from "@/components/ui/toast";
-import { listLiveNotifications, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder } from "@/lib/studio-api";
-import { getNotificationUnread, notificationHref, notificationRefreshEvent, publishNotificationSnapshot, subscribeNotificationSnapshot } from "@/lib/notification-events";
+import { listLiveNotifications, markLiveNotificationsRead, readLiveNotification, snoozeLiveReminder, StudioApiError, updateLiveTask } from "@/lib/studio-api";
+import { getNotificationUnread, noticeReminderId, noticeSound, notificationHref, notificationRefreshEvent, publishNotificationSnapshot, rangText, subscribeNotificationSnapshot } from "@/lib/notification-events";
 import { isActiveChat } from "@/lib/chat-presence";
 import { raiseAlert } from "@/lib/device-alerts";
 import { useNotificationNudges } from "@/lib/use-live-realtime";
-import { prepareChatAudio } from "@/components/studio/chat-message-effects";
+import { isChatSoundBlocked, prepareChatAudio, stopAlarm } from "@/components/studio/chat-message-effects";
+import { iconButton, SnoozeMenu, startButton, type SnoozeChoice } from "@/components/studio/notification-row";
 import { MessageIsland, type IslandMessage } from "./message-island";
 import { replayAnimation } from "@/lib/motion";
 
 type Notification = Awaited<ReturnType<typeof listLiveNotifications>>[number];
-type Toast = { item: Notification; count: number };
+// `blocked`: sound is on here, but the browser held it back (nobody had clicked on the page yet).
+type Toast = { item: Notification; count: number; blocked: boolean };
 const pollMs = 15_000;
 // A tab in the background still checks now and then, in case the live connection dropped.
 const hiddenPollMs = 60_000;
@@ -27,7 +28,7 @@ const alertWindowMs = 10 * 60_000;
 const isMessage = (item: Notification) => Boolean(item.chatKind) && ["message", "channel_message", "mention"].includes(item.type);
 const TOAST_ID = "live-notification";
 const errorText = (cause: unknown) => describeError(cause, "The action failed. Please try again.");
-const reminderId = (item: Notification) => item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
+const reminderId = noticeReminderId;
 const sticky = (item: Notification) => item.type === "reminder" || item.type === "deadline_warning";
 
 /** Top-bar bell. Reads the shared inbox snapshot; the badge pops once when the unread count rises. */
@@ -133,11 +134,13 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
             // A sound and, with the tab behind, a system banner: the newest few, oldest first.
             // Only recent ones: waking a computer from sleep shouldn't replay old news.
             const recent = unseen.filter((notice) => Date.now() - new Date(notice.createdAt).getTime() < alertWindowMs);
-            for (const notice of recent.slice(0, 3).reverse()) void raiseAlert({ id: notice.id, title: notice.title, body: notice.body, href: notificationHref(notice).href }, (href) => openRef.current(href));
+            for (const notice of recent.slice(0, 3).reverse()) void raiseAlert({ id: notice.id, title: notice.title, body: notice.body, href: notificationHref(notice).href, sound: noticeSound(notice) }, (href) => openRef.current(href));
             const others = unseen.filter((item) => !isMessage(item));
             const item = others.find(sticky) ?? others[0];
             if (item) {
-              setToasts((current) => [{ item, count: others.length }, ...current].slice(0, 3));
+              // A reminder that rings again replaces its own pop-up rather than queueing behind it.
+              const same = (shown: Toast) => Boolean(item.reminderId) && shown.item.reminderId === item.reminderId;
+              setToasts((current) => [{ item, count: others.length, blocked: isChatSoundBlocked() }, ...current.filter((shown) => !same(shown))].slice(0, 3));
               setActionError(""); setSnoozed("");
             }
           }
@@ -171,6 +174,7 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
 
   const toast = toasts[0];
   const dismiss = () => {
+    stopAlarm();
     const returnFocus = toastRef.current?.contains(document.activeElement);
     setToasts((current) => current.slice(1)); setActionError(""); setSnoozed("");
     if (returnFocus) requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-notification-bell]")?.focus());
@@ -179,19 +183,32 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
   async function markRead(item: Notification) {
     setBusy(true); setActionError("");
     try {
-      await readLiveNotification(item.id);
+      // Gone means the reminder rang again and its new row took this one's place: nothing left to mark.
+      await readLiveNotification(item.id).catch((cause: unknown) => { if (!(cause instanceof StudioApiError && cause.code === "NOT_FOUND")) throw cause; });
       dismiss(); pollRef.current();
     } catch (cause) { setActionError(errorText(cause)); }
     finally { setBusy(false); }
   }
 
-  async function snooze(item: Notification, value: string) {
+  async function snooze(item: Notification, value: SnoozeChoice) {
     const id = reminderId(item);
-    if (!id || !value) return;
+    if (!id) return;
     setBusy(true); setActionError("");
     try {
-      await snoozeLiveReminder(id, value === "never" ? "never" : Number(value) as 10 | 20 | 30);
-      setSnoozed(value === "never" ? "Reminder cancelled" : `Snoozed for ${value} minutes`);
+      await snoozeLiveReminder(id, value);
+      setSnoozed(value === "never" ? "Reminder cancelled" : `Snoozed: ${value} more minutes of quiet`);
+      window.setTimeout(() => { dismiss(); pollRef.current(); }, 900);
+    } catch (cause) { setActionError(errorText(cause)); }
+    finally { setBusy(false); }
+  }
+
+  /** Starts the task a "Start:" reminder is about (which stops the reminder), and reads the notice. */
+  async function start(item: Notification) {
+    setBusy(true); setActionError("");
+    try {
+      await updateLiveTask(item.resourceId, { status: "in_progress" });
+      await readLiveNotification(item.id).catch(() => undefined);
+      setSnoozed("Started. The reminder has stopped.");
       window.setTimeout(() => { dismiss(); pollRef.current(); }, 900);
     } catch (cause) { setActionError(errorText(cause)); }
     finally { setBusy(false); }
@@ -207,11 +224,14 @@ export function LiveNotificationPulse({ userId }: { userId: string }) {
   useEffect(() => {
     if (!toast) { dismissToast(TOAST_ID); return; }
     const open = notificationHref(toast.item);
+    const rang = rangText(toast.item.repeats);
+    const eyebrow = toast.count > 1 ? `${toast.count} new notifications` : rang ? `New notification · ${rang.toLowerCase()}` : "New notification";
     showToast({ id: TOAST_ID, sticky: true, node: <aside ref={toastRef} role="status" aria-label="New in-app notification" className="rounded-xl border border-[var(--color-neutral-200)] bg-white p-4 text-left shadow-[0_12px_34px_rgba(38,38,55,.16)]">
-      <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-100)] text-[var(--color-primary-700)]"><Bell size={17} /></span><div className="min-w-0 flex-1"><p className="text-[10px] font-semibold uppercase tracking-[.1em] text-[var(--color-primary-700)]">{toast.count > 1 ? `${toast.count} new notifications` : "New notification"}</p><h2 className="mt-1 break-words text-xs font-semibold text-[var(--color-neutral-800)]">{toast.item.title}</h2><p className="mt-1 line-clamp-3 break-words text-xs leading-5 text-[var(--color-neutral-500)]">{toast.item.body}</p></div><button type="button" onClick={dismiss} aria-label="Dismiss notification" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-400)] transition-colors duration-150 hover:bg-[var(--color-neutral-100)] hover:text-[var(--color-neutral-700)]"><X size={16} /></button></div>
+      <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[var(--color-primary-100)] text-[var(--color-primary-700)]">{toast.item.type === "reminder" ? <BellRing size={17} /> : <Bell size={17} />}</span><div className="min-w-0 flex-1"><p className="text-[10px] font-semibold uppercase tracking-[.1em] text-[var(--color-primary-700)]">{eyebrow}</p><h2 className="mt-1 break-words text-xs font-semibold text-[var(--color-neutral-800)]">{toast.item.title}</h2><p className="mt-1 line-clamp-3 break-words text-xs leading-5 text-[var(--color-neutral-500)]">{toast.item.body}</p></div><button type="button" onClick={dismiss} aria-label="Close" title="Close" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--color-neutral-400)] transition-colors duration-150 hover:bg-[var(--color-neutral-100)] hover:text-[var(--color-neutral-700)]"><X size={16} /></button></div>
+      {toast.blocked && <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-4 text-[var(--color-neutral-500)]"><VolumeX size={13} aria-hidden="true" className="mt-px shrink-0" />Your browser held back the sound because nothing on this page had been clicked yet. Click anywhere on the page once to hear the next one.</p>}
       {actionError && <p role="alert" className="vso-fade-enter mt-3 text-xs text-red-700">{actionError}</p>}
       {snoozed ? <p role="status" className="vso-fade-enter mt-3 inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-[var(--color-success-surface)] px-3 text-[11px] font-semibold text-[var(--color-success-text)]">✓ {snoozed}</p>
-        : <div className="mt-3 flex flex-wrap items-center gap-2"><Link href={open.href} onClick={dismiss} className="inline-flex min-h-9 items-center rounded-lg bg-[var(--color-primary-100)] px-3 text-[11px] font-semibold text-[var(--color-primary-700)] transition-[background-color,transform] duration-150 hover:bg-[var(--color-primary-200)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]">{open.label}</Link>{reminderId(toast.item) && <Select aria-label={`Snooze ${toast.item.title}`} disabled={busy} defaultValue="" onChange={(event) => { const value = event.currentTarget.value; event.currentTarget.value = ""; void snooze(toast.item, value); }} className="min-h-9 rounded-lg border border-[var(--color-neutral-200)] bg-white px-2 text-[11px] font-semibold text-[var(--color-neutral-700)]"><option value="">Snooze…</option><option value="10">10 min</option><option value="20">20 min</option><option value="30">30 min</option><option value="never">Cancel reminder</option></Select>}<button type="button" disabled={busy} onClick={() => void markRead(toast.item)} className="min-h-9 rounded-lg px-2 text-[11px] font-semibold text-[var(--color-neutral-500)] transition-[background-color,color,transform] duration-150 hover:bg-[var(--color-neutral-100)] hover:text-[var(--color-neutral-800)] active:scale-[0.97] disabled:opacity-40">{busy ? "Marking…" : "Mark read"}</button></div>}
+        : <div className="mt-3 flex flex-wrap items-center gap-1.5">{toast.item.startable && <button type="button" disabled={busy} onClick={() => void start(toast.item)} aria-label="Start the task" title="Start the task (stops this reminder)" className={startButton}><Play size={15} aria-hidden="true" /></button>}<Link href={open.href} onClick={dismiss} aria-label={open.label} title={open.label} className={iconButton}><ArrowUpRight size={16} aria-hidden="true" /></Link>{reminderId(toast.item) && <SnoozeMenu label={`Snooze ${toast.item.body || toast.item.title}`} disabled={busy} onChoose={(minutes) => void snooze(toast.item, minutes)} />}<button type="button" disabled={busy} onClick={() => void markRead(toast.item)} aria-label="Mark read" title="Mark read" className={iconButton}><Check size={16} aria-hidden="true" /></button></div>}
     </aside> });
   });
 

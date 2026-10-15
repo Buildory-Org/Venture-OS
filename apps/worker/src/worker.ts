@@ -17,7 +17,7 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 export class Worker {
   private readonly delivery: Delivery;
   private plannedAt = 0;
-  constructor(private readonly client: MongoClient, private readonly db: Db, private readonly config: WorkerConfig, private readonly transactions: boolean) { this.delivery = new Delivery(db, config); }
+  constructor(private readonly client: MongoClient, private readonly db: Db, private readonly config: WorkerConfig, private readonly transactions: boolean) { this.delivery = new Delivery(db, config, (work) => this.transaction(work)); }
   async tick(now = new Date()): Promise<boolean> {
     if (now.getTime() - this.plannedAt >= PLAN_EVERY_MS) {
       this.plannedAt = now.getTime();

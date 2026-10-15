@@ -29,3 +29,17 @@ export function notificationHref(item: Linkable): { href: string; label: string 
   if (item.resourceType === "document") return { href: `/knowledge/live?doc=${encodeURIComponent(item.resourceId)}`, label: "Open document" };
   return { href: "/notifications/live", label: "Open inbox" };
 }
+
+/** The reminder a notice comes from, for snoozing it (older reminder notices pointed at the reminder itself). */
+export function noticeReminderId(item: { type: string; reminderId?: string; resourceType: string; resourceId: string }): string | undefined {
+  return item.type === "reminder" ? item.reminderId ?? (item.resourceType === "reminder" ? item.resourceId : undefined) : undefined;
+}
+
+/** What a notice sounds like: reminders ring like an alarm, task notices beep, messages and news chime. */
+export function noticeSound(item: { type: string; resourceType: string }): "message" | "task" | "reminder" {
+  if (item.type === "reminder") return "reminder";
+  return item.type === "assignment" || item.type === "deadline_warning" || item.resourceType === "task" ? "task" : "message";
+}
+
+/** "Rang 3 times" for a stacked reminder; empty for a single notice. */
+export const rangText = (repeats?: number) => (repeats && repeats > 1 ? `Rang ${repeats} times` : "");

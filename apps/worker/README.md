@@ -1,6 +1,6 @@
 # Worker
 
-Claims due reminders and notification outbox entries using MongoDB leases. Reminder recurrence and delivery retry are independent: unstarted task reminders repeat every 10 minutes, while failed deliveries use capped exponential backoff and become `dead` after eight attempts.
+Claims due reminders and notification outbox entries using MongoDB leases. Reminder recurrence and delivery retry are independent: unstarted task reminders repeat every 10 minutes while the task waits to be started, in proposed, accepted or to do (in review, blocked, parked, backlog or draft they stay quiet and look again a repeat later), while failed deliveries use capped exponential backoff and become `dead` after eight attempts. A reminder's rings share one inbox row: each delivered ring takes over the earlier row (ring times and count carried over) and arrives on top, unread.
 
 ```powershell
 $env:MONGODB_URI='mongodb://127.0.0.1:27018/venture_studio_dev?replicaSet=ventureStudio'

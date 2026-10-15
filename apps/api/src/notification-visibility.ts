@@ -3,8 +3,11 @@ import { authorizedDocumentFilter } from "./document-access.js";
 
 type Actor = NonNullable<Express.Request["actor"]>;
 
-/** Read only notices whose current channel scope remains visible to this member. */
-export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: Record<string, unknown> = {}, limit = 100) {
+/**
+ * Read only notices whose current channel scope remains visible to this member, leaving out the ones they removed from their inbox.
+ * A stacked reminder's ring times stay out unless asked for (`withRings`): the inbox is polled often and only shows the count.
+ */
+export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: Record<string, unknown> = {}, limit = 100, withRings = false) {
   const visible: Record<string, any>[] = [];
   let before: { createdAt: Date; _id: string } | null = null;
   const archived = actor.membership.archivedVentureIds ?? [];
@@ -12,7 +15,7 @@ export async function listVisibleNotifications(db: AppDb, actor: Actor, filter: 
   const scopedChannels = actor.membership.role === "admin" ? (archived.length ? await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ventureId: { $nin: archived } }).project({ _id: 1 }).toArray() : null) : await db.collection("channels").find({ workspaceId: actor.membership.workspaceId, ventureId: { $in: actor.membership.ventureIds }, groupId: { $in: actor.membership.groupIds } }).project({ _id: 1 }).toArray();
   const modernScope = scopedChannels ? { $or: [{ chatKind: { $ne: "channel" } }, { chatKind: "channel", chatId: { $in: scopedChannels.map((channel) => String(channel._id)) } }] } : null;
   while (visible.length < limit) {
-    const page = await db.collection("notifications").find({ workspaceId: actor.membership.workspaceId, userId: actor.id, ...filter, ...((modernScope || before) ? { $and: [...(modernScope ? [modernScope] : []), ...(before ? [{ $or: [{ createdAt: { $lt: before.createdAt } }, { createdAt: before.createdAt, _id: { $lt: before._id } }] }] : [])] } : {}) }).sort({ createdAt: -1, _id: -1 }).limit(100).toArray();
+    const page = await db.collection("notifications").find({ workspaceId: actor.membership.workspaceId, userId: actor.id, dismissedAt: { $exists: false }, ...filter, ...((modernScope || before) ? { $and: [...(modernScope ? [modernScope] : []), ...(before ? [{ $or: [{ createdAt: { $lt: before.createdAt } }, { createdAt: before.createdAt, _id: { $lt: before._id } }] }] : [])] } : {}) }).project(withRings ? {} : { rungAt: 0 }).sort({ createdAt: -1, _id: -1 }).limit(100).toArray();
     if (!page.length) break;
     before = { createdAt: page[page.length - 1]!.createdAt, _id: String(page[page.length - 1]!._id) };
     const legacyIds = page.filter((item) => !item.chatKind && item.resourceType === "message").map((item) => String(item.resourceId));

@@ -56,6 +56,7 @@ import {
   reactionUpdateSchema,
   saveUpdateSchema,
   notificationSchema,
+  notificationHistorySchema,
   notificationPreferencesSchema,
   channelNotificationLevelSchema,
   type ChannelNotificationLevel,
@@ -567,6 +568,17 @@ export async function markLiveNotificationsRead(scope: { chatKind?: "direct" | "
   const read = result && typeof result === "object" && "data" in result && result.data && typeof result.data === "object" && "read" in result.data ? result.data.read : undefined;
   if (typeof read !== "number") throw new StudioApiError("The notification response was invalid.");
   return read;
+}
+
+/** Removes a notice from my inbox (kept, not deleted; a reminder that rings again comes back on top). */
+export async function dismissLiveNotification(id: string) {
+  const result = await request(`/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: "POST" });
+  if (!result || typeof result !== "object" || !("ok" in result) || result.ok !== true) throw new StudioApiError("The notification response was invalid.");
+}
+
+/** Every time a stacked reminder rang, newest first. */
+export async function getLiveNotificationHistory(id: string) {
+  return successEnvelope(notificationHistorySchema).parse(await request(`/v1/notifications/${encodeURIComponent(id)}/history`)).data;
 }
 
 export async function readLiveNotification(id: string) {

@@ -25,6 +25,17 @@ test("starting or completing a task ends its reminder recurrence", () => {
   assert.equal(reminderTransition({ repeatMinutes: null, sequence: 0 }, null, now).state, "completed");
 });
 
+test("a task's start reminder rings only while the task waits to be started; elsewhere it stays quiet and looks again later", () => {
+  const now = new Date("2026-09-23T10:00:00.000Z");
+  for (const status of ["proposed", "accepted", "todo"]) assert.equal(reminderTransition({ repeatMinutes: 10, sequence: 4 }, { status }, now).shouldDeliver, true, status);
+  for (const status of ["review", "blocked", "parked", "backlog", "draft"]) {
+    const quiet = reminderTransition({ repeatMinutes: 10, sequence: 4 }, { status }, now);
+    assert.deepEqual([quiet.state, quiet.shouldDeliver, quiet.nextAt?.toISOString(), quiet.nextSequence], ["scheduled", false, "2026-09-23T10:10:00.000Z", 4], status);
+  }
+  // A one-time reminder on a task (from /notify) is delivered whatever the task's state.
+  assert.equal(reminderTransition({ repeatMinutes: null, sequence: 0 }, { status: "blocked" }, now).shouldDeliver, true);
+});
+
 test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempotency, and delivery retry", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   const client = new MongoClient(process.env.TEST_MONGODB_URI!);
   await client.connect();
@@ -152,6 +163,61 @@ test("real Mongo replica-set smoke: reminder claim, recurrence, outbox idempoten
     assert.equal(await worker.tick(now), true);
     assert.equal((await collection("notification_outbox").findOne({ _id: "outbox-stale-reminder" }))?.state, "cancelled");
     assert.equal(await collection("notifications").countDocuments({ outboxId: "outbox-stale-reminder" }), 0);
+  } finally {
+    await db.dropDatabase();
+    await client.close();
+  }
+});
+
+test("a reminder's rings stack into one inbox row: newest on top and unread, with every ring time; a late ring joins the newer row", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  const client = new MongoClient(process.env.TEST_MONGODB_URI!);
+  await client.connect();
+  const dbName = `venture_studio_worker_test_${process.pid}_${Date.now()}_stack`;
+  assert.match(dbName, /^venture_studio_worker_test_/);
+  const db = client.db(dbName);
+  const collection = (name: string) => db.collection<Record<string, any> & { _id: string }>(name);
+  const config = { APP_MODE: "local" as const, MONGODB_URI: process.env.TEST_MONGODB_URI!, MONGODB_DB: dbName, WORKER_ID: "worker-stack", POLL_MS: 100, EMAIL_FROM: "Venture Studio <noreply@example.invalid>", VAPID_SUBJECT: "mailto:admin@example.invalid" };
+  const start = new Date("2026-10-15T12:00:00.000Z");
+  const minutes = (count: number) => new Date(start.getTime() + count * 60_000);
+  try {
+    await collection("notification_outbox").createIndex({ idempotencyKey: 1 }, { unique: true });
+    await collection("notifications").createIndex({ outboxId: 1 }, { unique: true });
+    await collection("users").insertOne({ _id: "user-a", workspaceId: "workspace-a", status: "active", email: "a@example.invalid" });
+    await collection("tasks").insertOne({ _id: "task-a", workspaceId: "workspace-a", assigneeId: "user-a", status: "todo", deadlineRisk: false });
+    await collection("reminders").insertOne({ _id: "reminder-a", workspaceId: "workspace-a", userId: "user-a", taskId: "task-a", kind: "task_start", message: "Start: Ship it", scheduledAt: start, repeatMinutes: 10, sequence: 0, state: "scheduled", createdAt: start, updatedAt: start });
+    // Another reminder's row, and a row from before stacking for this one, read and then hidden by its person.
+    await collection("notifications").insertOne({ _id: "other", outboxId: "other", workspaceId: "workspace-a", userId: "user-a", type: "reminder", title: "Reminder", body: "Other", resourceType: "task", resourceId: "task-b", reminderId: "reminder-b", createdAt: minutes(-30) });
+    await collection("notifications").insertOne({ _id: "before", outboxId: "before", workspaceId: "workspace-a", userId: "user-a", type: "reminder", title: "Reminder", body: "Start: Ship it", resourceType: "task", resourceId: "task-a", reminderId: "reminder-a", createdAt: minutes(-10), readAt: minutes(-9), dismissedAt: minutes(-8) });
+    const worker = new Worker(client, db, config, true);
+    // Three rings, ten minutes apart, each delivered.
+    for (const at of [0, 10, 20]) { assert.equal(await worker.tick(minutes(at)), true); assert.equal(await worker.tick(minutes(at)), true); }
+    const rows = await collection("notifications").find({ reminderId: "reminder-a" }).toArray();
+    assert.equal(rows.length, 1, JSON.stringify(rows));
+    const [row] = rows;
+    assert.equal(row!.repeats, 4);
+    assert.deepEqual(row!.rungAt.map((at: Date) => at.toISOString()), [minutes(20), minutes(10), minutes(0), minutes(-10)].map((at) => at.toISOString()));
+    assert.equal(row!.firstAt.toISOString(), minutes(-10).toISOString());
+    assert.equal(row!.readAt, undefined);
+    assert.equal(row!.dismissedAt, undefined);
+    assert.equal(row!.outboxId, (await collection("notification_outbox").findOne({ idempotencyKey: "reminder:reminder-a:2" }))?._id);
+    assert.equal(await collection("notifications").countDocuments({ _id: "other" }), 1);
+    // A ring delivered late (older than the row's newest) only adds its time, once, however often it is retried.
+    await collection("notification_outbox").insertOne({ _id: "late", workspaceId: "workspace-a", userId: "user-a", type: "reminder", title: "Reminder", body: "Start: Ship it", resourceType: "reminder", resourceId: "reminder-a", reminderId: "reminder-a", idempotencyKey: "late-ring", state: "pending", attempts: 0, nextAttemptAt: minutes(5), createdAt: minutes(5), updatedAt: minutes(5) });
+    assert.equal(await worker.tick(minutes(21)), true);
+    assert.ok((await collection("notification_outbox").findOne({ _id: "late" }))?.delivery?.foldedAt, "a late ring is marked folded, so it sends no push");
+    await collection("notification_outbox").updateOne({ _id: "late" }, { $set: { state: "pending" }, $unset: { "delivery.inAppAt": "", "delivery.foldedAt": "" } });
+    assert.equal(await worker.tick(minutes(21)), true);
+    const after = await collection("notifications").find({ reminderId: "reminder-a" }).toArray();
+    assert.equal(after.length, 1);
+    assert.equal(after[0]!._id, row!._id);
+    assert.equal(after[0]!.repeats, 5);
+    assert.deepEqual(after[0]!.rungAt.map((at: Date) => at.toISOString()), [minutes(20), minutes(10), minutes(5), minutes(0), minutes(-10)].map((at) => at.toISOString()));
+    // In review the reminder goes quiet: no new ring, the row stays as it was.
+    await collection("tasks").updateOne({ _id: "task-a" }, { $set: { status: "review" } });
+    assert.equal(await worker.tick(minutes(30)), true);
+    assert.equal(await worker.tick(minutes(30)), false);
+    assert.equal((await collection("reminders").findOne({ _id: "reminder-a" }))?.scheduledAt.toISOString(), minutes(40).toISOString());
+    assert.equal((await collection("notifications").findOne({ reminderId: "reminder-a" }))?.repeats, 5);
   } finally {
     await db.dropDatabase();
     await client.close();

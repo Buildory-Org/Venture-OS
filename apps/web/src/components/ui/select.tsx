@@ -19,6 +19,8 @@ type Props = {
   id?: string;
   name?: string;
   "aria-label"?: string;
+  /** Shows only this icon on the button (its name comes from aria-label); the choices open the same way. */
+  icon?: ReactNode;
 };
 
 function optionText(node: ReactNode): string {
@@ -39,7 +41,7 @@ function choicesFrom(children: ReactNode): Choice[] {
 }
 
 /** A site-styled, single-choice select. The native required control remains for form validation. */
-export function Select({ children, value, defaultValue, onChange, className, disabled, required, id, name, "aria-label": ariaLabel }: Props) {
+export function Select({ children, value, defaultValue, onChange, className, disabled, required, id, name, "aria-label": ariaLabel, icon }: Props) {
   const choices = choicesFrom(children);
   const [internalValue, setInternalValue] = useState(defaultValue ?? choices[0]?.value ?? "");
   const selectedValue = value ?? internalValue;
@@ -143,8 +145,8 @@ export function Select({ children, value, defaultValue, onChange, className, dis
 
   return <span className={className?.includes("w-full") ? "relative block w-full min-w-0" : "relative inline-flex min-w-0"}>
     <button ref={trigger} id={id} type="button" role="combobox" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open && motion !== "closing"} aria-controls={open ? listId : undefined} aria-activedescendant={open ? `${listId}-${highlighted}` : undefined} aria-required={required || undefined} disabled={disabled} onClick={() => open && motion !== "closing" ? hide(true) : show()} onKeyDown={onKeyDown}
-      className={clsx("relative flex min-w-0 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-not-allowed disabled:opacity-50", className)} style={{ paddingRight: "2.25rem" }}>
-      <span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select…"}</span><ChevronDown size={15} aria-hidden="true" className={clsx("pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 transition-transform duration-150", open && "rotate-180")} />
+      title={icon ? ariaLabel : undefined} className={clsx("relative flex min-w-0 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 disabled:cursor-not-allowed disabled:opacity-50", icon && "justify-center", className)} style={icon ? undefined : { paddingRight: "2.25rem" }}>
+      {icon ?? <><span className="min-w-0 flex-1 truncate">{selected?.label ?? "Select…"}</span><ChevronDown size={15} aria-hidden="true" className={clsx("pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 transition-transform duration-150", open && "rotate-180")} /></>}
     </button>
     {(required || name) && <select aria-hidden="true" tabIndex={-1} name={name} required={required} value={selectedValue} onChange={() => {}} onInvalid={(event) => { event.preventDefault(); show(); trigger.current?.focus(); }} className="pointer-events-none absolute h-px w-px opacity-0">{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.text}</option>)}</select>}
     {open && portalHost && createPortal(<div ref={menu} id={listId} role="listbox" aria-label={ariaLabel ?? "Options"} data-side={above ? "top" : "bottom"} data-align="left" data-state={motion === "closing" ? "closing" : undefined} className={clsx("thin-scroll fixed z-[120] overflow-y-auto rounded-xl border border-neutral-200 bg-white p-1 text-neutral-800 shadow-e4", motion !== "none" && "vso-enter-popover")} style={position}>

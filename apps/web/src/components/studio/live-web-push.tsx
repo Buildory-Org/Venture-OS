@@ -8,9 +8,10 @@ import { existingPushRegistration, pushSupported, turnOnPush } from "@/lib/web-p
 import clsx from "clsx";
 import { Notice, secondaryClass } from "@/components/studio/primitives";
 import { toast } from "@/components/ui/toast";
-import { askNotificationPermission, notificationsSupported, setAlertBanners, testAlert, useAlertBanners } from "@/lib/device-alerts";
+import { askNotificationPermission, notificationsSupported, previewSound, setAlertBanners, testAlert, useAlertBanners, type AlertSound } from "@/lib/device-alerts";
 import { prepareChatAudio, setChatSoundMuted, useChatSoundMuted } from "@/components/studio/chat-message-effects";
 
+const SOUNDS: [AlertSound, string, string][] = [["message", "Message", "The chime for messages and news"], ["task", "Task", "The short beep for task notices"], ["reminder", "Reminder", "The alarm for reminders; click anywhere to stop it"]];
 type PushState = "checking" | "unavailable" | "unsupported" | "ready" | "enabled" | "error";
 const errorText = (cause: unknown) => describeError(cause, "Notifications could not be updated.");
 
@@ -117,7 +118,8 @@ export function LiveWebPush({ preferenceEnabled }: { preferenceEnabled?: boolean
     <div className="flex items-start gap-2"><span className="relative mt-0.5 shrink-0"><BellRing size={17} className="text-primary-700" /><span aria-hidden="true" className={clsx("absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-white transition-[background-color,transform] duration-300", permission === "granted" ? "scale-100 bg-success" : permission === "denied" ? "scale-100 bg-danger" : "scale-0 bg-neutral-300")} /></span><div><p className="text-sm font-semibold text-neutral-800">Alerts on this device</p><p role="status" className="mt-1 text-xs leading-5 text-neutral-500">{status}</p></div></div>
     <div className="space-y-2">
       <SwitchRow label="Banner when a message arrives" detail="While Venture Studio is open in another tab or minimised." checked={banners.active} disabled={!notificationsSupported() || permission === "denied"} onChange={(next) => void changeBanners(next)} />
-      <SwitchRow label="Play a sound" detail="For new messages and alerts while the site is open." checked={!muted} onChange={(next) => { setChatSoundMuted(!next); if (next) prepareChatAudio(); }} />
+      <SwitchRow label="Play a sound" detail="While the site is open: messages chime, task notices beep, and reminders ring like an alarm until you click (ten seconds at most)." checked={!muted} onChange={(next) => { setChatSoundMuted(!next); if (next) prepareChatAudio(); }} />
+      <div data-open={!muted} className="vso-collapse"><div><div className="flex flex-wrap items-center gap-1.5 px-1 pt-0.5"><span className="mr-1 text-xs font-semibold text-neutral-500">Hear:</span>{SOUNDS.map(([sound, label, hint]) => <button key={sound} type="button" onClick={() => void previewSound(sound)} title={hint} className="min-h-8 rounded-lg border border-neutral-200 bg-white px-2.5 text-xs font-semibold text-neutral-700 transition-[background-color,transform] duration-150 hover:bg-neutral-50 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">{label}</button>)}</div></div></div>
       <SwitchRow label="Also when Venture Studio is closed" detail={busy ? (push === "enabled" ? "Turning off…" : "Turning on…") : pushDetail} checked={push === "enabled"} disabled={busy || !["ready", "enabled"].includes(push) || permission === "denied"} onChange={(next) => void (next ? enablePush() : disablePush())} />
     </div>
     <div data-open={preferenceEnabled === false && push === "enabled"} className="vso-collapse"><div><p className="text-xs leading-5 text-warning-text">&ldquo;Push when the site is closed&rdquo; is off in the preferences above, so nothing is pushed to this device. Turn it on and save.</p></div></div>

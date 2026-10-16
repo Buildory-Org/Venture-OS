@@ -158,6 +158,8 @@ export type Verdict = z.infer<typeof verdictSchema>;
 
 // Drafts: written (usually by Claude), reviewed in a separate pass, then sent by a person.
 export const DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes", "sent", "vetoed", "discarded"] as const;
+/** The statuses a draft can still change from (sent, vetoed and discarded end it). */
+export const OPEN_DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes"] as const satisfies readonly (typeof DRAFT_STATUSES)[number][];
 export const draftStatusSchema = z.enum(DRAFT_STATUSES);
 export const draftChannelSchema = z.enum(["email", "whatsapp", "call_opener", "linkedin", "instagram"]);
 /**

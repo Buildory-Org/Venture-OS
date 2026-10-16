@@ -12,6 +12,9 @@
 // A lock still "sending" two minutes after it was taken belongs to a send whose process died (or whose bookkeeping failed): it reads as
 // uncertain, and a person settles it the same way. Every answer is kept on the draft (`sendLog`, the last ten) so the same requestId gets
 // the first answer again, and a second request while the lock is held is refused. The provider never touches the database.
+// The send's own bookkeeping (the lock, "sending", failed, uncertain, "It didn't go", a claim given back) never moves the draft's `updatedAt`:
+// that is the version the person read (`expectedUpdatedAt`), and only an edit, a review, an approval or a change of status makes a new one.
+// A send that failed is retried, or marked sent by hand, with the version the person read.
 import { randomUUID } from "node:crypto";
 import type { ClientSession } from "mongodb";
 import type { ErrorCode } from "@venture-studio/contracts";
@@ -20,7 +23,7 @@ import { AppError } from "../../errors.js";
 import { actorFor } from "../../middleware.js";
 import { forbidClaude } from "../access.js";
 import { auditSales, settingsFor, type SalesCtx } from "../ctx.js";
-import { changedSince, draftChanged, expectedVersion, sendBlocker } from "../drafts.js";
+import { changedSince, draftChanged, expectedVersion, isOpenDraft, sendBlocker } from "../drafts.js";
 import { applyActivity, claimSendSlot, closeOtherVersions, defined, loadLead, markHandled, payloadHash, requireLeadEditor, versionBlocker } from "../leads.js";
 import { calendarOf } from "../settings.js";
 import { hasCountryCode, normalizePhone } from "../suppression.js";
@@ -97,7 +100,7 @@ export async function flipStaleSend(db: AppDb, draft: AppDocument, now = new Dat
   const delivery = defined({ state: "uncertain", at: now, accountId: lock.accountId ?? draft.delivery?.accountId, to: draft.delivery?.to, error: UNCONFIRMED });
   const flipped = await db.collection("sales_drafts").findOneAndUpdate(
     { _id: draft._id, "sendLock.requestId": lock.requestId, "delivery.state": "sending" },
-    { $set: { delivery, updatedAt: now }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
+    { $set: { delivery }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
     { returnDocument: "after" },
   );
   return flipped ?? (await db.collection("sales_drafts").findOne({ _id: draft._id })) ?? draft;
@@ -158,9 +161,19 @@ function targetFrom(lead: AppDocument, channel: SendChannel, contact: Contact | 
   return named(contact.externalUserId);
 }
 
-/** The lead's conversations linked on these accounts, newest first. */
-const contactsOf = (ctx: Pick<SalesCtx, "db" | "workspaceId">, leadIds: string[], accountIds: string[]) => ctx.db.collection("sales_channel_contacts")
-  .find({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, accountId: { $in: accountIds } }, { projection: { externalUserId: 1, username: 1, accountId: 1, leadId: 1 } }).sort({ updatedAt: -1, _id: 1 }).limit(2_000).toArray() as Promise<Contact[]>;
+/**
+ * The conversation a send to each lead on each account uses (linkedContact), for these leads and accounts: every link of theirs is read (no
+ * cap, so a lead with many links, or a long list, never loses the one that decides), newest first. The send (recipientFor) and the drafts'
+ * `sendTarget` (sendTargetsFor) both go through it, so they always agree.
+ */
+async function linkedContactsFor(ctx: Pick<SalesCtx, "db" | "workspaceId">, leadIds: string[], accountIds: string[]): Promise<(leadId: string, accountId: string, channel: SendChannel) => Contact | undefined> {
+  const rows = leadIds.length && accountIds.length ? await ctx.db.collection("sales_channel_contacts")
+    .find({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, accountId: { $in: accountIds } }, { projection: { externalUserId: 1, username: 1, accountId: 1, leadId: 1 } }).sort({ updatedAt: -1, _id: 1 }).toArray() as Contact[] : [];
+  const pair = (leadId: unknown, accountId: unknown) => JSON.stringify([String(leadId), String(accountId)]);
+  const byPair = new Map<string, Contact[]>();
+  for (const row of rows) { const key = pair(row.leadId, row.accountId); const list = byPair.get(key); if (list) list.push(row); else byPair.set(key, [row]); }
+  return (leadId, accountId, channel) => linkedContact(byPair.get(pair(leadId, accountId)) ?? [], channel);
+}
 
 /**
  * The recipient: email, the lead's first email route; WhatsApp, the number the lead wrote from on this account (a linked conversation), else
@@ -169,14 +182,13 @@ const contactsOf = (ctx: Pick<SalesCtx, "db" | "workspaceId">, leadIds: string[]
  * is missing.
  */
 export async function recipientFor(ctx: SalesCtx, account: AppDocument, lead: AppDocument, channel: SendChannel): Promise<{ to: string; toName?: string }> {
-  const contact = channel === "email" ? undefined : linkedContact(await contactsOf(ctx, [String(lead._id)], [String(account._id)]), channel);
+  const contact = channel === "email" ? undefined : (await linkedContactsFor(ctx, [String(lead._id)], [String(account._id)]))(String(lead._id), String(account._id), channel);
   const target = targetFrom(lead, channel, contact);
   if ("refused" in target) throw new AppError(409, "CONFLICT", target.refused);
   return target;
 }
 
 export type SendTarget = { channel: SendChannel; to: string };
-const TARGET_STATUSES: ReadonlySet<unknown> = new Set(["draft", "in_review", "ready", "needs_changes"]);
 
 /**
  * Where a send through a connected account would go, for a list of open drafts with their leads (`sendTarget` on the drafts the API returns):
@@ -186,7 +198,7 @@ const TARGET_STATUSES: ReadonlySet<unknown> = new Set(["draft", "in_review", "re
  * An Instagram target is shown as the conversation's @handle when it is known (an Instagram-scoped id means nothing to people).
  */
 export async function sendTargetsFor(ctx: SalesCtx, rows: { draft: AppDocument; lead: AppDocument }[]): Promise<(draft: AppDocument) => { sendTarget?: SendTarget }> {
-  const wanted = rows.filter(({ draft }) => isSendChannel(draft.channel) && TARGET_STATUSES.has(draft.status));
+  const wanted = rows.filter(({ draft }) => isSendChannel(draft.channel) && isOpenDraft(draft));
   const viaVenture = wanted.filter(({ draft }) => draft.channel !== "email");
   const ventureIds = [...new Set(viaVenture.map(({ lead }) => String(lead.ventureId)))];
   const accounts = ventureIds.length ? await ctx.db.collection(ACCOUNTS).find(
@@ -196,12 +208,12 @@ export async function sendTargetsFor(ctx: SalesCtx, rows: { draft: AppDocument; 
   const accountFor = (ventureId: string, kind: SendChannel) => chooseSendAccount(accounts.filter((account) => account.kind === kind && canUseAccount(ctx.actor, account, ventureId)), ventureId);
   const picked = new Map(viaVenture.map(({ draft, lead }) => [String(draft._id), accountFor(String(lead.ventureId), draft.channel as SendChannel)]));
   const accountIds = [...new Set([...picked.values()].filter((account): account is AppDocument => Boolean(account)).map((account) => String(account._id)))];
-  const contacts = accountIds.length ? await contactsOf(ctx, [...new Set(viaVenture.map(({ lead }) => String(lead._id)))], accountIds) : [];
+  const contactOf = await linkedContactsFor(ctx, [...new Set(viaVenture.map(({ lead }) => String(lead._id)))], accountIds);
   const targets = new Map<string, SendTarget>();
   for (const { draft, lead } of wanted) {
     const channel = draft.channel as SendChannel;
     const account = picked.get(String(draft._id));
-    const contact = account ? linkedContact(contacts.filter((row) => row.accountId === String(account._id) && row.leadId === String(lead._id)), channel) : undefined;
+    const contact = account ? contactOf(String(lead._id), String(account._id), channel) : undefined;
     const target = targetFrom(lead, channel, contact);
     if ("refused" in target) continue;
     const handle = channel === "instagram" && typeof contact?.username === "string" && contact.username.trim() ? `@${contact.username.trim().replace(/^@/, "")}` : undefined;
@@ -439,7 +451,7 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   const sending = defined({ state: "sending", at: now, accountId, to: shownTo(channel, target.to) });
   const before = await drafts.findOneAndUpdate(
     { _id: draft._id, workspaceId: ctx.workspaceId, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt) },
-    { $set: { sendLock: lock, delivery: sending, updatedAt: now }, $inc: { sendAttempts: 1 } },
+    { $set: { sendLock: lock, delivery: sending }, $inc: { sendAttempts: 1 } },
     { returnDocument: "before" },
   );
   if (!before) {
@@ -450,15 +462,13 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
     if (current && current.status !== "sent" && changedSince(current, input.expectedUpdatedAt)) throw draftChanged();
     throw new AppError(409, "CONFLICT", "This draft was already sent, or changed: reload it");
   }
-  const claimed: AppDocument = { ...before, sendLock: lock, delivery: sending, updatedAt: now, sendAttempts: Number(before.sendAttempts ?? 0) + 1 };
+  const claimed: AppDocument = { ...before, sendLock: lock, delivery: sending, sendAttempts: Number(before.sendAttempts ?? 0) + 1 };
   const attempt = Number(claimed.sendAttempts);
-  // The draft as it was before the claim (nothing went out): its earlier delivery state and its `updatedAt` come back, so the version the
-  // person read is still the one they can send. `updatedAt` only when it is still the claim's: a change made meanwhile keeps its own.
-  const giveBack = () => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, [
-    { $set: { updatedAt: { $cond: [{ $eq: ["$updatedAt", now] }, before.updatedAt, "$updatedAt"] }, ...(before.delivery ? { delivery: { $literal: before.delivery } } : {}) } },
-    { $unset: before.delivery ? ["sendLock"] : ["sendLock", "delivery"] },
-  ]);
-  const unlock = async (set: Record<string, unknown>, extra: Record<string, unknown> = {}) => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, { $unset: { sendLock: "" }, $set: { ...set, updatedAt: new Date() }, ...extra });
+  // The draft as it was before the claim (nothing went out): its earlier delivery state comes back (its `updatedAt` never moved), so the
+  // version the person read is still the one they can send.
+  const giveBack = () => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, before.delivery ? { $set: { delivery: before.delivery }, $unset: { sendLock: "" } } : { $unset: { sendLock: "", delivery: "" } });
+  // A send that didn't go: the lock comes off and the delivery says why; `updatedAt` stays the version the person read, so a retry with it goes.
+  const unlock = async (set: Record<string, unknown>, extra: Record<string, unknown> = {}) => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, { $unset: { sendLock: "" }, $set: set, ...extra });
 
   // Then one of the day's sends (the venture's cap per person and channel); refused when used up, and the draft is given back.
   let release: () => Promise<void>;
@@ -491,7 +501,7 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
 
   const markUncertain = async (error: string) => {
     await drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, {
-      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }), updatedAt: at },
+      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }) },
       $push: logPush({ requestId: input.requestId, outcome: "uncertain", error, attempt, at }),
     });
     await auditSales(ctx, "sales.draft.send_uncertain", "draft", String(draft._id), ventureId, { channel, attempt });
@@ -563,7 +573,7 @@ export async function settleDelivery(ctx: SalesCtx, draft: AppDocument, lead: Ap
   if (outcome === "not_sent") {
     const changed = await drafts.findOneAndUpdate(
       { _id: current._id, workspaceId: ctx.workspaceId, "sendLock.requestId": lock.requestId, "delivery.state": "uncertain" },
-      { $unset: { sendLock: "" }, $set: { delivery: { state: "failed", at: now, ...(accountId ? { accountId } : {}), error: `Not sent (confirmed by ${ctx.actor.name || "a teammate"})` }, updatedAt: now } },
+      { $unset: { sendLock: "" }, $set: { delivery: { state: "failed", at: now, ...(accountId ? { accountId } : {}), error: `Not sent (confirmed by ${ctx.actor.name || "a teammate"})` } } },
       { returnDocument: "after" },
     );
     if (!changed) throw new AppError(409, "CONFLICT", "This draft changed: reload it");

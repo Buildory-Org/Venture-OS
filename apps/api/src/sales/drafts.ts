@@ -1,7 +1,7 @@
 // Draft state machine: draft -> in_review -> ready | needs_changes; edits return to in_review; sent, vetoed and discarded end it.
 // Written by Claude or a person, reviewed in a separate pass, sent by a person (docs/sales-dealflow.md sections 1 and 5). One exception: a
 // reply a person writes in the app is ready at once, approved by them (`isOwnReply`), and their edits keep it ready.
-import { PRE_CONTACT_STAGES } from "@venture-studio/contracts";
+import { OPEN_DRAFT_STATUSES, PRE_CONTACT_STAGES } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import type { Via } from "./access.js";
@@ -28,9 +28,24 @@ export function firstMessageStillDue(stage: unknown, activities: { kind?: unknow
   return stage === "contacted" && sent.length > 0;
 }
 
-/** Statuses a draft can still change from. */
-export const OPEN_DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes"] as const;
-export const isOpenDraft = (draft: AppDocument) => (OPEN_DRAFT_STATUSES as readonly string[]).includes(String(draft.status));
+/** A draft that can still change (OPEN_DRAFT_STATUSES: not sent, vetoed or discarded). */
+export const isOpenDraft = (draft: Record<string, unknown>) => (OPEN_DRAFT_STATUSES as readonly unknown[]).includes(draft.status);
+
+/** A draft's channel and purpose in the plain words the API and Claude's tools use in their messages. */
+export const CHANNEL_WORDS: Readonly<Record<string, string>> = { email: "email", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram", call_opener: "call opener" };
+export const PURPOSE_WORDS: Readonly<Record<string, string>> = { first_touch: "first message", follow_up: "follow-up", reply: "reply", proposal: "proposal", other: "message" };
+/** "an email", "a WhatsApp", "a call opener". */
+export const channelWithArticle = (channel: unknown) => { const word = CHANNEL_WORDS[String(channel)] ?? String(channel); return `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`; };
+
+/**
+ * A person's decision against a lead's WhatsApp first message: they vetoed its WhatsApp version, or discarded it themselves (`discardedBy`).
+ * A version a rule closed (`closedReason`: another version went out) or discarded (do not contact, the lead closed: no `discardedBy`) is no
+ * decision. A decided lead gets no WhatsApp version suggested, and Claude writes none (a person still can, in the app). `decidedWhatsapp` is
+ * the same rule as a filter on `sales_drafts`.
+ */
+export const isWhatsappDecided = (draft: Record<string, unknown>) =>
+  draft.purpose === "first_touch" && draft.channel === "whatsapp" && (draft.status === "vetoed" || (draft.status === "discarded" && typeof draft.discardedBy === "string" && draft.discardedBy.length > 0 && !draft.closedReason));
+export const decidedWhatsapp = { purpose: "first_touch", channel: "whatsapp", $or: [{ status: "vetoed" }, { status: "discarded", discardedBy: { $type: "string", $ne: "" }, closedReason: null }] } as const;
 
 /**
  * A reply a person wrote in the app themselves: ready without Claude's review, approved by that person (`personApproval.own`). A person's

@@ -26,6 +26,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { BSON, MongoClient, type Db, type Document } from "mongodb";
 import { mongoHosts } from "./import-dealflow.js";
+import { OPEN_DRAFT_STATUSES } from "@venture-studio/contracts";
 import { localDay } from "../src/sales/workdays.js";
 
 const WORKSPACE_ID = "workspace-studio";
@@ -33,7 +34,7 @@ const NEVER_WRITE = new Set(["admin", "config", "local", "laxmi_agro", "library_
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 export const PARKED_TAG = "old-import-parked";
 const IMPORT_SYSTEM = "dealflow-sqlite";
-const OPEN_DRAFT = ["draft", "in_review", "ready", "needs_changes"];
+const OPEN_DRAFT = [...OPEN_DRAFT_STATUSES];
 const PRE_CONTACT = new Set(["identified", "researched"]);
 
 /**

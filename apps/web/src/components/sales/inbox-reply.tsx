@@ -33,8 +33,8 @@ function replySubject(activity: Activity, activities: readonly Activity[] | null
 /**
  * The reply box: the channels this lead can be answered on (the others named with the reason), the text, where it goes out from, and two
  * buttons. "Save and send" saves it ready (the person's own approval) and opens its send step; "Ask Claude to check it first" saves it for
- * Claude's review in another chat. `pending`: this message's drafts still waiting for a review, replaced (discarded) by the new one. That
- * discard is only a convenience: when one reply to a message goes out, the API closes the others itself ("Closed: another reply went out").
+ * Claude's review in another chat. `pending`: this message's drafts still waiting for a review, replaced by the new one: the API discards the
+ * replies to this message in the same step (one open reply per message), and this box discards the older ones that name no message.
  */
 export function ReplyComposer({ lead, activity, activities, pending, onSaved, onCancel }: {
   lead: ComposerLead; activity: Activity; activities: readonly Activity[] | null; pending: readonly Draft[];
@@ -73,9 +73,9 @@ export function ReplyComposer({ lead, activity, activities, pending, onSaved, on
     setBusy(check ? "check" : "send"); setError("");
     try {
       const draft = await createDraft(lead.id, { channel, purpose: "reply", inReplyTo: activity.id, body, ...(channel === "email" && subject.trim() ? { subject: subject.trim() } : {}), ...(check ? { checkByClaude: true } : {}) });
-      // The new reply replaces the ones still waiting for a review, so they leave the list now (a convenience: only one answer goes out,
-      // and the API closes the others when one is sent). A discard that fails changes nothing.
-      await Promise.all(pending.map((other) => discardDraft(other.id).catch(() => undefined)));
+      // The new reply replaces the ones still waiting for a review. The API discarded the replies to this message with it; an older draft
+      // that names no message (written before replies did) is discarded here. A discard that fails changes nothing.
+      await Promise.all(pending.filter((other) => !other.inReplyTo).map((other) => discardDraft(other.id).catch(() => undefined)));
       onSaved(draft, !check);
     } catch (cause) { setError(describeError(cause, "Could not save the reply. Try again.")); }
     finally { setBusy(""); }

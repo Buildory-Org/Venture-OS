@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { OPEN_DRAFT_STATUSES } from "@venture-studio/contracts";
 import { Check, Inbox, Info, Mail, Sparkles } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Panel } from "@/components/studio/primitives";
@@ -11,7 +12,7 @@ import { AskClaude } from "@/components/sales/ask-claude";
 import { ago, approvalOf, CHANNEL_ICON, CHANNEL_LABEL, ChannelTile, kbdClass, PURPOSE_LABEL, Segmented, typingTarget, useIsDesktop, useQueryParam, useSalesLoad, useVentureSettings } from "@/components/sales/draft-shared";
 import { useSalesShell } from "@/components/sales/sales-context";
 
-const OPEN_STATUSES = "draft,in_review,ready,needs_changes";
+const OPEN_STATUSES = OPEN_DRAFT_STATUSES.join(",");
 const preview = (draft: ReviewDraft) => (draft.subject || draft.body).replace(/\s+/g, " ").trim();
 type SectionKey = "review" | "approve" | "ready" | "changes" | "sent";
 /** One lead in the list: its versions (an email and a WhatsApp version of the same message), and the one to act on first. */

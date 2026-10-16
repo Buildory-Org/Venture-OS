@@ -2,12 +2,12 @@
 // the draft queues. Filters run in MongoDB; the few rules that need several collections (drafts and their plays) run in code.
 import type { Document } from "mongodb";
 import type { z } from "zod";
-import { EXIT_STAGES, PRE_CONTACT_STAGES, SALES_STAGES, VERSIONED_DRAFT_PURPOSES, WON_STAGES, LEGACY_STAGE_MAP, type leadFacetsQuerySchema, type leadListQuerySchema } from "@venture-studio/contracts";
+import { EXIT_STAGES, OPEN_DRAFT_STATUSES, PRE_CONTACT_STAGES, SALES_STAGES, VERSIONED_DRAFT_PURPOSES, WON_STAGES, LEGACY_STAGE_MAP, type leadFacetsQuerySchema, type leadListQuerySchema } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { canSeeVenture, ventureScope } from "./access.js";
 import type { SalesCtx } from "./ctx.js";
-import { MESSAGE_KINDS, OPEN_DRAFT_STATUSES, approvalNeed, canSendNow, needsPersonApproval } from "./drafts.js";
+import { MESSAGE_KINDS, approvalNeed, canSendNow, decidedWhatsapp, isOpenDraft, needsPersonApproval } from "./drafts.js";
 import { sendTargetsFor, shownSendState } from "./channels/dispatch.js";
 import { settingsFor } from "./ctx.js";
 import { leadCard, leadJson, leadSummary, present, whyFor } from "./present.js";
@@ -204,7 +204,7 @@ type Version = { id: string; channel: string; status: string };
  * when the list holds only one of them. Other drafts get nothing. One query for the whole list.
  */
 export async function versionsOf(ctx: Pick<SalesCtx, "db" | "workspaceId">, rows: AppDocument[]): Promise<(draft: AppDocument) => { otherVersions?: Version[] }> {
-  const versioned = (draft: AppDocument) => (VERSIONED_DRAFT_PURPOSES as readonly unknown[]).includes(draft.purpose) && draft.channel !== "call_opener" && (OPEN_DRAFT_STATUSES as readonly unknown[]).includes(draft.status);
+  const versioned = (draft: AppDocument) => (VERSIONED_DRAFT_PURPOSES as readonly unknown[]).includes(draft.purpose) && draft.channel !== "call_opener" && isOpenDraft(draft);
   const leadIds = [...new Set(rows.filter(versioned).map((draft) => String(draft.leadId)))];
   const open = leadIds.length ? await ctx.db.collection("sales_drafts").find(
     { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, purpose: { $in: [...VERSIONED_DRAFT_PURPOSES] }, status: { $in: [...OPEN_DRAFT_STATUSES] }, channel: { $ne: "call_opener" } },
@@ -229,7 +229,7 @@ async function approvalContext(ctx: SalesCtx, rows: AppDocument[]) {
 export async function listDrafts(ctx: SalesCtx, query: { ventureId?: string | undefined; status?: string | undefined; owner?: string | undefined; limit: number }) {
   const scope = ventureScope(ctx.actor, query.ventureId);
   if (!scope) return [];
-  const statuses = query.status ? query.status.split(",").map((item) => item.trim()).filter(Boolean) : ["draft", "in_review", "ready", "needs_changes"];
+  const statuses = query.status ? query.status.split(",").map((item) => item.trim()).filter(Boolean) : [...OPEN_DRAFT_STATUSES];
   const owner = ownerOf(ctx, query.owner);
   const rows = await ctx.db.collection("sales_drafts").aggregate<DraftRow>([
     { $match: { workspaceId: ctx.workspaceId, status: { $in: statuses }, ...scope } },
@@ -257,51 +257,75 @@ export async function getDraftWithLead(ctx: SalesCtx, id: string) {
 // ---- What Claude can write next -------------------------------------------------------------------------------------------
 
 /**
- * Leads whose first message waits as an email only although they opted in to WhatsApp, so Claude writes the WhatsApp version for the person
- * to choose from (sending one closes the other): an open email first message, no open WhatsApp one and no first message sent yet, on a lead
- * Claude recommended (not waiting for a person's decision, not on the do-not-contact list) in a venture that uses WhatsApp, whose first message
- * is still due (before first contact, or replied after a yes-to-WhatsApp call, with no message either way: firstMessageStillDue). `leadFilter`
- * is the caller's filter on the leads (workspace, ventures, owner, offer). Opted-in leads are few, so they are read first and their drafts
- * after (by the drafts' lead index). One row per lead, oldest email first; `total` counts them all. A lead whose only email bounced has moved
- * to contacted and is not listed: Claude may still write it a new version (firstMessageStillDue), but the lists don't suggest it.
+ * The leads whose first message waits as an email only although they opted in to WhatsApp, so Claude writes the WhatsApp version for the
+ * person to choose from (sending one closes the other), as the first stages of a pipeline on `opportunities`: an open email first message,
+ * no WhatsApp one (open, or one a person vetoed or discarded: decidedWhatsapp, "no WhatsApp for them") and no first message sent yet, on a
+ * lead Claude recommended (not waiting for a person's decision, not on the do-not-contact list) whose first message is still due (before
+ * first contact, or replied after a yes-to-WhatsApp call, with no message either way: firstMessageStillDue). A version a rule closed (another
+ * one went out) or discarded (the lead closed, do not contact) is no decision. `leadFilter` is the caller's filter on the leads (workspace,
+ * ventures, owner, offer); `only` narrows it further. Opted-in leads are few: they are matched first, then their first messages and their
+ * messages are looked up by the drafts' and activities' lead indexes. The venture's allowed channels are applied by the callers.
  */
-export async function whatsappVersionsToWrite(ctx: SalesCtx, leadFilter: Document, limit: number): Promise<{ total: number; rows: { lead: AppDocument; draft: AppDocument }[] }> {
-  const leads = await ctx.db.collection("opportunities").find(
-    { ...leadFilter, whatsappOptIn: { $ne: null }, doNotContact: { $ne: true }, needsYou: { $ne: true }, "verdict.decision": "recommend", stage: { $in: [...PRE_CONTACT_STAGES, "replied"] } },
-    // Only what the lists show (Daybreak's brief and opt-in, the Overview's count): never the lead's evidence, routes or notes.
-    { projection: { ventureId: 1, offerId: 1, companyName: 1, contactName: 1, city: 1, stage: 1, ownerId: 1, whatsappOptIn: 1 } },
-  ).limit(5_000).toArray();
-  if (!leads.length) return { total: 0, rows: [] };
-  const leadIds = leads.map((lead) => String(lead._id));
-  const [drafts, talked] = await Promise.all([
-    ctx.db.collection("sales_drafts").find(
-      { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, purpose: "first_touch", status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } },
-      { projection: { leadId: 1, channel: 1, status: 1, subject: 1, body: 1, createdAt: 1 } },
-    ).sort({ createdAt: 1, _id: 1 }).toArray(),
+function whatsappVersionLeads(ctx: SalesCtx, leadFilter: Document, project: Document, only?: Document): Document[] {
+  // `$type: "object"` (an opt-in is always one) lets the opted-in leads index answer it.
+  const leads: Document = { ...leadFilter, whatsappOptIn: { $type: "object" }, doNotContact: { $ne: true }, needsYou: { $ne: true }, "verdict.decision": "recommend", stage: { $in: [...PRE_CONTACT_STAGES, "replied"] } };
+  return [
+    { $match: only ? { $and: [leads, only] } : leads },
+    { $project: project },
+    { $lookup: { from: "sales_drafts", localField: "_id", foreignField: "leadId", as: "firsts", pipeline: [
+      { $match: { workspaceId: ctx.workspaceId, purpose: "first_touch", $or: [{ status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } }, decidedWhatsapp] } },
+      { $project: { channel: 1, status: 1, createdAt: 1 } },
+    ] } },
     // A message sent to the lead, or anything from it: the conversation has started, so the next message is not a first one.
-    ctx.db.collection("sales_activities").distinct("leadId", { workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, $or: [{ direction: "in" }, { direction: "out", kind: { $in: [...MESSAGE_KINDS] } }] }),
-  ]);
-  const started = new Set(talked.map(String));
-  const byLead = new Map<string, AppDocument[]>();
-  for (const draft of drafts) byLead.set(String(draft.leadId), [...(byLead.get(String(draft.leadId)) ?? []), draft]);
-  const rows: { lead: AppDocument; draft: AppDocument }[] = [];
-  for (const lead of leads) {
-    const own = byLead.get(String(lead._id)) ?? [];
-    const email = own.find((draft) => draft.channel === "email" && draft.status !== "sent");
-    // A WhatsApp version already waiting, or a first message already sent (one goes out, ever): nothing to write.
-    if (!email || started.has(String(lead._id)) || own.some((draft) => draft.status === "sent" || draft.channel === "whatsapp")) continue;
-    if ((await settingsFor(ctx, String(lead.ventureId))).allowedChannels.includes("whatsapp")) rows.push({ lead, draft: email });
-  }
-  rows.sort((a, b) => new Date(a.draft.createdAt).getTime() - new Date(b.draft.createdAt).getTime() || String(a.draft._id).localeCompare(String(b.draft._id)));
-  return { total: rows.length, rows: rows.slice(0, limit) };
+    { $lookup: { from: "sales_activities", localField: "_id", foreignField: "leadId", as: "talked", pipeline: [
+      { $match: { workspaceId: ctx.workspaceId, $or: [{ direction: "in" }, { direction: "out", kind: { $in: [...MESSAGE_KINDS] } }] } }, { $limit: 1 }, { $project: { _id: 1 } },
+    ] } },
+    { $match: { talked: { $size: 0 }, firsts: { $elemMatch: { channel: "email", status: { $in: [...OPEN_DRAFT_STATUSES] } } }, "firsts.channel": { $ne: "whatsapp" }, "firsts.status": { $ne: "sent" } } },
+  ];
 }
 
-/** Recommended leads approved for contact (not waiting for a person, not on the do-not-contact list) with no first message written or sent yet (a call opener is a script, not a message). */
+/** How many leads whatsappVersionLeads finds in the ventures that use WhatsApp (their sales settings), and those ventures. Counts only: no rows. */
+async function whatsappVersionTotal(ctx: SalesCtx, leadFilter: Document): Promise<{ total: number; ventureIds: string[] }> {
+  const perVenture = await ctx.db.collection("opportunities").aggregate<{ _id: string; n: number }>([...whatsappVersionLeads(ctx, leadFilter, { ventureId: 1 }), { $group: { _id: "$ventureId", n: { $sum: 1 } } }]).toArray();
+  const using = (await Promise.all(perVenture.map(async (row) => ((await settingsFor(ctx, String(row._id))).allowedChannels.includes("whatsapp") ? row : undefined)))).filter((row): row is { _id: string; n: number } => Boolean(row));
+  return { total: using.reduce((sum, row) => sum + row.n, 0), ventureIds: using.map((row) => String(row._id)) };
+}
+
+/**
+ * Daybreak's "WhatsApp versions to write" (whatsappVersionLeads, in the ventures that use WhatsApp): one row per lead with its email first
+ * message, oldest email first, `limit` rows; `total` counts them all. A lead whose only email bounced has moved to contacted and is not
+ * listed: Claude may still write it a new version (firstMessageStillDue), but the lists don't suggest it.
+ */
+export async function whatsappVersionsToWrite(ctx: SalesCtx, leadFilter: Document, limit: number): Promise<{ total: number; rows: { lead: AppDocument; draft: AppDocument }[] }> {
+  const { total, ventureIds } = await whatsappVersionTotal(ctx, leadFilter);
+  if (!total || limit <= 0) return { total, rows: [] };
+  const open = [...OPEN_DRAFT_STATUSES];
+  const rows = await ctx.db.collection("opportunities").aggregate<AppDocument & { emailDraft: AppDocument[] }>([
+    // Only what the list shows (Daybreak's brief and opt-in): never the lead's evidence, routes or notes.
+    ...whatsappVersionLeads(ctx, leadFilter, { ventureId: 1, offerId: 1, companyName: 1, contactName: 1, city: 1, stage: 1, ownerId: 1, whatsappOptIn: 1 }, { ventureId: { $in: ventureIds } }),
+    { $addFields: { email: { $first: { $sortArray: { input: { $filter: { input: "$firsts", cond: { $and: [{ $eq: ["$$this.channel", "email"] }, { $in: ["$$this.status", open] }] } } }, sortBy: { createdAt: 1, _id: 1 } } } } } },
+    { $sort: { "email.createdAt": 1, "email._id": 1 } }, { $limit: limit },
+    { $lookup: { from: "sales_drafts", localField: "email._id", foreignField: "_id", as: "emailDraft", pipeline: [{ $project: { channel: 1, status: 1, subject: 1, body: 1, createdAt: 1 } }] } },
+    { $project: { firsts: 0, talked: 0, email: 0 } },
+  ]).toArray();
+  return { total, rows: rows.filter((row) => row.emailDraft.length).map(({ emailDraft, ...lead }) => ({ lead: lead as AppDocument, draft: emailDraft[0]! })) };
+}
+
+/**
+ * How many recommended leads approved for contact (not waiting for a person, not on the do-not-contact list) have no first message written or
+ * sent yet (a call opener is a script, not a message). One count: the leads by their stage index, each one's first message by the drafts' lead index.
+ */
 async function firstMessagesToWrite(ctx: SalesCtx, base: Document): Promise<number> {
-  const leads = await ctx.db.collection("opportunities").find({ ...base, stage: "approved_for_contact", "verdict.decision": "recommend", needsYou: { $ne: true }, doNotContact: { $ne: true } }, { projection: { _id: 1 } }).limit(5_000).toArray();
-  if (!leads.length) return 0;
-  const written = await ctx.db.collection("sales_drafts").distinct("leadId", { workspaceId: ctx.workspaceId, leadId: { $in: leads.map((lead) => String(lead._id)) }, purpose: "first_touch", channel: { $ne: "call_opener" }, status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } });
-  return leads.length - written.length;
+  const [row] = await ctx.db.collection("opportunities").aggregate<{ n: number }>([
+    { $match: { ...base, stage: "approved_for_contact", "verdict.decision": "recommend", needsYou: { $ne: true }, doNotContact: { $ne: true } } },
+    { $project: { _id: 1 } },
+    { $lookup: { from: "sales_drafts", localField: "_id", foreignField: "leadId", as: "written", pipeline: [
+      { $match: { workspaceId: ctx.workspaceId, purpose: "first_touch", channel: { $ne: "call_opener" }, status: { $in: [...OPEN_DRAFT_STATUSES, "sent"] } } }, { $limit: 1 }, { $project: { _id: 1 } },
+    ] } },
+    { $match: { written: { $size: 0 } } },
+    { $count: "n" },
+  ]).toArray();
+  return row?.n ?? 0;
 }
 
 // ---- Overview -------------------------------------------------------------------------------------------------------------
@@ -368,7 +392,8 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
     ]).toArray(),
     leads.countDocuments({ ...base, wonAt: { $gte: since } }),
   ]);
-  const [firstMessages, whatsappVersions] = await Promise.all([firstMessagesToWrite(ctx, base), whatsappVersionsToWrite(ctx, base, 0)]);
+  // Counts only (no rows): what Claude can write next. Daybreak lists the WhatsApp versions themselves.
+  const [firstMessages, whatsappVersions] = await Promise.all([firstMessagesToWrite(ctx, base), whatsappVersionTotal(ctx, base)]);
 
   for (const row of stageRows) {
     const stage = (LEGACY_STAGE_MAP[row._id] ?? row._id) as string;

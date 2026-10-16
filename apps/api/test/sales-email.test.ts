@@ -460,14 +460,25 @@ test("a bounce opens again what its message closed: the WhatsApp version of a fi
       const chat = await ready(twin.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
       await ok(201, "POST", `/sales/drafts/${mail.id}/send`, "member", { requestId: "req-bounce-0001" });
       assert.deepEqual([(await stored(chat.id)).status, (await stored(chat.id)).statusBeforeClose], ["discarded", "ready"]);
-      // Two replies to one message: the person's own goes through the mailbox, the one sent to Claude's check (in review) closes.
+      // Two replies to one message (one open reply per message now, so the one sent to Claude's check is left from before that rule): the
+      // person's own goes through the mailbox, and the one in review closes.
+      const legacyReply = async (leadId: string, inReplyTo: string, id: string) => { await db.collection("sales_drafts").insertOne({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", leadId, inReplyTo, channel: "email", purpose: "reply", subject: "Re: more", body: "Checked first.", status: "in_review", authorId: "user-member", authorVia: "app", createdAt: new Date(), updatedAt: new Date() } as never); return { id }; };
       const asked = await newLead("Bounce Tiles", "ravi@bouncetiles.example");
       const inbound = (await ok(201, "POST", `/sales/leads/${asked.id}/activities`, "member", { kind: "email", direction: "in", body: "Tell me more" })).activity;
-      const checked = await ready(asked.id, { purpose: "reply", inReplyTo: inbound.id, subject: "Re: more", body: "Checked first.", checkByClaude: true });
       const own = await ready(asked.id, { purpose: "reply", inReplyTo: inbound.id, subject: "Re: more", body: "Here is more." });
       assert.equal(own.status, "ready");
+      const checked = await legacyReply(asked.id, inbound.id, "legacy-bounce-checked");
       await ok(201, "POST", `/sales/drafts/${own.id}/send`, "member", { requestId: "req-bounce-0002" });
       assert.deepEqual([(await stored(checked.id)).closedReason, (await stored(checked.id)).statusBeforeClose], ["other_reply_sent", "in_review"]);
+      // The same, but a person wrote a new reply to that message after it went: when it bounces, the closed one stays closed (one open
+      // reply per message), and the new one is the answer.
+      const rewritten = await newLead("Bounce Bricks", "neha@bouncebricks.example");
+      const question = (await ok(201, "POST", `/sales/leads/${rewritten.id}/activities`, "member", { kind: "email", direction: "in", body: "And the price?" })).activity;
+      const firstAnswer = await ready(rewritten.id, { purpose: "reply", inReplyTo: question.id, subject: "Re: price", body: "On a call, gladly." });
+      const leftOver = await legacyReply(rewritten.id, question.id, "legacy-bounce-left-over");
+      await ok(201, "POST", `/sales/drafts/${firstAnswer.id}/send`, "member", { requestId: "req-bounce-0005" });
+      assert.equal((await stored(leftOver.id)).closedReason, "other_reply_sent");
+      const secondAnswer = await ready(rewritten.id, { purpose: "reply", inReplyTo: question.id, subject: "Re: price", body: "Here is the range." });
       // A lead put on the do-not-contact list after its email went: nothing opens again there.
       const blocked = await newLead("Bounce Steel", "x@bouncesteel.example");
       const blockedMail = await ready(blocked.id, {});
@@ -492,9 +503,9 @@ test("a bounce opens again what its message closed: the WhatsApp version of a fi
         "--b1", "Content-Type: text/rfc822-headers", "", "From: Mem Ber <member@acme.example>", "Subject: Orders on the phone", `Message-ID: ${id}`, "", "--b1--", "",
       ].join("\n");
       const mine = boxes.get(box.id)!;
-      for (const [index, draftId] of [mail.id, own.id, blockedMail.id, bookedMail.id].entries()) deliver(mine, failed(ourId(draftId), index));
+      for (const [index, draftId] of [mail.id, own.id, blockedMail.id, bookedMail.id, firstAnswer.id].entries()) deliver(mine, failed(ourId(draftId), index));
       const round = (await sync.syncOnce())[0]!;
-      assert.equal(round.bounced, 4);
+      assert.equal(round.bounced, 5);
 
       // The WhatsApp version is back as it was (ready), without the closing fields, saying why; audited.
       const reopened = await stored(chat.id);
@@ -504,6 +515,8 @@ test("a bounce opens again what its message closed: the WhatsApp version of a fi
       assert.deepEqual([shown.status, shown.reopenedBecause, typeof shown.reopenedAt, shown.closedReason], ["ready", "bounced", "string", undefined]);
       // The other reply to the message is back in review.
       assert.deepEqual([(await stored(checked.id)).status, (await stored(checked.id)).reopenedBecause], ["in_review", "bounced"]);
+      // ...but not where a person wrote a new reply to that message since: that one stays the only open answer.
+      assert.deepEqual([(await stored(leftOver.id)).status, (await stored(leftOver.id)).closedReason, (await stored(secondAnswer.id)).status], ["discarded", "other_reply_sent", "ready"]);
       // Nothing opened on the do-not-contact lead.
       assert.deepEqual([(await stored(blockedChat.id)).status, (await stored(blockedChat.id)).reopenedBecause], ["discarded", undefined]);
       assert.deepEqual([(await stored(bookedChat.id)).status, (await stored(bookedChat.id)).reopenedBecause, (await db.collection("opportunities").findOne({ _id: booked.id }))?.stage], ["discarded", undefined, "discovery_booked"]);

@@ -1126,7 +1126,7 @@ test("the full run: “find 10 … and take them to ready drafts” is offered i
   }, "mcp_sales_full_run");
 });
 
-test("one reply per message through Claude: a second open reply to the same message is refused (revise the waiting one), a newer message gets its own, and sending one closes the others", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+test("one reply per message through Claude: a second open reply to the same message is refused (revise the waiting one), a newer message gets its own, and a person's own reply replaces Claude's waiting one", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
     const ok = workSessions(origin)(okRaw);
     const writer = await tokenFor("member");
@@ -1147,16 +1147,19 @@ test("one reply per message through Claude: a second open reply to the same mess
     // A newer message gets its own reply.
     const second = await logIn("Also, do you build Android apps?");
     const two = await ok(writer, "save_draft", { ...reply, inReplyTo: second, body: "Yes, Android too. A short call this week?" });
-    // A person writes their own reply to the newer message...
+    // A person writes their own reply to the newer message (the Inbox's "Write my own reply"): it replaces Claude's reply to that message,
+    // still waiting for review, in the same step.
     const own = await api("POST", `/sales/leads/${leadId}/drafts`, "member", { channel: "email", purpose: "reply", inReplyTo: second, subject: "Re: Android", body: "Yes, Android too. Tuesday at 11?" });
     assert.equal(own.status, 201, await own.clone().text());
     const ownDraft = ((await own.json()) as any).data;
     assert.equal(ownDraft.status, "ready");
-    // ...and sends it: Claude's waiting reply to that message closes (keeping the status it had); the reply to the other message stays.
+    const replaced = (await db.collection("sales_drafts").findOne({ _id: two.draftId as never }))!;
+    assert.deepEqual([replaced.status, replaced.discardedReason, replaced.discardedBy, replaced.closedReason], ["discarded", "Replaced by a reply a person wrote to the same message", "user-member", undefined]);
+    // Claude can't write another reply to that message while the person's is ready.
+    await refused(writer, "save_draft", { ...reply, inReplyTo: second, body: "Android as well. Open to a call?" }, /Reply Traders already has a reply to that message waiting \(email, ready\)/);
+    // ...and sends it: the reply to the other message stays.
     const sent = await api("POST", `/sales/drafts/${ownDraft.id}/sent`, "member", {});
     assert.equal(sent.status, 201, await sent.clone().text());
-    const closed = (await db.collection("sales_drafts").findOne({ _id: two.draftId as never }))!;
-    assert.deepEqual([closed.status, closed.closedReason, closed.sentVersion?.draftId, closed.statusBeforeClose, closed.discardedReason], ["discarded", "other_reply_sent", ownDraft.id, "in_review", "Another reply to this message was sent"]);
     assert.equal((await db.collection("sales_drafts").findOne({ _id: one.draftId as never }))!.status, "in_review");
   }, "mcp_sales_one_reply");
 });
@@ -1187,4 +1190,60 @@ test("a first message whose only sent version bounced can be written again (the 
     assert.equal(wrote.status, 201, await wrote.clone().text());
     await refused(writer, "save_draft", { ...again, channel: "linkedin", subject: undefined, body: "Saw you now serve dealers in 12 districts. Open to a call?" }, /A first message is for a lead nobody has contacted yet, and this one is replied/);
   }, "mcp_sales_bounced_first");
+});
+
+test("a WhatsApp version a person vetoed or discarded is their decision (no WhatsApp for them): the counts, Daybreak, get_lead and save_draft stop suggesting it and Claude writes none, while a person still can; one a rule closed is no decision", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
+    const ok = workSessions(origin)(okRaw);
+    const writer = await tokenFor("member");
+    const work = (await ok(writer, "start_sales", {})).sessionId as string;
+    const companies = ["Vetoed Foods", "Dropped Steel", "Closed Pumps"];
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: companies.map((companyName) => ({ companyName, city: "Jaipur", source: "Jaipur listing" })) });
+    const ids: Record<string, string> = {};
+    for (const company of companies) {
+      await ok(writer, "save_verdict", { company, sessionId: work, ...verdict() });
+      await ok(writer, "save_draft", { company, sessionId: work, ...email() });
+      ids[company] = (await ok(writer, "find_leads", { q: company })).leads[0].leadId as string;
+    }
+    // All three said yes to WhatsApp: each first message waits as an email only, so each gets its WhatsApp version.
+    await db.collection("opportunities").updateMany({ _id: { $in: Object.values(ids) as never[] } }, { $set: { whatsappOptIn: { at: new Date(), by: "user-member", how: "yes_on_call" } } });
+    assert.equal((await ok(writer, "start_sales", {})).today.whatsappVersionsToWrite, 3);
+    const chat = (company: string) => ({ company, sessionId: work, channel: "whatsapp", body: "Hi, saw you now serve dealers in 12 districts. How do they order today? Open to a quick call?" });
+    const versions: Record<string, string> = {};
+    for (const company of companies) versions[company] = (await ok(writer, "save_draft", chat(company))).draftId as string;
+    assert.equal((await ok(writer, "daybreak", {})).counts.whatsappVersions, 0);
+
+    // A head vetoes one, the owner discards another: their decision. A rule closed the third (another version went out, then bounced, and it
+    // was not opened again): no decision.
+    const veto = await api("POST", `/sales/drafts/${versions["Vetoed Foods"]}/veto`, "lead", { reason: "No WhatsApp for them: they asked for email" });
+    assert.equal(veto.status, 200, await veto.clone().text());
+    const discard = await api("POST", `/sales/drafts/${versions["Dropped Steel"]}/discard`, "member", {});
+    assert.equal(discard.status, 200, await discard.clone().text());
+    await db.collection("sales_drafts").updateOne({ _id: versions["Closed Pumps"] as never }, { $set: { status: "discarded", discardedAt: new Date(), discardedReason: "The email version of this first message was sent", closedReason: "sent_on_other_channel", sentVersion: { draftId: "gone-email", channel: "email", at: new Date() } } });
+
+    // Only the third is suggested again, in the same numbers everywhere.
+    const start = await ok(writer, "start_sales", {});
+    const morning = await ok(writer, "daybreak", {});
+    assert.deepEqual([start.today.whatsappVersionsToWrite, morning.counts.whatsappVersions, morning.whatsappVersions.map((row: any) => row.company)], [1, 1, ["Closed Pumps"]]);
+    const overview = await api("GET", "/sales/overview?ventureId=venture-a&owner=me", "member");
+    assert.equal(((await overview.json()) as any).data.counts.whatsappVersionsToWrite, 1);
+    for (const company of ["Vetoed Foods", "Dropped Steel"]) assert.notEqual((await ok(writer, "get_lead", { company })).next[0], `Write a WhatsApp version for ${company}`, company);
+    assert.equal((await ok(writer, "get_lead", { company: "Closed Pumps" })).next[0], "Write a WhatsApp version for Closed Pumps");
+
+    // Claude writes none where a person decided, and says why; the rule-closed one can be written again.
+    await refused(writer, "save_draft", chat("Vetoed Foods"), /"say":"A person decided against WhatsApp for Vetoed Foods in the app \(they vetoed its WhatsApp first message\), so no WhatsApp version is written unless they ask for one again in this conversation\."/);
+    await refused(writer, "save_draft", chat("Dropped Steel"), /A person decided against WhatsApp for Dropped Steel in the app \(they discarded its WhatsApp first message\)[\s\S]*whatsappAskedByPerson: true/);
+    assert.equal((await ok(writer, "save_draft", chat("Closed Pumps"))).channel, "whatsapp");
+    // A new email first message for a decided lead suggests no WhatsApp version either.
+    const emailDraft = (await ok(writer, "get_lead", { company: "Dropped Steel" })).drafts.find((row: any) => row.channel === "email").draftId as string;
+    assert.equal((await api("POST", `/sales/drafts/${emailDraft}/discard`, "member", {})).status, 200);
+    const rewritten = await ok(writer, "save_draft", { company: "Dropped Steel", sessionId: work, ...email({ body: "Saw you now serve dealers in 12 districts. Do dealers still order by phone? We build simple dealer ordering apps. Open to a short call?" }) });
+    assert.equal(rewritten.next[0], "Write the next draft");
+    assert.doesNotMatch(String(rewritten.then), /WhatsApp version/);
+    // The decision is the person's to change: when they ask Claude for one after all, Claude writes it (whatsappAskedByPerson), and a person
+    // may write one themselves (the API takes it).
+    assert.equal((await ok(writer, "save_draft", { ...chat("Vetoed Foods"), whatsappAskedByPerson: true })).channel, "whatsapp");
+    const byPerson = await api("POST", `/sales/leads/${ids["Dropped Steel"]}/drafts`, "member", { channel: "whatsapp", body: "Hello on WhatsApp, as you asked on the call." });
+    assert.equal(byPerson.status, 201, await byPerson.clone().text());
+  }, "mcp_wa_decided");
 });

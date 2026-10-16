@@ -3,7 +3,7 @@ import { BRAIN_KINDS, CALL_OUTCOMES, DRAFT_STATUSES, EXIT_STAGES, LEGACY_STAGE_M
 import { clean, clip, compact, localTime, ToolError, validTimeZone } from "./format.js";
 import { id, type Look, once, READ_ONLY, type Register, requestIdField, timezoneField, type ToolContext, writes } from "./kit.js";
 import { LEGACY_BRAIN_KINDS } from "../sales/offers.js";
-import { firstMessageStillDue } from "../sales/drafts.js";
+import { CHANNEL_WORDS, PURPOSE_WORDS, channelWithArticle, firstMessageStillDue, isOpenDraft, isWhatsappDecided } from "../sales/drafts.js";
 import { cityKey, sameCity } from "../sales/suppression.js";
 import { ASK_CLAUDE, FULL_RUN_PROMPT, type CityCount, guided, settingsLine, startNext, startSay, theBatch, viewHint, waitingLine } from "./sales-guided.js";
 import { newSession, requireSession, salesApi, sessionField, sessionModeOf } from "./sales-session.js";
@@ -33,11 +33,8 @@ export const WHATSAPP_CONFIRM = "WhatsApp is not switched on for this lead: only
 
 /** How to write the WhatsApp version of a first message (the connector's instructions say the same). */
 export const WHATSAPP_VERSION = "When the lead opted in to WhatsApp, also write a WhatsApp version of the first message (the offer's WhatsApp rules: short, plain text, the language the offer says), so the person can choose; sending one closes the other. Use save_draft with channel whatsapp and purpose first_touch, the same opening signal and the same one question.";
-const CHANNEL_WORDS: Record<string, string> = { email: "email", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram", call_opener: "call opener" };
-const PURPOSE_WORDS: Record<string, string> = { first_touch: "first message", follow_up: "follow-up", reply: "reply", proposal: "proposal", other: "message" };
 /** Purposes written as versions: one message, several channels, one goes out (the app closes the others when one is sent). */
 const VERSIONED = VERSIONED_DRAFT_PURPOSES;
-const OPEN_STATUSES = ["draft", "in_review", "ready", "needs_changes"];
 
 /** Social networks and chat links are people's profiles, never a company's published business route. */
 const SOCIAL_HOST = /(?:^|\.)(?:linkedin|facebook|fb|instagram|twitter|x|tiktok|snapchat)\.com$|(?:^|\.)wa\.me$/i;
@@ -514,8 +511,9 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     const sentBack = (detail.drafts as any[]).some((draft) => draft.status === "needs_changes");
     const preContact = (PRE_CONTACT_STAGES as readonly string[]).includes(lead.stage);
     // Its first message waits as an email only, and the lead opted in to WhatsApp: the WhatsApp version is the next thing to write.
-    const firstOpen = (detail.drafts as any[]).filter((draft) => draft.purpose === "first_touch" && draft.channel !== "call_opener" && OPEN_STATUSES.includes(draft.status));
-    const whatsappVersionOpen = Boolean(lead.whatsappOptIn) && decision === "recommend" && !lead.needsYou && firstOpen.some((draft) => draft.channel === "email") && !firstOpen.some((draft) => draft.channel === "whatsapp") && !(detail.drafts as any[]).some((draft) => draft.purpose === "first_touch" && draft.status === "sent") && firstMessageStillDue(lead.stage, detail.activities as any[]);
+    // A WhatsApp version a person vetoed or discarded is their decision (no WhatsApp for them): it is not suggested again.
+    const firstOpen = (detail.drafts as any[]).filter((draft) => draft.purpose === "first_touch" && draft.channel !== "call_opener" && isOpenDraft(draft));
+    const whatsappVersionOpen = Boolean(lead.whatsappOptIn) && decision === "recommend" && !lead.needsYou && firstOpen.some((draft) => draft.channel === "email") && !firstOpen.some((draft) => draft.channel === "whatsapp") && !(detail.drafts as any[]).some((draft) => (draft.purpose === "first_touch" && draft.status === "sent") || isWhatsappDecided(draft)) && firstMessageStillDue(lead.stage, detail.activities as any[]);
     // ...and only where the venture writes on WhatsApp at all (its sales settings), read only when the rest already says so.
     const whatsappVersionDue = whatsappVersionOpen && (await api<any>("GET", `/settings?ventureId=${enc(String(lead.ventureId))}`).catch(() => undefined))?.allowedChannels?.includes("whatsapp") === true;
     const next = lead.doNotContact ? ["This company must not be contacted: pick another lead", "Find new companies", "Open it in the app"]
@@ -651,6 +649,7 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     channel: z.enum(["email", "whatsapp", "call_opener", "linkedin", "instagram"]), purpose: z.enum(["first_touch", "follow_up", "reply", "proposal", "other"]).default("first_touch"),
     subject: z.string().trim().max(200).optional().describe("Required for email"), body: z.string().trim().min(1).max(5_000),
     inReplyTo: id.optional().describe("For purpose reply: the activityId of the reply this answers (default: their latest message)"),
+    whatsappAskedByPerson: z.literal(true).optional().describe("Only for a WhatsApp first message on a lead whose WhatsApp version a person vetoed or discarded (their decision against WhatsApp for it): true only when the person asked you in this conversation to write one after all"),
   });
 
   /** One draft for one lead: the same rules for the single tool and the batch. */
@@ -663,7 +662,9 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     const company = String(lead.companyName ?? "this lead");
     const drafts = detail.drafts as any[];
     // Versions: a first message (or the one follow-up) may wait in an email and a WhatsApp version at once; the person sends one, which closes the other.
-    const versions = drafts.filter((item) => item.purpose === input.purpose && item.channel !== "call_opener" && OPEN_STATUSES.includes(item.status));
+    const versions = drafts.filter((item) => item.purpose === input.purpose && item.channel !== "call_opener" && isOpenDraft(item));
+    // A person vetoed or discarded this lead's WhatsApp first message: they decided against WhatsApp for it.
+    const decidedAgainst = input.purpose === "first_touch" ? drafts.find((item) => isWhatsappDecided(item)) : undefined;
     let inReplyTo = input.inReplyTo;
     if (input.purpose === "reply") {
       const inbound = (detail.activities as any[]).filter((item) => item.direction === "in");
@@ -689,6 +690,7 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
       }
       if (input.purpose === "follow_up" && !["contacted", "thinking"].includes(lead.stage)) throw new ToolError(`A follow-up is for a lead that was contacted and has not replied, and this one is ${lead.stage}.`, 409);
     }
+    if (decidedAgainst && input.channel === "whatsapp" && input.whatsappAskedByPerson !== true) throw new ToolError(`A person decided against WhatsApp for ${company} in the app (they ${decidedAgainst.status === "vetoed" ? "vetoed" : "discarded"} its WhatsApp first message), so no WhatsApp version is written unless they ask for one again in this conversation. If they do, save it with whatsappAskedByPerson: true; the email version stays either way.`, 409);
     const venture = await api<any>("GET", `/settings?ventureId=${enc(String(lead.ventureId))}`).catch(() => undefined);
     const channelOf = { email: "email", whatsapp: "whatsapp", linkedin: "linkedin", instagram: "instagram", call_opener: "call" }[input.channel] as string;
     if (venture && Array.isArray(venture.allowedChannels) && !venture.allowedChannels.includes(channelOf)) throw new ToolError(`${channelOf === "call" ? "Calls aren't" : `${channelOf[0]!.toUpperCase()}${channelOf.slice(1)} isn't`} an allowed channel for this venture (its sales settings allow ${venture.allowedChannels.join(", ")}). Write for an allowed channel, or ask the venture head to change the settings in the app.`, 409);
@@ -698,19 +700,19 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     const linkIssue = linkProblem(input.body, input.channel);
     if (linkIssue) throw new ToolError(linkIssue);
     // The same text saved twice in this conversation (a retry) returns the first draft.
-    const twin = (detail.drafts as any[]).find((item) => item.authorSessionId === sessionId && item.channel === input.channel && item.body === input.body && ["draft", "in_review", "ready", "needs_changes"].includes(item.status));
+    const twin = (detail.drafts as any[]).find((item) => item.authorSessionId === sessionId && item.channel === input.channel && item.body === input.body && isOpenDraft(item));
     if (twin) return { say: "That draft was already saved in this chat, so I kept the first one.", next: ["Write the next draft", "Open a new chat and say “review drafts”", "Open it in the app"], row: { draftId: twin.id, status: twin.status, duplicate: true, company: clip(lead.companyName, 160), url: draftUrl(ctx, twin.id) } as Row };
     // One open version per channel: a second email first message (or follow-up) for the same lead is a rewrite of the first one.
     const sameChannel = input.channel !== "call_opener" && (VERSIONED as readonly string[]).includes(input.purpose) ? versions.find((item) => item.channel === input.channel) : undefined;
-    if (sameChannel) throw new ToolError(`${company} already has ${CHANNEL_WORDS[input.channel] === "email" ? "an" : "a"} ${CHANNEL_WORDS[input.channel] ?? input.channel} ${PURPOSE_WORDS[input.purpose] ?? input.purpose} waiting (${String(sameChannel.status).replaceAll("_", " ")}): change that one with revise_draft instead of writing a second.`, 409);
+    if (sameChannel) throw new ToolError(`${company} already has ${channelWithArticle(input.channel)} ${PURPOSE_WORDS[input.purpose] ?? input.purpose} waiting (${String(sameChannel.status).replaceAll("_", " ")}): change that one with revise_draft instead of writing a second.`, 409);
     // One reply per message of theirs: a second open reply to the same message (on any channel, a person's own included) is a rewrite of the
     // first. Only one goes out, and sending it closes the others.
-    const waitingReply = input.purpose === "reply" ? drafts.find((item) => item.purpose === "reply" && item.inReplyTo === inReplyTo && OPEN_STATUSES.includes(item.status)) : undefined;
+    const waitingReply = input.purpose === "reply" ? drafts.find((item) => item.purpose === "reply" && item.inReplyTo === inReplyTo && item.channel !== "call_opener" && isOpenDraft(item)) : undefined;
     if (waitingReply) throw new ToolError(`${company} already has a reply to that message waiting (${CHANNEL_WORDS[waitingReply.channel] ?? waitingReply.channel}, ${String(waitingReply.status).replaceAll("_", " ")}): change that one with revise_draft instead of writing a second. Only one reply to a message goes out.`, 409);
     const draft = await api<any>("POST", `/leads/${enc(leadId)}/drafts`, { channel: input.channel, purpose: input.purpose, ...(input.subject ? { subject: input.subject } : {}), body: input.body, ...(inReplyTo ? { inReplyTo } : {}), sessionId, submit: true }, "write drafts for this lead");
     const warnings = [PRICE_IN_TEXT.test(input.body) && input.purpose !== "reply" ? "The text looks like it names a price or amount. First messages and follow-ups carry no price: say it on the call. Fix it with revise_draft before review if so." : undefined].filter(Boolean);
     // The lead opted in to WhatsApp and its first message now waits as an email only: the WhatsApp version comes next, so the person can choose.
-    const whatsappVersionDue = input.purpose === "first_touch" && input.channel === "email" && Boolean(lead.whatsappOptIn) && !versions.some((item) => item.channel === "whatsapp") && firstMessageStillDue(lead.stage, detail.activities as any[]) && venture?.allowedChannels?.includes("whatsapp") === true;
+    const whatsappVersionDue = input.purpose === "first_touch" && input.channel === "email" && Boolean(lead.whatsappOptIn) && !decidedAgainst && !versions.some((item) => item.channel === "whatsapp") && firstMessageStillDue(lead.stage, detail.activities as any[]) && venture?.allowedChannels?.includes("whatsapp") === true;
     const twinOf = (VERSIONED as readonly string[]).includes(input.purpose) && input.channel !== "call_opener" ? versions.find((item) => item.channel !== input.channel) : undefined;
     const versionLine = twinOf ? ` It sits next to the ${CHANNEL_WORDS[twinOf.channel] ?? twinOf.channel} version: the person sends one, and that closes the other.` : whatsappVersionDue ? ` ${company} opted in to WhatsApp, so a WhatsApp version comes next.` : "";
     return {
@@ -726,7 +728,7 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
 
   tool("save_draft", "sales:write", {
     title: "Save draft", annotations: writes(false),
-    description: "Write a message for a person to send (you never send anything). Name the lead by company. Only for a lead whose latest verdict is recommend, or to answer a reply the lead sent (purpose reply: it answers their latest message unless you give inReplyTo). Write with the lead's offer packet (get_offer): its message rules, approved claims and proof words, never a claim to avoid. Open only with the verdict's quoted signal; ask a question, don't tell them they have a problem; say what we do in one plain sentence; use only the offer's approved proof words; no price; no links except one wa.me link line at the end of an email; exactly one call to action; keep to the channel's length. WhatsApp only when the lead has opted in. When the lead opted in to WhatsApp, also write a WhatsApp version of the first message (the offer's WhatsApp rules: short, plain text, the language the offer says), so the person can choose; sending one closes the other. A lead has one waiting draft per channel for its first message and for its follow-up: change a waiting one with revise_draft instead of writing a second. The draft goes to review: a different Claude conversation must review it, so do not review it yourself. A closed lead, a lead waiting for a person's decision, and a lead on the do-not-contact list get no draft. For many leads at once use save_drafts.",
+    description: "Write a message for a person to send (you never send anything). Name the lead by company. Only for a lead whose latest verdict is recommend, or to answer a reply the lead sent (purpose reply: it answers their latest message unless you give inReplyTo). Write with the lead's offer packet (get_offer): its message rules, approved claims and proof words, never a claim to avoid. Open only with the verdict's quoted signal; ask a question, don't tell them they have a problem; say what we do in one plain sentence; use only the offer's approved proof words; no price; no links except one wa.me link line at the end of an email; exactly one call to action; keep to the channel's length. WhatsApp only when the lead has opted in. When the lead opted in to WhatsApp, also write a WhatsApp version of the first message (the offer's WhatsApp rules: short, plain text, the language the offer says), so the person can choose; sending one closes the other. A WhatsApp first message a person vetoed or discarded means they decided against WhatsApp for that lead: write none unless they ask you for one again in this conversation (then whatsappAskedByPerson: true). A lead has one waiting draft per channel for its first message and for its follow-up, and one waiting reply per message of theirs: change a waiting one with revise_draft instead of writing a second. The draft goes to review: a different Claude conversation must review it, so do not review it yourself. A closed lead, a lead waiting for a person's decision, and a lead on the do-not-contact list get no draft. For many leads at once use save_drafts.",
     inputSchema: z.object({ ...leadRef, sessionId: sessionField, ...draftFields.shape, requestId: optionalRequestId }),
   }, async ({ requestId, ...input }) => {
     await requireSession(ctx, input.sessionId, "work");

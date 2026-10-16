@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import { draftDeliveryReconcileSchema, draftInputSchema, draftReviewInputSchema, draftSendInputSchema, draftSendThroughInputSchema, draftUpdateSchema, draftVetoInputSchema, idSchema } from "@venture-studio/contracts";
+import { OPEN_DRAFT_STATUSES, draftDeliveryReconcileSchema, draftInputSchema, draftReviewInputSchema, draftSendInputSchema, draftSendThroughInputSchema, draftUpdateSchema, draftVetoInputSchema, idSchema } from "@venture-studio/contracts";
 import { atomic, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
 import { forbidClaude, forbidden, isHeadOf, notFound, requireHead, requireWriter } from "../sales/access.js";
@@ -11,7 +11,7 @@ import { auditSales, salesCtx, settingsFor, type SalesCtx } from "../sales/ctx.j
 import { OWN_REPLY_KINDS, approvalNeed, changedSince, channelOf, draftChanged, expectedVersion, isOpenDraft, isOwnReply, needsPersonApproval, reviewOutcome, sendBlocker, startsAsOwnReply } from "../sales/drafts.js";
 import { notifyApprovalNeeded } from "../sales/notify.js";
 import { startOfLocalDay } from "../sales/workdays.js";
-import { applyActivity, claimSendSlot, closeOtherVersions, defined, isCappedChannel, loadLead, markHandled, payloadHash, requireLeadEditor, versionBlocker } from "../sales/leads.js";
+import { REPLACED_BY_OWN_REPLY, applyActivity, claimSendSlot, closeOtherVersions, defined, isCappedChannel, loadLead, markHandled, openSiblings, payloadHash, requireLeadEditor, siblingRefusal, versionBlocker } from "../sales/leads.js";
 import { leadJson, present } from "../sales/present.js";
 import { getDraftWithLead, listDrafts, versionsOf } from "../sales/queries.js";
 
@@ -35,11 +35,10 @@ async function loadDraft(database: Database, ctx: SalesCtx, id: string, session?
  * The draft as the API returns it: with whether it waits for a person's approval, and why (the same rule the send route applies), its other
  * versions and where a send through an account would go (`sendTarget`). A send still "sending" two minutes after it started reads as uncertain.
  */
-async function shownDraft(database: Database, ctx: SalesCtx, draft: AppDocument) {
+async function shownDraft(database: Database, ctx: SalesCtx, draft: AppDocument, lead: AppDocument) {
   const play = typeof draft.playId === "string" ? await database.db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }) : null;
-  const lead = await database.db.collection("opportunities").findOne({ _id: String(draft.leadId), workspaceId: ctx.workspaceId });
-  const target = lead ? (await sendTargetsFor(ctx, [{ draft, lead }]))(draft) : {};
-  return shownSendState({ ...present(draft), ...approvalNeed(draft, play, await settingsFor(ctx, String(draft.ventureId))), ...(await versionsOf(ctx, [draft]))(draft), ...target });
+  const [versions, targets] = await Promise.all([versionsOf(ctx, [draft]), sendTargetsFor(ctx, [{ draft, lead }])]);
+  return shownSendState({ ...present(draft), ...approvalNeed(draft, play, await settingsFor(ctx, String(draft.ventureId))), ...versions(draft), ...targets(draft) });
 }
 
 /** Drafts: written (usually by Claude), reviewed in a separate pass, approved for a play's first batch by a head, sent by a person. */
@@ -47,8 +46,9 @@ export function salesDraftRoutes(database: Database): Router {
   const db = database.db;
   const router = Router();
 
-  const shown = (ctx: SalesCtx, draft: AppDocument) => shownDraft(database, ctx, draft);
-  const reload = async (ctx: SalesCtx, id: unknown) => shown(ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!);
+  // The lead the caller already loaded (loadDraft, loadLead): where a send would go is worked out from it.
+  const shown = (ctx: SalesCtx, draft: AppDocument, lead: AppDocument) => shownDraft(database, ctx, draft, lead);
+  const reload = async (ctx: SalesCtx, id: unknown, lead: AppDocument) => shown(ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!, lead);
 
   /**
    * How many of a play's drafts a venture head or admin approved: only those count toward its first batch. Approvals stored before
@@ -101,11 +101,23 @@ export function salesDraftRoutes(database: Database): Router {
       status: own ? "ready" : input.submit ? "in_review" : "draft", authorId: ctx.actor.id, authorVia: ctx.via, authorSessionId: input.sessionId, createdAt: now, updatedAt: now,
       personApproval: own ? { by: ctx.actor.id, at: now, byHead: isHeadOf(ctx.actor, lead.ventureId), own: true } : undefined,
     });
+    // One open version per channel of a first message or follow-up, and one open reply per message of theirs (openSiblings): a second one is
+    // refused, with one exception. A reply a person writes in the app (their own, or one they send to Claude's check) replaces the replies to
+    // the same message that still wait for a review: those are discarded in the same step, saying so. One that is ready, or being sent, stays,
+    // and the new reply is refused: send or discard that one first.
     await atomic(database, async (session) => {
+      const others = await openSiblings(ctx, draft, session);
+      const replaces = draft.purpose === "reply" && ctx.via === "app" && others.every((other) => other.status !== "ready" && !other.sendLock);
+      if (others.length && !replaces) throw new AppError(409, "CONFLICT", siblingRefusal(draft, others.find((other) => other.status === "ready" || other.sendLock) ?? others[0]!));
+      for (const other of others) {
+        const discarded = await db.collection("sales_drafts").updateOne({ _id: other._id, status: { $in: ["draft", "in_review", "needs_changes"] }, sendLock: null }, { $set: { status: "discarded", discardedAt: now, discardedBy: ctx.actor.id, discardedReason: REPLACED_BY_OWN_REPLY, updatedAt: now } }, { session });
+        if (!discarded.modifiedCount) throw new AppError(409, "CONFLICT", "Another reply to this message changed meanwhile: reload it and try again");
+        await auditSales(ctx, "sales.draft.discard", "draft", String(other._id), String(lead.ventureId), { reason: "replaced_by_reply", replacedBy: draft._id }, session);
+      }
       await db.collection("sales_drafts").insertOne(draft, { session });
-      await auditSales(ctx, "sales.draft.create", "draft", draft._id, String(lead.ventureId), { channel: input.channel, purpose: input.purpose, status: draft.status, ...(own ? { ownReply: true } : {}) }, session);
+      await auditSales(ctx, "sales.draft.create", "draft", draft._id, String(lead.ventureId), { channel: input.channel, purpose: input.purpose, status: draft.status, ...(own ? { ownReply: true } : {}), ...(others.length ? { replaced: others.length } : {}) }, session);
     });
-    res.status(201).json(ok(await shown(ctx, draft)));
+    res.status(201).json(ok(await shown(ctx, draft, lead)));
   });
 
   // Editing the text sends the draft back to review and clears the review and any approval. A person's own ready reply stays ready when a
@@ -126,14 +138,14 @@ export function salesDraftRoutes(database: Database): Router {
           $set: { ...text, authorId: ctx.actor.id, authorVia: ctx.via, personApproval: { by: ctx.actor.id, at: now, byHead: isHeadOf(ctx.actor, lead.ventureId), own: true }, updatedAt: now },
           $unset: { review: "", authorSessionId: "" },
         }, { session })
-        : await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: ["draft", "in_review", "ready", "needs_changes"] }, sendLock: null }, {
+        : await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, {
           $set: { ...text, status: "in_review", authorId: ctx.actor.id, authorVia: ctx.via, updatedAt: now, ...(input.sessionId ? { authorSessionId: input.sessionId } : {}) },
           $unset: { review: "", personApproval: "", ...(input.sessionId ? {} : { authorSessionId: "" }) },
         }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
       await auditSales(ctx, "sales.draft.update", "draft", String(draft._id), String(lead.ventureId), keepsReady ? { ownReply: true } : undefined, session);
     });
-    res.json(ok(await reload(ctx, draft._id)));
+    res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
   // Review pass: pass -> ready, fail -> needs_changes. Claude's review of a Claude draft must come from a different session.
@@ -154,7 +166,7 @@ export function salesDraftRoutes(database: Database): Router {
       }
       await auditSales(ctx, "sales.draft.review", "draft", String(draft._id), String(lead.ventureId), { result: input.result, status }, session);
     });
-    res.json(ok(await reload(ctx, draft._id)));
+    res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
   // A person reads a play's first batch in full: head or admin, in the app only. Enough head approvals mark the batch as reviewed.
@@ -182,7 +194,7 @@ export function salesDraftRoutes(database: Database): Router {
       }
       await auditSales(ctx, "sales.draft.approve", "draft", String(draft._id), String(lead.ventureId), { byHead }, session);
     });
-    res.json(ok(await reload(ctx, draft._id)));
+    res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
   // Mark sent records what a person sent by hand: from their own mail app, phone, WhatsApp, Instagram or LinkedIn. Sending through a connected
@@ -203,7 +215,8 @@ export function salesDraftRoutes(database: Database): Router {
     const sentHash = payloadHash({ draftId: String(draft._id), sentVia: input.sentVia });
     const result = async () => {
       const activity = await db.collection("sales_activities").findOne({ workspaceId: ctx.workspaceId, draftId: String(draft._id), direction: "out" });
-      return { draft: await reload(ctx, draft._id), activity: present(activity!), lead: leadJson((await db.collection("opportunities").findOne({ _id: lead._id }))!) };
+      const fresh = (await db.collection("opportunities").findOne({ _id: lead._id }))!;
+      return { draft: await reload(ctx, draft._id, fresh), activity: present(activity!), lead: leadJson(fresh) };
     };
     // The same requestId repeats the first answer (a different draft or content under the same id is refused).
     const replay = async () => {
@@ -275,7 +288,8 @@ export function salesDraftRoutes(database: Database): Router {
       if (input.requestId && ((error as { code?: number }).code === 11000 || (error instanceof AppError && error.status === 409)) && await replay()) return;
       throw error;
     }
-    res.status(201).json(ok({ draft: await reload(ctx, draft._id), activity: present(activity), lead: leadJson((await db.collection("opportunities").findOne({ _id: lead._id }))!) }));
+    const fresh = (await db.collection("opportunities").findOne({ _id: lead._id }))!;
+    res.status(201).json(ok({ draft: await reload(ctx, draft._id, fresh), activity: present(activity), lead: leadJson(fresh) }));
   });
 
   router.post("/drafts/:id/veto", async (req, res) => {
@@ -287,11 +301,11 @@ export function salesDraftRoutes(database: Database): Router {
     if (draft.sendLock) await refuseLocked(database, draft);
     const now = new Date();
     await atomic(database, async (session) => {
-      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: ["draft", "in_review", "ready", "needs_changes"] }, sendLock: null }, { $set: { status: "vetoed", veto: { reason: input.reason, by: ctx.actor.id, at: now }, updatedAt: now } }, { session });
+      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "vetoed", veto: { reason: input.reason, by: ctx.actor.id, at: now }, updatedAt: now } }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
       await auditSales(ctx, "sales.draft.veto", "draft", String(draft._id), String(lead.ventureId), undefined, session);
     });
-    res.json(ok(await reload(ctx, draft._id)));
+    res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
   router.post("/drafts/:id/discard", async (req, res) => {
@@ -303,11 +317,11 @@ export function salesDraftRoutes(database: Database): Router {
     if (draft.sendLock) await refuseLocked(database, draft);
     const now = new Date();
     await atomic(database, async (session) => {
-      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: ["draft", "in_review", "ready", "needs_changes"] }, sendLock: null }, { $set: { status: "discarded", discardedAt: now, discardedBy: ctx.actor.id, updatedAt: now } }, { session });
+      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "discarded", discardedAt: now, discardedBy: ctx.actor.id, updatedAt: now } }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
       await auditSales(ctx, "sales.draft.discard", "draft", String(draft._id), String(lead.ventureId), undefined, session);
     });
-    res.json(ok(await reload(ctx, draft._id)));
+    res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
   return router;
@@ -320,7 +334,7 @@ export function salesDraftRoutes(database: Database): Router {
 export function salesDraftSendRoutes(database: Database, env: ChannelEnv): Router {
   const db = database.db;
   const router = Router();
-  const reload = async (ctx: SalesCtx, id: unknown) => shownDraft(database, ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!);
+  const reload = async (ctx: SalesCtx, id: unknown, lead: AppDocument) => shownDraft(database, ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!, lead);
 
   // 201 { draft, activity, lead, to } when it went out; 202 { draft, to } when the result is unclear (a person checks and answers /delivery); 502
   // SEND_FAILED when it didn't go (the draft stays ready). The same requestId repeats the first answer.
@@ -332,8 +346,8 @@ export function salesDraftSendRoutes(database: Database, env: ChannelEnv): Route
     const result = await sendDraftThrough(ctx, env, draft, lead, { accountId: input.accountId, template: input.template ? { ...input.template, variables: input.template.variables ?? [] } : undefined, requestId: input.requestId, expectedUpdatedAt: input.expectedUpdatedAt });
     // `to`: where it went (the lead's address, or the WhatsApp number as normalised), also kept on the draft's delivery.
     const to = result.to ? { to: result.to } : {};
-    if (result.outcome === "uncertain") { res.status(202).json(ok({ draft: await reload(ctx, draft._id), ...to })); return; }
-    res.status(201).json(ok({ draft: await reload(ctx, draft._id), activity: present(result.activity), lead: leadJson(result.lead), ...to }));
+    if (result.outcome === "uncertain") { res.status(202).json(ok({ draft: await reload(ctx, draft._id, lead), ...to })); return; }
+    res.status(201).json(ok({ draft: await reload(ctx, draft._id, result.lead), activity: present(result.activity), lead: leadJson(result.lead), ...to }));
   });
 
   // A person says whether an unclear send went out: "sent" records it (201 { draft, activity, lead }), "not_sent" frees the draft (200 { draft }).
@@ -343,8 +357,8 @@ export function salesDraftSendRoutes(database: Database, env: ChannelEnv): Route
     const { draft, lead } = await loadDraft(database, ctx, idSchema.parse(req.params.id));
     const { outcome } = draftDeliveryReconcileSchema.parse(req.body ?? {});
     const result = await settleDelivery(ctx, draft, lead, outcome);
-    if (result.activity && result.lead) { res.status(201).json(ok({ draft: await reload(ctx, draft._id), activity: present(result.activity), lead: leadJson(result.lead) })); return; }
-    res.json(ok({ draft: await reload(ctx, draft._id) }));
+    if (result.activity && result.lead) { res.status(201).json(ok({ draft: await reload(ctx, draft._id, result.lead), activity: present(result.activity), lead: leadJson(result.lead) })); return; }
+    res.json(ok({ draft: await reload(ctx, draft._id, lead) }));
   });
 
   return router;

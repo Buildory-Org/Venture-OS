@@ -3,11 +3,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ClientSession } from "mongodb";
 import type { z } from "zod";
-import { DRAFT_CLOSED_REASONS, VERSIONED_DRAFT_PURPOSES, type activityInputSchema, type opportunityInputSchema, type updateOpportunitySchema } from "@venture-studio/contracts";
+import { DRAFT_CLOSED_REASONS, OPEN_DRAFT_STATUSES, VERSIONED_DRAFT_PURPOSES, type activityInputSchema, type opportunityInputSchema, type updateOpportunitySchema } from "@venture-studio/contracts";
 import { atomic, type AppDb, type AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { assertOwnerInVenture, canEditLead, canSeeVenture, canWriteIn, forbidden, isHeadOf, notFound } from "./access.js";
-import { MESSAGE_KINDS, firstMessageStillDue } from "./drafts.js";
+import { CHANNEL_WORDS, MESSAGE_KINDS, PURPOSE_WORDS, channelWithArticle, firstMessageStillDue } from "./drafts.js";
 import { auditSales, settingsFor, type SalesCtx } from "./ctx.js";
 import { NEXT_ACTION_REMINDER, cancelNextActionReminders, notifyReply, syncNextActionReminder } from "./notify.js";
 import { assertVentureOffer, defaultOfferId } from "./offers.js";
@@ -16,7 +16,6 @@ import { calendarOf } from "./settings.js";
 import { SUPPRESS_KEYS_VERSION, leadSuppressKeys, normalizeValue, optOutEntries, suppressionKey, type SuppressionKind } from "./suppression.js";
 import { localDay, startOfLocalDay } from "./workdays.js";
 
-export const OPEN_DRAFT = ["draft", "in_review", "ready", "needs_changes"];
 /** Stages that mean the lead is being (or about to be) contacted: a do-not-contact lead is never moved into one. */
 export const CONTACT_STAGES: ReadonlySet<string> = new Set(["approved_for_contact", "contacted", "replied", "discovery_booked", "qualified", "proposal"]);
 
@@ -64,7 +63,7 @@ export const DO_NOT_CONTACT_REASON = "The lead is on the do-not-contact list";
  */
 export async function stopContactWork(ctx: Pick<SalesCtx, "db" | "workspaceId">, leadIds: string[], now: Date, session?: ClientSession): Promise<{ drafts: number; reminders: number }> {
   if (!leadIds.length) return { drafts: 0, reminders: 0 };
-  const drafts = await ctx.db.collection("sales_drafts").updateMany({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, status: { $in: OPEN_DRAFT } }, { $set: { status: "discarded", discardedAt: now, discardedReason: DO_NOT_CONTACT_REASON, updatedAt: now } }, { session });
+  const drafts = await ctx.db.collection("sales_drafts").updateMany({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, status: { $in: [...OPEN_DRAFT_STATUSES] } }, { $set: { status: "discarded", discardedAt: now, discardedReason: DO_NOT_CONTACT_REASON, updatedAt: now } }, { session });
   const reminders = await ctx.db.collection("reminders").updateMany({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, kind: NEXT_ACTION_REMINDER, state: "scheduled" }, { $set: { state: "cancelled", cancelReason: "do_not_contact", updatedAt: now } }, { session });
   return { drafts: drafts.modifiedCount, reminders: reminders.modifiedCount };
 }
@@ -124,7 +123,7 @@ export async function discardOpenDrafts(ctx: SalesCtx, leadId: string, mode: Dra
   // A draft that is being sent through an account (or whose send is unclear) keeps its lock: the message may be on its way or gone already,
   // and the send records it (or a person settles it). Discarding it would lose a message that went out.
   const result = await ctx.db.collection("sales_drafts").updateMany(
-    { workspaceId: ctx.workspaceId, leadId, status: { $in: OPEN_DRAFT }, sendLock: null, ...(mode === "follow_ups" ? { purpose: "follow_up" } : {}) },
+    { workspaceId: ctx.workspaceId, leadId, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null, ...(mode === "follow_ups" ? { purpose: "follow_up" } : {}) },
     { $set: { status: "discarded", discardedAt: now, discardedReason: reason, updatedAt: now } }, { session });
   return result.modifiedCount;
 }
@@ -137,8 +136,6 @@ export async function discardOpenDrafts(ctx: SalesCtx, leadId: string, mode: Dra
 // replica set (production, and the tests) each send runs in one transaction, and the write conflict on the draft being closed aborts and
 // retries the second, which then finds its draft closed. Accepted for local development: no fix is planned.
 
-const CHANNEL_WORDS: Record<string, string> = { email: "email", whatsapp: "WhatsApp", linkedin: "LinkedIn", instagram: "Instagram" };
-const PURPOSE_WORDS: Record<string, string> = { first_touch: "first message", follow_up: "follow-up" };
 /** A draft that is one version of a lead's first message or its one follow-up (call openers are scripts for call mode, not messages). */
 const isVersioned = (draft: AppDocument) => (VERSIONED_DRAFT_PURPOSES as readonly unknown[]).includes(draft.purpose) && draft.channel !== "call_opener";
 /** A reply answering one message of the lead's (`inReplyTo`): the lead's other replies to that same message are its siblings, and one goes out. */
@@ -155,6 +152,43 @@ function siblingsOf(ctx: Pick<SalesCtx, "workspaceId">, draft: AppDocument): Rec
 }
 /** A sent email that bounced never reached the lead: it is not the version that went out. */
 const NOT_BOUNCED = { "delivery.state": { $ne: "bounced" } };
+
+/** The key the drafts of one message share: a lead's version of its first message or follow-up on one channel, or its replies to one message. */
+function messageSlot(ctx: Pick<SalesCtx, "workspaceId">, draft: AppDocument): string | undefined {
+  if (isVersioned(draft)) return `${ctx.workspaceId}:${String(draft.leadId)}:${String(draft.purpose)}:${String(draft.channel)}`;
+  if (isSiblingReply(draft)) return `${ctx.workspaceId}:${String(draft.leadId)}:reply:${String(draft.inReplyTo)}`;
+  return undefined;
+}
+
+/**
+ * The open drafts a new (or reopened) draft would stand next to as the same message, oldest first: for a first message or follow-up, the
+ * lead's open version of it on the same channel (a lead has one waiting version per channel: its email and its WhatsApp version may wait
+ * together, two emails may not); for a reply, the lead's open replies to the same message on any channel (only one answer to a message goes
+ * out). Empty for every other draft. The API's paths that create or reopen a draft keep to it (POST /leads/:id/drafts, a reopen after a
+ * bounce); Claude's tools check it first, in their words. In a transaction the message's slot (`sales_draft_slots`) is written first: two
+ * writes of the same message at once collide there, and the one retried reads the other's draft (two inserts alone never collide). Without
+ * transactions (local development) the check is best effort.
+ */
+export async function openSiblings(ctx: Pick<SalesCtx, "db" | "workspaceId">, draft: AppDocument, session?: ClientSession): Promise<AppDocument[]> {
+  const siblings = siblingsOf(ctx, draft);
+  const slot = messageSlot(ctx, draft);
+  if (!siblings || !slot) return [];
+  if (session) await ctx.db.collection("sales_draft_slots").updateOne({ _id: slot }, { $set: { workspaceId: ctx.workspaceId, leadId: String(draft.leadId), updatedAt: new Date() }, $inc: { writes: 1 } }, { upsert: true, session });
+  return ctx.db.collection("sales_drafts").find({ ...siblings, ...(isVersioned(draft) ? { channel: draft.channel } : {}), status: { $in: [...OPEN_DRAFT_STATUSES] } }, { session, projection: { channel: 1, status: 1, sendLock: 1, createdAt: 1 } }).sort({ createdAt: 1, _id: 1 }).toArray();
+}
+
+/** Why a new draft can't be written next to `other`, an open draft that is the same message (openSiblings), in plain words. */
+export function siblingRefusal(draft: AppDocument, other: AppDocument): string {
+  const state = other.sendLock ? "being sent" : String(other.status).replaceAll("_", " ");
+  if (draft.purpose === "reply") {
+    if (other.sendLock || other.status === "ready") return `A reply to this message is ${other.sendLock ? "being sent" : "ready to send"} already (${CHANNEL_WORDS[String(other.channel)] ?? String(other.channel)}): send it, or discard it, before writing another. Only one reply to a message goes out`;
+    return `A reply to this message is already waiting (${CHANNEL_WORDS[String(other.channel)] ?? String(other.channel)}, ${state}): change that one instead of writing a second. Only one reply to a message goes out`;
+  }
+  return `This lead already has ${channelWithArticle(draft.channel)} ${PURPOSE_WORDS[String(draft.purpose)] ?? "message"} waiting (${state}): change that one instead of writing a second`;
+}
+
+/** What a reply a person writes in the app says on the replies to the same message it replaces. */
+export const REPLACED_BY_OWN_REPLY = "Replaced by a reply a person wrote to the same message";
 
 /**
  * Why this draft can't go out because another version of the same message (the same lead and purpose), or another reply to the same message
@@ -195,7 +229,7 @@ export async function closeOtherVersions(ctx: SalesCtx, sent: AppDocument, chann
   const siblings = siblingsOf(ctx, sent);
   if (!siblings) return [];
   const drafts = ctx.db.collection("sales_drafts");
-  const open = await drafts.find({ ...siblings, status: { $in: OPEN_DRAFT }, sendLock: null }, { session, projection: { channel: 1 } }).toArray();
+  const open = await drafts.find({ ...siblings, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { session, projection: { channel: 1 } }).toArray();
   const closed: string[] = [];
   const reply = sent.purpose === "reply";
   const what = PURPOSE_WORDS[String(sent.purpose)] ?? "message";
@@ -205,7 +239,7 @@ export async function closeOtherVersions(ctx: SalesCtx, sent: AppDocument, chann
     const closedReason = reply ? "other_reply_sent" : same ? "other_version_sent" : "sent_on_other_channel";
     const discardedReason = reply ? (same ? "Another reply to this message was sent" : `The ${words} reply to this message was sent`) : same ? `Another version of this ${what} was sent` : `The ${words} version of this ${what} was sent`;
     // One update that keeps the status it had (read in the same write), so nothing can change it between reading and closing.
-    const changed = await drafts.updateOne({ _id: other._id, status: { $in: OPEN_DRAFT }, sendLock: null }, [
+    const changed = await drafts.updateOne({ _id: other._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, [
       { $set: { statusBeforeClose: "$status", status: "discarded", discardedAt: now, discardedReason: { $literal: discardedReason }, closedReason, sentVersion: { draftId: { $literal: String(sent._id) }, channel: { $literal: channel }, at: now }, updatedAt: now } },
       { $unset: ["reopenedAt", "reopenedBecause"] },
     ], { session });
@@ -253,10 +287,12 @@ export async function reopenClosedBy(ctx: SalesCtx, bounced: AppDocument, now: D
     ] }, { session, projection: { _id: 1 } });
     if (moved) return [];
   }
-  const closed = await drafts.find({ workspaceId: ctx.workspaceId, leadId, status: "discarded", "sentVersion.draftId": String(bounced._id), closedReason: { $in: [...DRAFT_CLOSED_REASONS] } }, { session, projection: { statusBeforeClose: 1 } }).toArray();
+  const closed = await drafts.find({ workspaceId: ctx.workspaceId, leadId, status: "discarded", "sentVersion.draftId": String(bounced._id), closedReason: { $in: [...DRAFT_CLOSED_REASONS] } }, { session, projection: { statusBeforeClose: 1, leadId: 1, purpose: 1, channel: 1, inReplyTo: 1 } }).sort({ createdAt: 1, _id: 1 }).toArray();
   const opened: string[] = [];
   for (const row of closed) {
-    const status = OPEN_DRAFT.includes(String(row.statusBeforeClose)) ? String(row.statusBeforeClose) : "in_review";
+    // One open version per channel, one open reply per message: one written since it closed (or opened just before it) keeps it closed.
+    if ((await openSiblings(ctx, row, session)).length) continue;
+    const status = (OPEN_DRAFT_STATUSES as readonly unknown[]).includes(row.statusBeforeClose) ? String(row.statusBeforeClose) : "in_review";
     const changed = await drafts.updateOne({ _id: row._id, status: "discarded", "sentVersion.draftId": String(bounced._id) }, {
       $set: { status, reopenedAt: now, reopenedBecause: "bounced", updatedAt: now },
       $unset: { closedReason: "", sentVersion: "", discardedAt: "", discardedReason: "", discardedBy: "", statusBeforeClose: "" },

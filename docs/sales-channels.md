@@ -95,10 +95,12 @@ in the claim's filter (step 5), so it can't slip in between.
      lead's other open versions of the message (its email or WhatsApp twin, or its other replies to the same message: discarded with
      `closedReason` and `sentVersion`), removes
      `sendLock`, audits `sales.draft.sent` (with `closedVersions` when it closed any). 201 `{ draft, activity, lead }`.
-   - A refusal after the claim (the cap used up, a last-moment check) gives both claims back and restores the draft as it was, its
-     `updatedAt` included.
+   - A refusal after the claim (the cap used up, a last-moment check) gives both claims back and restores the draft as it was (its
+     `sendAttempts` count stays raised).
    - `failed`: the day's send is given back, `sendLock` removed, `delivery: { state: "failed", error }` kept on the draft (it stays ready).
      502 `SEND_FAILED` with the provider's reason in plain words.
+   - None of the send's own bookkeeping (the claim, "sending", failed, uncertain, "It didn't go", a claim given back) moves the draft's
+     `updatedAt`: a retry, or marking it sent by hand, with the `expectedUpdatedAt` the person read goes through.
    - `uncertain`: the send stays counted, `sendLock` stays, `delivery: { state: "uncertain", error }`. 202 with the draft. A person checks
      their Sent folder or WhatsApp and answers `POST /v1/sales/drafts/:id/delivery` `{ outcome: "sent" | "not_sent" }`: sent records it as sent
      (no provider id) and closes the other versions; not_sent removes the lock and gives the send back if it was today's. Until then the
@@ -116,7 +118,8 @@ also takes an optional `accountId` naming the mailbox or LinkedIn profile it wen
 the other open versions (or other replies to the same message) in the same transaction.
 
 **Where a send would go** (`sendTarget`): every open email, WhatsApp and Instagram draft the API returns carries `sendTarget: { channel, to }`,
-worked out by the same code as step 3 (`targetFrom`) with the account a send would pick by itself (the person's default for the venture, or
+worked out by the same code as step 3 (`targetFrom`, and `linkedContactsFor` for the conversation linked on the account: every link of the
+listed leads is read, with no cap, so the list and the send always agree) with the account a send would pick by itself (the person's default for the venture, or
 their only one): the email address; for WhatsApp the number the lead wrote from on that account, else its WhatsApp or phone route,
 normalised; for Instagram the linked conversation, shown as its @handle when known. Absent when there is none. It is shown even when the
 person has no account to send through; with several accounts and no default the lead's routes decide (the send's `to` says where it

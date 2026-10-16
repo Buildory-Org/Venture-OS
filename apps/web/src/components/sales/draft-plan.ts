@@ -1,4 +1,4 @@
-import { VERSIONED_DRAFT_PURPOSES, type ChannelAccount, type ContactRoute, type Draft } from "@venture-studio/contracts";
+import { OPEN_DRAFT_STATUSES, VERSIONED_DRAFT_PURPOSES, type ChannelAccount, type ContactRoute, type Draft } from "@venture-studio/contracts";
 import { accountLine, emailSettingsOf } from "./channel-model";
 import { CHANNEL_LABEL, instagramHref, linkedinHref, mailtoHref, PURPOSE_LABEL, routeOf, waDigits, waHref } from "./draft-shared";
 import type { Tone } from "./sales-ui";
@@ -7,8 +7,8 @@ import type { Tone } from "./sales-ui";
 // 4, 7): send it through a connected account, send it by hand and say so, approve it, fix it, or wait. The API enforces every rule; this
 // only decides what to show.
 
-export const OPEN_DRAFT_STATUSES: readonly Draft["status"][] = ["draft", "in_review", "ready", "needs_changes"];
-export const isOpenDraft = (draft: Pick<Draft, "status">) => OPEN_DRAFT_STATUSES.includes(draft.status);
+/** A draft that can still change (the API's OPEN_DRAFT_STATUSES: not sent, vetoed or discarded). */
+export const isOpenDraft = (draft: Pick<Draft, "status">) => (OPEN_DRAFT_STATUSES as readonly Draft["status"][]).includes(draft.status);
 /** A first message or a follow-up: written for several channels, only one version goes out and sending it closes the others (the API does). */
 export const isVersioned = (purpose: string) => (VERSIONED_DRAFT_PURPOSES as readonly string[]).includes(purpose);
 /**

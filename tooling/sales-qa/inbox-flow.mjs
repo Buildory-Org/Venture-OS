@@ -1,9 +1,9 @@
 // The Inbox's receiving side, clicked through and photographed (Playwright, gstack's bundled copy): a lead replies, the person answers
 // from the Inbox (their own reply is ready at once), the send step shows inline, it is marked sent by hand and the reply is handled.
 // Also: Claude's reply (written and reviewed through the connector) sent from the Inbox, "Ask Claude to check it first", a reply that came
-// to someone's phone logged with They replied in the lead drawer, and the empty Inbox. Also two answers to one message: one is marked sent,
-// the other closes ("Closed: another reply went out"), and a reply written after the message was answered says so instead of offering a
-// send. Desktop 1440x900, phone 375x812, dark.
+// to someone's phone logged with They replied in the lead drawer, and the empty Inbox. Also one open answer per message: the API refuses a
+// second answer while one is ready, "Write my own reply" over one waiting for Claude's check replaces it (the API discards it in the same
+// step), and a reply written after the message was answered says so instead of offering a send. Desktop 1440x900, phone 375x812, dark.
 //
 // Never sends anything: the browser sees one fake mailbox only (the channel list is replaced in the test browser, so no real account is
 // ever offered), any send through an account is blocked in the browser, and every send is "marked sent by hand". QA leads are tagged
@@ -65,14 +65,16 @@ const phoneLead = await lead("Inbox Phone Reply", { contactRoutes: [{ kind: "ema
 await api(ME, "POST", `/sales/leads/${phoneLead.id}/activities`, { kind: "email", direction: "out", at: twoDaysAgo, body: "Subject: Contractor rates\n\nHello Asha, worth a short call?" });
 const mobile = await lead("Inbox Phone Screen");
 const mobileIn = await conversation(mobile, undefined, "QA: Sounds good. Send me a time.");
-// Two answers to the same message, both written by a person (ready at once).
+// One open answer per message: the person's answer (ready at once), and a second one to the same message refused by the API in plain words.
 const twice = await lead("Inbox Two Answers");
 const twiceIn = await conversation(twice, "interested", "QA: Interesting. Who do I talk to?");
 if (![ownIn, claudeIn, checkIn, mobileIn, twiceIn].every((item) => item?.id)) throw new Error("could not log the QA replies");
-const ownReply = (body) => api(ME, "POST", `/sales/leads/${twice.id}/drafts`, { channel: "email", purpose: "reply", inReplyTo: twiceIn.id, subject: "Re: Contractor rates at your store", body });
+const replyBody = (body) => ({ channel: "email", purpose: "reply", inReplyTo: twiceIn.id, subject: "Re: Contractor rates at your store", body });
+const ownReply = (body) => api(ME, "POST", `/sales/leads/${twice.id}/drafts`, replyBody(body));
 const answerA = await ownReply("Hello Asha,\n\nYou talk to me. Tuesday at 11 for 20 minutes?\n\nDivyansh (QA answer A)");
-const answerB = await ownReply("Hello Asha,\n\nThat would be me. Would Wednesday at 4 suit you?\n\nDivyansh (QA answer B)");
-check("seed: two answers to one message, both ready", answerA?.status === "ready" && answerB?.status === "ready", `${answerA?.status} ${answerB?.status}`);
+const secondAnswer = await fetch(`${apiBase}/v1/sales/leads/${twice.id}/drafts`, { method: "POST", headers: { "x-dev-user-id": ME, "content-type": "application/json" }, body: JSON.stringify(replyBody("Hello Asha,\n\nThat would be me. Would Wednesday at 4 suit you?\n\nDivyansh (QA answer B)")) }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => null) })).catch(() => null);
+check("seed: one answer to the message, ready", answerA?.status === "ready", answerA?.status);
+check("seed: a second answer to the same message is refused while that one is ready (409, in plain words)", secondAnswer?.status === 409 && /A reply to this message is ready to send already \(email\): send it, or discard it, before writing another/.test(secondAnswer?.body?.error?.message ?? ""), `${secondAnswer?.status} ${secondAnswer?.body?.error?.message ?? ""}`);
 
 // Claude's answer to the "details" reply, written in one connector session and reviewed in another (as a venture head's Claude).
 let claudeDraftId = "", patId = "";
@@ -215,33 +217,16 @@ try {
     await context.close();
   }
 
-  // 1b. Two answers to one message: one is marked sent by hand, the API closes the other ("Closed: another reply went out"). A reply written
-  // after the message was answered says so in Review instead of offering a send.
+  // 1b. One answer to the message, marked sent by hand. A reply written after the message was answered says so in Review instead of
+  // offering a send.
   await pause();
   {
     const { context, page } = await open();
     await go(page, `/sales/live/inbox?reply=${twiceIn.id}`);
-    check("two answers: both show as reply cards", await page.getByRole("region", { name: "Your reply" }).count() === 2);
-    await markSentByHand(page, "inbox-desktop-two-answers");
-    const after = await detailOf(twice.id);
-    const [sentOne, otherOne] = [answerA, answerB].map((answer) => after?.drafts?.find((item) => item.id === answer?.id));
-    const sent = [sentOne, otherOne].find((item) => item?.status === "sent");
-    const other = [sentOne, otherOne].find((item) => item && item !== sent);
-    check("two answers: one marked sent by hand", Boolean(sent) && sent.sentVia === "manual" && blockedSends.length === 0);
-    if (other?.status === "discarded" && other?.closedReason === "other_reply_sent") {
-      check("two answers: the API closed the other one (other_reply_sent)", true);
-      await go(page, `/sales/live/inbox?reply=${twiceIn.id}`);
-      check("Inbox: the closed answer reads Closed: another reply went out", await seen(page.getByText("Closed: another reply went out")));
-      await visible(page.getByText("Closed: another reply went out")).scrollIntoViewIfNeeded().catch(() => {}); await page.waitForTimeout(300);
-      await shot(page, "inbox-desktop-closed-reply");
-      await go(page, `/sales/live/review?draft=${other.id}`);
-      check("Review: the closed answer's title is Closed: another reply went out", await seen(page.getByText("Closed: another reply went out")) && await seen(page.getByText(/Only one answer to a message goes out/)));
-      await shot(page, "review-desktop-closed-reply");
-    } else {
-      console.log(`NOTE  the API left the other answer ${other?.status ?? "missing"} (no other_reply_sent yet): checking the "already answered" state on it instead`);
-      await go(page, `/sales/live/review?draft=${other?.id}`);
-      check("Review: the other open answer says the message was already answered", await seen(page.getByText("Their message was already answered")));
-    }
+    check("one answer: one reply card, and no second reply offered while it is ready", await page.getByRole("region", { name: "Your reply" }).count() === 1 && await page.getByRole("button", { name: /Write (a|my own) reply/ }).count() === 0);
+    await markSentByHand(page, "inbox-desktop-one-answer");
+    const sent = (await detailOf(twice.id))?.drafts?.find((item) => item.id === answerA?.id);
+    check("one answer: marked sent by hand", sent?.status === "sent" && sent?.sentVia === "manual" && blockedSends.length === 0, `${sent?.status} ${sent?.sentVia}`);
     // A reply written after the message was answered: Review shows that instead of a send button.
     const late = await ownReply("Hello Asha,\n\nJust checking you got my note.\n\nDivyansh (QA late answer)");
     if (late?.id) {
@@ -329,6 +314,20 @@ try {
     await visible(page.getByRole("button", { name: "Write my own reply" })).click(); await page.waitForTimeout(500);
     check("dark: writing your own says it replaces the draft waiting for review", await seen(page.getByText("Saving this replaces the draft above that waits for a review.")));
     await shot(page, "inbox-desktop-dark-composer");
+    // Saved: the API replaces the reply waiting for Claude's check in the same step (no discard from the browser), and only yours shows.
+    const waitingBefore = (await detailOf(checkLead.id))?.drafts?.find((draft) => draft.purpose === "reply" && draft.status === "in_review");
+    await page.getByRole("form", { name: "Your reply" }).getByRole("textbox", { name: "Your reply" }).fill("Hello Asha,\n\nMost stores like yours land in one of two ranges; I can show both on a short call. Tuesday at 11?\n\nDivyansh");
+    const discardCalls = [];
+    page.on("request", (request) => { if (/\/v1\/sales\/drafts\/[^/?]+\/discard/.test(request.url())) discardCalls.push(request.url()); });
+    await page.getByRole("form", { name: "Your reply" }).getByRole("button", { name: "Save and send" }).click(); await page.waitForTimeout(2200);
+    const replacedDetail = await detailOf(checkLead.id);
+    const replaced = replacedDetail?.drafts?.find((draft) => draft.id === waitingBefore?.id);
+    const mine = replacedDetail?.drafts?.find((draft) => draft.purpose === "reply" && draft.status === "ready");
+    check("dark: your own reply replaced the one waiting for Claude's check (the API discarded it, saying so)", Boolean(waitingBefore) && replaced?.status === "discarded" && replaced?.discardedReason === "Replaced by a reply a person wrote to the same message" && replaced?.discardedBy === ME && mine?.personApproval?.own === true, `${replaced?.status} ${replaced?.discardedReason ?? ""}`);
+    check("dark: the browser made no discard call of its own", discardCalls.length === 0, discardCalls.join(" "));
+    check("dark: only the new reply shows now (written and approved by you)", await page.getByRole("region", { name: "Your reply" }).count() === 1 && await seen(page.getByRole("region", { name: "Your reply" }).getByText("Written and approved by you")));
+    await visible(page.getByRole("button", { name: "Not yet" })).click().catch(() => {}); await page.waitForTimeout(300);
+    await shot(page, "inbox-desktop-dark-replaced");
     await context.close();
   }
   {

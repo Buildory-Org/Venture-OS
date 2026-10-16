@@ -600,3 +600,68 @@ test("Reports, Daybreak and the Overview narrow to one offer, or to the leads wi
     await db.collection("ventures").updateOne({ _id: "venture-r7" }, { $set: { status: "archived" } });
   }
 });
+
+test("What Claude can write next: the Overview counts first messages and WhatsApp versions to write (counts only) exactly as Daybreak lists them; a WhatsApp version a person vetoed or discarded is their decision, one a rule closed is not", skip, async () => {
+  const h = await getHarness();
+  const db = h.database.db;
+  const now = new Date();
+  await db.collection("ventures").insertOne({ _id: "venture-r8", workspaceId: "workspace-a", name: "Venture r8", status: "active", createdAt: now });
+  await db.collection("pipelines").insertOne({ _id: "pipeline-r8", workspaceId: "workspace-a", ventureId: "venture-r8", name: "Leads", offerName: "Offer", status: "active", createdAt: now, updatedAt: now });
+  await db.collection("memberships").updateMany({ _id: { $in: ["membership-head", "membership-contrib"] } }, { $push: { ventureIds: "venture-r8" } } as never);
+  const drafts = db.collection("sales_drafts");
+  const recommended = async () => { const lead = await newLead(h, "venture-r8"); await claudeVerdict(h, lead.id, "recommend", "medium"); return lead; };
+  const write = async (leadId: string, body: Record<string, unknown>) => expectStatus(await h.call("contrib", "POST", `/sales/leads/${leadId}/drafts`, { channel: "email", subject: "Dealer orders", body: "The first message", ...body }), 201).data;
+  try {
+    // First messages to write: no draft (counted), only a call opener (counted: a script, not a message), only a vetoed email (counted), an
+    // open email, one sent, one waiting for a person, one on the do-not-contact list (none of those).
+    await recommended();
+    await write((await recommended()).id, { channel: "call_opener", subject: undefined, body: "Script" });
+    const vetoedEmail = await write((await recommended()).id, {});
+    expectStatus(await h.call("head", "POST", `/sales/drafts/${vetoedEmail.id}/veto`, { reason: "Wrong angle for them" }), 200);
+    await write((await recommended()).id, {});
+    const sent = await write((await recommended()).id, {});
+    await drafts.updateOne({ _id: sent.id }, { $set: { status: "sent", sentAt: now } });
+    await db.collection("opportunities").updateOne({ _id: (await recommended()).id }, { $set: { needsYou: true } });
+    await db.collection("opportunities").updateOne({ _id: (await recommended()).id }, { $set: { doNotContact: true } });
+
+    // WhatsApp versions to write (opted in, the email first message waiting): listed are a lead with the email only, one whose WhatsApp version a
+    // rule closed, one whose WhatsApp version the system discarded (the lead was closed, then reopened) and one at replied after a yes on a
+    // call; not listed are one whose WhatsApp version a head vetoed, one whose owner discarded it, one with its WhatsApp version waiting and
+    // one written to already.
+    const optedIn = async (whatsapp?: (draftId: string) => Promise<void>, extra?: (leadId: string) => Promise<void>) => {
+      const lead = await recommended();
+      await db.collection("opportunities").updateOne({ _id: lead.id }, { $set: { whatsappOptIn: { at: now, by: "user-contrib", how: "yes_on_call" } } });
+      const email = await write(lead.id, { body: `Email version for ${lead.companyName}` });
+      if (whatsapp) await whatsapp((await write(lead.id, { channel: "whatsapp", subject: undefined, body: "WhatsApp version" })).id);
+      await extra?.(lead.id);
+      return { lead, email };
+    };
+    const emailOnly = await optedIn();
+    const ruleClosed = await optedIn(async (id) => { await drafts.updateOne({ _id: id }, { $set: { status: "discarded", discardedAt: now, discardedReason: "The email version of this first message was sent", closedReason: "sent_on_other_channel", sentVersion: { draftId: "gone", channel: "email", at: now } } }); });
+    const systemDiscarded = await optedIn(async (id) => { await drafts.updateOne({ _id: id }, { $set: { status: "discarded", discardedAt: now, discardedReason: "Lead moved to lost" } }); });
+    const repliedAfterCall = await optedIn(undefined, async (leadId) => { await db.collection("opportunities").updateOne({ _id: leadId }, { $set: { stage: "replied" } }); });
+    await optedIn(async (id) => { expectStatus(await h.call("head", "POST", `/sales/drafts/${id}/veto`, { reason: "No WhatsApp for them" }), 200); });
+    await optedIn(async (id) => { expectStatus(await h.call("contrib", "POST", `/sales/drafts/${id}/discard`, {}), 200); });
+    await optedIn(async () => undefined);
+    await optedIn(undefined, async (leadId) => { await db.collection("sales_activities").insertOne({ _id: `r8-out-${leadId}`, workspaceId: "workspace-a", ventureId: "venture-r8", leadId, actorId: "user-contrib", via: "app", kind: "email", direction: "out", body: "First note", at: now, createdAt: now }); });
+
+    const counts = async () => expectStatus(await h.call("contrib", "GET", "/sales/overview?ventureId=venture-r8&owner=me"), 200).data.counts;
+    const listed = [emailOnly, ruleClosed, systemDiscarded, repliedAfterCall];
+    const overview = await counts();
+    const morning = await daybreak(h, "contrib", "ventureId=venture-r8");
+    assert.deepEqual([overview.firstMessagesToWrite, overview.whatsappVersionsToWrite, morning.counts.whatsappVersions], [3, 4, 4]);
+    assert.deepEqual(morning.whatsappVersions.map((row) => [row.id, row.emailDraft.draftId, row.emailDraft.body]), listed.map(({ lead, email }) => [lead.id, email.id, `Email version for ${lead.companyName}`]), "oldest email first, with its text");
+    // A venture that doesn't write on WhatsApp has none to write, in either count.
+    expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-r8", { allowedChannels: ["call", "email"] }), 200);
+    assert.deepEqual([(await counts()).whatsappVersionsToWrite, (await daybreak(h, "contrib", "ventureId=venture-r8")).counts.whatsappVersions, (await counts()).firstMessagesToWrite], [0, 0, 3]);
+    // Every lead in the workspace (no venture named) counts the same leads.
+    expectStatus(await h.call("head", "PUT", "/sales/settings?ventureId=venture-r8", {}), 200);
+    const everywhere = expectStatus(await h.call("contrib", "GET", "/sales/overview?owner=me"), 200).data.counts;
+    assert.equal(everywhere.whatsappVersionsToWrite, (await daybreak(h, "contrib", "")).counts.whatsappVersions);
+  } finally {
+    await db.collection("sales_settings").deleteOne({ _id: "venture-r8" });
+    await db.collection("memberships").updateMany({ _id: { $in: ["membership-head", "membership-contrib"] } }, { $pull: { ventureIds: "venture-r8" } } as never);
+    await db.collection("opportunities").updateMany({ ventureId: "venture-r8" }, { $set: { deletedAt: new Date() } });
+    await db.collection("ventures").updateOne({ _id: "venture-r8" }, { $set: { status: "archived" } });
+  }
+});

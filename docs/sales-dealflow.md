@@ -71,7 +71,7 @@ ventures and the ones they made themselves.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/overview?ventureId&owner=me` | Today: replies waiting, calls due, follow-ups due, drafts to review, ready to send, needs you, won to hand over, stage counts, last 7 days. `counts` also has `inReview` (waiting for Claude's review), `needsChanges` (sent back), `firstMessagesToWrite` (recommended leads approved for contact with no first message written or sent; a call opener doesn't count) and `whatsappVersionsToWrite` (opted-in leads whose first message waits as an email only and is still due; the same rule as Daybreak's `whatsappVersions`); start_sales turns them into its options |
+| GET | `/overview?ventureId&owner=me` | Today: replies waiting, calls due, follow-ups due, drafts to review, ready to send, needs you, won to hand over, stage counts, last 7 days. `counts` also has `inReview` (waiting for Claude's review), `needsChanges` (sent back), `firstMessagesToWrite` (recommended leads approved for contact with no first message written or sent; a call opener doesn't count) and `whatsappVersionsToWrite` (opted-in leads whose first message waits as an email only and is still due; the same rule as Daybreak's `whatsappVersions`); start_sales turns them into its options. Both are counts only (indexed aggregations, no draft text read): Daybreak lists the WhatsApp versions themselves |
 | GET | `/leads?ventureId&pipelineId&stage=a,b&q&owner&needsYou&playId&verdict&region&city&category&contact&sort&offset&limit` | server-side filter + paging (thousands of leads); `region`, `city`, `category` are exact (any case, `none` = not set), `contact` is `phone` (phone or WhatsApp number), `email`, `whatsapp` (consent recorded) or `none` (no phone, WhatsApp or email route) |
 | GET | `/pipeline-value?ventureId&owner=me&tz` | the pipeline in money for the Overview: one row per currency with open deals, open value, open weighted value, the weighted forecast for this and next calendar month (by expected close date; an open deal expected in an earlier month counts in this month), weighted value with no close date, and what was won this month; plus `openWithoutValue` (open leads with no value) and the two month keys. Same venture scoping as the list; months are cut in the Sales time zone (`tz` overrides) |
 | GET | `/leads/facets?ventureId&stage&q&owner&region&city&category&contact…` | counts for the filter choices (same filters as the list, no sort or paging): `regions`, `cities` (with their region), `categories`, `contact`, and `notSet`; each group is counted with every other filter applied but not its own, like a shop sidebar. A state and its cities go together: the state counts ignore the chosen city. Case and spacing variants are one value. Same venture scoping as the list |
@@ -196,13 +196,29 @@ Default calendar: Monday to Saturday, Asia/Kolkata; festival blackout 2026-10-20
   draft was written (a check-back after "not now") does not count. Every open first message and
   follow-up the API returns (the draft lists, one draft, the Overview queues, a lead's detail, the answers of draft writes) carries
   `otherVersions: [{ id, channel, status }]` (empty when there are none). Claude writes the WhatsApp version of an opted-in lead's
-  first message (§9); a person may write one in the app.
+  first message (§9); a person may write one in the app. A lead has **one open version per channel** of its first message and of its
+  follow-up: the API refuses a second one on the same channel (`POST /leads/:id/drafts`, `409`, "This lead already has an email first
+  message waiting (in review): change that one instead of writing a second"), for a person and Claude alike. Two writes of the same
+  message at once collide on one row per message (`sales_draft_slots`, in the same transaction), so the second one is refused too
+  (on a replica set; without transactions in local development the check is best effort). The old importer
+  (`scripts/import-dealflow.ts`) writes its drafts directly and is not held to it.
+- **A person's decision against WhatsApp.** A WhatsApp first message a person vetoed, or discarded themselves (`discardedBy`), means no
+  WhatsApp for that lead: it is not suggested again (the Overview's `whatsappVersionsToWrite`, Daybreak's `whatsappVersions`,
+  `get_lead`, `save_draft`), and Claude's `save_draft` refuses a new WhatsApp first message for it unless the person asks for one again
+  in the conversation (`whatsappAskedByPerson: true`). The API itself takes one (`POST /leads/:id/drafts`). A version a rule closed
+  (`closedReason`) or discarded (do not contact, the lead closed: no `discardedBy`) is no decision.
 - **Replies as versions.** The lead's replies to one message of theirs (`purpose: "reply"`, the same `inReplyTo`) are versions of one
   answer: when one is sent (any of the ways above), the lead's other open replies to that message close in the same transaction with
   `closedReason: "other_reply_sent"` ("Another reply to this message was sent", or "The WhatsApp reply to this message was sent"),
   `sentVersion` and the same audit; a reply being sent through an account keeps its lock. A reply can't go out while another reply to
   the same message is being sent (or its send is unclear), nor when another one went out after it was written (`409`, "only one reply
-  goes out"). Claude's tools refuse a second open reply to the same message (revise the waiting one).
+  goes out"). The API keeps **one open reply per message** (`POST /leads/:id/drafts`): a second is refused (`409`, "A reply to this
+  message is already waiting …" or "… is ready to send already …: send it, or discard it, before writing another"), with one
+  exception: a reply a person writes in the app (their own, or one sent to Claude's check: the Inbox's "Write my own reply")
+  replaces the replies to that message still waiting for a review, in the same transaction (`status: discarded`, `discardedBy` the
+  person, `discardedReason` "Replaced by a reply a person wrote to the same message", audited `sales.draft.discard` with `{ reason:
+  "replaced_by_reply", replacedBy }`). One that is ready or being sent stays, and the new one is refused. Claude never replaces one;
+  its tools refuse a second open reply to the same message first, in their words (revise the waiting one).
 - **Closing keeps the status.** A closed version or reply keeps the status it had (`statusBeforeClose`, internal). When the sent one
   bounces (its email came back, `docs/sales-channels.md` §3), the drafts it closed (`sentVersion.draftId` = the bounced draft) open
   again in that status (in review for one closed before the status was kept): `closedReason`, `sentVersion` and the discard fields go,
@@ -210,14 +226,18 @@ Default calendar: Monday to Saturday, Asia/Kolkata; festival blackout 2026-10-20
   moved past that message: a lead deleted, closed, won or on the do-not-contact list; another version (or reply to the same message)
   that reached the lead sent since; a first message no longer due (they wrote, another message reached them, or a call moved the lead
   on, e.g. a meeting booked); a follow-up once the lead left contacted or thinking, wrote to us (by when it happened or when it was
-  filed) or got another message since. A reopen that fails is logged and never stops the rest of the bounce. A bounced message is not "the version that went out": it blocks no other version, and Claude may write a new version
+  filed) or got another message since; and a closed draft stays closed when an open one of the same message on that channel (or an
+  open reply to the same message) was written since (one open version per channel, one open reply per message). A reopen that fails
+  is logged and never stops the rest of the bounce. A bounced message is not "the version that went out": it blocks no other version, and Claude may write a new version
   of a first message whose only sent version bounced (the lead's stage stays contacted).
 - **The version the person read.** `POST /drafts/:id/send` and `POST /drafts/:id/sent` take an optional `expectedUpdatedAt` (the
   draft's `updatedAt` the person saw). The draft is claimed only while it still has that `updatedAt` (in the claim's filter, so an
   edit, review or approval between opening and sending is caught atomically): otherwise `409 DRAFT_CHANGED`, "This draft changed
-  since you opened it: read it again before sending". Without it a send works as before. A claim given back because nothing went out
-  (the cap was used up, a last-moment refusal) restores the draft's `updatedAt`, so the same version can still be sent. A draft that is
-  being sent (or whose send is unclear) can't be approved meanwhile (`409`), like it can't be edited.
+  since you opened it: read it again before sending". Without it a send works as before. The send's own bookkeeping never moves the
+  draft's `updatedAt` (the lock, "sending", a send that failed, an unclear one, "It didn't go", a claim given back because nothing went
+  out): after any of them the same version can still be sent, or marked sent by hand. Only an edit, a review, an approval or a change of
+  status makes a new version. A draft that is being sent (or whose send is unclear) can't be approved meanwhile (`409`), like it can't
+  be edited.
 - **Where it goes.** Every open email, WhatsApp and Instagram draft the API returns (the draft lists, one draft, the Overview queues, a
   lead's detail, so the Inbox's replies, and the answers of draft writes) carries `sendTarget: { channel, to }`: what a send through a
   connected account would use (`recipientFor`): the lead's email address; for WhatsApp the number the lead wrote from on the account

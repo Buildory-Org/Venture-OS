@@ -543,9 +543,11 @@ test("the version the person read, replies as versions and where a send goes: ex
       const inbound = (await expect(201, "POST", `/sales/leads/${lead.id}/activities`, "member", { kind: "email", direction: "in", body: "Send details" })).data.activity;
       // A person's own reply (ready at once), opened, then edited by them (it stays ready): the version they read is gone.
       const draft = await readyDraft(expect, lead.id, { purpose: "reply", inReplyTo: inbound.id, subject: "Re: details", body: "Details below." });
-      // A second reply to the same message, sent to Claude's check: a version of the same answer.
-      const checked = (await expect(201, "POST", `/sales/leads/${lead.id}/drafts`, "member", { channel: "email", purpose: "reply", inReplyTo: inbound.id, subject: "Re: details", body: "Details, checked first.", checkByClaude: true })).data;
-      assert.equal(checked.status, "in_review");
+      // A second reply to the same message is refused while that one is ready (one open reply per message)...
+      assert.match((await expect(409, "POST", `/sales/leads/${lead.id}/drafts`, "member", { channel: "email", purpose: "reply", inReplyTo: inbound.id, subject: "Re: details", body: "Details, checked first.", checkByClaude: true })).body.error.message, /A reply to this message is ready to send already \(email\): send it, or discard it, before writing another/);
+      // ...so one waiting next to it is left from before that rule: a version of the same answer, in review.
+      const checked = { id: "legacy-checked-reply" };
+      await db.collection("sales_drafts").insertOne({ _id: checked.id, workspaceId: "workspace-a", ventureId: "venture-a", leadId: lead.id, inReplyTo: inbound.id, channel: "email", purpose: "reply", subject: "Re: details", body: "Details, checked first.", status: "in_review", authorId: "user-member", authorVia: "app", createdAt: new Date(), updatedAt: new Date() } as never);
       const seen = (await expect(200, "GET", `/sales/drafts/${draft.id}`, "member")).data;
       assert.deepEqual(seen.sendTarget, { channel: "email", to: "asha@versionpumps.example" });
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -594,4 +596,95 @@ test("the version the person read, replies as versions and where a send goes: ex
       for (const text of texts) assertNoSecrets(text, "an answer");
     }, "channels_expected");
   } finally { email.restore(); whatsapp.restore(); }
+});
+
+test("a send that didn't go keeps the version the person read: after a failed send, an unclear one settled as not sent, or a send nobody finished, the same expectedUpdatedAt sends it (or marks it sent by hand); an edit still asks to read it again", { skip }, async () => {
+  const email = standIn("email");
+  const goes = email.state.answer;
+  try {
+    await withSalesApp(async ({ api, db }) => {
+      const { expect, texts } = caller(api);
+      const box = account((await expect(201, "POST", "/sales/channels", "member", mailbox("member@acme.example"))).body);
+      const opened = async (id: string) => (await expect(200, "GET", `/sales/drafts/${id}`, "member")).data;
+
+      // Failed: nothing went out, the day's send is given back, and the draft stays ready, saying why, as the version the person read.
+      const draft = await readyDraft(expect, (await newLead(expect, "Retry Pumps")).id);
+      const read = await opened(draft.id);
+      email.state.answer = async () => ({ state: "failed", error: "The mail server refused the login" });
+      assert.equal((await expect(502, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-retry-0001", expectedUpdatedAt: read.updatedAt })).body.error.code, "SEND_FAILED");
+      const afterFail = await opened(draft.id);
+      assert.deepEqual([afterFail.status, afterFail.delivery.state, afterFail.delivery.error, afterFail.updatedAt, afterFail.sendLock, await counter(db, "email")], ["ready", "failed", "The mail server refused the login", read.updatedAt, undefined, 0]);
+      // The retry with the version read goes.
+      email.state.answer = goes;
+      const retried = await expect(201, "POST", `/sales/drafts/${draft.id}/send`, "member", { requestId: "req-retry-0002", expectedUpdatedAt: read.updatedAt });
+      assert.deepEqual([retried.data.draft.status, email.sends.length, await counter(db, "email")], ["sent", 2, 1]);
+
+      // Unclear, then "It didn't go": the version read is sent again.
+      const unclear = await readyDraft(expect, (await newLead(expect, "Unclear Tiles")).id);
+      const readUnclear = await opened(unclear.id);
+      email.state.answer = async () => ({ state: "uncertain", error: "The mail server stopped answering while the message was being sent" });
+      await expect(202, "POST", `/sales/drafts/${unclear.id}/send`, "member", { requestId: "req-retry-0003", expectedUpdatedAt: readUnclear.updatedAt });
+      const waiting = await opened(unclear.id);
+      assert.deepEqual([waiting.delivery.state, waiting.updatedAt], ["uncertain", readUnclear.updatedAt]);
+      await expect(200, "POST", `/sales/drafts/${unclear.id}/delivery`, "member", { outcome: "not_sent" });
+      const freed = await opened(unclear.id);
+      assert.deepEqual([freed.delivery.state, freed.updatedAt], ["failed", readUnclear.updatedAt]);
+      email.state.answer = goes;
+      assert.equal((await expect(201, "POST", `/sales/drafts/${unclear.id}/send`, "member", { requestId: "req-retry-0004", expectedUpdatedAt: readUnclear.updatedAt })).data.draft.status, "sent");
+
+      // A send nobody finished (its process died: a "sending" lock five minutes old) reads as unclear; "It didn't go" frees it, and the person
+      // marks the version they read as sent by hand.
+      const dead = await readyDraft(expect, (await newLead(expect, "Dead Steel")).id);
+      const readDead = await opened(dead.id);
+      const fiveAgo = new Date(Date.now() - 5 * 60_000);
+      await db.collection("sales_drafts").updateOne({ _id: dead.id }, { $set: { sendLock: { requestId: "req-dead-0001", by: "user-member", at: fiveAgo, accountId: box.id, channel: "email" }, delivery: { state: "sending", at: fiveAgo, accountId: box.id }, sendAttempts: 1 } });
+      assert.equal((await opened(dead.id)).delivery.state, "uncertain");
+      await expect(200, "POST", `/sales/drafts/${dead.id}/delivery`, "member", { outcome: "not_sent" });
+      assert.equal((await opened(dead.id)).updatedAt, readDead.updatedAt);
+      assert.equal((await expect(201, "POST", `/sales/drafts/${dead.id}/sent`, "member", { expectedUpdatedAt: readDead.updatedAt })).data.draft.status, "sent");
+
+      // A real change still asks to read it again: edited after a failed send, the version read is gone.
+      const edited = await readyDraft(expect, (await newLead(expect, "Edited Gears")).id);
+      const readEdited = await opened(edited.id);
+      email.state.answer = async () => ({ state: "failed", error: "Mailbox full" });
+      await expect(502, "POST", `/sales/drafts/${edited.id}/send`, "member", { requestId: "req-retry-0005", expectedUpdatedAt: readEdited.updatedAt });
+      email.state.answer = goes;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await expect(200, "PATCH", `/sales/drafts/${edited.id}`, "member", { body: "Hello Asha, a shorter note." });
+      await expect(200, "POST", `/sales/drafts/${edited.id}/review`, "member2", { result: "pass" });
+      assert.equal((await expect(409, "POST", `/sales/drafts/${edited.id}/send`, "member", { requestId: "req-retry-0006", expectedUpdatedAt: readEdited.updatedAt })).body.error.code, "DRAFT_CHANGED");
+      assert.equal(email.sends.length, 5);
+      for (const text of texts) assertNoSecrets(text, "an answer");
+    }, "channels_retry");
+  } finally { email.restore(); }
+});
+
+test("where a send goes, on a long list: sendTarget reads every conversation linked to the leads listed (no cap), so it names the number the send uses although another lead has thousands of newer links", { skip }, async () => {
+  const whatsapp = standIn("whatsapp");
+  try {
+    await withSalesApp(async ({ api, db }) => {
+      const { expect } = caller(api);
+      const number = account((await expect(201, "POST", "/sales/channels", "lead", whatsappNumber())).body);
+      const optIn = { at: new Date(), by: "user-member", how: "they_messaged" };
+      const busy = await newLead(expect, "Busy Tiles");
+      const quiet = await newLead(expect, "Quiet Pumps");
+      await db.collection("opportunities").updateMany({ _id: { $in: [busy.id, quiet.id] } }, { $set: { whatsappOptIn: optIn } });
+      // The quiet lead wrote once from a UK number, a day ago; the busy one has 2,100 newer links on the same number (more than the old cap).
+      const link = (id: string, leadId: string, from: string, at: Date) => ({ _id: id, workspaceId: "workspace-a", accountId: number.id, externalUserId: from, leadId, ventureId: "venture-a", kind: "whatsapp", how: "linked", linkedBy: "user-member", createdAt: at, updatedAt: at });
+      await db.collection("sales_channel_contacts").insertOne(link("link-quiet", quiet.id, "+447700900123", new Date(Date.now() - 86_400_000)) as never);
+      await db.collection("sales_channel_contacts").insertMany(Array.from({ length: 2_100 }, (_, i) => link(`link-busy-${i}`, busy.id, `+9198${10_000_000 + i}`, new Date(Date.now() - i))) as never[]);
+      const busyChat = await readyDraft(expect, busy.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      const quietChat = await readyDraft(expect, quiet.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      const listed = (await expect(200, "GET", "/sales/drafts?status=ready", "member")).data as any[];
+      assert.deepEqual(listed.find((row) => row.id === quietChat.id).sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      assert.deepEqual(listed.find((row) => row.id === busyChat.id).sendTarget, { channel: "whatsapp", to: "+919810000000" });
+      // One draft, the lead's detail and the Overview say the same, and the sends go exactly there.
+      assert.deepEqual((await expect(200, "GET", `/sales/drafts/${quietChat.id}`, "member")).data.sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      assert.deepEqual((await expect(200, "GET", `/sales/leads/${quiet.id}`, "member")).data.drafts.find((row: any) => row.id === quietChat.id).sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      assert.deepEqual((await expect(200, "GET", "/sales/overview?ventureId=venture-a&owner=me", "member")).data.readyToSend.find((row: any) => row.id === quietChat.id).sendTarget, { channel: "whatsapp", to: "+447700900123" });
+      await expect(201, "POST", `/sales/drafts/${quietChat.id}/send`, "member", { requestId: "req-many-0001", template: { name: "hello", language: "en" } });
+      await expect(201, "POST", `/sales/drafts/${busyChat.id}/send`, "member", { requestId: "req-many-0002", template: { name: "hello", language: "en" } });
+      assert.deepEqual(whatsapp.sends.map((send) => send.to), ["+447700900123", "+919810000000"]);
+    }, "channels_many_links");
+  } finally { whatsapp.restore(); }
 });

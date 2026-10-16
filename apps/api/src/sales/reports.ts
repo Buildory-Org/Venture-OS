@@ -4,13 +4,13 @@
 // Honest numbers: every share carries its sample (n); below REPORT_MIN_N a share, median or average has no value (the screen says
 // "too few"), below REPORT_SMALL_N it is marked as a small sample.
 import type { Document } from "mongodb";
-import { CALL_OUTCOMES, EXIT_STAGES, LOST_REASONS, PRE_CONTACT_STAGES, REPLY_TYPES, REPORT_MIN_N, REPORT_SMALL_N, SALES_CHANNELS, WON_STAGES, isoDateSchema, type SalesStage } from "@venture-studio/contracts";
+import { CALL_OUTCOMES, EXIT_STAGES, LOST_REASONS, OPEN_DRAFT_STATUSES, PRE_CONTACT_STAGES, REPLY_TYPES, REPORT_MIN_N, REPORT_SMALL_N, SALES_CHANNELS, WON_STAGES, isoDateSchema, type SalesStage } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 import { loadVenture, ventureScope } from "./access.js";
 import { settingsFor, type SalesCtx } from "./ctx.js";
-import { OPEN_DRAFT_STATUSES, needsPersonApproval } from "./drafts.js";
+import { needsPersonApproval } from "./drafts.js";
 import { isCappedChannel } from "./leads.js";
 import { offerClause } from "./offers.js";
 import { whatsappVersionsToWrite } from "./queries.js";

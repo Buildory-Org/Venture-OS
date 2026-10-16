@@ -33,6 +33,16 @@ const WIDE = "(min-width: 1024px)";
 const subscribeWide = (callback: () => void) => { const query = window.matchMedia(WIDE); query.addEventListener("change", callback); return () => query.removeEventListener("change", callback); };
 const useWide = () => useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE).matches, () => true);
 
+const pad = (value: number) => String(value).padStart(2, "0");
+/** A time as this device's date and time inputs show it ("2026-11-20", "17:00"). */
+const localParts = (iso: string) => { const at = new Date(iso); return { date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`, time: `${pad(at.getHours())}:${pad(at.getMinutes())}` }; };
+/** The date picked, moved by some days ("2026-11-20" + 7). */
+const addDays = (day: string, days: number) => { const at = new Date(`${day}T12:00:00`); at.setDate(at.getDate() + days); return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`; };
+/** "Nov 20, 2026, 5:00 PM", in this device's time zone. */
+const displayDue = (iso: string) => new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+const chipClass = "min-h-7 rounded-lg border border-neutral-200 bg-white px-2 text-[11px] font-semibold text-neutral-600 transition-[background-color,transform] duration-150 hover:bg-neutral-50 active:scale-[0.97] disabled:opacity-50";
+const PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+
 /** Mirrors the API: the assignee, reviewer, venture leads, and admins update status and people. */
 const updatesWork = (session: Session, task: Task) => ["admin", "venture_head"].includes(session.membership.role) || task.assigneeId === session.user.id || task.reviewerId === session.user.id;
 
@@ -54,6 +64,11 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
   const [evidenceDescription, setEvidenceDescription] = useState("");
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [comment, setComment] = useState("");
+  // The plan as typed: priority, due date and time on this device, and estimate.
+  const [plan, setPlan] = useState({ priority: "medium" as Task["priority"], date: "", time: "", minutes: 0 });
+  // When the plan was last edited: what its warnings measure "already passed" and "time left" against.
+  const [planEditedAt, setPlanEditedAt] = useState(() => Date.now());
+  const editPlan = (change: (value: typeof plan) => Partial<typeof plan>) => { setPlan((value) => ({ ...value, ...change(value) })); setPlanEditedAt(Date.now()); };
   const [editingDetails, setEditingDetails] = useState(false);
   const [draft, setDraft] = useState({ title: "", outcome: "", definitionOfDone: "", evidenceRequirement: "", details: "", tags: "" });
   // The details as they were when editing began: only fields changed since then are sent, so a refresh can't revert someone else's edit.
@@ -68,7 +83,7 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
   // Items present at first load stay still; anything added afterwards rises in.
   const [knownIds, setKnownIds] = useState<Set<string> | null>(null);
   // The status and people as last loaded: a refresh only updates the fields the server changed, keeping unsaved picks.
-  const loaded = useRef<{ status: string; assigneeId: string; reviewerId: string; blocker: string } | null>(null);
+  const loaded = useRef<{ status: string; assigneeId: string; reviewerId: string; blocker: string; priority: string; dueAt: string; minutes: number } | null>(null);
   // Evidence fields filled in after an upload don't count as typing when closing.
   const [prefilled, setPrefilled] = useState({ title: "", description: "" });
   const menuRoot = useRef<HTMLDivElement>(null);
@@ -88,12 +103,15 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
       if (!active) return;
       setDetail(result);
       setKnownIds((current) => current ?? new Set([...result.evidence, ...result.updates, ...result.attachments].map((item) => item.id)));
-      const server = { status: result.task.status, assigneeId: result.task.assigneeId, reviewerId: result.task.reviewerId ?? "", blocker: result.task.blocker ?? "" };
+      const server = { status: result.task.status, assigneeId: result.task.assigneeId, reviewerId: result.task.reviewerId ?? "", blocker: result.task.blocker ?? "", priority: result.task.priority, dueAt: result.task.dueAt, minutes: result.task.estimatedMinutes };
       const before = loaded.current;
       if (!before || before.status !== server.status) setStatus(server.status);
       if (!before || before.assigneeId !== server.assigneeId) setAssigneeId(server.assigneeId);
       if (!before || before.reviewerId !== server.reviewerId) setReviewerId(server.reviewerId);
       if (!before || before.blocker !== server.blocker) setBlocker(server.blocker);
+      if (!before || before.priority !== server.priority) setPlan((value) => ({ ...value, priority: result.task.priority }));
+      if (!before || before.dueAt !== server.dueAt) setPlan((value) => ({ ...value, ...localParts(server.dueAt) }));
+      if (!before || before.minutes !== server.minutes) setPlan((value) => ({ ...value, minutes: server.minutes }));
       loaded.current = server;
       setError("");
     }).catch((cause: unknown) => { if (active) setError(taskError(cause)); }));
@@ -128,12 +146,36 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
   // A task's details belong to whoever created it, and admins; so does deleting it.
   const owns = !!task && (role === "admin" || (["venture_head", "contributor"].includes(role) && task.creatorId === session.user.id));
   const canEditDetails = owns && !!task && !["done", "cancelled"].includes(task.status);
+  // Mirrors the API: venture leads and admins plan a task (priority, due date, estimate). Its due date and estimate stay once work is
+  // handed in (evidence waiting, accepted or an exception: the on-time record measures the hand-in against them) or it is finished.
+  const canPlan = !!task && ["admin", "venture_head"].includes(role);
+  const handedIn = !!detail && detail.evidence.some((item) => ["pending", "accepted", "exception"].includes(item.reviewStatus));
+  const finished = !!task && ["done", "cancelled"].includes(task.status);
+  const planLocked = handedIn || finished;
+  // The due date counts as moved only when its date or time was changed here (a due time with seconds, or one in a repeated hour,
+  // shows the same in the inputs and isn't moved by saving the priority).
+  const shownDue = task ? localParts(task.dueAt) : { date: "", time: "" };
+  const dueChanged = !planLocked && (plan.date !== shownDue.date || plan.time !== shownDue.time);
+  const plannedDue = plan.date && plan.time ? new Date(`${plan.date}T${plan.time}`) : null;
+  const minutesValid = Number.isInteger(plan.minutes) && plan.minutes >= 1 && plan.minutes <= 100_800;
+  const minutesChanged = !planLocked && !!task && plan.minutes !== task.estimatedMinutes;
+  const planChange = !task ? {} : {
+    ...(plan.priority !== task.priority ? { priority: plan.priority } : {}),
+    ...(dueChanged && plannedDue && !Number.isNaN(plannedDue.getTime()) ? { dueAt: plannedDue.toISOString() } : {}),
+    ...(minutesChanged ? { estimatedMinutes: plan.minutes } : {}),
+  };
+  const planDirty = Object.keys(planChange).length > 0;
+  const planValid = (!dueChanged || (!!plannedDue && !Number.isNaN(plannedDue.getTime()))) && (!minutesChanged || minutesValid);
+  // Warnings only about what was changed here, measured from the last edit.
+  const planPast = dueChanged && !!plannedDue && plannedDue.getTime() < planEditedAt;
+  const planTight = (dueChanged || minutesChanged) && !planPast && !!plannedDue && minutesValid && plannedDue.getTime() - planEditedAt < plan.minutes * 60_000;
+  const deviceZone = typeof Intl === "undefined" ? "" : Intl.DateTimeFormat().resolvedOptions().timeZone;
   const venture = session.hierarchy.ventures.find((item) => item.id === task?.ventureId);
   const group = venture?.groups.find((item) => item.id === task?.groupId);
   const images: ChatAttachment[] = useMemo(() => (detail?.attachments ?? []).filter((file) => INLINE_IMAGE.test(file.contentType)), [detail]);
   const otherFiles = (detail?.attachments ?? []).filter((file) => !INLINE_IMAGE.test(file.contentType));
   const pendingEvidence = (detail?.evidence ?? []).filter((item) => item.reviewStatus === "pending").length;
-  const dirty = (editingDetails && JSON.stringify(draft) !== JSON.stringify(draftBase)) || Boolean(comment.trim() || evidenceUrl.trim() || evidenceTitle !== prefilled.title || evidenceDescription !== prefilled.description);
+  const dirty = (editingDetails && JSON.stringify(draft) !== JSON.stringify(draftBase)) || (canPlan && planDirty) || Boolean(comment.trim() || evidenceUrl.trim() || evidenceTitle !== prefilled.title || evidenceDescription !== prefilled.description);
 
   const requestClose = useCallback(() => {
     if (busy) return;
@@ -299,8 +341,27 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
         <button type="submit" disabled={busy || !assigneeId || (!!task.reviewerId && !reviewerId) || (assigneeId === task.assigneeId && reviewerId === (task.reviewerId ?? ""))} className={clsx(secondaryClass, "w-full")}><ActionLabel busy={pending === "people"} done={saved === "people"} idle="Save people" /></button>
       </form> : <dl className="space-y-1.5 text-sm"><div className="flex justify-between gap-3"><dt className="text-neutral-500">Assignee</dt><dd className="font-medium text-neutral-800">{memberName(task.assigneeId)}</dd></div><div className="flex justify-between gap-3"><dt className="text-neutral-500">Reviewer</dt><dd className="font-medium text-neutral-800">{task.reviewerId ? memberName(task.reviewerId) : "None"}</dd></div></dl>}
     </section>
-    <section className="border-t border-neutral-100 pt-5"><h3 className="mb-2 text-sm font-semibold text-neutral-900">Plan</h3>
-      <dl className="space-y-1.5 text-sm">{([["Priority", `${task.priority[0]!.toUpperCase()}${task.priority.slice(1)}`], ["Due", displayDate(task.dueAt)], ["Estimate", `${task.estimatedMinutes} min`], ["Time zone", task.timezone], ["Venture", venture?.name ?? "Venture"], ["Group", group?.name ?? "Group"], ["Created by", memberName(task.creatorId)]] as const).map(([name, value]) => <div key={name} className="flex justify-between gap-3"><dt className="text-neutral-500">{name}</dt><dd className="min-w-0 truncate text-right font-medium text-neutral-800">{value}</dd></div>)}</dl>
+    <section className="space-y-3 border-t border-neutral-100 pt-5"><h3 className="text-sm font-semibold text-neutral-900">Plan</h3>
+      {canPlan && <form onSubmit={(event) => { event.preventDefault(); if (!planDirty || !planValid) return; mutate(() => updateLiveTask(task.id, planChange), undefined, "plan"); }} className="space-y-3">
+        <Field label="Priority"><Select className={inputClass} value={plan.priority} onChange={(event) => editPlan(() => ({ priority: event.target.value as Task["priority"] }))}>{PRIORITIES.map((item) => <option key={item} value={item}>{item[0]!.toUpperCase()}{item.slice(1)}</option>)}</Select></Field>
+        <div className="grid grid-cols-[minmax(0,1fr)_8.5rem] gap-2">
+          <Field label="Due date"><input required type="date" disabled={planLocked} aria-describedby={planLocked ? "task-plan-locked" : undefined} className={clsx(inputClass, "!px-2.5")} value={plan.date} onChange={(event) => editPlan(() => ({ date: event.target.value }))} /></Field>
+          <Field label="Time"><input required type="time" disabled={planLocked} aria-describedby={planLocked ? "task-plan-locked" : undefined} className={clsx(inputClass, "!px-2.5")} value={plan.time} onChange={(event) => editPlan(() => ({ time: event.target.value }))} /></Field>
+        </div>
+        {!planLocked && plan.date && <div role="group" aria-label="Move the due date" className="-mt-1 flex flex-wrap gap-1.5">{([["+1 day", 1], ["+3 days", 3], ["+1 week", 7]] as const).map(([text, days]) => <button key={text} type="button" onClick={() => editPlan((value) => ({ date: addDays(value.date, days) }))} className={chipClass}>{text}</button>)}</div>}
+        {!planLocked && deviceZone && deviceZone !== task.timezone && <p className="-mt-1 text-[11px] leading-4 text-neutral-500">In your time zone ({deviceZone}); the task&apos;s is {task.timezone}.</p>}
+        <Field label="Estimate (minutes)"><input required type="number" min={1} max={100800} step={1} disabled={planLocked} aria-invalid={minutesChanged && !minutesValid} aria-describedby={planLocked ? "task-plan-locked" : undefined} className={inputClass} value={plan.minutes || ""} onChange={(event) => editPlan(() => ({ minutes: Number(event.target.value) }))} /></Field>
+        {minutesChanged && !minutesValid && <p className="-mt-1 text-[11px] font-semibold leading-4 text-danger-text">Whole minutes, from 1 to 100,800.</p>}
+        {planLocked && <p id="task-plan-locked" className="text-[11px] leading-4 text-neutral-500">{handedIn ? "Work was handed in, so the due date and estimate stay as they were: its on-time record is measured against them." : "Finished: reopen it to move its due date or estimate."}</p>}
+        {/* Always there, so a warning that appears is read out. */}
+        <div aria-live="polite" className="empty:hidden space-y-2">
+          {planPast && <p className="rounded-lg bg-warning-surface px-3 py-2 text-xs font-semibold text-warning-text">That time has already passed: the task will show as overdue.</p>}
+          {planTight && <p className="rounded-lg bg-warning-surface px-3 py-2 text-xs font-semibold text-warning-text">Deadline risk: {plan.minutes} estimated minutes is more than the time left before then.</p>}
+        </div>
+        {dueChanged && task.assigneeId !== session.user.id && <p className="text-[11px] leading-4 text-neutral-500">{memberName(task.assigneeId)} is told about the new due date{task.startedAt ? "" : ", and the start reminder moves with it"}.</p>}
+        <button type="submit" disabled={busy || !planDirty || !planValid} className={clsx(secondaryClass, "w-full")}><ActionLabel busy={pending === "plan"} done={saved === "plan"} idle="Save plan" /></button>
+      </form>}
+      <dl className="space-y-1.5 text-sm">{([...(canPlan ? [] : [["Priority", `${task.priority[0]!.toUpperCase()}${task.priority.slice(1)}`], ["Due", displayDue(task.dueAt)], ["Estimate", `${task.estimatedMinutes} min`]] as const), ["Time zone", task.timezone], ["Venture", venture?.name ?? "Venture"], ["Group", group?.name ?? "Group"], ["Created by", memberName(task.creatorId)]] as const).map(([name, value]) => <div key={name} className="flex justify-between gap-3"><dt className="text-neutral-500">{name}</dt><dd className="min-w-0 truncate text-right font-medium text-neutral-800">{value}</dd></div>)}</dl>
     </section>
   </div>;
 
@@ -319,7 +380,7 @@ export function TaskDialog({ id, session, memberName, initialTab, onClose, onCha
         <div className="min-w-0 flex-1">
           {task && <div className="mb-1.5 flex flex-wrap items-center gap-1.5"><Badge tone={priorityTone(task)}>{task.priority}</Badge><Badge tone={statusTone(task)}>{statusLabel(task.status)}</Badge>{atRisk(task) && <Badge tone="amber">Deadline risk</Badge>}</div>}
           <h2 id="task-dialog-title" className="text-lg font-bold leading-snug text-neutral-900 [overflow-wrap:anywhere]">{task?.title ?? "Task"}</h2>
-          {task && <p className="mt-1 text-xs text-neutral-500">{venture?.name ?? "Venture"} · Due {displayDate(task.dueAt)} · {task.estimatedMinutes} min · {memberName(task.assigneeId)}{task.reviewerId ? ` → ${memberName(task.reviewerId)}` : ""}</p>}
+          {task && <p className="mt-1 text-xs text-neutral-500">{venture?.name ?? "Venture"} · Due {displayDue(task.dueAt)} · {task.estimatedMinutes} min · {memberName(task.assigneeId)}{task.reviewerId ? ` → ${memberName(task.reviewerId)}` : ""}</p>}
         </div>
         {task && <div ref={menuRoot} className="relative shrink-0" onKeyDown={menuKeys}>
           <button ref={menuButton} type="button" aria-label="Task actions" aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => { menuByKeyboard.current = event.detail === 0; setMenuOpen((value) => !value); }} className={clsx("grid h-9 w-9 place-items-center rounded-full text-neutral-500 transition-[background-color,color,transform] duration-150 hover:bg-neutral-100 hover:text-neutral-800 active:scale-[0.96]", menuOpen && "bg-neutral-100 text-neutral-800")}><MoreHorizontal size={18} /></button>

@@ -224,7 +224,7 @@ export function ExpenseForm({ settings, ventures, expense, fixedVentureId, defau
   return <DetailDrawer layout="dialog" wide={receiptColumn} title={title} subtitle={readOnly ? "You can view expenses but not change them." : "Amounts and labels only: never bank, card or account numbers."} onClose={onClose} dirty={!readOnly && dirty} footer={actions || undefined}>
     <div className={clsx("grid grid-cols-1 gap-5", receiptColumn && "lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] lg:items-start")}>
     {receiptColumn && <div className="grid min-w-0 gap-3 lg:sticky lg:top-0">
-      <ReceiptSection receiptId={receiptId} canEdit={!readOnly} onReceipt={receiptChanged} />
+      <ReceiptSection receiptId={receiptId} canEdit={!readOnly} company={knownCompany} onReceipt={receiptChanged} />
       <p role="status" className={receiptNote ? "rounded-xl bg-primary-50 px-3 py-2 text-xs leading-5 text-primary-900" : "sr-only"}>{receiptNote}</p>
     </div>}
     <div className="grid min-w-0 gap-5">

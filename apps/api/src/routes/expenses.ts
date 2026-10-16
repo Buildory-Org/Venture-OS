@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import express, { Router, type Request } from "express";
+import express, { Router, type Request, type Response } from "express";
 import type { ClientSession } from "mongodb";
 import {
   addMonths, currencyDigits, DEFAULT_EXPENSE_CATEGORIES, expenseAccessFor, expenseAccessAtLeast, expenseAccessInputSchema, expenseCategoryInputSchema, expenseCategoryUpdateSchema, expenseChangeSchema, expenseGroupInputSchema, expenseRatesQuerySchema, MAX_EXPENSE_PAISE, type ForeignAmount,
@@ -13,7 +13,7 @@ import { atomic, type AppDb, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
 import { ratesBetween, rupeeRate } from "../exchange-rates.js";
 import { COMPANIES, fetchLogoInTurn, logoFromImage, logoVersion, resolveCompany } from "../expense-companies.js";
-import { prepareReceipt, readReceipt } from "../expense-receipts.js";
+import { copyReceipt, prepareReceipt, readReceipt, type PreparedReceipt } from "../expense-receipts.js";
 import { jsonValue } from "../json.js";
 import { overLimit } from "../middleware.js";
 import type { LocalObjectStore, ObjectStore } from "../storage.js";
@@ -31,6 +31,8 @@ const SETTINGS = "expense_settings";
 const EXPENSES = "expenses";
 const RECEIPTS = "expense_receipts";
 const RECEIPTS_PER_HOUR = 40;
+/** A full copy not saved this long after it was asked for never will be (the copy gives up after two minutes). */
+const COPY_WAIT_MS = 150_000;
 const LOGO_FETCHES_PER_HOUR = 30;
 const MAX_CATEGORIES = 60;
 const MAX_GROUPS = 100;
@@ -174,8 +176,32 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
   const receiptJson = (doc: AppDocument, settings: Settings, me: ExpenseAccess) => {
     const data = doc.data as { categoryId?: string | null } | null | undefined;
     const suggested = data?.categoryId && visibleCategories(settings, me).some((category) => category.id === data.categoryId) ? data.categoryId : null;
-    return jsonValue({ id: doc._id, contentType: doc.contentType, size: doc.size, data: data ? { ...data, categoryId: suggested } : null, ...(doc.error ? { error: doc.error } : {}), ...(doc.expenseId ? { expenseId: doc.expenseId } : {}), createdAt: doc.createdAt });
+    // The full copy is saved apart from the details (it comes later). One still being written after COPY_WAIT_MS never will be (the
+    // API restarted meanwhile): it counts as failed, and Read again tries anew.
+    const layout = Array.isArray(doc.layout) ? doc.layout : [];
+    const writing = doc.copyState === "writing" && doc.copyStartedAt instanceof Date && Date.now() - doc.copyStartedAt.getTime() < COPY_WAIT_MS;
+    const copy = !data ? undefined : writing ? "writing" : !layout.length && (doc.copyState === "writing" || doc.copyState === "failed") ? "failed" : undefined;
+    return jsonValue({ id: doc._id, contentType: doc.contentType, size: doc.size, data: data ? { ...data, categoryId: suggested, layout } : null, ...(copy ? { copy } : {}), ...(doc.error ? { error: doc.error } : {}), ...(doc.expenseId ? { expenseId: doc.expenseId } : {}), createdAt: doc.createdAt });
   };
+  /**
+   * Reads a receipt's details and, at the same time, writes out its full copy: the details are waited for (they fill in the form), the
+   * copy is saved on the receipt when it comes (in a few seconds more for a long receipt), unless a newer reading began meanwhile. The
+   * page closing before the details come stops both, and so does a failed read of the details.
+   */
+  async function readAndCopy(workspaceId: string, id: string, file: PreparedReceipt, settings: Settings, me: ExpenseAccess, res: Response) {
+    const gone = new AbortController();
+    res.on("close", () => { if (!res.writableFinished) gone.abort(); });
+    // Marked as being written before it is asked for, so a copy never runs with nothing waiting to save it.
+    const copyStartedAt = config.ANTHROPIC_API_KEY ? new Date() : null;
+    if (copyStartedAt) await db.collection(RECEIPTS).updateOne({ _id: id as never, workspaceId }, { $set: { copyState: "writing", copyStartedAt } });
+    const copying = copyStartedAt ? copyReceipt(config.ANTHROPIC_API_KEY, file, gone.signal) : null;
+    const read = await readReceipt(config.ANTHROPIC_API_KEY, file, visibleCategories(settings, me).filter((category) => !category.archived), gone.signal);
+    if ("error" in read) gone.abort();
+    void copying?.then((copy) => db.collection(RECEIPTS).updateOne({ _id: id as never, workspaceId, copyStartedAt }, "layout" in copy ? { $set: { layout: copy.layout, copyState: "done" } } : { $set: { copyState: "failed" } }))
+      .catch((error: unknown) => console.warn(JSON.stringify({ level: "warn", event: "expense_receipt_copy_save_failed", receiptId: id, message: error instanceof Error ? error.message : String(error) })));
+    return { read, copyStartedAt };
+  }
+
   /** Deletes receipts attached to nothing for a day, a few at a time (run when receipts are added and when the list is opened). */
   async function dropOrphanReceipts(workspaceId: string) {
     const old = await db.collection(RECEIPTS).find({ workspaceId, orphanedAt: { $lt: new Date(Date.now() - 86_400_000) } }).limit(20).toArray();
@@ -438,14 +464,37 @@ export function expenseRoutes(database: Database, config: AppConfig, store: Obje
     const now = new Date();
     await db.collection(RECEIPTS).insertOne({ _id: id, workspaceId, ownerId: actor.id, objectKey, storage: store.kind, contentType: file.contentType, size: file.bytes.length, orphanedAt: now, createdAt: now } as never);
     await store.put(objectKey, file.bytes, file.contentType);
-    // A read the person no longer waits for (they closed the page) is stopped.
-    const gone = new AbortController();
-    res.on("close", () => { if (!res.writableFinished) gone.abort(); });
-    const read = await readReceipt(config.ANTHROPIC_API_KEY, file, visibleCategories(settings, me).filter((category) => !category.archived), gone.signal);
-    const doc = await db.collection(RECEIPTS).findOneAndUpdate({ _id: id as never }, { $set: read }, { returnDocument: "after" });
+    const { read } = await readAndCopy(workspaceId, id, file, settings, me, res);
+    const doc = await db.collection(RECEIPTS).findOneAndUpdate({ _id: id as never }, { $set: "data" in read ? { data: read.data } : { error: read.error } }, { returnDocument: "after" });
     await record("expense.receipt.upload", "expense_receipt", id, { contentType: file.contentType, read: "data" in read });
     res.status(201).json(ok(receiptJson(doc!, settings, me)));
     sweepReceipts(workspaceId);
+  });
+
+  // Reads a kept receipt again, details and full copy (such as one read before the full copy existed). Only the receipt's reading
+  // changes: its expense keeps what was saved. A read that fails leaves the one before. Counts against the same hourly limit as adding.
+  router.post("/expenses/receipts/:id/read", async (req, res) => {
+    appOnly(req, "Receipts are read again in the app");
+    const { actor, workspaceId, settings, me, record } = await gate(req, "edit");
+    const id = idSchema.parse(req.params.id);
+    const doc = await visibleReceipt(workspaceId, id, actor.id, settings, me);
+    const wait = await overLimit(db, `expense-receipts:${actor.id}`, RECEIPTS_PER_HOUR, 3_600_000);
+    if (wait) { res.setHeader("retry-after", wait); throw new AppError(429, "RATE_LIMITED", "That's a lot of receipts for one hour: try again later"); }
+    const fileStore = fileStoreFor(doc, store, localStore);
+    if (!fileStore) throw new AppError(503, "INTEGRATION_UNAVAILABLE", "The receipt's storage is not configured here");
+    const bytes = await fileStore.read(String(doc.objectKey), MAX_RECEIPT_BYTES);
+    const file: PreparedReceipt = doc.contentType === "application/pdf" ? await prepareReceipt(bytes) : { bytes, contentType: "image/webp" };
+    const { read, copyStartedAt } = await readAndCopy(workspaceId, id, file, settings, me, res);
+    // Asking again won't help with no key, or a PDF too long or that won't open; it may with a busy or slow reader.
+    if ("error" in read) {
+      const reason = read.error.replace(/: type the details in\.$/, ".").replace(/ Type the details in\.$/, "");
+      throw read.lasting ? new AppError(400, "BAD_REQUEST", reason) : new AppError(503, "INTEGRATION_UNAVAILABLE", `${reason.replace(/\.$/, "")}. Try again in a moment.`);
+    }
+    // Saved only on the receipt as it was when this reading began: not one let go meanwhile, nor one read again since.
+    const updated = await db.collection(RECEIPTS).findOneAndUpdate({ _id: id as never, workspaceId, $or: [{ expenseId: { $exists: true } }, { ownerId: { $exists: true } }], ...(copyStartedAt ? { copyStartedAt } : {}) }, { $set: { data: read.data }, $unset: { error: "" } }, { returnDocument: "after" });
+    if (!updated) throw new AppError(409, "CONFLICT", "This receipt changed while it was read: open it again");
+    await record("expense.receipt.read", "expense_receipt", id, { contentType: String(doc.contentType) });
+    res.json(ok(receiptJson(updated, settings, me)));
   });
 
   router.get("/expenses/receipts/:id", async (req, res) => {

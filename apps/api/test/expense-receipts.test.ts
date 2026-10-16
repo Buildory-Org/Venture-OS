@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import { expenseReceiptSchema, successEnvelope } from "@venture-studio/contracts";
-import { cleanReceipt, prepareReceipt, readReceipt, RECEIPT_MODEL, receiptReadFormat } from "../src/expense-receipts.js";
+import { cleanLayout, cleanReceipt, copyReceipt, prepareReceipt, readReceipt, RECEIPT_MODEL, receiptCopyFormat, receiptReadFormat } from "../src/expense-receipts.js";
+import { internalHeaders } from "../src/internal-auth.js";
 import { DEFAULT_EXPENSE_CATEGORIES } from "../src/routes/expenses.js";
 import { withSalesApp } from "./mcp-sales-harness.js";
 
@@ -23,7 +24,19 @@ const READ = {
   items: [{ name: "Edamame", quantity: 1, unitPrice: 9, amount: 9 }, { name: "A la Carte Sushi", quantity: 1, unitPrice: 243, amount: 243 }],
   subtotal: 262.5, discount: null, taxes: [{ label: "Sales Tax", ratePercent: 8.875, amount: 23.3 }], tip: null, roundOff: null, total: 285.8,
   paymentMethod: "card", cardLast4: "1111", footer: "Paid with card 4111 1111 1111 1111. Thank you", category: "AI tools",
+  title: "", store: "Midtown", cashier: "", totalQuantity: null, taxTreatment: "added",
 };
+/** What the stand-in writes out as the full copy: a card number to cut, an empty line to drop, a table, a QR code. */
+const COPY = { layout: [
+  { kind: "heading", text: "Sushi Yasuda", cells: [], centered: true },
+  { kind: "pair", text: "Card", cells: ["4111 1111 1111 1111"], centered: false },
+  { kind: "text", text: "  ", cells: [], centered: false },
+  { kind: "head", text: "", cells: ["Item", "Qty", "Amount"], centered: false },
+  { kind: "row", text: "", cells: ["Edamame", "1", "9.00"], centered: false },
+  { kind: "rule", text: "", cells: [], centered: false },
+  { kind: "code", text: "Scan & Pay", cells: ["QR code"], centered: true },
+] };
+const isCopy = (body: any) => typeof body?.system === "string" && body.system.startsWith("You copy");
 
 /** A small valid PDF with `pages` blank pages (the sandboxed PDF reader counts them). */
 function pdf(pages: number) {
@@ -40,15 +53,16 @@ function pdf(pages: number) {
 function standInClaude() {
   const seen: any[] = [];
   const answer = (read: object) => Response.json({ id: "msg_1", type: "message", role: "assistant", model: RECEIPT_MODEL, content: [{ type: "text", text: JSON.stringify(read) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1800, output_tokens: 400 } });
-  const state = { answer, reply: (): Response => answer(READ) };
+  const state = { answer, reply: (body: any): Response => answer(isCopy(body) ? COPY : READ) };
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.hostname === "api.anthropic.com") { seen.push(JSON.parse(String(init?.body ?? "{}"))); return state.reply(); }
+    if (url.hostname === "api.anthropic.com") { const body = JSON.parse(String(init?.body ?? "{}")); seen.push(body); return state.reply(body); }
     if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") throw new Error(`no real network in tests (${url.hostname})`);
     return realFetch(input, init);
   }) as typeof fetch;
-  return { seen, state, restore: () => { globalThis.fetch = realFetch; } };
+  // The last request for a receipt's details (each reading also asks for its full copy, at the same time).
+  return { seen, state, details: () => [...seen].reverse().find((body) => !isCopy(body)), copies: () => seen.filter(isCopy), restore: () => { globalThis.fetch = realFetch; } };
 }
 
 test("what is read is tidied: card numbers cut to four digits, a date only when real, the category matched by name", () => {
@@ -62,6 +76,36 @@ test("what is read is tidied: card numbers cut to four digits, a date only when 
   }
   const loose = cleanReceipt({ ...READ, billedTo: "Buildory, A/c 123456789012", footer: "Plan 01/10/2026 - 31/10/2026, call 080 4567 1200", items: [{ name: "Pro plan 01/10/2026 - 31/10/2026", quantity: 1, unitPrice: null, amount: 1 }] } as never, DEFAULT_EXPENSE_CATEGORIES);
   assert.deepEqual([loose.billedTo, loose.footer, loose.items[0]!.name], ["Buildory, A/c •••• 9012", "Plan 01/10/2026 - 31/10/2026, call 080 4567 1200", "Pro plan 01/10/2026 - 31/10/2026"]);
+  // Taxes included in the prices, added on top, or not said; the store kept, an empty title none.
+  assert.deepEqual(["included", "added", "unclear"].map((taxTreatment) => cleanReceipt({ ...READ, taxTreatment } as never, DEFAULT_EXPENSE_CATEGORIES).taxIncluded), [true, false, null]);
+  assert.deepEqual([clean.store, clean.title, clean.totalQuantity, clean.layout], ["Midtown", null, null, []]);
+});
+
+test("the full copy is tidied: card numbers by their checksum, UPI IDs anywhere, account numbers where accounts are meant; empty lines dropped; a long copy cut", () => {
+  const line = (kind: string, text: string, cells: string[] = []) => ({ kind, text, cells, centered: false }) as never;
+  const clean = cleanLayout([
+    line("pair", "Card", ["4111 1111 1111 1111"]),
+    line("pair", "Ack No", ["112410034567891"]),
+    line("text", "A/c No 123456789012 IFSC SBIN0001234"),
+    line("text", "Call 9876543210 for delivery"),
+    line("pair", "UPI", ["9876543210@ybl"]),
+    line("text", "Pay to 9876543210@okaxis"),
+    line("text", "Aadhaar 1234 5678 9012"),
+    line("head", "", ["Bank", "A/c No", "IFSC"]), line("row", "", ["SBI", "123456789012", "SBIN0001234"]),
+    line("head", "", ["Item", "Amount"]), line("row", "", ["Order 123456789012", "10"]),
+    line("text", "", ["stray"]), line("heading", "   "),
+    line("code", "Scan & Pay", ["qr"]),
+    line("row", "", Array.from({ length: 16 }, (_, index) => String(index))),
+  ]);
+  assert.deepEqual(clean.slice(0, 13).map((one) => [one.text, one.cells]), [
+    ["Card", ["•••• 1111"]], ["Ack No", ["112410034567891"]], ["A/c No •••• 9012 IFSC SBIN0001234", []], ["Call 9876543210 for delivery", []],
+    ["UPI", ["•••• 3210@ybl"]], ["Pay to •••• 3210@okaxis", []], ["Aadhaar •••• 9012", []],
+    ["", ["Bank", "A/c No", "IFSC"]], ["", ["SBI", "•••• 9012", "SBIN0001234"]], ["", ["Item", "Amount"]], ["", ["Order 123456789012", "10"]],
+    ["Scan & Pay", ["QR code"]], ["", Array.from({ length: 14 }, (_, index) => String(index))],
+  ]);
+  assert.equal(clean.length, 13, "a text line with only cells and a blank heading are dropped");
+  const long = cleanLayout(Array.from({ length: 205 }, (_, index) => line("text", `Line ${index}`)));
+  assert.deepEqual([long.length, long.at(-1)?.text], [201, "The rest of this receipt is on the original."]);
 });
 
 test("the answer format stays within the structured-output limits: at most 16 fields that may be null", () => {
@@ -74,6 +118,9 @@ test("the answer format stays within the structured-output limits: at most 16 fi
   };
   walk(receiptReadFormat.schema);
   assert.ok(unions <= 16, `${unions} fields may be null`);
+  unions = 0;
+  walk(receiptCopyFormat.schema);
+  assert.equal(unions, 0, "the full copy's lines have no field that may be null");
   // Text that isn't printed comes back empty and is kept as null.
   const clean = cleanReceipt({ ...READ, merchantTaxId: "", billedTo: "", cardLast4: "", currency: "", date: "", category: "" } as never, DEFAULT_EXPENSE_CATEGORIES);
   assert.deepEqual([clean.merchantTaxId, clean.billedTo, clean.cardLast4, clean.currency, clean.date, clean.categoryId], [null, null, null, null, null, null]);
@@ -95,8 +142,10 @@ test("a photo is kept as a WebP of about 4 megapixels at most: a phone photo shr
   assert.deepEqual([(await kept(1200, 1600)).width, (await kept(1200, 1600)).height], [1200, 1600], "within the budget: never enlarged or shrunk");
 });
 
-test("with no key set, a receipt is kept but not read", async () => {
-  assert.deepEqual(await readReceipt(undefined, { bytes: Buffer.from("x"), contentType: "image/webp" }, []), { error: "Reading receipts isn't set up yet: type the details in." });
+test("with no key set, a receipt is kept but not read (nor copied)", async () => {
+  // Asking again won't help until a key is set (lasting).
+  assert.deepEqual(await readReceipt(undefined, { bytes: Buffer.from("x"), contentType: "image/webp" }, []), { error: "Reading receipts isn't set up yet: type the details in.", lasting: true });
+  assert.deepEqual(await copyReceipt(undefined, { bytes: Buffer.from("x"), contentType: "image/webp" }), { error: "Reading receipts isn't set up yet: type the details in.", lasting: true });
 });
 
 test("receipts: kept small, read by Haiku, seen and attached only by the right people, let go and cleaned up", { skip }, async () => {
@@ -107,6 +156,14 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       const call = async (method: string, path: string, handle: string, body?: unknown) => read(await api(method, path, handle, body));
       const upload = async (handle: string, bytes: Buffer, type = "image/png") => read(await fetch(`${origin}/v1/expenses/receipts`, { method: "POST", headers: { "content-type": type, "x-dev-user-id": `user-${handle}` }, body: new Uint8Array(bytes) }));
       const photo = await sharp({ create: { width: 2400, height: 1200, channels: 3, background: "#f5f1e8" } }).jpeg().toBuffer();
+      /** A receipt once its full copy is no longer being written (it is saved a moment after the answer). */
+      const copiedReceipt = async (id: string, handle = "boss") => {
+        for (let tries = 0; ; tries++) {
+          const got = (await call("GET", `/expenses/receipts/${id}`, handle)).body.data;
+          if (got.copy !== "writing" || tries > 100) return got;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      };
       await call("PUT", "/expenses/settings/access/user-member", "boss", { level: "edit", restricted: false });
       await call("PUT", "/expenses/settings/access/user-member2", "boss", { level: "view", restricted: false });
 
@@ -115,9 +172,19 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       assert.equal(first.status, 201, first.text);
       const receipt = successEnvelope(expenseReceiptSchema).parse(first.body).data;
       assert.deepEqual([receipt.contentType, receipt.data?.number, receipt.data?.total, receipt.data?.categoryId, receipt.data?.footer, receipt.expenseId], ["image/webp", "3528", 285.8, "ai-tools", "Paid with card •••• 1111. Thank you", undefined]);
-      const sent = claude.seen.at(-1);
+      const sent = claude.details();
       assert.deepEqual([sent.model, sent.thinking, sent.output_config.effort, sent.output_config.format.type, sent.messages[0].content[0].type, sent.messages[0].content[0].source.media_type], [RECEIPT_MODEL, { type: "adaptive" }, "low", "json_schema", "image", "image/webp"]);
       assert.match(sent.messages[0].content[1].text, /Salary/, "the boss may file it under a restricted category");
+      assert.deepEqual([receipt.data?.taxIncluded, receipt.data?.store], [false, "Midtown"]);
+      // The full copy was asked for at the same time (no categories with it), and is saved on the receipt when it comes: tidied like
+      // the details (the card cut to four digits, the empty line dropped), its table and QR code kept.
+      const copyAsked = claude.copies().at(-1);
+      assert.deepEqual([copyAsked.model, copyAsked.output_config.format.type, copyAsked.messages[0].content.length], [RECEIPT_MODEL, "json_schema", 1]);
+      const copied = await copiedReceipt(receipt.id);
+      assert.equal(copied.copy, undefined);
+      assert.deepEqual(copied.data.layout.map((line: any) => [line.kind, line.text, line.cells]), [
+        ["heading", "Sushi Yasuda", []], ["pair", "Card", ["•••• 1111"]], ["head", "", ["Item", "Qty", "Amount"]], ["row", "", ["Edamame", "1", "9.00"]], ["rule", "", []], ["code", "Scan & Pay", ["QR code"]],
+      ]);
       const kept = await fetch(`${origin}/v1/expenses/receipts/${receipt.id}/file`, { headers: { "x-dev-user-id": "user-boss" } });
       assert.deepEqual([kept.status, kept.headers.get("content-type"), (await sharp(Buffer.from(await kept.arrayBuffer())).metadata()).width], [200, "image/webp", 2400]);
 
@@ -130,10 +197,10 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       assert.equal((await upload("member", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'), "image/svg+xml")).status, 415);
       const members = await upload("member", photo);
       assert.equal(members.status, 201, members.text);
-      assert.doesNotMatch(claude.seen.at(-1).messages[0].content[1].text, /Salary|Personal EMI/, "restricted category names stay out for people who can't see them");
+      assert.doesNotMatch(claude.details().messages[0].content[1].text, /Salary|Personal EMI/, "restricted category names stay out for people who can't see them");
       // A PDF is kept as it came and sent as a document; a long one, or one that won't open, is kept but not read.
       const pdfReceipt = await upload("boss", pdf(1), "application/pdf");
-      assert.deepEqual([pdfReceipt.status, pdfReceipt.body.data.contentType, claude.seen.at(-1).messages[0].content[0].type], [201, "application/pdf", "document"], pdfReceipt.text);
+      assert.deepEqual([pdfReceipt.status, pdfReceipt.body.data.contentType, claude.details().messages[0].content[0].type, claude.copies().at(-1).messages[0].content[0].type], [201, "application/pdf", "document", "document"], pdfReceipt.text);
       const calls = claude.seen.length;
       const long = await upload("boss", pdf(6), "application/pdf");
       assert.deepEqual([long.status, long.body.data.data, long.body.data.error, claude.seen.length], [201, null, "This PDF has 6 pages: only receipts of up to 5 pages are read. Type the details in.", calls]);
@@ -158,7 +225,7 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       // A restricted category it suggested is never shown to someone who can't see that category.
       claude.state.reply = () => claude.state.answer({ ...READ, category: "Salary" });
       const suggested = (await upload("boss", photo)).body.data;
-      claude.state.reply = () => claude.state.answer(READ);
+      claude.state.reply = (body: any) => claude.state.answer(isCopy(body) ? COPY : READ);
       assert.equal(suggested.data.categoryId, "salary");
       assert.equal((await call("POST", "/expenses", "boss", { ...base, paidTo: "Snacks", receiptId: suggested.id })).status, 201);
       assert.deepEqual([(await call("GET", `/expenses/receipts/${suggested.id}`, "member2")).body.data.data.categoryId, (await call("GET", `/expenses/receipts/${suggested.id}`, "boss")).body.data.data.categoryId], [null, "salary"]);
@@ -180,6 +247,39 @@ test("receipts: kept small, read by Haiku, seen and attached only by the right p
       const monthly = (await call("POST", "/expenses", "boss", { ...base, repeat: "monthly", receiptId: third.id })).body.data;
       const changed = await call("POST", `/expenses/${monthly.id}/change`, "boss", { fromMonth: "2026-12", amountPaise: 30_000 });
       assert.deepEqual([changed.status, changed.body.data.stopped.receiptId, changed.body.data.continued.receiptId], [201, third.id, undefined], changed.text);
+
+      // A copy that can't be written (an answer that doesn't fit its format) leaves the details, and shows as failed.
+      claude.state.reply = (body: any) => (isCopy(body) ? claude.state.answer({ layout: "not a list" }) : claude.state.answer(READ));
+      const noCopy = (await upload("boss", photo)).body.data;
+      const noCopyNow = await copiedReceipt(noCopy.id);
+      assert.deepEqual([noCopyNow.data.total, noCopyNow.copy, noCopyNow.data.layout], [285.8, "failed", []]);
+      claude.state.reply = (body: any) => claude.state.answer(isCopy(body) ? COPY : READ);
+      // A receipt that couldn't be read has no copy being written either.
+      assert.equal(long.body.data.copy, undefined);
+      // Reading a PDF too long to read again won't help: said plainly, not "try again".
+      const tooLong = await call("POST", `/expenses/receipts/${long.body.data.id}/read`, "boss");
+      assert.deepEqual([tooLong.status, tooLong.body.error.message], [400, "This PDF has 6 pages: only receipts of up to 5 pages are read."]);
+
+      // Read again: its details and full copy read anew from the kept file, by someone who may change it; never by someone who only
+      // views, nor through Claude. A failed read leaves the one before.
+      await db.collection("expense_receipts").updateOne({ _id: third.id as never }, { $unset: { layout: "", copyState: "", copyStartedAt: "" }, $set: { "data.store": null } });
+      assert.deepEqual((await copiedReceipt(third.id)).data.layout, [], "read before the full copy existed");
+      const again = await call("POST", `/expenses/receipts/${third.id}/read`, "boss");
+      assert.equal(again.status, 200, again.text);
+      assert.equal(again.body.data.data.store, "Midtown");
+      assert.equal((await copiedReceipt(third.id)).data.layout.length, 6);
+      assert.equal((await call("POST", `/expenses/receipts/${third.id}/read`, "member2")).status, 403, "viewers don't read receipts again");
+      assert.equal((await fetch(`${origin}/v1/expenses/receipts/${third.id}/read`, { method: "POST", headers: internalHeaders("user-boss", ["expenses:read", "expenses:write"]) })).status, 403, "nor does Claude");
+      claude.state.reply = () => new Response("{}", { status: 500 });
+      const failed = await call("POST", `/expenses/receipts/${third.id}/read`, "boss");
+      assert.deepEqual([failed.status, failed.body.error.message], [503, "Couldn't read this receipt. Try again in a moment."]);
+      const kept3 = await copiedReceipt(third.id);
+      assert.deepEqual([kept3.data.store, kept3.data.layout.length], ["Midtown", 6], "the reading before stays");
+      claude.state.reply = (body: any) => claude.state.answer(isCopy(body) ? COPY : READ);
+      assert.ok(await db.collection("audit_events").findOne({ action: "expense.receipt.read", objectId: third.id }));
+      // A copy still "being written" long after it was asked for never will be: it shows as failed (Read again tries anew).
+      await db.collection("expense_receipts").updateOne({ _id: third.id as never }, { $unset: { layout: "" }, $set: { copyState: "writing", copyStartedAt: new Date(Date.now() - 5 * 60_000) } });
+      assert.equal((await call("GET", `/expenses/receipts/${third.id}`, "boss")).body.data.copy, "failed");
 
       // When the reader fails or its key is refused, the receipt is still kept, with a sentence saying why.
       claude.state.reply = () => Response.json({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }, { status: 401 });

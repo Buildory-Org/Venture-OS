@@ -206,6 +206,25 @@ export type ExpenseRates = z.infer<typeof expenseRatesSchema>;
 
 export const RECEIPT_KINDS = ["receipt", "tax_invoice", "invoice", "bill", "other"] as const;
 export const RECEIPT_PAYMENT_METHODS = ["cash", "card", "upi", "bank_transfer", "wallet", "other", "unknown"] as const;
+/**
+ * One line of a receipt's full copy, top to bottom as printed: a heading (the shop's name, "Retail Invoice", or another line printed
+ * bold or large), a line of text (an address, one of the terms, a thank-you), a pair ("Store: SAM": the label, and its value in
+ * `cells`), a table's header or one of its rows (its cells, column by column; neighbouring ones make one table), a printed rule, or a
+ * QR code or barcode (what it is for, as printed: "Scan & Pay", and its type in `cells`). Kept small: a long receipt is many lines.
+ */
+export const RECEIPT_BLOCK_KINDS = ["heading", "text", "pair", "head", "row", "rule", "code"] as const;
+export const receiptBlockSchema = z.object({
+  kind: z.enum(RECEIPT_BLOCK_KINDS),
+  /** A heading's or line's words, a pair's label, or what a code is for. */
+  text: z.string(),
+  /** A pair's value, a table header's or row's cells, or a code's type ("QR code", "Barcode"). */
+  cells: z.array(z.string()),
+  /** Printed in the middle of the line. */
+  centered: z.boolean(),
+});
+export type ReceiptBlock = z.infer<typeof receiptBlockSchema>;
+/** At most this many lines of a full copy are kept (a very long receipt is cut, and says so). */
+export const MAX_RECEIPT_BLOCKS = 200;
 /** What was read off a receipt, as printed: amounts in the receipt's own currency (not paise), null where it doesn't say. */
 export const receiptDataSchema = z.object({
   kind: z.enum(RECEIPT_KINDS),
@@ -230,12 +249,25 @@ export const receiptDataSchema = z.object({
   paymentMethod: z.enum(RECEIPT_PAYMENT_METHODS), cardLast4: z.string().nullable(), footer: z.string().nullable(),
   /** The category it most likely belongs to, among those the uploader may use. */
   categoryId: idSchema.nullable(),
+  // Read since the full copy (2026-10-16); receipts read before have none of these until they are read again.
+  /** The document's own title as printed ("Retail Invoice", "Tax Invoice"). */
+  title: z.string().nullable().default(null),
+  /** The store, branch or outlet, and the cashier or counter, as printed. */
+  store: z.string().nullable().default(null), cashier: z.string().nullable().default(null),
+  /** The total quantity, when printed. */
+  totalQuantity: z.number().nullable().default(null),
+  /** Whether the taxes are part of the prices and the total (true), come on top (false), or it doesn't say (null). */
+  taxIncluded: z.boolean().nullable().default(null),
+  /** The whole receipt, top to bottom as printed (its terms and notes too): what the digital copy is drawn from. */
+  layout: z.array(receiptBlockSchema).default([]),
 });
 export type ReceiptData = z.infer<typeof receiptDataSchema>;
 /** A receipt: its kept copy (a WebP of the photo, or the PDF), what was read off it, or why it couldn't be read. */
 export const expenseReceiptSchema = z.object({
   id: idSchema, contentType: z.enum(["image/webp", "application/pdf"]), size: z.number().int(),
   data: receiptDataSchema.nullable(), error: z.string().optional(), expenseId: idSchema.optional(), createdAt: isoDateSchema,
+  /** Its full copy is still being written (it comes a few seconds after the details), or couldn't be (Read again tries anew). */
+  copy: z.enum(["writing", "failed"]).optional(),
 });
 export type ExpenseReceipt = z.infer<typeof expenseReceiptSchema>;
 /** The largest receipt file accepted: a photo or a PDF. */

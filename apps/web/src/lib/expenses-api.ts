@@ -38,6 +38,8 @@ export async function createGroup(input: { name: string; color: ExpenseGroup["co
 export async function updateGroup(groupId: string, change: Partial<Omit<ExpenseGroup, "id">>) { return successEnvelope(expenseGroupSchema).parse(await request(`/v1/expenses/settings/groups/${id(groupId)}`, send("PATCH", change))).data; }
 /** A photo or PDF of a receipt, sent as it is: the server keeps a small copy and reads it (a few seconds). */
 export async function uploadReceipt(file: File) { return successEnvelope(expenseReceiptSchema).parse(await request("/v1/expenses/receipts", { method: "POST", body: file, headers: { "content-type": file.type || "application/octet-stream" } })).data; }
+/** Reads a kept receipt again (its details and full copy); its expense keeps what was saved. */
+export async function readReceiptAgain(receiptId: string) { return successEnvelope(expenseReceiptSchema).parse(await request(`/v1/expenses/receipts/${id(receiptId)}/read`, { method: "POST" })).data; }
 export async function getReceipt(receiptId: string) { return successEnvelope(expenseReceiptSchema).parse(await request(`/v1/expenses/receipts/${id(receiptId)}`)).data; }
 /** The kept copy as a local link (revoke it when done). */
 export async function receiptFileUrl(receiptId: string) {

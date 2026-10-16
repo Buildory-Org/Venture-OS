@@ -52,6 +52,13 @@ function printedAmount(text: string): number | null {
   const digits = text.replace(/₹|rs\.?|inr|[$€£¥,\s]/gi, "");
   return /^[-−]?\d+(\.\d+)?$/.test(digits) ? Number(digits.replace("−", "-")) : null;
 }
+/**
+ * Whether the full copy shows this amount anywhere (as a cell, or among a line's numbers: "Net Amount 498.0"). A copy that doesn't show
+ * the total read into the form missed part of the receipt, so the summary of the details is drawn instead.
+ */
+function copyShows(layout: ReceiptBlock[], total: number, slack: number): boolean {
+  return layout.some((line) => [line.text, ...line.cells].some((words) => (words.match(/[\d,]*\d(?:\.\d+)?/g) ?? []).some((found) => Math.abs(Number(found.replace(/,/g, "")) - total) <= slack)));
+}
 /** The total printed on the full copy: its last "Total", "Net amount", "Grand total" or "Amount payable" line, read from the bottom. */
 function copyTotal(layout: ReceiptBlock[]): number | null {
   const label = /^\s*(grand |net |bill |invoice )?(total|amount)( amount| payable| due| to pay)?\s*:?\s*$|^\s*(net amount|amount payable|to pay)\s*:?\s*$/i;
@@ -119,10 +126,12 @@ function FullCopy({ layout }: { layout: ReceiptBlock[] }) {
 /** The receipt as read: a paper slip with a torn bottom edge, drawn from its full copy once that is written. */
 export function ReceiptPaper({ data, copy }: { data: ReceiptData; copy?: ExpenseReceipt["copy"] }) {
   const m = (value: number) => money(value, data.currency);
-  const full = data.layout.length > 0;
+  const slack = data.currency && data.currency !== "INR" ? 0.02 : 1;
+  const incomplete = data.layout.length > 0 && data.total !== null && !copyShows(data.layout, data.total, slack);
+  const full = data.layout.length > 0 && !incomplete;
   // The full copy and the details are two readings of one receipt: when the total printed on the copy isn't the total the form got, say so.
   const printedTotal = full ? copyTotal(data.layout) : null;
-  const apart = printedTotal !== null && data.total !== null && Math.abs(printedTotal - data.total) > (data.currency && data.currency !== "INR" ? 0.02 : 1);
+  const apart = printedTotal !== null && data.total !== null && Math.abs(printedTotal - data.total) > slack;
   const warning = apart ? `The receipt shows a total of ${m(printedTotal!)}, but ${m(data.total!)} was read into the form.` : mismatch(data);
   const paidBy = [PAID_BY[data.paymentMethod], data.cardLast4 ? `•••• ${data.cardLast4}` : ""].filter(Boolean).join(" ");
   return <div className="grid gap-2">
@@ -163,6 +172,7 @@ export function ReceiptPaper({ data, copy }: { data: ReceiptData; copy?: Expense
     </div>
     {copy === "writing" && <p role="status" className="flex items-center justify-center gap-1.5 text-xs text-neutral-500"><span aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-500" />Writing out the full copy…</p>}
     {copy === "failed" && !full && <p className="text-center text-xs leading-5 text-neutral-500">The full copy couldn&apos;t be written. Read again to try once more.</p>}
+    {incomplete && copy !== "writing" && <p className="text-center text-xs leading-5 text-neutral-500">The full copy missed part of this receipt (it doesn&apos;t show the total), so this is what was read. Read again to try once more.</p>}
     {warning && <p className="flex items-start gap-1.5 text-xs leading-5 text-warning-text"><AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />{warning} Check it against the original.</p>}
   </div>;
 }

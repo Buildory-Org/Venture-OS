@@ -26,6 +26,9 @@ The spec (data, API, the connector's tools, the finder, the screens and the migr
 - **No cold first WhatsApp.** A WhatsApp draft can be marked sent only when the lead has `whatsappOptIn`
   (they messaged us, or said yes on a call or by email). First touch is a call, or an email ending with a
   `wa.me` link.
+- **One message, one channel.** A lead's first message (and its one follow-up) goes out on one channel only. It may wait in
+  several versions at once (an email and, for a lead that opted in, a WhatsApp version) so the person can choose; sending one
+  closes the others (§5, "Versions").
 - **One do-not-contact list for every venture.** An opt-out or hostile reply suppresses the company's
   routes and blocks every outbound action on it.
 - **Stop on reply.** Any inbound reply on a lead discards its pending follow-up drafts.
@@ -68,24 +71,24 @@ ventures and the ones they made themselves.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/overview?ventureId&owner=me` | Today: replies waiting, calls due, follow-ups due, drafts to review, ready to send, needs you, won to hand over, stage counts, last 7 days |
+| GET | `/overview?ventureId&owner=me` | Today: replies waiting, calls due, follow-ups due, drafts to review, ready to send, needs you, won to hand over, stage counts, last 7 days. `counts` also has `inReview` (waiting for Claude's review), `needsChanges` (sent back), `firstMessagesToWrite` (recommended leads approved for contact with no first message written or sent; a call opener doesn't count) and `whatsappVersionsToWrite` (opted-in leads whose first message waits as an email only and is still due; the same rule as Daybreak's `whatsappVersions`); start_sales turns them into its options. Both are counts only (indexed aggregations, no draft text read): Daybreak lists the WhatsApp versions themselves |
 | GET | `/leads?ventureId&pipelineId&stage=a,b&q&owner&needsYou&playId&verdict&region&city&category&contact&sort&offset&limit` | server-side filter + paging (thousands of leads); `region`, `city`, `category` are exact (any case, `none` = not set), `contact` is `phone` (phone or WhatsApp number), `email`, `whatsapp` (consent recorded) or `none` (no phone, WhatsApp or email route) |
 | GET | `/pipeline-value?ventureId&owner=me&tz` | the pipeline in money for the Overview: one row per currency with open deals, open value, open weighted value, the weighted forecast for this and next calendar month (by expected close date; an open deal expected in an earlier month counts in this month), weighted value with no close date, and what was won this month; plus `openWithoutValue` (open leads with no value) and the two month keys. Same venture scoping as the list; months are cut in the Sales time zone (`tz` overrides) |
 | GET | `/leads/facets?ventureId&stage&q&owner&region&city&category&contact…` | counts for the filter choices (same filters as the list, no sort or paging): `regions`, `cities` (with their region), `categories`, `contact`, and `notSet`; each group is counted with every other filter applied but not its own, like a shop sidebar. A state and its cities go together: the state counts ignore the chosen city. Case and spacing variants are one value. Same venture scoping as the list |
 | POST | `/leads` | create; suppressed routes set `doNotContact`. A deal can carry `valueEstimateMinor` + `currency`, `expectedCloseAt` and `probability` (0 to 100); a lead created as `lost` needs a `lostReason` |
-| GET | `/leads/:id` | lead + activities + drafts + verdicts |
+| GET | `/leads/:id` | lead + activities + drafts + verdicts; each open first message or follow-up carries `otherVersions` (§5, "Versions") |
 | PATCH | `/leads/:id` | edit fields / stage (rules in §5); `expectedCloseAt` and `probability` take `null` to clear them; moving a lead to `lost` needs `exitReason` and a `lostReason` category (Claude's own moves default to `other`), and the category goes when the lead is reopened |
 | DELETE | `/leads/:id` | soft delete (`deletedAt`); venture head/admin, or the owner before first contact |
 | POST | `/leads/:id/activities` | log call/email/whatsapp/linkedin/meeting/note, in or out (rules in §5); `requestId` makes it idempotent |
 | POST | `/activities/:id/handled` | clears an inbound item from the Inbox |
 | POST | `/leads/:id/verdicts` | Claude verdict (§5) |
 | POST | `/verdicts/:id/override` | person override with reason |
-| GET | `/drafts?ventureId&status=a,b&owner=me` | with a small lead summary |
-| POST | `/leads/:id/drafts` | create (`submit` true → in_review) |
-| PATCH | `/drafts/:id` | edit text → back to in_review (clears review and approval) |
+| GET | `/drafts?ventureId&status=a,b&owner=me` | with a small lead summary (its WhatsApp opt-in and contact routes), on open first messages and follow-ups `otherVersions`, and on open email, WhatsApp and Instagram drafts `sendTarget` (§5, "Versions") |
+| POST | `/leads/:id/drafts` | create (`submit` true → in_review); a reply a person writes in the app (`purpose: "reply"`, `inReplyTo` a message from the lead) → ready at once with their own approval, unless `checkByClaude: true` (→ in_review); see §5, "A person's own reply" |
+| PATCH | `/drafts/:id` | edit text → back to in_review (clears review and approval); a person's edit of a person's own ready reply keeps it ready (§5) |
 | POST | `/drafts/:id/review` | pass → ready, fail → needs_changes |
 | POST | `/drafts/:id/approve` | person approval for a play's first batch (app only) |
-| POST | `/drafts/:id/sent` | mark sent (manual only in v1) → out activity |
+| POST | `/drafts/:id/sent` | mark sent (by hand; sending through a connected account is `/drafts/:id/send`, `docs/sales-channels.md`) → out activity; closes the lead's other open versions of the message (or its other replies to the same message). Optional `expectedUpdatedAt` (the draft's `updatedAt` the person saw): a draft changed since is refused, `409 DRAFT_CHANGED` (§5) |
 | POST | `/drafts/:id/veto`, `/drafts/:id/discard` | |
 | GET | `/inbox?ventureId&handled&owner=me` | inbound activities with lead cards, unhandled first |
 | GET/POST | `/plays`, PATCH `/plays/:id`, POST `/plays/:id/approve` | approve: venture head/admin, app only |
@@ -126,7 +129,7 @@ with the defaults shown, instead of constants.
 | `followUpAfterWorkingDays` | 4 | a first touch sets `followUpDueAt` this many working days later |
 | `replySlaHours` | 2 | a warm reply ("interested") gets a next action this many working hours later (working hours are 10:00-19:00 local); Daybreak's `overSla` and the Reports' promise use it with the venture's working days, blackout and time zone, on warm replies only (interested, send_details, price_first); both responses carry `workRules` (and Daybreak `replySlaHours`, null when ventures differ) |
 | `dailyCaps` | email 20, whatsapp 20 | emails and WhatsApp messages one person may send per local day and venture, whether marked sent from a draft or logged by hand (outbound, through the app or Claude); a send counts on the day it happened (`at`), so one logged now for an earlier day does not; more is `409`. Counted atomically in `sales_send_counters` (one row per person, venture, channel and day, never below what was sent that day), so parallel sends cannot pass the cap |
-| `approvalMode` | `claude_review_enough` | `person_approves_every_message`: every reviewed draft (not call openers) needs a person's approval before it can be sent, not only a play's first batch; the lead's owner, a head or an admin approves it in the app, never Claude. Only a head's or admin's approval (`personApproval.byHead`) counts toward a play's first batch, in either mode |
+| `approvalMode` | `claude_review_enough` | `person_approves_every_message`: every reviewed draft (not call openers) needs a person's approval before it can be sent, not only a play's first batch; the lead's owner, a head or an admin approves it in the app, never Claude. Only a head's or admin's approval (`personApproval.byHead`) counts toward a play's first batch, in either mode. A person's own reply (`personApproval.own`) is approved by its author in either mode and never counts toward a first batch |
 | `allowedChannels` | call, email, whatsapp, linkedin | drafts for another channel are refused (`409`), and so is sending one written earlier |
 | `timezone` | Asia/Kolkata | where days, midnights, "today" on the Overview and the 10:00 follow-up time are counted |
 
@@ -149,12 +152,25 @@ Default calendar: Monday to Saturday, Asia/Kolkata; festival blackout 2026-10-20
   "Book the discovery call" due in 2 working hours; send_details → next action "Send details";
   wrong_person → next action "Find the right person"; price_first → next action "Answer price with a
   range and ask for a call".
+- **A person's own reply.** A reply a person writes in the app (draft `purpose: "reply"`, not through Claude, `inReplyTo` naming an
+  inbound message on the lead: an email, WhatsApp, Instagram or LinkedIn message from them, or their call, that still waits in the Inbox
+  or is their latest one) is ready at once: warm replies are due within the venture's reply time, and Claude's review is a separate
+  chat. A "reply" with nothing to answer (no `inReplyTo`, one naming our own message, a meeting or note, or an older message already
+  handled) is a first message or a follow-up in disguise and goes to review. It is stored with the author's approval,
+  `personApproval { by, at, byHead, own: true }` and no `review`, so it can be sent in either approval mode (also inside a play whose
+  first batch nobody has read) and it never counts toward a play's first batch. `checkByClaude: true` sends it to Claude's review
+  instead (in_review, as before). A person's edit of an own ready reply keeps it ready (the editor, the lead's owner, a head or an admin,
+  approves the new text); Claude's edit sends it to review and clears the approval. First messages and follow-ups written by people, and
+  every draft Claude writes (its replies included), keep the review rule. Learners can't write drafts. Approving an own reply again is
+  refused (409). Sending the reply (through an account or marked sent by hand) clears the message it answers (`inReplyTo`) from the
+  Inbox. The audit marks these `ownReply`.
 - **Call outcomes**: interested_book → discovery_booked; send_details → replied, "Send details";
   call_back → next action "Call back" at the given time or next working day; no_answer and busy → next
   action "Call again" next working day (first try also counts as contacted); not_interested → lost
   ("Not interested on call"); wrong_person → "Find the right person"; wrong_number → note only;
-  yes_whatsapp → replied, next action "Send details on WhatsApp", and `whatsappOptIn { how: yes_on_call }`
-  when a person logs it (Claude's log does not grant it: WhatsApp consent is person-only).
+  yes_whatsapp → replied, next action "Send details on WhatsApp", and `whatsappOptIn { how: yes_on_call, by: that person }`
+  when a person logs it in the app (their word that the lead agreed is the person's decision; an opt-in recorded earlier stays as
+  it was). Claude's log does not grant it: WhatsApp consent is person-only, so a person confirms it with the opt-in route.
 - **Verdicts**: saving updates the lead's `verdict` summary (with who set it: `via`, `by`). Low
   confidence or hold → `needsYou`. On a lead before first contact: recommend (medium/high) →
   approved_for_contact; recommend (low) or hold → researched; reject (medium/high) → disqualified with
@@ -166,6 +182,71 @@ Default calendar: Monday to Saturday, Asia/Kolkata; festival blackout 2026-10-20
   are scripts for call mode and cannot be marked sent. Every draft the API returns in a list, the Overview queues or
   `GET /drafts/:id` (a member of the lead's venture; 404 otherwise or once the lead is deleted) carries `needsPersonApproval` and
   `approvalReason` (`every_message`: the owner or a head approves; `first_batch`: a head or admin approves; else null).
+- **Versions** (one message, several channels): a lead's `first_touch` drafts are versions of one first message, and its
+  `follow_up` drafts versions of its one follow-up (`VERSIONED_DRAFT_PURPOSES`); call openers are scripts, never versions. When one
+  version is sent (through an account with outcome sent, by hand with `/sent`, or an unclear send settled as sent with `/delivery`
+  or by a bounce), every OTHER open version of the same lead and purpose (draft, in review, ready, needs changes) is closed in the
+  same transaction: `status: discarded`, `discardedAt`, `discardedReason` ("The WhatsApp version of this first message was sent"),
+  `closedReason` (`sent_on_other_channel`, or `other_version_sent` when the one sent was on the same channel) and `sentVersion`
+  (`{ draftId, channel, at }` of the one that went), each audited as `sales.draft.discard` with `{ reason, sentDraftId,
+  sentChannel }`; the send's own audit carries `closedVersions`. Drafts of other purposes or other leads are never touched, and a
+  version being sent through an account keeps its lock. A version cannot go out while another one is being sent (or its send is
+  unclear: settle that first), nor when another one went out after it was written (`409`, "only one version goes out"; marking
+  sent by hand adds "if you sent this one by hand anyway, log it on the lead as a message"); an earlier message sent before this
+  draft was written (a check-back after "not now") does not count. Every open first message and
+  follow-up the API returns (the draft lists, one draft, the Overview queues, a lead's detail, the answers of draft writes) carries
+  `otherVersions: [{ id, channel, status }]` (empty when there are none). Claude writes the WhatsApp version of an opted-in lead's
+  first message (§9); a person may write one in the app. A lead has **one open version per channel** of its first message and of its
+  follow-up: the API refuses a second one on the same channel (`POST /leads/:id/drafts`, `409`, "This lead already has an email first
+  message waiting (in review): change that one instead of writing a second"), for a person and Claude alike. Two writes of the same
+  message at once collide on one row per message (`sales_draft_slots`, in the same transaction), so the second one is refused too
+  (on a replica set; without transactions in local development the check is best effort). The old importer
+  (`scripts/import-dealflow.ts`) writes its drafts directly and is not held to it.
+- **A person's decision against WhatsApp.** A WhatsApp first message a person vetoed, or discarded themselves (`discardedBy`), means no
+  WhatsApp for that lead: it is not suggested again (the Overview's `whatsappVersionsToWrite`, Daybreak's `whatsappVersions`,
+  `get_lead`, `save_draft`), and Claude's `save_draft` refuses a new WhatsApp first message for it unless the person asks for one again
+  in the conversation (`whatsappAskedByPerson: true`). The API itself takes one (`POST /leads/:id/drafts`). A version a rule closed
+  (`closedReason`) or discarded (do not contact, the lead closed: no `discardedBy`) is no decision.
+- **Replies as versions.** The lead's replies to one message of theirs (`purpose: "reply"`, the same `inReplyTo`) are versions of one
+  answer: when one is sent (any of the ways above), the lead's other open replies to that message close in the same transaction with
+  `closedReason: "other_reply_sent"` ("Another reply to this message was sent", or "The WhatsApp reply to this message was sent"),
+  `sentVersion` and the same audit; a reply being sent through an account keeps its lock. A reply can't go out while another reply to
+  the same message is being sent (or its send is unclear), nor when another one went out after it was written (`409`, "only one reply
+  goes out"). The API keeps **one open reply per message** (`POST /leads/:id/drafts`): a second is refused (`409`, "A reply to this
+  message is already waiting …" or "… is ready to send already …: send it, or discard it, before writing another"), with one
+  exception: a reply a person writes in the app (their own, or one sent to Claude's check: the Inbox's "Write my own reply")
+  replaces the replies to that message still waiting for a review, in the same transaction (`status: discarded`, `discardedBy` the
+  person, `discardedReason` "Replaced by a reply a person wrote to the same message", audited `sales.draft.discard` with `{ reason:
+  "replaced_by_reply", replacedBy }`). One that is ready or being sent stays, and the new one is refused. Claude never replaces one;
+  its tools refuse a second open reply to the same message first, in their words (revise the waiting one).
+- **Closing keeps the status.** A closed version or reply keeps the status it had (`statusBeforeClose`, internal). When the sent one
+  bounces (its email came back, `docs/sales-channels.md` §3), the drafts it closed (`sentVersion.draftId` = the bounced draft) open
+  again in that status (in review for one closed before the status was kept): `closedReason`, `sentVersion` and the discard fields go,
+  `reopenedAt` and `reopenedBecause: "bounced"` are set, each audited as `sales.draft.reopen`. Nothing reopens where the lead has
+  moved past that message: a lead deleted, closed, won or on the do-not-contact list; another version (or reply to the same message)
+  that reached the lead sent since; a first message no longer due (they wrote, another message reached them, or a call moved the lead
+  on, e.g. a meeting booked); a follow-up once the lead left contacted or thinking, wrote to us (by when it happened or when it was
+  filed) or got another message since; and a closed draft stays closed when an open one of the same message on that channel (or an
+  open reply to the same message) was written since (one open version per channel, one open reply per message). A reopen that fails
+  is logged and never stops the rest of the bounce. A bounced message is not "the version that went out": it blocks no other version, and Claude may write a new version
+  of a first message whose only sent version bounced (the lead's stage stays contacted).
+- **The version the person read.** `POST /drafts/:id/send` and `POST /drafts/:id/sent` take an optional `expectedUpdatedAt` (the
+  draft's `updatedAt` the person saw). The draft is claimed only while it still has that `updatedAt` (in the claim's filter, so an
+  edit, review or approval between opening and sending is caught atomically): otherwise `409 DRAFT_CHANGED`, "This draft changed
+  since you opened it: read it again before sending". Without it a send works as before. The send's own bookkeeping never moves the
+  draft's `updatedAt` (the lock, "sending", a send that failed, an unclear one, "It didn't go", a claim given back because nothing went
+  out): after any of them the same version can still be sent, or marked sent by hand. Only an edit, a review, an approval or a change of
+  status makes a new version. A draft that is being sent (or whose send is unclear) can't be approved meanwhile (`409`), like it can't
+  be edited.
+- **Where it goes.** Every open email, WhatsApp and Instagram draft the API returns (the draft lists, one draft, the Overview queues, a
+  lead's detail, so the Inbox's replies, and the answers of draft writes) carries `sendTarget: { channel, to }`: what a send through a
+  connected account would use (`recipientFor`): the lead's email address; for WhatsApp the number the lead wrote from on the account
+  the person would send through (their default for the venture, or the only one), else its WhatsApp or phone route, normalised; for
+  Instagram the linked conversation, as its @handle when known. Absent when there is none (no address, no usable number, no linked
+  Instagram conversation). The address or number is shown even when the person has no account to send through (it is where the message
+  is meant to go); with several accounts and no default, the lead's own routes decide, and a send through an account with a linked
+  conversation goes to the linked number (the send's answer has `to`). A list costs two queries at most (the accounts, the linked
+  conversations).
 - **Reminders and notices**:
   - One reminder per lead for its next action, for the lead's owner, at `nextActionAt` ("Call again: {company}", the next action
     text, then the company); a new date or text replaces it, a reassignment moves it, and closing, deleting or `doNotContact`
@@ -274,7 +355,16 @@ Plays · Brain**, plus **Calls** (call mode) and **Find leads** reached from Ove
 - Review: mail-style split view: list of drafts (to review, ready to send, needs changes) on the left,
   the draft with Claude's review checks on the right; edit, approve (first batch), mark sent, veto,
   discard. "Copy and open mail app" uses `mailto:`; WhatsApp uses `wa.me` only with opt-in.
-- Inbox: replies grouped by lead, reply type chip, suggested response draft, mark handled.
+- Inbox: the conversation as bubbles, the reply type and reply-time chips, and the answer in place. **Write a reply** opens a reply box:
+  the channels this lead can take (email with an address on file; WhatsApp once they opted in, and with the venture's number connected
+  only within 24 hours of their last WhatsApp; LinkedIn and Instagram where there is a route; the others named with the reason), the
+  subject (`Re:` their message or our last email), the text, "Your reply goes out from <account>", **Save and send** (ready at once; a
+  send through a connected account opens its confirm straight away) and **Ask Claude to check it first**. Any ready reply for the
+  message, the person's or Claude's, shows the Review draft reader inline with the same main action ("Send from …", or by hand with
+  "Did you send it?") and the how-it's-recorded line; "Open in Review" stays as a small link. Once it is sent the reply is handled and
+  the list moves to the next one. Writing your own reply replaces drafts that still wait for a review. Mark handled, the do-not-contact
+  and WhatsApp-confirm notes and "Ask Claude: draft replies to my inbox" stay. A reply that reached someone's phone or own mailbox is
+  logged with **They replied** on the lead (the empty Inbox and the lead drawer say so) and then waits here like the others.
 - Pipeline: 7-column board (§2) with drag to change stage; each column head shows its deals and value ("₹12.4L · 6 deals") and the board header the weighted total. Dropping a card on Closed asks for the lost reason category.
 - Plays: list and detail (audience, hypothesis, steps, stop rule, stats), approve, first-batch switch.
 - Calls: one lead at a time: opener script, contact route, outcome buttons (§5), next lead.
@@ -355,8 +445,19 @@ no sales tool; a sales key sees only the sales tools and the two lookups).
   and reply timing, daily caps, allowed channels, approval mode; read from `GET /v1/sales/settings`) to `rules`, and
   `save_draft` refuses a channel the venture doesn't allow. People get notified of replies, approvals and verdicts that
   need them (`sales_reply`, `sales_approval`, `sales_needs_you`).
+- **The full run.** A request to find leads ("find 10 pump distributors in Indore", "find N leads and take them all the way") means
+  the whole process unless the person says "just find": find (`search_companies` and `add_leads` with published routes and sources,
+  or a find run the person asked for), research and judge each against the offer packet (`save_verdicts`, holds and rejects with their
+  reasons), draft first messages for the recommended (`save_drafts`, plus the WhatsApp version for opted-in leads), then an
+  independent review: in Claude Code a fresh subagent that calls `start_sales` mode review (its own session, so the separate-session
+  rule holds) and passes or fails only that run's drafts; the writing chat revises what failed and a new reviewer looks once more (two
+  rounds at most); where no subagent can be started (claude.ai), it ends with "open a new chat and say review drafts". One summary at
+  the end (found, recommended, hold, rejected, drafts ready, drafts that need the person, links, the next step). No AI runs on the
+  server: Claude does the work through the tools; nothing is sent or approved. The skill's `steps/full-run.md` holds the steps;
+  `start_sales`' `askClaude`, its fallback option and the answers of `search_companies`, `find_leads`, `add_leads` and `plan_find_run`
+  offer it in the same words ("Find 10 leads and take them to ready drafts").
 - **Prompts** (slash commands in Claude Code, `/mcp__dealflow-sales__<name>`): `sales` (start), `review_drafts`,
-  `find_leads` (asks the area and the kind of business, then `search_companies` and `add_leads`, or `plan_find_run`),
+  `find_leads` (asks the area, the kind of business and how many, then the full run; with "just find", `search_companies` and `add_leads`, or `plan_find_run`),
   `todays_calls`, `weekly_review` (calls `weekly_report`), `daybreak` ("Run my morning": call `daybreak`, do its `then`
   plan in order, show the summary as an artifact or table and ask what to do first).
 
@@ -384,6 +485,20 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
 
 - **Read:** `start_sales`, `sales_overview`, `inbox`, `list_drafts`, `find_leads`, `get_lead`, `list_plays`,
   `list_find_runs`, `get_brain`, `list_offers`, `get_offer`, `search_companies`, `weekly_report`, `daybreak`.
+- **Versions.** When the lead opted in to WhatsApp, Claude also writes a WhatsApp version of the first message (the offer's
+  WhatsApp rules: short, plain text, the language the offer says), so the person can choose; sending one closes the other. The
+  tools allow it although a yes-to-WhatsApp call moved the lead on to replied, but only the WhatsApp version, and only while no
+  message went either way (`firstMessageStillDue`: before first contact or at replied, nothing sent to the lead by email, WhatsApp,
+  LinkedIn or Instagram and nothing from it; a lead that wrote to us gets a reply). Once a first message went out they refuse
+  ("only one version is ever sent"), unless the only one sent bounced (it never reached them): then a new version may be written. One waiting draft per channel for a lead's first message and for its follow-up: a
+  second one on the same channel is refused (revise the waiting one). `save_draft` says when a WhatsApp version comes next and
+  names the other versions; `get_lead`, `start_sales` and `daybreak` suggest it ("Write a WhatsApp version for …").
+- **The app's "Ask Claude" prompts.** `start_sales` returns `askClaude`: the one-line prompts the app shows ("run my morning",
+  "draft replies to my inbox", "write first messages for my recommended leads", "write the first message for <company>", "write a
+  WhatsApp version for <company>", "fix the drafts that need changes", "review drafts", "research and judge <company>", "find
+  <industry> companies in <city>", "find 10 <kind> in <place> and take them to ready drafts") and the whole step each one means; its `next` options and daybreak's plan start with the same
+  words, so the app and Claude speak the same language. Sorting the type of a reply that arrived by itself (mail or WhatsApp sync)
+  has no tool: a person does it in the Inbox.
 - **Write:** `save_verdict`, `save_verdicts` (up to 25), `save_draft`, `save_drafts` (up to 25), `review_draft`,
   `revise_draft`, `log_reply`, `log_call`, `update_lead`, `add_leads` (up to 25), `enrich_lead`, `propose_play`,
   `plan_find_run`, `propose_brain_change` (shared notes only), `propose_offer`.
@@ -419,8 +534,8 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
 - **`daybreak`** (`GET /v1/sales/daybreak`, owner `me` by default). The morning work list, at most 25 per list (only what is
   still to do: leads already queued for contacts and verdicts a person set are left out; work done since drops out; `offset`
   skips items left on purpose), plus
-  `then`, the plan in order: draft the due follow-ups with `save_drafts` (each refers back to its first touch), queue
-  `enrich_lead` for leads without contacts, re-judge stale verdicts Claude may re-judge with `save_verdicts`, then list
+  `then`, the plan in order: draft the due follow-ups with `save_drafts` (each refers back to its first touch), write the WhatsApp
+  versions of opted-in leads' first messages (`whatsappVersions`), queue `enrich_lead` for leads without contacts, re-judge stale verdicts Claude may re-judge with `save_verdicts`, then list
   the calls and replies for the person. `say` is one line ("3 follow-ups to draft, 12 leads without contacts, 2 replies
   waiting over 2h."). Both tools are read only and draw a card where the chat app supports it.
 - **`enrich_lead`.** Queues an enrich run for the named leads (`POST /v1/sales/leads/:id/enrich`); the lead finder fills in
@@ -430,13 +545,17 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
 
 ### How the connector keeps the rules in section 1
 
+- A reply a person writes in the app is ready without a review (their own approval, §5); a draft written or edited through Claude never
+  is: Claude's replies are reviewed in a separate chat, then a person sends them (from the Inbox or Review). Claude writes one reply
+  per message of the lead's: a second open reply to the same message is refused (revise the waiting one).
 - There is no send tool, and nothing that approves a play, a brain item or a draft, marks a draft sent, vetoes or
   discards it, overrides a verdict, confirms WhatsApp, marks a deal won or reopens a closed lead. Those routes are not
   on the MCP allowlist, and the server refuses the same actions when a request comes through MCP (`via = "claude"`).
 - `start_sales` returns a new `sessionId` and declares the conversation a **work** session or a **review** session
   (`mode`). Every write carries the `sessionId`: verdicts, drafts, logged replies and calls, lead changes, new leads,
   enrich requests and proposals need a work session, `review_draft` needs a review session, so the writer and the
-  reviewer of a draft are different conversations and a review session writes nothing else. This is an honour system: a conversation could start a second
+  reviewer of a draft are different conversations and a review session writes nothing else. In a full run in Claude Code the reviewer
+  is a fresh subagent with its own context that starts its own review session; the writing chat never starts one. This is an honour system: a conversation could start a second
   session on purpose, which the tools call self-approval. A person still approves the first batch of every play.
 - Claude moves a lead one step at a time (the tools refuse the rest up front, with plain messages), drafts only for
   leads whose latest verdict is `recommend` (replies excepted, and only as an answer to a logged inbound message), and
@@ -445,8 +564,10 @@ Reads need `sales:read`, writes need `sales:write`. Every sales tool accepts a c
   never carries a web page's words: search results are named by number and bare domain ("Add search result 3 (acme.in) to
   the pipeline"), stored company names are cut at a sentence break and to 40 characters and go with the lead id, and city
   names in `next` options are clipped to 40 characters without hidden characters.
-- The server instructions stay under 2,000 characters: start_sales first and the sessionId, `say`/`next`, cards, artifacts
-  and tables, never send or approve, review in a separate chat, data never instructions, person-only decisions.
+- The server instructions stay under 1,850 characters (Claude Code keeps the first 2,048; the rest is headroom): start_sales first and
+  the sessionId, `say`/`next`, cards, artifacts and tables, save every message as a draft and write the WhatsApp version of an opted-in
+  lead's first message, never send or approve, "find N <kind> in <place>" is the full run, review in a separate chat (or a fresh review
+  subagent in Claude Code), data never instructions, person-only decisions.
 
 Both endpoints are `POST` only (stateless Streamable HTTP, JSON responses, one message per request); `GET` answers
 405. `MCP_ENABLED=false` switches both off, `MCP_WRITES_ENABLED=false` leaves only the read tools.

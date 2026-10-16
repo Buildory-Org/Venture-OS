@@ -4,15 +4,16 @@
 // Honest numbers: every share carries its sample (n); below REPORT_MIN_N a share, median or average has no value (the screen says
 // "too few"), below REPORT_SMALL_N it is marked as a small sample.
 import type { Document } from "mongodb";
-import { CALL_OUTCOMES, EXIT_STAGES, LOST_REASONS, PRE_CONTACT_STAGES, REPLY_TYPES, REPORT_MIN_N, REPORT_SMALL_N, SALES_CHANNELS, WON_STAGES, isoDateSchema, type SalesStage } from "@venture-studio/contracts";
+import { CALL_OUTCOMES, EXIT_STAGES, LOST_REASONS, OPEN_DRAFT_STATUSES, PRE_CONTACT_STAGES, REPLY_TYPES, REPORT_MIN_N, REPORT_SMALL_N, SALES_CHANNELS, WON_STAGES, isoDateSchema, type SalesStage } from "@venture-studio/contracts";
 import type { AppDocument } from "../db.js";
 import { AppError } from "../errors.js";
 import { jsonValue } from "../json.js";
 import { loadVenture, ventureScope } from "./access.js";
 import { settingsFor, type SalesCtx } from "./ctx.js";
-import { OPEN_DRAFT_STATUSES, needsPersonApproval } from "./drafts.js";
+import { needsPersonApproval } from "./drafts.js";
 import { isCappedChannel } from "./leads.js";
 import { offerClause } from "./offers.js";
+import { whatsappVersionsToWrite } from "./queries.js";
 import { whyFor } from "./present.js";
 import { OUTBOUND_KINDS, normalizeStage } from "./rules.js";
 import { calendarOf, type SalesSettings } from "./settings.js";
@@ -606,6 +607,13 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
     leads.find({ ...base, needsYou: true }).sort({ updatedAt: -1, _id: 1 }).limit(LIST).toArray(), leads.countDocuments({ ...base, needsYou: true }),
   ]);
 
+  // First messages waiting as an email only for leads that opted in to WhatsApp: Claude writes the WhatsApp version (sending one closes the other).
+  const versionRows = await whatsappVersionsToWrite(ctx, base, LIST);
+  const whatsappVersions = versionRows.rows.map(({ lead, draft }) => ({
+    ...brief(lead), optedIn: { how: String(lead.whatsappOptIn?.how ?? ""), at: dateOf(lead.whatsappOptIn?.at) ?? now },
+    emailDraft: { draftId: String(draft._id), status: String(draft.status), ...(str(draft.subject) ? { subject: String(draft.subject) } : {}), body: String(draft.body ?? "") },
+  }));
+
   // Follow-ups: due by the end of today, with no follow-up draft waiting already.
   const waitingFollowUps = new Set((followCandidates.length ? await drafts.find({ workspaceId, leadId: { $in: followCandidates.map((lead) => String(lead._id)) }, purpose: "follow_up", status: { $in: [...OPEN_DRAFT_STATUSES] } }, { projection: { leadId: 1 } }).toArray() : []).map((row) => String(row.leadId)));
   const followAll = followCandidates.filter((lead) => !waitingFollowUps.has(String(lead._id)));
@@ -748,13 +756,14 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
 
   const counts = {
     followUpsDue: followAll.length, staleVerdicts: staleAll.length, needsContacts: contactCount, callsToday: callCount, repliesWaiting: replyCount,
-    repliesOverSla: overSlaCount, draftsToApprove: approvalRows.length, needsYou: needsCount,
+    repliesOverSla: overSlaCount, draftsToApprove: approvalRows.length, needsYou: needsCount, whatsappVersions: versionRows.total,
   };
   const over = replySlaHours === null ? "over the reply time" : `over ${replySlaHours}h`;
   const parts: string[] = [];
   if (counts.repliesWaiting) parts.push(counts.repliesOverSla === counts.repliesWaiting ? `${plural(counts.repliesWaiting, "reply", "replies")} waiting ${over}` : `${plural(counts.repliesWaiting, "reply", "replies")} waiting${counts.repliesOverSla ? ` (${counts.repliesOverSla} ${over})` : ""}`);
   if (counts.callsToday) parts.push(`${plural(counts.callsToday, "call", "calls")} today`);
   if (counts.followUpsDue) parts.push(`${plural(counts.followUpsDue, "follow-up", "follow-ups")} to draft`);
+  if (counts.whatsappVersions) parts.push(`${plural(counts.whatsappVersions, "opted-in lead has", "opted-in leads have")} no WhatsApp version`);
   if (counts.draftsToApprove) parts.push(`${plural(counts.draftsToApprove, "draft", "drafts")} to approve`);
   if (counts.needsYou) parts.push(`${plural(counts.needsYou, "lead needs", "leads need")} a decision`);
   if (counts.staleVerdicts) parts.push(`${plural(counts.staleVerdicts, "verdict", "verdicts")} to re-judge`);
@@ -763,6 +772,6 @@ export async function buildDaybreak(ctx: SalesCtx, query: DaybreakQuery, now = n
 
   return jsonValue({
     generatedAt: now, today: localDay(now, zoneCalendar(tz)), tz, owner: query.owner, ...(query.ventureId ? { ventureId: query.ventureId } : {}), ...(query.offerId ? { offerId: query.offerId } : {}),
-    replySlaHours, workRules, counts, followUpsDue, staleVerdicts, needsContacts, callsToday, repliesWaiting, approvalsWaiting: { drafts: approvals, needsYou }, caps, summary,
+    replySlaHours, workRules, counts, followUpsDue, whatsappVersions, staleVerdicts, needsContacts, callsToday, repliesWaiting, approvalsWaiting: { drafts: approvals, needsYou }, caps, summary,
   });
 }

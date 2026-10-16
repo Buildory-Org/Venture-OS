@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { simpleParser } from "mailparser";
+import { draftSchema } from "@venture-studio/contracts";
 import { buildMessage, emailMessageId, emailProvider, imapFailure, imapOptions, passwordAdvice, resolveMailServer, smtpFailure, smtpOptions, useMailLookupForTests } from "../src/sales/channels/email/provider.js";
 import { createMailSync, htmlToText, mailSyncEnabled, mailText, messageIds, ourMessageIds, parseMail, stripQuoted, type MailClient, type MailConnect } from "../src/sales/channels/email/sync.js";
 import { useProviderForTests, type SendOutcome, type SendRequest } from "../src/sales/channels/provider.js";
@@ -430,5 +431,98 @@ test("the sync files thread replies only from the lead's own side, ignores delay
       assert.deepEqual([stalled.lastError, stalled.mailSync.leaseBy, stalled.mailSync.leaseUntil, stalled.mailSync.lastUid, stalled.status], ["Reading the inbox took too long, so it was stopped: the next round goes on from where it stopped", undefined, undefined, 49, "not_tested"]);
       assert.ok(imap.calls.includes(`close ${other.id}`));
     }, "email_sync_side");
+  } finally { restore(); }
+});
+
+test("a bounce opens again what its message closed: the WhatsApp version of a first message and the other replies to a message come back as they were and can be sent; nothing reopens on a do-not-contact lead", { skip }, async () => {
+  const restore = useProviderForTests({ kind: "email", test: async () => ({ ok: true, message: "Connected", checks: [] }), send: async (request) => ({ state: "sent", externalId: `<${request.idempotencyKey}@acme.example>`, to: request.to }) });
+  try {
+    await withSalesApp(async ({ api, db, database, config }) => {
+      const ok = async (status: number, method: string, path: string, handle: string, body?: unknown) => { const response = await api(method, path, handle, body); const text = await response.text(); assert.equal(response.status, status, `${method} ${path}: ${text}`); return JSON.parse(text).data; };
+      const box = await ok(201, "POST", "/sales/channels", "member", { kind: "email", label: "Work mail", ventureIds: ["venture-a"], defaultFor: ["venture-a"], settings: { address: "member@acme.example", senderName: "Mem Ber", username: "member@acme.example", smtp: { host: "smtp.example.com", port: 465, security: "ssl" }, imap: { host: "imap.example.com", port: 993, security: "ssl" } }, secrets: { password: PASSWORD } });
+      const optIn = { at: new Date(), by: "user-member", how: "yes_on_call" };
+      const newLead = async (name: string, email: string) => {
+        const lead = await ok(201, "POST", "/sales/leads", "member", { pipelineId: "pipeline-a", companyName: name, ownerId: "user-member", contactRoutes: [{ kind: "email", value: email }, { kind: "phone", value: "98765 43210" }] });
+        await db.collection("opportunities").updateOne({ _id: lead.id }, { $set: { whatsappOptIn: optIn } });
+        return lead;
+      };
+      const ready = async (leadId: string, body: Record<string, unknown>) => {
+        const draft = await ok(201, "POST", `/sales/leads/${leadId}/drafts`, "member", { channel: "email", subject: "Orders on the phone", body: "Hello, a short note about dealer orders.", ...body });
+        if (draft.status === "in_review" && !body.checkByClaude) await ok(200, "POST", `/sales/drafts/${draft.id}/review`, "member2", { result: "pass" });
+        return draft;
+      };
+      const stored = async (id: string) => (await db.collection("sales_drafts").findOne({ _id: id }))!;
+      const ourId = (draftId: string) => `<draft-${draftId}-1@acme.example>`;
+
+      // A first message in two versions: the email goes through the mailbox, and the WhatsApp version (ready) closes.
+      const twin = await newLead("Bounce Pumps", "asha@bouncepumps.example");
+      const mail = await ready(twin.id, {});
+      const chat = await ready(twin.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      await ok(201, "POST", `/sales/drafts/${mail.id}/send`, "member", { requestId: "req-bounce-0001" });
+      assert.deepEqual([(await stored(chat.id)).status, (await stored(chat.id)).statusBeforeClose], ["discarded", "ready"]);
+      // Two replies to one message (one open reply per message now, so the one sent to Claude's check is left from before that rule): the
+      // person's own goes through the mailbox, and the one in review closes.
+      const legacyReply = async (leadId: string, inReplyTo: string, id: string) => { await db.collection("sales_drafts").insertOne({ _id: id, workspaceId: "workspace-a", ventureId: "venture-a", leadId, inReplyTo, channel: "email", purpose: "reply", subject: "Re: more", body: "Checked first.", status: "in_review", authorId: "user-member", authorVia: "app", createdAt: new Date(), updatedAt: new Date() } as never); return { id }; };
+      const asked = await newLead("Bounce Tiles", "ravi@bouncetiles.example");
+      const inbound = (await ok(201, "POST", `/sales/leads/${asked.id}/activities`, "member", { kind: "email", direction: "in", body: "Tell me more" })).activity;
+      const own = await ready(asked.id, { purpose: "reply", inReplyTo: inbound.id, subject: "Re: more", body: "Here is more." });
+      assert.equal(own.status, "ready");
+      const checked = await legacyReply(asked.id, inbound.id, "legacy-bounce-checked");
+      await ok(201, "POST", `/sales/drafts/${own.id}/send`, "member", { requestId: "req-bounce-0002" });
+      assert.deepEqual([(await stored(checked.id)).closedReason, (await stored(checked.id)).statusBeforeClose], ["other_reply_sent", "in_review"]);
+      // The same, but a person wrote a new reply to that message after it went: when it bounces, the closed one stays closed (one open
+      // reply per message), and the new one is the answer.
+      const rewritten = await newLead("Bounce Bricks", "neha@bouncebricks.example");
+      const question = (await ok(201, "POST", `/sales/leads/${rewritten.id}/activities`, "member", { kind: "email", direction: "in", body: "And the price?" })).activity;
+      const firstAnswer = await ready(rewritten.id, { purpose: "reply", inReplyTo: question.id, subject: "Re: price", body: "On a call, gladly." });
+      const leftOver = await legacyReply(rewritten.id, question.id, "legacy-bounce-left-over");
+      await ok(201, "POST", `/sales/drafts/${firstAnswer.id}/send`, "member", { requestId: "req-bounce-0005" });
+      assert.equal((await stored(leftOver.id)).closedReason, "other_reply_sent");
+      const secondAnswer = await ready(rewritten.id, { purpose: "reply", inReplyTo: question.id, subject: "Re: price", body: "Here is the range." });
+      // A lead put on the do-not-contact list after its email went: nothing opens again there.
+      const blocked = await newLead("Bounce Steel", "x@bouncesteel.example");
+      const blockedMail = await ready(blocked.id, {});
+      const blockedChat = await ready(blocked.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      await ok(201, "POST", `/sales/drafts/${blockedMail.id}/send`, "member", { requestId: "req-bounce-0003" });
+      await db.collection("opportunities").updateOne({ _id: blocked.id }, { $set: { doNotContact: true } });
+      // A lead a call moved on after its email went (a meeting booked): its first message is no longer due, so nothing opens there either.
+      const booked = await newLead("Bounce Gears", "y@bouncegears.example");
+      const bookedMail = await ready(booked.id, {});
+      const bookedChat = await ready(booked.id, { channel: "whatsapp", subject: undefined, body: "Hello on WhatsApp" });
+      await ok(201, "POST", `/sales/drafts/${bookedMail.id}/send`, "member", { requestId: "req-bounce-0004" });
+      await ok(201, "POST", `/sales/leads/${booked.id}/activities`, "member", { kind: "call", direction: "out", callOutcome: "interested_book", body: "Booked a demo" });
+
+      // All three emails bounce.
+      const boxes = new Map<string, Box>([[box.id, { uidValidity: "9", uidNext: 10, messages: new Map() }]]);
+      const sync = createMailSync({ database, env: config, connect: standInImap(boxes).connect, workerId: "test-worker", log: () => undefined });
+      await sync.syncOnce();
+      const failed = (id: string, n: number) => [
+        "From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>", "To: member@acme.example", "Subject: Delivery Status Notification (Failure)", `Message-ID: <bounce-${n}@mx.google.com>`, `Date: ${new Date().toUTCString()}`, "Auto-Submitted: auto-replied",
+        "MIME-Version: 1.0", 'Content-Type: multipart/report; report-type=delivery-status; boundary="b1"', "", "--b1", "Content-Type: text/plain; charset=utf-8", "", "Address not found.", "",
+        "--b1", "Content-Type: message/delivery-status", "", "Reporting-MTA: dns; googlemail.com", "", "Final-Recipient: rfc822; someone@example.org", "Action: failed", "Status: 5.1.1", "",
+        "--b1", "Content-Type: text/rfc822-headers", "", "From: Mem Ber <member@acme.example>", "Subject: Orders on the phone", `Message-ID: ${id}`, "", "--b1--", "",
+      ].join("\n");
+      const mine = boxes.get(box.id)!;
+      for (const [index, draftId] of [mail.id, own.id, blockedMail.id, bookedMail.id, firstAnswer.id].entries()) deliver(mine, failed(ourId(draftId), index));
+      const round = (await sync.syncOnce())[0]!;
+      assert.equal(round.bounced, 5);
+
+      // The WhatsApp version is back as it was (ready), without the closing fields, saying why; audited.
+      const reopened = await stored(chat.id);
+      assert.deepEqual([reopened.status, reopened.reopenedBecause, reopened.reopenedAt instanceof Date, reopened.closedReason, reopened.sentVersion, reopened.discardedAt, reopened.discardedReason, reopened.statusBeforeClose], ["ready", "bounced", true, undefined, undefined, undefined, undefined, undefined]);
+      assert.deepEqual((await db.collection("audit_events").findOne({ action: "sales.draft.reopen", objectId: chat.id }))?.metadata, { reason: "bounced", bouncedDraftId: mail.id, status: "ready" });
+      const shown = draftSchema.parse(await ok(200, "GET", `/sales/drafts/${chat.id}`, "member"));
+      assert.deepEqual([shown.status, shown.reopenedBecause, typeof shown.reopenedAt, shown.closedReason], ["ready", "bounced", "string", undefined]);
+      // The other reply to the message is back in review.
+      assert.deepEqual([(await stored(checked.id)).status, (await stored(checked.id)).reopenedBecause], ["in_review", "bounced"]);
+      // ...but not where a person wrote a new reply to that message since: that one stays the only open answer.
+      assert.deepEqual([(await stored(leftOver.id)).status, (await stored(leftOver.id)).closedReason, (await stored(secondAnswer.id)).status], ["discarded", "other_reply_sent", "ready"]);
+      // Nothing opened on the do-not-contact lead.
+      assert.deepEqual([(await stored(blockedChat.id)).status, (await stored(blockedChat.id)).reopenedBecause], ["discarded", undefined]);
+      assert.deepEqual([(await stored(bookedChat.id)).status, (await stored(bookedChat.id)).reopenedBecause, (await db.collection("opportunities").findOne({ _id: booked.id }))?.stage], ["discarded", undefined, "discovery_booked"]);
+      // The bounced email never reached them, so it doesn't stand in the way: the WhatsApp version can go now (marked sent by hand).
+      await ok(201, "POST", `/sales/drafts/${chat.id}/sent`, "member", {});
+      assert.equal((await stored(chat.id)).status, "sent");
+    }, "email_bounce_reopen");
   } finally { restore(); }
 });

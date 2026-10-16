@@ -6,12 +6,15 @@
 // the channel withdrawn meanwhile: the claims are given back and nothing goes out), then the provider call outside any transaction with a
 // 25-second limit, then the outcome:
 //   sent      the draft is marked sent and the outbound activity logged through applyActivity (stage, follow-up date and the other rules),
-//             in one transaction where Mongo has them;
+//             and the lead's other open versions of the message (its email or WhatsApp twin) closed, in one transaction where Mongo has them;
 //   failed    the day's send is given back and the lock removed; the draft stays ready with `delivery.state: "failed"`;
 //   uncertain the send stays counted and the lock stays until a person says whether it went out (POST /drafts/:id/delivery).
 // A lock still "sending" two minutes after it was taken belongs to a send whose process died (or whose bookkeeping failed): it reads as
 // uncertain, and a person settles it the same way. Every answer is kept on the draft (`sendLog`, the last ten) so the same requestId gets
 // the first answer again, and a second request while the lock is held is refused. The provider never touches the database.
+// The send's own bookkeeping (the lock, "sending", failed, uncertain, "It didn't go", a claim given back) never moves the draft's `updatedAt`:
+// that is the version the person read (`expectedUpdatedAt`), and only an edit, a review, an approval or a change of status makes a new one.
+// A send that failed is retried, or marked sent by hand, with the version the person read.
 import { randomUUID } from "node:crypto";
 import type { ClientSession } from "mongodb";
 import type { ErrorCode } from "@venture-studio/contracts";
@@ -20,12 +23,12 @@ import { AppError } from "../../errors.js";
 import { actorFor } from "../../middleware.js";
 import { forbidClaude } from "../access.js";
 import { auditSales, settingsFor, type SalesCtx } from "../ctx.js";
-import { sendBlocker } from "../drafts.js";
-import { applyActivity, claimSendSlot, defined, loadLead, markHandled, payloadHash, requireLeadEditor } from "../leads.js";
+import { changedSince, draftChanged, expectedVersion, isOpenDraft, sendBlocker } from "../drafts.js";
+import { applyActivity, claimSendSlot, closeOtherVersions, defined, loadLead, markHandled, payloadHash, requireLeadEditor, versionBlocker } from "../leads.js";
 import { calendarOf } from "../settings.js";
 import { hasCountryCode, normalizePhone } from "../suppression.js";
 import { localDay } from "../workdays.js";
-import { ACCOUNTS, missingSecrets, openSecrets, pickSendAccount, type ChannelEnv } from "./accounts.js";
+import { ACCOUNTS, canUseAccount, chooseSendAccount, missingSecrets, openSecrets, pickSendAccount, type ChannelEnv } from "./accounts.js";
 import { emailMessageId } from "./email/provider.js";
 import { providerFor, type SendOutcome, type SendRequest } from "./provider.js";
 
@@ -51,7 +54,8 @@ const isSendChannel = (channel: unknown): channel is SendChannel => channel === 
 const SEND_FAILED: ErrorCode = "SEND_FAILED";
 const TEMPLATE_REQUIRED: ErrorCode = "TEMPLATE_REQUIRED";
 
-export type SendInput = { accountId?: string | undefined; template?: { name: string; language: string; variables: string[] } | undefined; requestId: string };
+/** `expectedUpdatedAt`: the draft's `updatedAt` the person saw; the draft is claimed only while it is still that version (409 DRAFT_CHANGED). */
+export type SendInput = { accountId?: string | undefined; template?: { name: string; language: string; variables: string[] } | undefined; requestId: string; expectedUpdatedAt?: string | undefined };
 /** `to`: where it went (the lead's address, or the WhatsApp number as normalised), for the app to show. */
 export type SendResult =
   | { outcome: "sent"; draft: AppDocument; activity: AppDocument; lead: AppDocument; to?: string }
@@ -96,7 +100,7 @@ export async function flipStaleSend(db: AppDb, draft: AppDocument, now = new Dat
   const delivery = defined({ state: "uncertain", at: now, accountId: lock.accountId ?? draft.delivery?.accountId, to: draft.delivery?.to, error: UNCONFIRMED });
   const flipped = await db.collection("sales_drafts").findOneAndUpdate(
     { _id: draft._id, "sendLock.requestId": lock.requestId, "delivery.state": "sending" },
-    { $set: { delivery, updatedAt: now }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
+    { $set: { delivery }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
     { returnDocument: "after" },
   );
   return flipped ?? (await db.collection("sales_drafts").findOne({ _id: draft._id })) ?? draft;
@@ -122,6 +126,55 @@ const INDIA = new Set(["india", "in", "ind", "bharat", "republicofindia"]);
 /** A lead in India, or whose country nobody wrote down: a number without a country code is read as Indian (+91). */
 const inIndia = (country: unknown) => { const name = typeof country === "string" ? country.toLowerCase().replace(/[^a-z]/g, "") : ""; return !name || INDIA.has(name); };
 
+type Contact = { externalUserId?: unknown; username?: unknown; accountId?: unknown; leadId?: unknown };
+/**
+ * The conversation linked to the lead on an account that a send uses, from the lead's links on that account newest first: for WhatsApp the
+ * first whose sender is a phone number (a hidden-number id alone can't be sent to yet), for Instagram the first.
+ */
+function linkedContact(contacts: Contact[], channel: SendChannel): Contact | undefined {
+  if (channel === "whatsapp") return contacts.find((contact) => typeof contact.externalUserId === "string" && normalizePhone(contact.externalUserId) !== null);
+  return contacts.find((contact) => typeof contact.externalUserId === "string" && contact.externalUserId.length > 0);
+}
+
+/**
+ * The recipient worked out from the stored lead and the conversation linked to it (no database access, so the send and the drafts' `sendTarget`
+ * agree): email, the lead's first email route; WhatsApp, the number the lead wrote from on the account, else its WhatsApp route, else its phone
+ * route, normalised (India +91 by default: a lead in another country needs its number written with the country code); Instagram, the person's
+ * Instagram-scoped id from the linked conversation. `refused` says what is missing.
+ */
+function targetFrom(lead: AppDocument, channel: SendChannel, contact: Contact | undefined): { to: string; toName?: string } | { refused: string } {
+  const toName = typeof lead.contactName === "string" && lead.contactName.trim() ? lead.contactName.trim() : undefined;
+  const named = (to: string) => ({ to, ...(toName ? { toName } : {}) });
+  if (channel === "email") {
+    const email = routeValue(lead, "email");
+    return email ? named(email.trim()) : { refused: "This lead has no email address: add one to the lead first" };
+  }
+  if (channel === "whatsapp") {
+    const linked = typeof contact?.externalUserId === "string" ? normalizePhone(contact.externalUserId) : null;
+    const routed = routeValue(lead, "whatsapp") ?? routeValue(lead, "phone");
+    // A number Meta gave us is international already; one a person typed for a lead abroad is not guessed as Indian.
+    if (!linked && routed && !hasCountryCode(routed) && !inIndia(lead.country)) return { refused: `Write this lead's WhatsApp number with its country code, like +44 … (the lead is in ${String(lead.country).trim().slice(0, 80)})` };
+    const phone = linked ?? (routed ? normalizePhone(routed) : null);
+    return phone ? named(phone) : { refused: "This lead has no WhatsApp or phone number that can be used: add one to the lead first" };
+  }
+  if (typeof contact?.externalUserId !== "string" || !contact.externalUserId) return { refused: "No Instagram conversation with this lead is linked to this account yet (the app can only answer people who wrote first): send it from the Instagram app and mark it sent" };
+  return named(contact.externalUserId);
+}
+
+/**
+ * The conversation a send to each lead on each account uses (linkedContact), for these leads and accounts: every link of theirs is read (no
+ * cap, so a lead with many links, or a long list, never loses the one that decides), newest first. The send (recipientFor) and the drafts'
+ * `sendTarget` (sendTargetsFor) both go through it, so they always agree.
+ */
+async function linkedContactsFor(ctx: Pick<SalesCtx, "db" | "workspaceId">, leadIds: string[], accountIds: string[]): Promise<(leadId: string, accountId: string, channel: SendChannel) => Contact | undefined> {
+  const rows = leadIds.length && accountIds.length ? await ctx.db.collection("sales_channel_contacts")
+    .find({ workspaceId: ctx.workspaceId, leadId: { $in: leadIds }, accountId: { $in: accountIds } }, { projection: { externalUserId: 1, username: 1, accountId: 1, leadId: 1 } }).sort({ updatedAt: -1, _id: 1 }).toArray() as Contact[] : [];
+  const pair = (leadId: unknown, accountId: unknown) => JSON.stringify([String(leadId), String(accountId)]);
+  const byPair = new Map<string, Contact[]>();
+  for (const row of rows) { const key = pair(row.leadId, row.accountId); const list = byPair.get(key); if (list) list.push(row); else byPair.set(key, [row]); }
+  return (leadId, accountId, channel) => linkedContact(byPair.get(pair(leadId, accountId)) ?? [], channel);
+}
+
 /**
  * The recipient: email, the lead's first email route; WhatsApp, the number the lead wrote from on this account (a linked conversation), else
  * its WhatsApp route, else its phone route, normalised (India +91 by default: a lead in another country needs its number written with the
@@ -129,24 +182,44 @@ const inIndia = (country: unknown) => { const name = typeof country === "string"
  * is missing.
  */
 export async function recipientFor(ctx: SalesCtx, account: AppDocument, lead: AppDocument, channel: SendChannel): Promise<{ to: string; toName?: string }> {
-  const toName = typeof lead.contactName === "string" && lead.contactName.trim() ? lead.contactName.trim() : undefined;
-  if (channel === "email") {
-    const email = routeValue(lead, "email");
-    if (!email) throw new AppError(409, "CONFLICT", "This lead has no email address: add one to the lead first");
-    return { to: email.trim(), ...(toName ? { toName } : {}) };
+  const contact = channel === "email" ? undefined : (await linkedContactsFor(ctx, [String(lead._id)], [String(account._id)]))(String(lead._id), String(account._id), channel);
+  const target = targetFrom(lead, channel, contact);
+  if ("refused" in target) throw new AppError(409, "CONFLICT", target.refused);
+  return target;
+}
+
+export type SendTarget = { channel: SendChannel; to: string };
+
+/**
+ * Where a send through a connected account would go, for a list of open drafts with their leads (`sendTarget` on the drafts the API returns):
+ * the same rules as the send (`targetFrom`), with the account a send would pick for WhatsApp and Instagram (the person's default for the
+ * venture, or the only one they can use; with none or several to choose from, the lead's routes decide). Two queries for the whole list at
+ * most (the venture accounts, the linked conversations); email needs none. Drafts that are sent, closed, call openers or LinkedIn get nothing.
+ * An Instagram target is shown as the conversation's @handle when it is known (an Instagram-scoped id means nothing to people).
+ */
+export async function sendTargetsFor(ctx: SalesCtx, rows: { draft: AppDocument; lead: AppDocument }[]): Promise<(draft: AppDocument) => { sendTarget?: SendTarget }> {
+  const wanted = rows.filter(({ draft }) => isSendChannel(draft.channel) && isOpenDraft(draft));
+  const viaVenture = wanted.filter(({ draft }) => draft.channel !== "email");
+  const ventureIds = [...new Set(viaVenture.map(({ lead }) => String(lead.ventureId)))];
+  const accounts = ventureIds.length ? await ctx.db.collection(ACCOUNTS).find(
+    { workspaceId: ctx.workspaceId, kind: { $in: ["whatsapp", "instagram"] }, ventureIds: { $in: ventureIds }, enabled: { $ne: false } },
+    { projection: { workspaceId: 1, kind: 1, ventureIds: 1, defaultFor: 1, enabled: 1, ownerUserId: 1 } },
+  ).toArray() : [];
+  const accountFor = (ventureId: string, kind: SendChannel) => chooseSendAccount(accounts.filter((account) => account.kind === kind && canUseAccount(ctx.actor, account, ventureId)), ventureId);
+  const picked = new Map(viaVenture.map(({ draft, lead }) => [String(draft._id), accountFor(String(lead.ventureId), draft.channel as SendChannel)]));
+  const accountIds = [...new Set([...picked.values()].filter((account): account is AppDocument => Boolean(account)).map((account) => String(account._id)))];
+  const contactOf = await linkedContactsFor(ctx, [...new Set(viaVenture.map(({ lead }) => String(lead._id)))], accountIds);
+  const targets = new Map<string, SendTarget>();
+  for (const { draft, lead } of wanted) {
+    const channel = draft.channel as SendChannel;
+    const account = picked.get(String(draft._id));
+    const contact = account ? contactOf(String(lead._id), String(account._id), channel) : undefined;
+    const target = targetFrom(lead, channel, contact);
+    if ("refused" in target) continue;
+    const handle = channel === "instagram" && typeof contact?.username === "string" && contact.username.trim() ? `@${contact.username.trim().replace(/^@/, "")}` : undefined;
+    targets.set(String(draft._id), { channel, to: handle ?? target.to });
   }
-  const contact = await ctx.db.collection("sales_channel_contacts").findOne({ workspaceId: ctx.workspaceId, accountId: String(account._id), leadId: String(lead._id) });
-  if (channel === "whatsapp") {
-    const linked = typeof contact?.externalUserId === "string" ? normalizePhone(contact.externalUserId) : null;
-    const routed = routeValue(lead, "whatsapp") ?? routeValue(lead, "phone");
-    // A number Meta gave us is international already; one a person typed for a lead abroad is not guessed as Indian.
-    if (!linked && routed && !hasCountryCode(routed) && !inIndia(lead.country)) throw new AppError(409, "CONFLICT", `Write this lead's WhatsApp number with its country code, like +44 … (the lead is in ${String(lead.country).trim().slice(0, 80)})`);
-    const phone = linked ?? (routed ? normalizePhone(routed) : null);
-    if (!phone) throw new AppError(409, "CONFLICT", "This lead has no WhatsApp or phone number that can be used: add one to the lead first");
-    return { to: phone, ...(toName ? { toName } : {}) };
-  }
-  if (typeof contact?.externalUserId !== "string" || !contact.externalUserId) throw new AppError(409, "CONFLICT", "No Instagram conversation with this lead is linked to this account yet (the app can only answer people who wrote first): send it from the Instagram app and mark it sent");
-  return { to: contact.externalUserId, ...(toName ? { toName } : {}) };
+  return (draft) => { const target = targets.get(String(draft._id)); return target ? { sendTarget: target } : {}; };
 }
 
 /** The lead's last message to us on this account and channel (WhatsApp and Instagram only answer freely within 24 hours of it). */
@@ -234,7 +307,9 @@ async function recordSent(ctx: SalesCtx, record: SentRecord): Promise<AppDocumen
         const replied = await ctx.db.collection("sales_activities").findOne({ _id: String(draft.inReplyTo), workspaceId: ctx.workspaceId }, { session });
         if (replied && !replied.handledAt) await markHandled(ctx, await loadLead(ctx, record.leadId, session), replied, now, session);
       }
-      await auditSales(ctx, "sales.draft.sent", "draft", String(draft._id), String(draft.ventureId), { channel, sentVia, ...(logged.stageTo ? { stageTo: logged.stageTo } : {}) }, session);
+      // One version goes out: the lead's other open versions of this message close with it.
+      const closed = await closeOtherVersions(ctx, draft, channel, now, session);
+      await auditSales(ctx, "sales.draft.sent", "draft", String(draft._id), String(draft.ventureId), { channel, sentVia, ...(logged.stageTo ? { stageTo: logged.stageTo } : {}), ...(closed.length ? { closedVersions: closed.length } : {}) }, session);
       return logged.activity;
     } catch (error) {
       // Without transactions the draft is already marked: put it back as it was, so the next try (or the fallback below) starts clean.
@@ -275,6 +350,10 @@ async function recordSent(ctx: SalesCtx, record: SentRecord): Promise<AppDocumen
       throw insertError;
     }
     await auditSales(ctx, "sales.draft.sent", "draft", String(draft._id), String(draft.ventureId), { channel, sentVia, rules: false });
+    // The message went out all the same: its other versions still close (a lead put on the do-not-contact list has none left open).
+    await closeOtherVersions(ctx, draft, channel, now).catch((closeError: unknown) => {
+      console.warn(JSON.stringify({ level: "warn", event: "sales.send.versions_not_closed", draftId: String(draft._id), message: closeError instanceof Error ? closeError.message.slice(0, 200) : "unknown" }));
+    });
     return activity;
   }
 }
@@ -311,7 +390,8 @@ async function prepareSend(ctx: SalesCtx, env: ChannelEnv, claimed: AppDocument,
   const ventureId = String(lead.ventureId);
   const play = claimed.playId ? await db.collection("sales_plays").findOne({ _id: claimed.playId, workspaceId: ctx.workspaceId }) : null;
   const settings = await settingsFor({ ...ctx, settings: new Map() }, ventureId);
-  const blocker = sendBlocker(claimed, lead, play, settings);
+  // ...and only one version of a message goes out: another one being sent now (or sent meanwhile) stops this one.
+  const blocker = sendBlocker(claimed, lead, play, settings) ?? await versionBlocker(ctx, claimed);
   if (blocker) throw new AppError(409, "CONFLICT", blocker);
   const target = await recipientFor(ctx, account, lead, channel);
   const replied = claimed.inReplyTo ? await db.collection("sales_activities").findOne({ _id: String(claimed.inReplyTo), workspaceId: ctx.workspaceId }) : null;
@@ -345,6 +425,9 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
     if (logged) return replay(ctx, current, logged);
     throw beingSent(current);
   }
+  // The person sends the version they read: a draft edited, reviewed or approved since they opened it is read again first (checked again,
+  // atomically, in the claim below).
+  if (draft.status !== "sent" && changedSince(draft, input.expectedUpdatedAt)) throw draftChanged();
   const channel = draft.channel;
   if (channel === "linkedin") throw new AppError(409, "CONFLICT", "LinkedIn messages can't be sent from the app: open the profile, send it yourself and mark it sent");
   if (!isSendChannel(channel)) throw new AppError(409, "CONFLICT", "A call opener is a script for call mode: it is not sent");
@@ -352,7 +435,7 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   const ventureId = String(lead.ventureId);
   const play = draft.playId ? await db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }) : null;
   const settings = await settingsFor(ctx, ventureId);
-  const blocker = sendBlocker(draft, lead, play, settings);
+  const blocker = sendBlocker(draft, lead, play, settings) ?? await versionBlocker(ctx, draft);
   if (blocker) throw new AppError(409, "CONFLICT", blocker);
   const account = await pickSendAccount(ctx, ventureId, channel, input.accountId);
   const accountId = String(account._id);
@@ -362,23 +445,30 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   await checkWindow(ctx, account, lead, channel, input.template, now);
   const day = localDay(now, calendarOf(settings));
 
-  // Claim the draft: only one request sets the lock on a ready draft, so a repeated or parallel click never sends twice.
-  const claimed = await drafts.findOneAndUpdate(
-    { _id: draft._id, workspaceId: ctx.workspaceId, status: "ready", sendLock: null },
-    { $set: { sendLock: { requestId: input.requestId, by: ctx.actor.id, at: now, accountId, channel, day }, delivery: defined({ state: "sending", at: now, accountId, to: shownTo(channel, target.to) }), updatedAt: now }, $inc: { sendAttempts: 1 } },
-    { returnDocument: "after" },
+  // Claim the draft: only one request sets the lock on a ready draft, so a repeated or parallel click never sends twice. With
+  // `expectedUpdatedAt` the draft is claimed only while it is still the version the person read.
+  const lock = { requestId: input.requestId, by: ctx.actor.id, at: now, accountId, channel, day };
+  const sending = defined({ state: "sending", at: now, accountId, to: shownTo(channel, target.to) });
+  const before = await drafts.findOneAndUpdate(
+    { _id: draft._id, workspaceId: ctx.workspaceId, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt) },
+    { $set: { sendLock: lock, delivery: sending }, $inc: { sendAttempts: 1 } },
+    { returnDocument: "before" },
   );
-  if (!claimed) {
+  if (!before) {
     const current = await drafts.findOne({ _id: draft._id, workspaceId: ctx.workspaceId });
     const raced = current ? logOf(current, input.requestId) : undefined;
     if (current && raced) return replay(ctx, current, raced);
     if (current?.sendLock) throw beingSent(current);
+    if (current && current.status !== "sent" && changedSince(current, input.expectedUpdatedAt)) throw draftChanged();
     throw new AppError(409, "CONFLICT", "This draft was already sent, or changed: reload it");
   }
-  const attempt = Number(claimed.sendAttempts ?? 1);
-  // The draft as it was before the claim (nothing went out): its earlier delivery state comes back.
-  const giveBack = () => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, draft.delivery ? { $unset: { sendLock: "" }, $set: { delivery: draft.delivery, updatedAt: new Date() } } : { $unset: { sendLock: "", delivery: "" }, $set: { updatedAt: new Date() } });
-  const unlock = async (set: Record<string, unknown>, extra: Record<string, unknown> = {}) => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, { $unset: { sendLock: "" }, $set: { ...set, updatedAt: new Date() }, ...extra });
+  const claimed: AppDocument = { ...before, sendLock: lock, delivery: sending, sendAttempts: Number(before.sendAttempts ?? 0) + 1 };
+  const attempt = Number(claimed.sendAttempts);
+  // The draft as it was before the claim (nothing went out): its earlier delivery state comes back (its `updatedAt` never moved), so the
+  // version the person read is still the one they can send.
+  const giveBack = () => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, before.delivery ? { $set: { delivery: before.delivery }, $unset: { sendLock: "" } } : { $unset: { sendLock: "", delivery: "" } });
+  // A send that didn't go: the lock comes off and the delivery says why; `updatedAt` stays the version the person read, so a retry with it goes.
+  const unlock = async (set: Record<string, unknown>, extra: Record<string, unknown> = {}) => drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, { $unset: { sendLock: "" }, $set: set, ...extra });
 
   // Then one of the day's sends (the venture's cap per person and channel); refused when used up, and the draft is given back.
   let release: () => Promise<void>;
@@ -411,7 +501,7 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
 
   const markUncertain = async (error: string) => {
     await drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, {
-      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }), updatedAt: at },
+      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }) },
       $push: logPush({ requestId: input.requestId, outcome: "uncertain", error, attempt, at }),
     });
     await auditSales(ctx, "sales.draft.send_uncertain", "draft", String(draft._id), ventureId, { channel, attempt });
@@ -483,7 +573,7 @@ export async function settleDelivery(ctx: SalesCtx, draft: AppDocument, lead: Ap
   if (outcome === "not_sent") {
     const changed = await drafts.findOneAndUpdate(
       { _id: current._id, workspaceId: ctx.workspaceId, "sendLock.requestId": lock.requestId, "delivery.state": "uncertain" },
-      { $unset: { sendLock: "" }, $set: { delivery: { state: "failed", at: now, ...(accountId ? { accountId } : {}), error: `Not sent (confirmed by ${ctx.actor.name || "a teammate"})` }, updatedAt: now } },
+      { $unset: { sendLock: "" }, $set: { delivery: { state: "failed", at: now, ...(accountId ? { accountId } : {}), error: `Not sent (confirmed by ${ctx.actor.name || "a teammate"})` } } },
       { returnDocument: "after" },
     );
     if (!changed) throw new AppError(409, "CONFLICT", "This draft changed: reload it");

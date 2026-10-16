@@ -6,12 +6,14 @@ import { ArrowLeft, ArrowUpRight, Check, Clock3, Reply } from "@/components/ui/i
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
 import { describeError } from "@/lib/errors";
-import { WorkspaceLink } from "@/components/shell/workspace-link";
-import { ActionLabel, Badge, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
-import { createDraft, getLead, markActivityHandled, setActivityReplyType, type InboxItem } from "@/lib/sales-api";
+import { ActionLabel, Badge, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
+import { getLead, markActivityHandled, setActivityReplyType, type InboxItem } from "@/lib/sales-api";
 import { Phone } from "./draft-icons";
 import { CALL_OUTCOME_LABEL, canEditLead, canWriteIn, ChannelTile, CHANNEL_LABEL, kickerClass, OPT_IN_LABEL, OWNER_ONLY_NOTE, REPLY_LABEL, ReplyTypeChip, stamp, telHref, routeOf, useSalesLoad } from "./draft-shared";
-import { DRAFT_STATUS } from "./draft-reader";
+import type { DraftChange } from "./draft-reader";
+import { heldSibling, isOpenDraft } from "./draft-plan";
+import { ClosedReplyLine, ReplyCard, ReplyComposer } from "./inbox-reply";
+import { AskClaude } from "./ask-claude";
 import { SlaChip, useNow, useSlaCalendars } from "./inbox-sla";
 import { useSalesShell } from "./sales-context";
 import { StageChip, VerdictChip, when } from "./sales-ui";
@@ -34,12 +36,13 @@ const NEXT_STEP: Record<string, string> = {
 /** "silence" is the absence of a reply, so it is not offered when sorting a message that arrived. */
 const SORTABLE_TYPES = REPLY_TYPES.filter((type) => type !== "silence");
 
-type DraftChannel = "email" | "whatsapp" | "linkedin" | "instagram";
-const replyChannel = (kind: string): DraftChannel => kind === "whatsapp" ? "whatsapp" : kind === "linkedin" ? "linkedin" : kind === "instagram" ? "instagram" : "email";
 /** Message kinds shown as chat bubbles; calls, meetings and notes are one-line events. */
 const MESSAGE_KINDS = ["email", "whatsapp", "linkedin", "instagram"];
 
-/** The right-hand pane of the Inbox: the conversation, what the reply means, and a reply to draft. */
+/**
+ * The right-hand pane of the Inbox: the conversation, what the reply means, and the answer: written here (ready at once), or Claude's,
+ * sent from here exactly as in Review. Once it is sent the reply is handled and the list moves on.
+ */
 export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBack: () => void; onChanged: (change: { kind: "handled" | "typed"; activity: Activity }) => void }) {
   const { session, openLead, refresh, personName } = useSalesShell();
   const { activity, lead } = item;
@@ -50,21 +53,26 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
   const calendar = useSlaCalendars([lead.ventureId])(lead.ventureId);
   const detail = useSalesLoad(`lead|${lead.id}`, () => getLead(lead.id));
   const [composing, setComposing] = useState(false);
-  const [channel, setChannel] = useState<DraftChannel>(replyChannel(activity.kind));
-  const [text, setText] = useState("");
+  // The reply just saved with "Save and send": its send step opens at once.
+  const [justSaved, setJustSaved] = useState("");
   const [typePick, setTypePick] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
   const now = useNow();
   const handled = Boolean(activity.handledAt);
-  const optedIn = Boolean(lead.whatsappOptIn);
   const full = detail.data?.lead;
+  const context = detail.data;
   const history = [...(detail.data?.activities ?? [])].sort((a, b) => a.at.localeCompare(b.at));
   const shown = history.length ? history.slice(-8) : [activity];
-  const replyDrafts = (detail.data?.drafts ?? []).filter((draft) => draft.purpose === "reply" && !["sent", "vetoed", "discarded"].includes(draft.status) && (!draft.inReplyTo || draft.inReplyTo === activity.id));
-  // Instagram is offered only where there is somewhere to send it: the lead's @handle, or a conversation with them on the venture's account.
-  const instagramReachable = Boolean(routeOf(lead.contactRoutes, "instagram")) || activity.kind === "instagram" || history.some((entry) => entry.kind === "instagram");
+  // This message's open answers (a reply draft without a message named answers the latest one). Ready ones first: they go out next.
+  const replyDrafts = (detail.data?.drafts ?? []).filter((draft) => draft.purpose === "reply" && isOpenDraft(draft) && (!draft.inReplyTo || draft.inReplyTo === activity.id))
+    .sort((a, b) => Number(b.status === "ready") - Number(a.status === "ready") || a.createdAt.localeCompare(b.createdAt));
+  const readyReply = replyDrafts.some((draft) => draft.status === "ready");
+  // Replies to this message that closed because another one went out (the API closes them): one line each.
+  const closedReplies = (detail.data?.drafts ?? []).filter((draft) => draft.purpose === "reply" && draft.inReplyTo === activity.id && draft.status === "discarded" && draft.closedReason === "other_reply_sent");
+  // Drafts still waiting for a review: writing your own answer replaces them.
+  const pendingReplies = replyDrafts.filter((draft) => draft.status !== "ready");
   const phone = routeOf(lead.contactRoutes, "phone", "whatsapp");
   const phoneLink = phone ? telHref(phone.value) : "";
   // Nobody calls or writes to someone on the do-not-contact list. The reply itself may also say so (opt out, hostile).
@@ -80,14 +88,21 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
   }
   const markHandled = () => void run("handled", () => markActivityHandled(activity.id), (updated) => { toast({ title: unconfirmedWhatsapp ? "WhatsApp confirmed and marked handled" : "Marked handled", body: lead.companyName }); onChanged({ kind: "handled", activity: updated }); refresh(); });
   const saveType = () => { if (typePick) void run("type", () => setActivityReplyType(activity.id, { replyType: typePick as (typeof REPLY_TYPES)[number] }), (result) => { toast({ title: "Reply type saved", body: `${lead.companyName}: ${REPLY_LABEL[typePick]}` }); onChanged({ kind: "typed", activity: result.activity }); refresh(); }); };
-  function saveReply() {
-    const body = text.trim();
-    if (!body) { setError("Write the reply first."); return; }
-    void run("reply", () => createDraft(lead.id, { channel, purpose: "reply", inReplyTo: activity.id, body, submit: true }), () => {
-      setComposing(false); setText("");
-      toast({ title: "Reply saved for review", body: `${lead.companyName}. Claude checks it, then you send it.` });
-      detail.reload(); refresh();
-    });
+  function saved(draft: { id: string; status: string }, send: boolean) {
+    setComposing(false); setError("");
+    setJustSaved(send && draft.status === "ready" ? draft.id : "");
+    toast(draft.status === "ready" ? { title: "Reply saved, ready to send", body: lead.companyName } : { title: "Saved for Claude to check", body: `${lead.companyName}. In a new chat, ask Claude: review drafts. Then send it from here.` });
+    detail.reload(); refresh();
+  }
+  // A reply went out (through an account, or marked sent by hand): the API marks the message handled when the reply names it; one that
+  // doesn't (an older Claude draft) is marked here. Then the list moves to the next reply.
+  async function replyChanged(change: DraftChange) {
+    setJustSaved("");
+    if (change.kind !== "sent" || handled) { detail.reload(); return; }
+    let cleared = change.draft.inReplyTo === activity.id;
+    if (!cleared && !unconfirmedWhatsapp) cleared = await markActivityHandled(activity.id).then(() => true, () => false);
+    if (!cleared) { detail.reload(); return; }
+    onChanged({ kind: "handled", activity: { ...activity, handledAt: new Date().toISOString(), ...(session ? { handledBy: session.user.id } : {}) } });
   }
 
   return <article className="vso-fade-enter min-w-0">
@@ -115,29 +130,20 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
         {doNotContact && <p role="note" className="rounded-2xl bg-danger-surface p-3.5 text-xs font-semibold leading-5 text-danger-text">On the do-not-contact list. Do not call or write to them again, on any channel.</p>}
         {unconfirmedWhatsapp && !handled && <p role="note" className="rounded-2xl bg-primary-50 p-3.5 text-xs leading-5 text-primary-900"><b>Claude logged this WhatsApp message.</b> WhatsApp stays off for {lead.companyName} until you confirm they really messaged us.</p>}
 
-        {replyDrafts.length > 0 && <div className="space-y-2">
-          <span className={kickerClass}>Reply in progress</span>
-          {replyDrafts.map((draft) => <WorkspaceLink key={draft.id} href={`/sales/live/review?draft=${encodeURIComponent(draft.id)}`} className="flex items-start gap-3 rounded-2xl border border-primary-200 bg-primary-50 p-3.5 transition-[background-color,transform] duration-150 hover:bg-primary-100 active:scale-[0.995]"><ChannelTile channel={draft.channel} size={32} /><span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><b className="text-sm text-primary-900">A reply is drafted</b><Badge tone={DRAFT_STATUS[draft.status].tone}>{DRAFT_STATUS[draft.status].label}</Badge></span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-primary-800 [overflow-wrap:anywhere]">{draft.body}</span><span className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-primary-800">Open in Review<ArrowUpRight size={12} aria-hidden="true" /></span></span></WorkspaceLink>)}
-        </div>}
+        {full && context && replyDrafts.map((draft) => <ReplyCard key={draft.id} draft={draft} lead={full} autoSend={draft.id === justSaved} heldBy={heldSibling(replyDrafts, draft)} detail={context} onChanged={(change) => void replyChanged(change)} />)}
+        {closedReplies.length > 0 && <div className="space-y-1.5">{closedReplies.map((draft) => <ClosedReplyLine key={draft.id} draft={draft} />)}</div>}
 
-        {composing && writer && <form onSubmit={(event) => { event.preventDefault(); saveReply(); }} className="vso-fade-enter space-y-3 rounded-2xl border border-primary-300 bg-white p-4 ring-2 ring-primary-100">
-          <div className="grid gap-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-            <Field label="Send it by"><Select className={inputClass} value={channel} onChange={(event) => setChannel(event.target.value as DraftChannel)}><option value="email">Email</option><option value="whatsapp" disabled={!optedIn}>{optedIn ? "WhatsApp" : "WhatsApp (not opted in)"}</option><option value="linkedin">LinkedIn</option>{instagramReachable && <option value="instagram">Instagram</option>}</Select></Field>
-            <p className="self-end pb-1 text-xs leading-5 text-neutral-500">Write it in their language and keep it short. Claude checks it against the message rules before you send it.</p>
-          </div>
-          <Field label="Your reply"><textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setComposing(false); } }} maxLength={5000} rows={6} autoFocus className={clsx(inputClass, "py-3 leading-7")} /></Field>
-          <div className="flex flex-wrap gap-2"><button type="submit" disabled={busy === "reply"} className={primaryClass}><ActionLabel busy={busy === "reply"} idle="Save for review" /></button><button type="button" onClick={() => setComposing(false)} className={secondaryClass}>Cancel</button></div>
-        </form>}
+        {composing && writer && !doNotContact && <ReplyComposer lead={full ?? lead} activity={activity} activities={detail.data ? history : null} pending={pendingReplies} onSaved={saved} onCancel={() => setComposing(false)} />}
 
         <div className="flex flex-wrap items-center gap-2">
-          {writer && !doNotContact && !composing && replyDrafts.length === 0 && <button type="button" onClick={() => { setComposing(true); setError(""); }} className={primaryClass}><Reply size={16} />Draft a reply</button>}
-          {writer && (!handled || unconfirmedWhatsapp) && <button type="button" onClick={markHandled} disabled={busy === "handled"} className={clsx(unconfirmedWhatsapp || replyDrafts.length > 0 || composing || doNotContact ? primaryClass : secondaryClass, "max-w-full", unconfirmedWhatsapp && "!h-auto !py-2.5 text-left leading-5")}><ActionLabel busy={busy === "handled"} busyText="Saving…" idle={<><Check size={16} className="shrink-0" />{unconfirmedWhatsapp ? "Confirm they messaged us on WhatsApp and mark handled" : "Mark handled"}</>} /></button>}
+          {writer && !doNotContact && !composing && !readyReply && <button type="button" onClick={() => { setComposing(true); setError(""); }} className={replyDrafts.length ? secondaryClass : primaryClass}><Reply size={16} />{replyDrafts.length ? "Write my own reply" : "Write a reply"}</button>}
+          {writer && (!handled || unconfirmedWhatsapp) && <button type="button" onClick={markHandled} disabled={busy === "handled"} className={clsx(unconfirmedWhatsapp || doNotContact ? primaryClass : secondaryClass, "max-w-full", unconfirmedWhatsapp && "!h-auto !py-2.5 text-left leading-5")}><ActionLabel busy={busy === "handled"} busyText="Saving…" idle={<><Check size={16} className="shrink-0" />{unconfirmedWhatsapp ? "Confirm they messaged us on WhatsApp and mark handled" : "Mark handled"}</>} /></button>}
           <button type="button" onClick={() => openLead(lead.id)} className={secondaryClass}><ArrowUpRight size={16} />Open lead</button>
           {phone && phoneLink && writer && !doNotContact && <a href={phoneLink} className={secondaryClass}><Phone size={16} />Call</a>}
         </div>
         {teammate && <p className="text-xs text-neutral-500">{OWNER_ONLY_NOTE}</p>}
-        {!writer && !teammate && <p className="text-xs text-neutral-500">You can read replies. A contributor or venture head answers them.</p>}
-        {writer && !handled && !doNotContact && replyDrafts.length === 0 && !composing && <p className="text-xs leading-5 text-neutral-500">Or ask Claude: &ldquo;draft replies to my inbox&rdquo;. It writes each one in the venture&apos;s voice and you read it in Review.</p>}
+        {!writer && !teammate && <p className="text-xs text-neutral-500">You can read replies. The lead&apos;s owner or a venture head answers them.</p>}
+        {writer && !handled && !doNotContact && replyDrafts.length === 0 && !composing && <AskClaude prompt="draft replies to my inbox" note="reviewed in a new chat, then sent from here" />}
 
         {!activity.replyType && writer && !doNotContact && <div className="space-y-2 rounded-2xl border border-warning-surface bg-warning-surface p-4">
           <p className="text-[13px] font-bold text-warning-text">What kind of reply is this?</p>

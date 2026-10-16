@@ -15,8 +15,9 @@ export const appRoleSchema = z.enum(["admin", "venture_head", "contributor", "re
 export const errorCodeSchema = z.enum([
   "BAD_REQUEST", "UNAUTHENTICATED", "FORBIDDEN", "NOT_FOUND", "CONFLICT",
   "RATE_LIMITED", "STALE_PREVIEW", "INTERNAL_ERROR", "INTEGRATION_UNAVAILABLE",
-  // Sales channels (docs/sales-channels.md): a send through a connected account didn't go; WhatsApp needs a template outside 24 hours.
-  "SEND_FAILED", "TEMPLATE_REQUIRED",
+  // Sales channels (docs/sales-channels.md): a send through a connected account didn't go; WhatsApp needs a template outside 24 hours;
+  // the draft changed after the person opened it (`expectedUpdatedAt` on a send), so it is read again before it goes.
+  "SEND_FAILED", "TEMPLATE_REQUIRED", "DRAFT_CHANGED",
 ]);
 
 export const errorEnvelopeSchema = z.object({

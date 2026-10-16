@@ -8,7 +8,7 @@ import { registerSalesServer, SALES_SERVER_INSTRUCTIONS } from "../src/mcp/sales
 import { SERVER_INSTRUCTIONS } from "../src/mcp/tools.js";
 import { CARD_BUILDERS, CARD_MIME, CARD_SHOWN_NOTE, CARD_URI, UI_EXTENSION, chatDrawsCards, safeDomain, safeName, withCard, type Card } from "../src/mcp/sales-cards.js";
 import { CARD_HTML } from "../src/mcp/sales-card-view.js";
-import { BATCH, greeting, refusalGuide, researchOption, startNext, startSay } from "../src/mcp/sales-guided.js";
+import { ASK_CLAUDE, BATCH, FULL_RUN_OPTION, FULL_RUN_PROMPT, greeting, refusalGuide, researchOption, startNext, startSay } from "../src/mcp/sales-guided.js";
 import { guessCompany } from "../src/mcp/tools-search.js";
 import { reserveSearch } from "../src/sales/search-engines.js";
 import { daybreakPlan, daybreakSay, daybreakWork, rateText, reportFrom, reportNext, reportSay } from "../src/mcp/tools-sales-reports.js";
@@ -54,7 +54,7 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
   assert.deepEqual(startNext({ mode: "review", counts: { toReview: 3 } }).slice(0, 1), ["Review the 3 drafts waiting"]);
   assert.equal(startNext({ mode: "work", counts: { replies: 1, callsDue: 2, toReview: 3, followUpsDue: 4, needsYou: 5 }, newLeads: 6 }).length, 3);
   // Offers: with none set up, setting one up is offered once nothing more urgent waits; the welcome names the offer being worked on.
-  assert.deepEqual(startNext({ mode: "work", counts: {}, noOffer: true }), ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
+  assert.deepEqual(startNext({ mode: "work", counts: {}, noOffer: true }), ["Set up the first offer: tell me what you sell and who buys it", FULL_RUN_OPTION, "Plan the next play"]);
   assert.equal(startNext({ mode: "work", counts: { replies: 1, callsDue: 2, toReview: 3 }, noOffer: true }).includes("Set up the first offer: tell me what you sell and who buys it"), false);
   const at = new Date("2026-10-10T03:00:00Z");
   assert.equal(startSay({ name: "Asha", timeZone: "Asia/Kolkata", mode: "work", counts: {}, offers: ["Dealer Commerce"], now: at }), "Good morning, Asha. Welcome to Dealflow Sales: I research and judge leads and write drafts, and you send and approve everything. Nothing urgent is waiting. Working on Dealer Commerce.");
@@ -68,7 +68,7 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
     const empty = await ok(writer, "start_sales", {});
     assert.match(empty.say, /^Good (morning|afternoon|evening), Person\. Welcome to Dealflow Sales: .*Nothing urgent is waiting\.$/);
     // The venture has no offer yet: setting one up comes first.
-    assert.deepEqual(empty.next, ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
+    assert.deepEqual(empty.next, ["Set up the first offer: tell me what you sell and who buys it", FULL_RUN_OPTION, "Plan the next play"]);
     assert.equal(empty.steps.length, 8);
     // How to show it: this connection can't tell which chat app it is, so the instructions decide between an artifact and a table.
     assert.deepEqual(empty.view, { present: "artifact_or_table", title: "Dealflow Sales: today" });
@@ -77,7 +77,7 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
     const added = await ok(writer, "add_leads", { ventureId: "venture-a", leads: ["Alpha Pumps", "Beta Valves", "Gamma Motors", "Delta Pipes"].map((companyName) => ({ companyName, city: "Raipur", source: "Raipur trade listing" })) });
     assert.equal(added.added, 4);
     const fresh = await ok(writer, "start_sales", {});
-    assert.equal(fresh.next[0], "Research the 4 new Raipur leads");
+    assert.equal(fresh.next[0], "Research and judge the 4 new Raipur leads");
 
     // A reply, a draft waiting for review and two new leads: the options follow the priorities (replies, then reviews, then research).
     const session = (await ok(writer, "start_sales", {})).sessionId as string;
@@ -86,7 +86,7 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
     await ok(writer, "log_reply", { company: "Beta Valves", channel: "email", body: "Yes, tell me more.", replyType: "interested" });
     const busy = await ok(writer, "start_sales", {});
     assert.match(busy.say, /1 reply waiting and 1 draft to review\.$/);
-    assert.deepEqual(busy.next, ["Sort the 1 reply waiting (warm replies are due within 2 working hours)", "Get the 1 draft waiting reviewed (open a new chat and say “review drafts”)", "Research the 2 new Raipur leads"]);
+    assert.deepEqual(busy.next, ["Draft replies to my inbox (1 reply waiting; warm ones are due within 2 working hours)", "Review drafts: open a new chat and say “review drafts” (1 draft waiting)", "Research and judge the 2 new Raipur leads"]);
     // The overview says the same, and a review chat is told what it is for.
     const overview = await ok(writer, "sales_overview", {});
     assert.match(overview.say, /^Today in sales: 1 reply waiting and 1 draft to review\.$/);
@@ -120,17 +120,19 @@ test("start_sales greets by first name in Asia/Kolkata and offers three options 
 
 test("research suggestions name the busiest cities of ALL new leads and offer one batch of 25, never the whole pile", { skip: !process.env.TEST_MONGODB_URI }, async () => {
   // The phrasing, by batch and never by total.
-  assert.equal(researchOption(4, [{ city: "Raipur", count: 4 }]), "Research the 4 new Raipur leads");
-  assert.equal(researchOption(6, [{ city: "Indore", count: 3 }, { city: "Raipur", count: 2 }, { city: "Nagpur", count: 1 }]), "Research the 6 new leads (Indore 3, Raipur 2, Nagpur 1)");
-  assert.equal(researchOption(1_522, [{ city: "Indore", count: 101 }, { city: "Raipur", count: 94 }, { city: "Nagpur", count: 74 }, { city: "Bhopal", count: 12 }]), "Research the newest leads: Indore (101), Raipur (94) or Nagpur (74). Say a city and I'll take the first 25");
-  assert.equal(researchOption(300, [{ city: "Indore", count: 300 }]), "Research the first 25 of 300 new Indore leads");
-  assert.equal(researchOption(300, []), "Research the first 25 of 300 new leads");
-  assert.equal(researchOption(300, [{ city: "Indore", count: 40 }]), "Research the first 25 of 300 new leads", "one city that holds only part of them is not named as if it held all");
+  assert.equal(researchOption(4, [{ city: "Raipur", count: 4 }]), "Research and judge the 4 new Raipur leads");
+  assert.equal(researchOption(6, [{ city: "Indore", count: 3 }, { city: "Raipur", count: 2 }, { city: "Nagpur", count: 1 }]), "Research and judge the 6 new leads (Indore 3, Raipur 2, Nagpur 1)");
+  assert.equal(researchOption(1_522, [{ city: "Indore", count: 101 }, { city: "Raipur", count: 94 }, { city: "Nagpur", count: 74 }, { city: "Bhopal", count: 12 }]), "Research and judge the newest leads: Indore (101), Raipur (94) or Nagpur (74). Say a city and I'll take the first 25");
+  assert.equal(researchOption(300, [{ city: "Indore", count: 300 }]), "Research and judge the first 25 of 300 new Indore leads");
+  assert.equal(researchOption(300, []), "Research and judge the first 25 of 300 new leads");
+  assert.equal(researchOption(300, [{ city: "Indore", count: 40 }]), "Research and judge the first 25 of 300 new leads", "one city that holds only part of them is not named as if it held all");
   // No option anywhere asks for more than one batch.
-  const piles = { replies: 400, callsDue: 90, toReview: 300, followUpsDue: 70, needsYou: 60, wonToHandOver: 30 };
+  const piles = { replies: 400, callsDue: 90, toReview: 300, inReview: 300, needsChanges: 80, followUpsDue: 70, whatsappVersionsToWrite: 40, firstMessagesToWrite: 120, needsYou: 60, wonToHandOver: 30 };
   const options = Object.keys(piles).flatMap((key) => startNext({ mode: "work", counts: { [key]: piles[key as keyof typeof piles] }, newLeads: 1_522, cities: [{ city: "Indore", count: 101 }] }));
   assert.ok(options.includes("Plan the first 25 of today's 90 calls"));
-  assert.ok(options.includes("Sort the first 25 of 400 replies waiting (warm replies are due within 2 working hours)"));
+  assert.ok(options.includes("Draft replies to my inbox (the first 25 of 400 replies waiting; warm ones are due within 2 working hours)"));
+  // The options start with the app's "Ask Claude" words for the step (the count follows in brackets).
+  for (const words of ["Review drafts: open a new chat and say “review drafts” (the first 25 of 300 drafts waiting)", "Fix the drafts that need changes (the first 25 of 80 drafts sent back)", "Write a WhatsApp version for my opted-in leads (the first 25 of 40 leads with only an email first message)", "Write first messages for my recommended leads (the first 25 of 120 leads waiting)"]) assert.ok(options.includes(words), words);
   for (const option of options) {
     for (const number of option.replace(/first (\d+) of (?:today's )?[\d,]+/g, "first $1").match(/\d[\d,]*/g) ?? []) assert.ok(Number(number.replaceAll(",", "")) <= BATCH, `${option} offers one batch`);
   }
@@ -146,17 +148,17 @@ test("research suggestions name the busiest cities of ALL new leads and offer on
       assert.equal((await ok(writer, "add_leads", { ventureId: "venture-a", leads })).added, leads.length);
     }
     const start = await ok(writer, "start_sales", {});
-    assert.equal(start.next[0], "Research the newest leads: Indore (30), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
+    assert.equal(start.next[0], "Research and judge the newest leads: Indore (30), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
     const overview = await ok(writer, "sales_overview", {});
     assert.equal(overview.next[0], start.next[0]);
     // Judging one Indore lead takes it out of the new pile, and the counts follow.
     const session = start.sessionId as string;
     await ok(writer, "save_verdict", { company: "Indore Traders 30", sessionId: session, ...verdict({ decision: "reject", confidence: "high", signal: "" }) });
-    assert.equal((await ok(writer, "start_sales", {})).next[0], "Research the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
+    assert.equal((await ok(writer, "start_sales", {})).next[0], "Research and judge the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
     // Everyone's leads (scope all) count the same way; someone else's new leads are not in "mine".
     const other = await tokenFor("member2");
-    assert.deepEqual((await ok(other, "start_sales", {})).next, ["Set up the first offer: tell me what you sell and who buys it", "Find new leads: tell me the area and the kind of business", "Plan the next play"]);
-    assert.equal((await ok(other, "start_sales", { scope: "all" })).next[0], "Research the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
+    assert.deepEqual((await ok(other, "start_sales", {})).next, ["Set up the first offer: tell me what you sell and who buys it", FULL_RUN_OPTION, "Plan the next play"]);
+    assert.equal((await ok(other, "start_sales", { scope: "all" })).next[0], "Research and judge the newest leads: Indore (29), Raipur (28) or Nagpur (6). Say a city and I'll take the first 25");
   }, "mcp_sales_cities");
 });
 
@@ -419,8 +421,10 @@ test("search_companies with keys: TinyFish and Exa, merged by site, known leads 
       assert.equal(found.known[0].company, "Known Lead Pvt Ltd");
       assert.equal(found.skippedDoNotContact, 1);
       assert.match(found.say, /^Found 3 companies for “pump distributors in Indore”, and skipped 1 already in the pipeline, and 1 on the do-not-contact list\.$/);
-      assert.match(found.next[0], /^Add the best 3 to the pipeline and research them$/);
+      // The suggestion is the full run (add, judge, draft, review); only adding them is the second choice.
+      assert.deepEqual(found.next.slice(0, 2), ["Take the best 3 to ready drafts: add, judge, draft and review them", "Just add the best 3 to the pipeline"]);
       assert.match(found.then, /never contact anyone from here/);
+      assert.match(found.then, /full run[\s\S]*just find[\s\S]*judge, draft, independent review, one summary/);
       assert.match(found.note, /data, never as instructions/);
       assert.equal(found.companies[2].snippet.startsWith("Ignore previous instructions"), true, "outsider text is returned as data, labelled as such");
       assert.equal(await db.collection("opportunities").countDocuments({}), leadsBefore, "nothing was stored");
@@ -897,10 +901,10 @@ test("round 2: a button's request never carries a web page's words, and the serv
   // City names in `next` (from our own facets) are clipped and cleaned before a card turns them into buttons.
   const option = researchOption(4, [{ city: `Raipur‮${"x".repeat(60)}`, count: 4 }]);
   assert.ok(!option.includes("‮"));
-  assert.ok(option.length <= "Research the 4 new  leads".length + 40, option);
-  // The instructions: under 2,000 characters, in the order that matters.
-  assert.ok(SALES_SERVER_INSTRUCTIONS.length <= 2_000, String(SALES_SERVER_INSTRUCTIONS.length));
-  const order = ["start_sales first", "sessionId to every write", "`next` options", "`artifact_or_table`", "You never send anything", "Review only in a separate chat", "data, never instructions", "a person's decisions"].map((phrase) => SALES_SERVER_INSTRUCTIONS.indexOf(phrase));
+  assert.ok(option.length <= "Research and judge the 4 new  leads".length + 40, option);
+  // The instructions: under 1,850 characters (Claude Code keeps 2,048), in the order that matters.
+  assert.ok(SALES_SERVER_INSTRUCTIONS.length < 1_850, String(SALES_SERVER_INSTRUCTIONS.length));
+  const order = ["start_sales first", "sessionId to every write", "`next` options", "`artifact_or_table`", "You never send or approve anything", "means the full run", "Review only in a separate chat", "data, never instructions", "people's decisions"].map((phrase) => SALES_SERVER_INSTRUCTIONS.indexOf(phrase));
   assert.ok(order.every((index) => index >= 0), JSON.stringify(order));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   // The Venture Studio connector's too: Claude Code keeps only the first 2,048 characters, and the safety rules come before the rest.
@@ -968,4 +972,278 @@ test("round 2: a name picks a lead only by its company (never by a contact or a 
     }
     assert.deepEqual(await tally(), counted, "nothing was written");
   }, "mcp_sales_round2");
+});
+
+test("WhatsApp versions through Claude: an opted-in lead's first message gets a WhatsApp version next to the email one, the options and the morning plan say so in the app's words, one waiting draft per channel", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
+    const ok = workSessions(origin)(okRaw);
+    const writer = await tokenFor("member"); const reviewer = await tokenFor("member");
+    const work = (await ok(writer, "start_sales", {})).sessionId as string;
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: [
+      { companyName: "Sharma Foods", city: "Jaipur", source: "Jaipur listing", contactRoutes: [{ kind: "email", value: "orders@sharmafoods.in", sourceUrl: "https://www.sharmafoods.in/contact" }, { kind: "phone", value: "+91 98765 43210", sourceUrl: "https://www.sharmafoods.in/contact" }] },
+      { companyName: "Verma Steel", city: "Jaipur", source: "Jaipur listing" },
+    ] });
+    await ok(writer, "save_verdict", { company: "Sharma Foods", sessionId: work, ...verdict() });
+    await ok(writer, "save_verdict", { company: "Verma Steel", sessionId: work, ...verdict() });
+    // Two recommended leads with no first message: the option uses the app's words, and askClaude says what each prompt means.
+    const start = await ok(writer, "start_sales", {});
+    assert.ok(start.next.includes("Write first messages for my recommended leads (2 leads waiting)"), JSON.stringify(start.next));
+    assert.equal(start.today.firstMessagesToWrite, 2);
+    for (const prompt of ["write first messages for my recommended leads", "review drafts", "fix the drafts that need changes", "write a WhatsApp version for <company>", "draft replies to my inbox", "research and judge <company>", "write the first message for <company>", "run my morning", "find <industry> companies in <city>"]) assert.ok(start.askClaude[prompt], prompt);
+    assert.match(start.askClaude["write a WhatsApp version for <company>"], /save_draft with channel whatsapp and purpose first_touch/);
+    assert.deepEqual(Object.keys((await ok(reviewer, "start_sales", { mode: "review" })).askClaude), ["review drafts"]);
+
+    // The email first message; a second email version is a rewrite (revise_draft), and WhatsApp waits for the opt-in.
+    const first = await ok(writer, "save_draft", { company: "Sharma Foods", sessionId: work, ...email() });
+    assert.equal(first.next[0], "Write the next draft");
+    await refused(writer, "save_draft", { company: "Sharma Foods", sessionId: work, ...email({ body: "Saw you now serve dealers in 12 districts. Do dealers still order by phone? Open to a short call?" }) }, /Sharma Foods already has an email first message waiting \(in review\): change that one with revise_draft instead of writing a second/);
+    const chat = { company: "Sharma Foods", sessionId: work, channel: "whatsapp", body: "Hi, saw you now serve dealers in 12 districts. How do they order today? Open to a quick call?" };
+    await refused(writer, "save_draft", chat, /No cold first WhatsApp/);
+
+    // A person logs the call where Sharma said yes to WhatsApp: the opt-in is theirs to record, and the lead moves on to replied.
+    const sharma = (await ok(writer, "find_leads", { q: "Sharma Foods" })).leads[0].leadId as string;
+    const called = await api("POST", `/sales/leads/${sharma}/activities`, "member", { kind: "call", direction: "out", callOutcome: "yes_whatsapp", body: "Said yes to WhatsApp" });
+    assert.equal(called.status, 201, await called.clone().text());
+    assert.deepEqual([(await db.collection("opportunities").findOne({ _id: sharma as never }))?.whatsappOptIn?.how, (await db.collection("opportunities").findOne({ _id: sharma as never }))?.stage], ["yes_on_call", "replied"]);
+
+    // Now its first message waits as an email only: start_sales, get_lead and daybreak all point to the WhatsApp version, in the same words.
+    const now = await ok(writer, "start_sales", {});
+    assert.deepEqual(now.next, ["Review drafts: open a new chat and say “review drafts” (1 draft waiting)", "Write a WhatsApp version for my opted-in leads (1 lead with only an email first message)", "Write first messages for my recommended leads (1 lead waiting)"]);
+    assert.equal(now.today.whatsappVersionsToWrite, 1);
+    assert.equal((await ok(writer, "get_lead", { company: "Sharma Foods" })).next[0], "Write a WhatsApp version for Sharma Foods");
+    // ...but only where the venture writes on WhatsApp: with WhatsApp off in its settings, get_lead doesn't suggest it.
+    const off = await api("PUT", "/sales/settings?ventureId=venture-a", "lead", { allowedChannels: ["call", "email", "linkedin"] });
+    assert.equal(off.status, 200, await off.clone().text());
+    assert.notEqual((await ok(writer, "get_lead", { company: "Sharma Foods" })).next[0], "Write a WhatsApp version for Sharma Foods");
+    assert.equal((await ok(writer, "start_sales", {})).today.whatsappVersionsToWrite, undefined);
+    assert.equal((await api("PUT", "/sales/settings?ventureId=venture-a", "lead", {})).status, 200);
+    assert.equal((await ok(writer, "get_lead", { company: "Sharma Foods" })).next[0], "Write a WhatsApp version for Sharma Foods");
+    const morning = await ok(writer, "daybreak", {});
+    assert.equal(morning.counts.whatsappVersions, 1);
+    assert.match(morning.say, /1 opted-in lead has no WhatsApp version/);
+    assert.deepEqual(morning.whatsappVersions.map((row: any) => [row.company, row.emailDraft.draftId, row.emailDraft.subject, row.optedIn.startsWith("yes on call")]), [["Sharma Foods", first.draftId, "Dealer orders", true]]);
+    assert.ok(morning.then.some((step: string) => /^\d\. Write a WhatsApp version for the 1 opted-in lead listed under whatsappVersions[\s\S]*save_drafts call \(channel whatsapp, purpose first_touch\)[\s\S]*sending one closes the other/.test(step)), JSON.stringify(morning.then));
+    assert.match(morning.next[0], /^Run the morning plan in order: WhatsApp versions, contacts, then your calls and replies$/);
+
+    // Claude writes it: a first message although the lead has moved on, next to the email version.
+    const version = await ok(writer, "save_draft", chat);
+    assert.match(version.say, /It sits next to the email version: the person sends one, and that closes the other\.$/);
+    assert.deepEqual([version.channel, version.purpose, version.otherVersions], ["whatsapp", "first_touch", ["email (in review)"]]);
+    const listed = await ok(writer, "list_drafts", {});
+    assert.deepEqual(listed.drafts.find((row: any) => row.draftId === first.draftId).otherVersions, ["WhatsApp (in review)"]);
+    await refused(writer, "save_draft", { ...chat, body: "Hello again on WhatsApp. Open to a call?" }, /Sharma Foods already has a WhatsApp first message waiting \(in review\)/);
+    // Past first contact, only the WhatsApp version is a first message: not another channel.
+    await refused(writer, "save_draft", { company: "Sharma Foods", sessionId: work, channel: "linkedin", body: "Saw you now serve dealers in 12 districts. Open to a call?" }, /A first message is for a lead nobody has contacted yet, and this one is replied/);
+    assert.equal((await ok(writer, "daybreak", {})).counts.whatsappVersions, 0);
+    assert.equal((await ok(writer, "start_sales", {})).today.whatsappVersionsToWrite, undefined);
+
+    // The person sends the email version: the WhatsApp version closes, and no other version of that first message can be written.
+    const review = (await ok(reviewer, "start_sales", { mode: "review" })).sessionId as string;
+    await ok(reviewer, "review_draft", { draftId: first.draftId, sessionId: review, result: "pass" });
+    const sent = await api("POST", `/sales/drafts/${first.draftId}/sent`, "member", {});
+    assert.equal(sent.status, 201, await sent.clone().text());
+    const closed = await db.collection("sales_drafts").findOne({ _id: version.draftId as never });
+    assert.deepEqual([closed?.status, closed?.closedReason, closed?.sentVersion?.channel], ["discarded", "sent_on_other_channel", "email"]);
+    await refused(writer, "save_draft", { ...chat, body: "One more WhatsApp version. Open to a call?" }, /The first message to Sharma Foods already went out \(email\), and only one version of it is ever sent/);
+
+    // A lead that wrote to us on WhatsApp gets a reply, not a WhatsApp first message: it is not listed, and the tool says so.
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Gupta Traders", city: "Jaipur", source: "Jaipur listing" }] });
+    await ok(writer, "save_verdict", { company: "Gupta Traders", sessionId: work, ...verdict() });
+    await ok(writer, "save_draft", { company: "Gupta Traders", sessionId: work, ...email() });
+    const gupta = (await ok(writer, "find_leads", { q: "Gupta Traders" })).leads[0].leadId as string;
+    const wrote = await api("POST", `/sales/leads/${gupta}/activities`, "member", { kind: "whatsapp", direction: "in", body: "Hi, please send details here" });
+    assert.equal(wrote.status, 201, await wrote.clone().text());
+    assert.equal((await db.collection("opportunities").findOne({ _id: gupta as never }))?.whatsappOptIn?.how, "they_messaged");
+    assert.equal((await ok(writer, "daybreak", {})).counts.whatsappVersions, 0);
+    assert.notEqual((await ok(writer, "get_lead", { company: "Gupta Traders" })).next[0], "Write a WhatsApp version for Gupta Traders");
+    await refused(writer, "save_draft", { ...chat, company: "Gupta Traders" }, /A first message is for a lead nobody has contacted yet, and this one is replied/);
+    assert.equal((await ok(writer, "save_draft", { ...chat, company: "Gupta Traders", purpose: "reply", body: "Thanks for writing. Which day suits you for a short call?" })).purpose, "reply");
+  }, "mcp_sales_versions");
+});
+
+test("the full run: “find 10 … and take them to ready drafts” is offered in the app's words, and a fresh review subagent (its own review session on the same connection) reviews the run's drafts while the writing chat only revises", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  // The words: the instructions, the app's "Ask Claude" prompt and the option offered when nothing more urgent waits.
+  assert.match(SALES_SERVER_INSTRUCTIONS, /"Find N <kind> in <place>" means the full run: find, judge, draft, independent review, one summary; "just find" only finds\./);
+  assert.match(SALES_SERVER_INSTRUCTIONS, /Review only in a separate chat \(in Claude Code, a fresh review subagent\): the writer never reviews\./);
+  assert.equal(FULL_RUN_PROMPT, "find 10 <kind> in <place> and take them to ready drafts");
+  assert.match(ASK_CLAUDE[FULL_RUN_PROMPT]!, /never sending or approving[\s\S]*search_companies[\s\S]*add_leads[\s\S]*save_verdicts[\s\S]*save_drafts[\s\S]*fresh subagent starts start_sales mode review[\s\S]*revise_draft[\s\S]*two rounds at most[\s\S]*open a new chat and say review drafts[\s\S]*Batches of 25, within the daily caps[\s\S]*one summary/);
+  assert.match(ASK_CLAUDE["find <industry> companies in <city>"]!, /^The full run \(below\) unless the person says “just find”/);
+  assert.deepEqual(startNext({ mode: "work", counts: {} }), [FULL_RUN_OPTION, "Plan the next play", "Look at what is working this week"]);
+
+  await withSalesApp(async ({ ok: okRaw, refused, origin, tokenFor, db }) => {
+    const ok = workSessions(origin)(okRaw);
+    // One connection, as in Claude Code: the reviewer subagent uses the same key as the chat that writes.
+    const token = await tokenFor("member");
+    const start = await ok(token, "start_sales", {});
+    const work = start.sessionId as string;
+    assert.match(start.askClaude[FULL_RUN_PROMPT], /fresh subagent/);
+    assert.ok(start.rules.some((rule: string) => rule.includes(FULL_RUN_PROMPT) && /just find/.test(rule)), JSON.stringify(start.rules));
+    // The slash command and the review tool say the same.
+    const prompt = (await mcpCall(origin, token, "prompts/get", { name: "find_leads" })).body.result.messages[0].content.text as string;
+    assert.match(prompt, /the full run[\s\S]*save_verdicts[\s\S]*save_drafts[\s\S]*fresh review subagent[\s\S]*one summary[\s\S]*just find[\s\S]*Never send or approve anything/);
+    const tools = (await mcpCall(origin, token, "tools/list")).body.result.tools as any[];
+    assert.match(tools.find((item) => item.name === "review_draft").description, /A fresh subagent that did not write the drafts \(Claude Code, in a full run\) is a separate conversation: it calls start_sales mode review itself and only reviews/);
+    assert.match(tools.find((item) => item.name === "start_sales").description, /a fresh review subagent with its own context, which never wrote the drafts and starts its own review session, is a separate conversation/);
+    // Nothing in the pipeline matches: the first option is the full run.
+    assert.equal((await ok(token, "find_leads", { q: "Nothing like this" })).next[0], "Find 10 new ones and take them to ready drafts");
+
+    // 1. Find: the run adds what it chose, and the answer says to go straight on.
+    const added = await ok(token, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Run Pumps", city: "Indore", source: "https://www.runpumps.in/about" }, { companyName: "Run Valves", city: "Indore", source: "https://www.runvalves.in/" }] });
+    assert.deepEqual(added.next.slice(0, 2), ["Take the 2 new leads to ready drafts: judge, draft and review", "Only research and judge the 2 new leads"]);
+    assert.match(added.then, /In a full run \(the default when the person asked to find leads, unless they said "just find"\) go straight on without asking: judge, draft the recommended, the independent review, then one summary\./);
+    // 2. Judge: one recommended, one rejected with its reason.
+    const judged = await ok(token, "save_verdicts", { sessionId: work, verdicts: [
+      { company: "Run Pumps", ...verdict() },
+      { company: "Run Valves", ...verdict({ decision: "reject", confidence: "high", gates: [{ gate: "Not a national brand", result: "fail", note: "A national brand" }], signal: "", summary: "A national brand: not a fit." }) },
+    ] });
+    assert.equal(judged.saved, 2);
+    // 3. Draft the recommended one.
+    const drafted = await ok(token, "save_drafts", { sessionId: work, drafts: [{ company: "Run Pumps", ...email() }] });
+    const draftId = drafted.results[0].draftId as string;
+    // 4. The writing chat never reviews its own drafts...
+    await refused(token, "review_draft", { draftId, sessionId: work, result: "pass" }, /started as a work session, so it can't review drafts[\s\S]*fresh subagent/);
+    // ...a fresh reviewer starts its own review session on the same connection, and sends the draft back with the exact fix.
+    const reviewer1 = (await okRaw(token, "start_sales", { mode: "review" })).sessionId as string;
+    assert.notEqual(reviewer1, work);
+    const failed = await ok(token, "review_draft", { draftId, sessionId: reviewer1, result: "fail", issues: ["Say what we do in one plain sentence"] });
+    assert.equal(failed.status, "needs_changes");
+    // A reviewer writes nothing: it can't fix the draft itself.
+    await refused(token, "revise_draft", { draftId, sessionId: reviewer1, body: "Fixed by the reviewer" }, /started as a review session/);
+    // The writing chat applies exactly the issue, and a NEW reviewer looks once more (round two) and passes it.
+    const revised = await ok(token, "revise_draft", { draftId, sessionId: work, body: "Saw you now serve dealers in 12 districts. How do dealers place orders with you today? We build dealer ordering apps. Open to a 15 minute call this week?" });
+    assert.equal(revised.status, "in_review");
+    const reviewer2 = (await okRaw(token, "start_sales", { mode: "review" })).sessionId as string;
+    const passed = await ok(token, "review_draft", { draftId, sessionId: reviewer2, result: "pass" });
+    assert.equal(passed.status, "ready");
+    // 5. The summary's numbers come from the app: one ready to send, one rejected with its reason, nothing sent or approved.
+    const today = await ok(token, "start_sales", {});
+    assert.equal(today.today.readyToSend, 1);
+    const stored = (await db.collection("sales_drafts").findOne({ _id: draftId as never }))!;
+    assert.deepEqual([stored.status, stored.personApproval, stored.sentAt], ["ready", undefined, undefined]);
+    const rejected = (await db.collection("opportunities").findOne({ companyName: "Run Valves" }))!;
+    assert.equal(rejected.stage, "disqualified");
+    assert.match(String(rejected.exitReason), /^Not a fit: A national brand/);
+  }, "mcp_sales_full_run");
+});
+
+test("one reply per message through Claude: a second open reply to the same message is refused (revise the waiting one), a newer message gets its own, and a person's own reply replaces Claude's waiting one", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
+    const ok = workSessions(origin)(okRaw);
+    const writer = await tokenFor("member");
+    const work = (await ok(writer, "start_sales", {})).sessionId as string;
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Reply Traders", city: "Pune", source: "Pune listing", contactRoutes: [{ kind: "email", value: "hello@replytraders.in", sourceUrl: "https://www.replytraders.in/contact" }] }] });
+    const leadId = (await ok(writer, "find_leads", { q: "Reply Traders" })).leads[0].leadId as string;
+    const logIn = async (body: string) => {
+      const response = await api("POST", `/sales/leads/${leadId}/activities`, "member", { kind: "email", direction: "in", body });
+      assert.equal(response.status, 201, await response.clone().text());
+      return ((await response.json()) as any).data.activity.id as string;
+    };
+    const first = await logIn("Interested, send details");
+    const reply = { company: "Reply Traders", sessionId: work, channel: "email", purpose: "reply", subject: "Re: details", body: "Thanks. Which day suits you for a short call?" };
+    const one = await ok(writer, "save_draft", { ...reply, inReplyTo: first });
+    await refused(writer, "save_draft", { ...reply, inReplyTo: first, body: "Thanks! Is Tuesday good for a call?" }, /Reply Traders already has a reply to that message waiting \(email, in review\): change that one with revise_draft instead of writing a second\. Only one reply to a message goes out\./);
+    // Without inReplyTo a reply answers their latest message: the same one, so the same refusal.
+    await refused(writer, "save_draft", { ...reply, body: "Thanks again. A call this week?" }, /already has a reply to that message waiting/);
+    // A newer message gets its own reply.
+    const second = await logIn("Also, do you build Android apps?");
+    const two = await ok(writer, "save_draft", { ...reply, inReplyTo: second, body: "Yes, Android too. A short call this week?" });
+    // A person writes their own reply to the newer message (the Inbox's "Write my own reply"): it replaces Claude's reply to that message,
+    // still waiting for review, in the same step.
+    const own = await api("POST", `/sales/leads/${leadId}/drafts`, "member", { channel: "email", purpose: "reply", inReplyTo: second, subject: "Re: Android", body: "Yes, Android too. Tuesday at 11?" });
+    assert.equal(own.status, 201, await own.clone().text());
+    const ownDraft = ((await own.json()) as any).data;
+    assert.equal(ownDraft.status, "ready");
+    const replaced = (await db.collection("sales_drafts").findOne({ _id: two.draftId as never }))!;
+    assert.deepEqual([replaced.status, replaced.discardedReason, replaced.discardedBy, replaced.closedReason], ["discarded", "Replaced by a reply a person wrote to the same message", "user-member", undefined]);
+    // Claude can't write another reply to that message while the person's is ready.
+    await refused(writer, "save_draft", { ...reply, inReplyTo: second, body: "Android as well. Open to a call?" }, /Reply Traders already has a reply to that message waiting \(email, ready\)/);
+    // ...and sends it: the reply to the other message stays.
+    const sent = await api("POST", `/sales/drafts/${ownDraft.id}/sent`, "member", {});
+    assert.equal(sent.status, 201, await sent.clone().text());
+    assert.equal((await db.collection("sales_drafts").findOne({ _id: one.draftId as never }))!.status, "in_review");
+  }, "mcp_sales_one_reply");
+});
+
+test("a first message whose only sent version bounced can be written again (the lead stays contacted); one that reached the lead can't", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
+    const ok = workSessions(origin)(okRaw);
+    const writer = await tokenFor("member"); const reviewer = await tokenFor("member");
+    const work = (await ok(writer, "start_sales", {})).sessionId as string;
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: [{ companyName: "Bounce Agro", city: "Nashik", source: "Nashik listing", contactRoutes: [{ kind: "email", value: "old@bounceagro.in", sourceUrl: "https://www.bounceagro.in/contact" }] }] });
+    await ok(writer, "save_verdict", { company: "Bounce Agro", sessionId: work, ...verdict() });
+    const first = await ok(writer, "save_draft", { company: "Bounce Agro", sessionId: work, ...email() });
+    const review = (await ok(reviewer, "start_sales", { mode: "review" })).sessionId as string;
+    await ok(reviewer, "review_draft", { draftId: first.draftId, sessionId: review, result: "pass" });
+    const sent = await api("POST", `/sales/drafts/${first.draftId}/sent`, "member", {});
+    assert.equal(sent.status, 201, await sent.clone().text());
+    const again = { company: "Bounce Agro", sessionId: work, ...email({ subject: "Dealer orders, again", body: "Saw you now serve dealers in 12 districts. How do they order today? We build dealer ordering apps. A 15 minute call this week?" }) };
+    await refused(writer, "save_draft", again, /The first message to Bounce Agro already went out \(email\), and only one version of it is ever sent/);
+    // The email bounced (the mailbox sync marks the draft and its message): it never reached them, so the first message is still due.
+    await db.collection("sales_drafts").updateOne({ _id: first.draftId as never }, { $set: { delivery: { state: "bounced", at: new Date(), error: "The email bounced: 550 no such user" } } });
+    await db.collection("sales_activities").updateOne({ draftId: first.draftId, direction: "out" }, { $set: { message: { delivery: { state: "bounced", at: new Date() } } } });
+    const rewritten = await ok(writer, "save_draft", again);
+    assert.deepEqual([rewritten.status, rewritten.purpose, rewritten.channel], ["in_review", "first_touch", "email"]);
+    assert.equal((await db.collection("opportunities").findOne({ companyName: "Bounce Agro" }))?.stage, "contacted");
+    // Once the lead wrote back, a first message is not due any more: a reply is.
+    const leadId = (await ok(writer, "find_leads", { q: "Bounce Agro" })).leads[0].leadId as string;
+    const wrote = await api("POST", `/sales/leads/${leadId}/activities`, "member", { kind: "email", direction: "in", body: "Got your note via a colleague" });
+    assert.equal(wrote.status, 201, await wrote.clone().text());
+    await refused(writer, "save_draft", { ...again, channel: "linkedin", subject: undefined, body: "Saw you now serve dealers in 12 districts. Open to a call?" }, /A first message is for a lead nobody has contacted yet, and this one is replied/);
+  }, "mcp_sales_bounced_first");
+});
+
+test("a WhatsApp version a person vetoed or discarded is their decision (no WhatsApp for them): the counts, Daybreak, get_lead and save_draft stop suggesting it and Claude writes none, while a person still can; one a rule closed is no decision", { skip: !process.env.TEST_MONGODB_URI }, async () => {
+  await withSalesApp(async ({ ok: okRaw, refused, api, db, origin, tokenFor }) => {
+    const ok = workSessions(origin)(okRaw);
+    const writer = await tokenFor("member");
+    const work = (await ok(writer, "start_sales", {})).sessionId as string;
+    const companies = ["Vetoed Foods", "Dropped Steel", "Closed Pumps"];
+    await ok(writer, "add_leads", { ventureId: "venture-a", leads: companies.map((companyName) => ({ companyName, city: "Jaipur", source: "Jaipur listing" })) });
+    const ids: Record<string, string> = {};
+    for (const company of companies) {
+      await ok(writer, "save_verdict", { company, sessionId: work, ...verdict() });
+      await ok(writer, "save_draft", { company, sessionId: work, ...email() });
+      ids[company] = (await ok(writer, "find_leads", { q: company })).leads[0].leadId as string;
+    }
+    // All three said yes to WhatsApp: each first message waits as an email only, so each gets its WhatsApp version.
+    await db.collection("opportunities").updateMany({ _id: { $in: Object.values(ids) as never[] } }, { $set: { whatsappOptIn: { at: new Date(), by: "user-member", how: "yes_on_call" } } });
+    assert.equal((await ok(writer, "start_sales", {})).today.whatsappVersionsToWrite, 3);
+    const chat = (company: string) => ({ company, sessionId: work, channel: "whatsapp", body: "Hi, saw you now serve dealers in 12 districts. How do they order today? Open to a quick call?" });
+    const versions: Record<string, string> = {};
+    for (const company of companies) versions[company] = (await ok(writer, "save_draft", chat(company))).draftId as string;
+    assert.equal((await ok(writer, "daybreak", {})).counts.whatsappVersions, 0);
+
+    // A head vetoes one, the owner discards another: their decision. A rule closed the third (another version went out, then bounced, and it
+    // was not opened again): no decision.
+    const veto = await api("POST", `/sales/drafts/${versions["Vetoed Foods"]}/veto`, "lead", { reason: "No WhatsApp for them: they asked for email" });
+    assert.equal(veto.status, 200, await veto.clone().text());
+    const discard = await api("POST", `/sales/drafts/${versions["Dropped Steel"]}/discard`, "member", {});
+    assert.equal(discard.status, 200, await discard.clone().text());
+    await db.collection("sales_drafts").updateOne({ _id: versions["Closed Pumps"] as never }, { $set: { status: "discarded", discardedAt: new Date(), discardedReason: "The email version of this first message was sent", closedReason: "sent_on_other_channel", sentVersion: { draftId: "gone-email", channel: "email", at: new Date() } } });
+
+    // Only the third is suggested again, in the same numbers everywhere.
+    const start = await ok(writer, "start_sales", {});
+    const morning = await ok(writer, "daybreak", {});
+    assert.deepEqual([start.today.whatsappVersionsToWrite, morning.counts.whatsappVersions, morning.whatsappVersions.map((row: any) => row.company)], [1, 1, ["Closed Pumps"]]);
+    const overview = await api("GET", "/sales/overview?ventureId=venture-a&owner=me", "member");
+    assert.equal(((await overview.json()) as any).data.counts.whatsappVersionsToWrite, 1);
+    for (const company of ["Vetoed Foods", "Dropped Steel"]) assert.notEqual((await ok(writer, "get_lead", { company })).next[0], `Write a WhatsApp version for ${company}`, company);
+    assert.equal((await ok(writer, "get_lead", { company: "Closed Pumps" })).next[0], "Write a WhatsApp version for Closed Pumps");
+
+    // Claude writes none where a person decided, and says why; the rule-closed one can be written again.
+    await refused(writer, "save_draft", chat("Vetoed Foods"), /"say":"A person decided against WhatsApp for Vetoed Foods in the app \(they vetoed its WhatsApp first message\), so no WhatsApp version is written unless they ask for one again in this conversation\."/);
+    await refused(writer, "save_draft", chat("Dropped Steel"), /A person decided against WhatsApp for Dropped Steel in the app \(they discarded its WhatsApp first message\)[\s\S]*whatsappAskedByPerson: true/);
+    assert.equal((await ok(writer, "save_draft", chat("Closed Pumps"))).channel, "whatsapp");
+    // A new email first message for a decided lead suggests no WhatsApp version either.
+    const emailDraft = (await ok(writer, "get_lead", { company: "Dropped Steel" })).drafts.find((row: any) => row.channel === "email").draftId as string;
+    assert.equal((await api("POST", `/sales/drafts/${emailDraft}/discard`, "member", {})).status, 200);
+    const rewritten = await ok(writer, "save_draft", { company: "Dropped Steel", sessionId: work, ...email({ body: "Saw you now serve dealers in 12 districts. Do dealers still order by phone? We build simple dealer ordering apps. Open to a short call?" }) });
+    assert.equal(rewritten.next[0], "Write the next draft");
+    assert.doesNotMatch(String(rewritten.then), /WhatsApp version/);
+    // The decision is the person's to change: when they ask Claude for one after all, Claude writes it (whatsappAskedByPerson), and a person
+    // may write one themselves (the API takes it).
+    assert.equal((await ok(writer, "save_draft", { ...chat("Vetoed Foods"), whatsappAskedByPerson: true })).channel, "whatsapp");
+    const byPerson = await api("POST", `/sales/leads/${ids["Dropped Steel"]}/drafts`, "member", { channel: "whatsapp", body: "Hello on WhatsApp, as you asked on the call." });
+    assert.equal(byPerson.status, 201, await byPerson.clone().text());
+  }, "mcp_wa_decided");
 });

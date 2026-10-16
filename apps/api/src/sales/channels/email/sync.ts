@@ -24,7 +24,7 @@ import { atomic, type AppDocument, type Database } from "../../../db.js";
 import { actorFor } from "../../../middleware.js";
 import { canSeeVenture } from "../../access.js";
 import { auditSales, type SalesCtx } from "../../ctx.js";
-import { applyActivity, loadLead } from "../../leads.js";
+import { applyActivity, loadLead, reopenClosedBy } from "../../leads.js";
 import { isSharedDomain, leadContacts, normalizeEmail, suppressionKey } from "../../suppression.js";
 import { settleSentByBounce } from "../dispatch.js";
 import { connectImap, domainOf, imapFailure, settingsOf } from "./provider.js";
@@ -298,7 +298,9 @@ export function createMailSync(options: MailSyncOptions): MailSync {
 
   /**
    * A bounce naming our messages: the delivery on that message's activity and its draft reads bounced. A send whose result was still unclear
-   * is first recorded as sent (the bounce proves it went out). Nothing else is stored.
+   * is first recorded as sent (the bounce proves it went out). The message never reached the lead, so the drafts its sending closed (the
+   * lead's other versions of that first message or follow-up, or its other replies to the same message) open again (reopenClosedBy). Nothing
+   * else is stored.
    */
   async function markBounced(ctx: SalesCtx, account: AppDocument, ids: { id: string; draftId: string }[], reason: string, now: Date): Promise<number> {
     const accountId = String(account._id);
@@ -310,8 +312,15 @@ export function createMailSync(options: MailSyncOptions): MailSync {
       let activity = await bounce(entry.id);
       if (!activity && await settleSentByBounce(ctx, entry.draftId, accountId, entry.id)) activity = await bounce(entry.id);
       // A draft whose send is still unclear keeps waiting for a person (its lock and "uncertain" stay): only sent drafts take the bounce.
-      const draft = await db.collection("sales_drafts").updateOne({ _id: typeof activity?.draftId === "string" ? activity.draftId : entry.draftId, workspaceId: ctx.workspaceId, sentAccountId: accountId, sendLock: null }, { $set: { delivery, updatedAt: now } });
-      if (activity || draft.modifiedCount) marked++;
+      const draftId = typeof activity?.draftId === "string" ? activity.draftId : entry.draftId;
+      const draft = await db.collection("sales_drafts").findOneAndUpdate({ _id: draftId, workspaceId: ctx.workspaceId, sentAccountId: accountId, sendLock: null }, { $set: { delivery, updatedAt: now } }, { returnDocument: "after" });
+      // The bounce is recorded either way; a reopen that fails is logged and the next message of the bounce goes on.
+      if (draft?.status === "sent") {
+        await atomic(database, (session) => reopenClosedBy(ctx, draft, now, session)).catch((error: unknown) => {
+          log({ level: "warn", event: "sales.mail_sync.reopen_failed", draftId: String(draft._id), message: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+        });
+      }
+      if (activity || draft) marked++;
     }
     return marked;
   }

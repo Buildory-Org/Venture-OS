@@ -11,6 +11,8 @@ const steps = [
   ["Click-through, desktop", "ui-flow.mjs", []],
   ["Click-through, phone", "ui-flow.mjs", ["--phone"]],
   ["WhatsApp consent (Claude logs, person confirms)", "consent-flow.mjs", []],
+  ["Review: send and receive (versions, main action, More, by hand)", "send-flow.mjs", []],
+  ["Inbox: answer a reply (own reply ready at once, send inline, handled)", "inbox-flow.mjs", []],
   ...(process.argv.includes("--no-shots") ? [] : [["Screenshots, all pages", "shots.mjs", []]]),
 ];
 const summary = [];

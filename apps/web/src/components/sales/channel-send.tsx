@@ -10,6 +10,7 @@ import { errorCode, listWhatsappTemplates, reconcileDraftDelivery, sendDraftThro
 import type { ReviewDraft } from "@/lib/sales-api";
 import { CHANNEL_LABEL, kickerClass } from "./draft-shared";
 import { accountLine, statusOf } from "./channel-model";
+import { sendFromLabel } from "./draft-plan";
 import { labelClass } from "./channel-form-parts";
 
 // Sending a ready draft through a connected account, from the draft reader (docs/sales-channels.md section 2): pick the account (the
@@ -46,16 +47,22 @@ function guess(slot: string, index: number, names: { contact: string; company: s
 const sentence = (text: string) => /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
 const fill = (body: string, slots: readonly string[], values: readonly string[]) => body.replace(PLACEHOLDER, (match, name: string) => values[slots.indexOf(name)]?.trim() || match);
 
-/** Send through a connected account, with the account picker, a confirm step and, for WhatsApp outside 24 hours, the template picker. */
-export function SendBox({ draft, accounts, recipient, window, names, lastFailure, onResult, onFailed, onSentMyself }: {
+/**
+ * Send through a connected account: the main button ("Send from admin@buildory.dev", "Send from the venture's WhatsApp"), the account
+ * picker when there are several, a confirm step and, for WhatsApp outside 24 hours, the template picker. `more` sits beside the button.
+ * `startOpen`: the person already asked to send (the Inbox's "Save and send"), so the confirm (or the template picker) is open at once.
+ * Every send names the version the person read (`expectedUpdatedAt`); a draft changed since is refused and `onStale` reads it again (the
+ * reader says why). Nothing is retried by itself.
+ */
+export function SendBox({ draft, accounts, recipient, window, names, lastFailure, more, startOpen = false, onResult, onFailed, onStale }: {
   draft: ReviewDraft; accounts: ChannelAccount[]; recipient: string | undefined; window: "open" | "closed" | "unknown"; names: { contact: string; company: string }; lastFailure?: string | undefined;
-  onResult: (result: SendResult, account: ChannelAccount) => void; onFailed: () => void; onSentMyself: () => void;
+  more?: React.ReactNode; startOpen?: boolean; onResult: (result: SendResult, account: ChannelAccount) => void; onFailed: () => void; onStale: () => void;
 }) {
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const account = accounts.find((item) => item.id === accountId) ?? accounts[0];
   const whatsapp = draft.channel === "whatsapp";
-  const [stage, setStage] = useState<"idle" | "confirm" | "template">("idle");
-  const [templateNote, setTemplateNote] = useState("");
+  const [stage, setStage] = useState<"idle" | "confirm" | "template">(() => !startOpen || lastFailure ? "idle" : whatsapp && window === "closed" ? "template" : "confirm");
+  const [templateNote, setTemplateNote] = useState(() => startOpen && whatsapp && window === "closed" ? "They haven't written on WhatsApp in the last 24 hours, so WhatsApp only allows an approved template." : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [failure, setFailure] = useState(lastFailure ?? "");
@@ -80,7 +87,7 @@ export function SendBox({ draft, accounts, recipient, window, names, lastFailure
     if (!requestId.current) requestId.current = crypto.randomUUID();
     setBusy(true); setError(""); setFailure("");
     try {
-      const result = await sendDraftThrough(draft.id, { accountId: account.id, requestId: requestId.current, ...(template ? { template } : {}) });
+      const result = await sendDraftThrough(draft.id, { accountId: account.id, requestId: requestId.current, expectedUpdatedAt: draft.updatedAt, ...(template ? { template } : {}) });
       requestId.current = "";
       setStage("idle");
       onResult(result, account);
@@ -88,7 +95,8 @@ export function SendBox({ draft, accounts, recipient, window, names, lastFailure
       const code = errorCode(cause);
       const message = describeError(cause, "It could not be sent. Try again.");
       if (code) requestId.current = "";
-      if (code === "TEMPLATE_REQUIRED") { setTemplateNote(message); setStage("template"); }
+      if (code === "DRAFT_CHANGED") { setStage("idle"); onStale(); }
+      else if (code === "TEMPLATE_REQUIRED") { setTemplateNote(message); setStage("template"); }
       else if (code === "SEND_FAILED") { setFailure(message); setStage("idle"); onFailed(); }
       else if (code) setError(message);
       else setError("The server didn't answer, so it's not clear whether it went. Press send again: the same request is repeated, never sent twice.");
@@ -96,27 +104,23 @@ export function SendBox({ draft, accounts, recipient, window, names, lastFailure
   }
 
   if (!account) return null;
-  return <div ref={box} className="scroll-mt-4 space-y-3 rounded-2xl border border-primary-200 bg-primary-50 p-3.5 sm:p-4">
-    <div className="min-w-0">
-      <span className={kickerClass}>Send from</span>
-      {accounts.length > 1
-        ? <div className="mt-1 max-w-md"><Select aria-label="Send from" className={clsx(inputClass, "!min-h-10")} value={account.id} onChange={(event) => { setAccountId(event.target.value); setStage("idle"); requestId.current = ""; }}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.label} · {accountLine(item)}{item.defaultFor.includes(draft.ventureId) ? " (default)" : ""}</option>)}</Select></div>
-        : <p className="mt-1 text-sm font-bold text-neutral-900 [overflow-wrap:anywhere]">{account.label} <span className="font-medium text-neutral-500">· {accountLine(account)}</span></p>}
-    </div>
+  return <div ref={box} className="scroll-mt-4 space-y-3">
+    {accounts.length > 1 && stage === "idle" && <div className="max-w-md"><label htmlFor={`send-from-${draft.id}`} className={labelClass}>Send from</label><Select id={`send-from-${draft.id}`} className={clsx(inputClass, "!min-h-10")} value={account.id} onChange={(event) => { setAccountId(event.target.value); setStage("idle"); requestId.current = ""; }}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.label} · {accountLine(item)}{item.defaultFor.includes(draft.ventureId) ? " (default)" : ""}</option>)}</Select></div>}
     {status && account.status !== "connected" && <p className="flex flex-wrap items-center gap-2 text-xs text-neutral-600"><Badge tone={status.tone}>{status.text}</Badge>{account.status === "needs_attention" ? "It failed its last check. Sending may not work until it is fixed in Channels." : "Not tested yet. It may not work until it is tested in Channels."}</p>}
-    {stage === "idle" && <div className="flex flex-wrap items-center gap-2">
-      <button type="button" onClick={start} className={primaryClass}><Send size={16} aria-hidden="true" />{needsTemplate ? "Send a template" : "Send"}</button>
-      <button type="button" onClick={onSentMyself} className={secondaryClass}>I sent it myself</button>
+    {stage === "idle" && <div className="flex items-center gap-2">
+      <button type="button" onClick={start} title={`${account.label} · ${accountLine(account)}`} className={clsx(primaryClass, "!min-h-11 min-w-0 flex-1 py-2 sm:flex-initial")}><Send size={16} aria-hidden="true" className="shrink-0" /><span className="min-w-0 text-center leading-5 [overflow-wrap:anywhere]">{sendFromLabel(draft.channel, account)}</span></button>
+      {more}
     </div>}
+    {stage === "idle" && needsTemplate && <p className="text-xs leading-5 text-neutral-600">They haven&apos;t written on WhatsApp in the last 24 hours, so WhatsApp only takes an approved template: you pick one next, and it goes instead of this text.</p>}
 
-    {stage === "confirm" && <div role="alertdialog" aria-label="Confirm sending" className="vso-fade-enter rounded-xl border border-primary-200 bg-white p-3.5">
-      <p className="text-sm font-bold text-neutral-900">Send this {channelWord} to {recipient || "them"} from {account.label}?</p>
+    {stage === "confirm" && <div role="alertdialog" aria-label="Confirm sending" className="vso-fade-enter rounded-2xl border border-primary-200 bg-primary-50 p-3.5 sm:p-4">
+      <p className="text-sm font-bold text-neutral-900 [overflow-wrap:anywhere]">Send this {channelWord} to {recipient || "them"} from {draft.channel === "email" ? accountLine(account) : account.label}?</p>
       <p className="mt-1 text-xs leading-5 text-neutral-600">It goes out now, exactly as written. {draft.channel === "email" ? "Replies come back to your inbox and to the Inbox here." : "Their replies come back to the Inbox here."}</p>
-      <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void send()} disabled={busy} className={primaryClass}><ActionLabel busy={busy} busyText="Sending…" idle={<><Send size={16} aria-hidden="true" />Send now</>} /></button><button type="button" onClick={() => { setStage("idle"); setError(""); }} disabled={busy} className={secondaryClass}>Not yet</button></div>
+      <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void send()} disabled={busy} className={clsx(primaryClass, "max-sm:flex-1")}><ActionLabel busy={busy} busyText="Sending…" idle={<><Send size={16} aria-hidden="true" />Send now</>} /></button><button type="button" onClick={() => { setStage("idle"); setError(""); }} disabled={busy} className={clsx(secondaryClass, "max-sm:flex-1")}>Not yet</button></div>
     </div>}
     {stage === "template" && <TemplatePicker account={account} note={templateNote} names={names} busy={busy} onSend={(template) => void send(template)} onCancel={() => { setStage("idle"); setError(""); }} />}
 
-    {failure && <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-surface p-3 text-xs font-semibold leading-5 text-danger-text"><CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">It didn&apos;t send: {sentence(failure)} Nothing went out. Fix it and send again, or send it yourself.</span></p>}
+    {failure && <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-surface p-3 text-xs font-semibold leading-5 text-danger-text"><CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">It didn&apos;t send: {sentence(failure)} Nothing went out. Fix it and send again, or send it yourself (More, I sent it myself).</span></p>}
     <Notice tone="error" message={error} onDismiss={() => setError("")} />
   </div>;
 }

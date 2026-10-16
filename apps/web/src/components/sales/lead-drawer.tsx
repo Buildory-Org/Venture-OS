@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
-import type { Draft } from "@venture-studio/contracts";
-import { ArrowUpRight, Check, LinkIcon } from "@/components/ui/icons";
+import type { Draft, Lead } from "@venture-studio/contracts";
+import { ArrowUpRight, Check, Info, LinkIcon } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
 import { Badge, DetailDrawer, primaryClass, secondaryClass, SkeletonRows } from "@/components/studio/primitives";
@@ -19,8 +19,12 @@ import { LeadLog, LeadLogBar, type LogMode } from "@/components/sales/lead-log";
 import { LeadNextAction } from "@/components/sales/lead-manage";
 import { LeadTimeline } from "@/components/sales/lead-timeline";
 import { useVentureOffers } from "@/components/sales/offer-model";
+import { AskClaude } from "@/components/sales/ask-claude";
+import { useChannelAccounts, usableAccounts } from "@/components/sales/channel-model";
+import { ChannelTile, PURPOSE_LABEL, useVentureSettings } from "@/components/sales/draft-shared";
+import { closedLabel, heldSibling, isOpenDraft, isVersioned, nextStepLabel, sendPlanOf, sortVersions, TONE_DOT, TONE_TEXT, versionStatus } from "@/components/sales/draft-plan";
 import {
-  callablePhone, canDeleteLead, canEditLead, CHANNEL_LABELS, DRAFT_STATUS_LABELS, hostOf, isManager, isWonStage, OfferChip, PersonChip, Phone, safeUrl, snippet, StageChip, telHref, timeAgo, useUrlParams, VerdictChip,
+  callablePhone, canDeleteLead, canEditLead, CHANNEL_LABELS, hostOf, isManager, isWonStage, OfferChip, PersonChip, Phone, safeUrl, snippet, StageChip, telHref, timeAgo, useUrlParams, VerdictChip, type SalesPermissionSession,
 } from "@/components/sales/sales-ui";
 
 type LeadTab = "activity" | "claude" | "drafts" | "details";
@@ -28,15 +32,56 @@ const TABS: readonly LeadTab[] = ["activity", "claude", "drafts", "details"];
 /** `?tab=`: Activity is the default and leaves no parameter. The old Overview and Timeline names land on Activity. */
 const tabFrom = (raw: string | null): LeadTab => raw === "claude" || raw === "drafts" || raw === "details" ? raw : "activity";
 const sectionLabel = "text-[11px] font-semibold uppercase tracking-[.08em] text-neutral-400";
-const DRAFT_TONE: Record<string, "neutral" | "blue" | "green" | "amber" | "red" | "purple"> = { draft: "neutral", in_review: "blue", ready: "green", needs_changes: "amber", sent: "neutral", vetoed: "red", discarded: "neutral" };
+/**
+ * The lead's drafts. Open ones first, as versions side by side (an email and a WhatsApp version of the same first message), each with
+ * the next step Review offers for it ("Send from admin@…", "Open WhatsApp", "Approve it first"); the link opens that version in Review.
+ */
+function Drafts({ lead, drafts, session }: { lead: Lead; drafts: Draft[]; session: SalesPermissionSession }) {
+  const editor = canEditLead(session, lead);
+  const { accounts } = useChannelAccounts(editor);
+  const settings = useVentureSettings([lead.ventureId])[lead.ventureId];
+  if (!drafts.length) return <p className="rounded-xl bg-neutral-50 px-3 py-3 text-sm text-neutral-500">No drafts yet. Claude writes them once the lead is approved for contact.</p>;
+  const open = sortVersions(drafts.filter(isOpenDraft));
+  // What went out first, then what closed, each newest first.
+  const earlier = drafts.filter((draft) => !isOpenDraft(draft)).sort((a, b) => Number(b.status === "sent") - Number(a.status === "sent") || (b.sentAt ?? b.updatedAt).localeCompare(a.sentAt ?? a.updatedAt));
+  // The lead detail says per draft whether a person still approves it; without that, the venture's every-message rule decides.
+  const approvalNeeded = (draft: Draft) => draft.status === "ready" && (draft.needsPersonApproval ?? (settings?.approvalMode === "person_approves_every_message" && draft.channel !== "call_opener" && !draft.personApproval));
+  const versioned = (purpose: string) => isVersioned(purpose) && open.filter((draft) => draft.purpose === purpose).length > 1;
+  const manyVersions = open.some((draft) => versioned(draft.purpose));
+  const row = (draft: Draft) => {
+    const needed = approvalNeeded(draft);
+    const status = versionStatus(draft, needed);
+    const send = draft.channel === "email" || draft.channel === "whatsapp" || draft.channel === "instagram";
+    const plan = sendPlanOf({ draft, lead, approvalNeeded: needed, sendAccounts: send ? usableAccounts(accounts, lead.ventureId, draft.channel, session.user.id) : [] });
+    // Another version's send isn't settled yet: this one waits (Review shows it disabled, naming the one to settle).
+    const waitsFor = isOpenDraft(draft) && (plan.kind === "through" || plan.kind === "hand") ? heldSibling(open, draft) : undefined;
+    const actionable = editor && !waitsFor && ["through", "hand", "approve", "needs_changes", "held"].includes(plan.kind);
+    return <li key={draft.id}><Link href={`/sales/live/review?draft=${encodeURIComponent(draft.id)}`} className="group flex items-start gap-3 rounded-xl border border-neutral-200 p-3 transition-[background-color,transform] duration-150 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]">
+      <ChannelTile channel={draft.channel} size={32} />
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5"><b className="text-[13px] font-bold text-neutral-900">{CHANNEL_LABELS[draft.channel] ?? draft.channel}</b><span className={clsx("inline-flex items-center gap-1 text-[11px] font-semibold", TONE_TEXT[status.tone])}><span aria-hidden="true" className={clsx("h-1.5 w-1.5 rounded-full", TONE_DOT[status.tone])} />{closedLabel(draft) || status.label}</span>{isOpenDraft(draft) && draft.reopenedBecause === "bounced" && <span className="text-[11px] font-semibold text-warning-text">Reopened: the email bounced</span>}<span className="text-[11px] font-medium text-neutral-400">{PURPOSE_LABEL[draft.purpose]} · {timeAgo(draft.sentAt ?? draft.updatedAt)}</span></span>
+        <span className="mt-1 block truncate text-sm font-semibold text-neutral-800">{draft.subject || snippet(draft.body, 80)}</span>
+        {draft.subject && <span className="mt-0.5 block truncate text-xs text-neutral-500">{snippet(draft.body, 100)}</span>}
+        {draft.status === "discarded" && draft.discardedReason && <span className="mt-1 block text-xs text-neutral-500 [overflow-wrap:anywhere]">{draft.discardedReason}.</span>}
+        {isOpenDraft(draft) && <span className={clsx("mt-2 flex min-w-0 items-center gap-1 text-xs font-semibold", actionable ? "text-primary-700" : "text-neutral-500")}><span className="truncate">{editor ? waitsFor ? `Settle the ${CHANNEL_LABELS[waitsFor.channel]?.toLowerCase() ?? "other"} version first` : nextStepLabel(plan, draft.channel) : "Open in Review"}</span><ArrowUpRight size={13} aria-hidden="true" className="shrink-0" /></span>}
+      </span>
+    </Link></li>;
+  };
+  return <div className="grid grid-cols-1 gap-4">
+    {open.length > 0 && <section aria-label="Open drafts" className="grid gap-2">
+      {manyVersions && <p className="flex items-start gap-1.5 text-xs leading-5 text-neutral-500"><Info size={13} aria-hidden="true" className="mt-1 shrink-0 text-neutral-400" />Only one version of a message goes out: sending one closes the others.</p>}
+      <ul className="grid grid-cols-1 gap-2">{open.map(row)}</ul>
+    </section>}
+    {earlier.length > 0 && <section aria-label="Earlier drafts" className="grid gap-2"><h4 className={sectionLabel}>Earlier</h4><ul className="grid grid-cols-1 gap-2">{earlier.map(row)}</ul></section>}
+  </div>;
+}
 
-function Drafts({ drafts }: { drafts: Draft[] }) {
-  const sorted = [...drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  if (!sorted.length) return <p className="rounded-xl bg-neutral-50 px-3 py-3 text-sm text-neutral-500">No drafts yet. Claude writes them once the lead is approved for contact.</p>;
-  return <ul className="grid grid-cols-1 gap-2">{sorted.map((draft) => <li key={draft.id}><Link href={`/sales/live/review?draft=${encodeURIComponent(draft.id)}`} className="group flex items-start gap-3 rounded-xl border border-neutral-200 p-3 transition-[background-color,transform] duration-150 hover:bg-neutral-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.99]">
-    <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><Badge tone={DRAFT_TONE[draft.status] ?? "neutral"}>{DRAFT_STATUS_LABELS[draft.status] ?? draft.status}</Badge><Badge>{CHANNEL_LABELS[draft.channel] ?? draft.channel}</Badge><span className="text-[11px] font-medium text-neutral-400">{timeAgo(draft.updatedAt)}</span></span><span className="mt-1.5 block truncate text-sm font-semibold text-neutral-800">{draft.subject || snippet(draft.body, 80)}</span>{draft.subject && <span className="mt-0.5 block truncate text-xs text-neutral-500">{snippet(draft.body, 100)}</span>}</span>
-    <ArrowUpRight size={15} className="mt-1 shrink-0 text-neutral-300 transition-colors duration-150 group-hover:text-neutral-600" />
-  </Link></li>)}</ul>;
+/** Where Claude can help with this lead next: judge it when nobody has, write the first message once it is recommended. */
+function leadPrompt(lead: Lead, drafts: Draft[]): string {
+  if (lead.doNotContact || ["lost", "disqualified"].includes(lead.stage) || isWonStage(lead.stage)) return "";
+  if (!lead.verdict) return `research and judge ${lead.companyName}`;
+  if (lead.verdict.decision === "recommend" && !drafts.some((draft) => isOpenDraft(draft) || draft.status === "sent")) return `write the first message for ${lead.companyName}`;
+  return "";
 }
 
 /**
@@ -80,6 +125,7 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
   const dial = lead ? callablePhone(lead) : undefined;
   const tel = dial ? telHref(dial) : undefined;
   const won = !!lead && isWonStage(lead.stage);
+  const prompt = lead && detail ? leadPrompt(lead, detail.drafts) : "";
 
   const openTab = (key: LeadTab, scroll = false) => {
     update({ tab: key === "activity" ? null : key });
@@ -101,6 +147,7 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
         <div className="flex flex-wrap items-center gap-2"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} />{lead.needsYou && <Badge tone="amber">Needs you</Badge>}{lead.doNotContact && <Badge tone="red">Do not contact</Badge>}{offerName && <OfferChip name={offerName} />}{!ventureId && <Badge>{ventureName(lead.ventureId)}</Badge>}</div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="inline-flex items-center gap-1.5"><span className="text-xs font-medium text-neutral-400">Owner</span><PersonChip name={personName(lead.ownerId)} /></span>{lead.contactName && <span className="text-xs font-medium text-neutral-500">Contact: <strong className="font-semibold text-neutral-700">{lead.contactName}</strong></span>}</div>
         <LeadNextAction lead={lead} canEdit={editable} onSaved={changed} onDirty={setDirty} />
+        {session.membership.role !== "learner" && prompt && <AskClaude prompt={prompt} />}
       </div>
 
       {!editable && <p className="rounded-xl bg-neutral-50 px-3 py-2.5 text-xs leading-5 text-neutral-500">{session.membership.role === "learner" ? "You can read this lead. Learners cannot change leads." : "You can read this lead. Only its owner and the venture heads can change it."}</p>}
@@ -117,7 +164,11 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
         <SlidingTabs fitContent label="Lead sections" className="sticky -top-5 z-10 -mx-1 shadow-sm" active={tab} onChange={(key) => openTab(key as LeadTab)}
           tabs={[{ key: "activity", label: "Activity", badge: detail.activities.length }, { key: "claude", label: "Claude", ...(detail.verdicts.length ? { badge: detail.verdicts.length } : {}) }, { key: "drafts", label: "Drafts", badge: detail.drafts.length }, { key: "details", label: "Details" }]} />
         <div key={tab} className={clsx(tabMotion.className, "mt-4")} style={tabMotion.style}>
-          {tab === "activity" && <LeadTimeline activities={detail.activities} canEdit={editable} personName={personName} onChanged={changed} />}
+          {tab === "activity" && <>
+            {/* Replies that reach a phone or someone's own mailbox never arrive by themselves: logged here, they wait in the Inbox like the rest. */}
+            {editable && !lead.doNotContact && <p className="mb-3 flex items-start gap-2 rounded-xl bg-neutral-50 px-3 py-2.5 text-xs leading-5 text-neutral-500"><Info size={14} aria-hidden="true" className="mt-0.5 shrink-0 text-neutral-400" /><span>Got a reply on your phone or in your own mail? Log it with <b className="font-semibold text-neutral-700">They replied</b> below so it shows in the Inbox.</span></p>}
+            <LeadTimeline activities={detail.activities} canEdit={editable} personName={personName} onChanged={changed} />
+          </>}
           {tab === "claude" && <div className="grid grid-cols-1 gap-4">
             <LeadVerdict lead={lead} verdicts={detail.verdicts} canEdit={editable} personName={personName} onChanged={changed} onDirty={setDirty} />
             {(lead.observedSignal || lead.fitReason) && <dl className="grid grid-cols-1 gap-3 text-sm leading-6">
@@ -125,7 +176,7 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
               {lead.fitReason && <div><dt className={sectionLabel}>Why they might fit</dt><dd className="mt-1 text-neutral-700">{lead.fitReason}</dd></div>}
             </dl>}
           </div>}
-          {tab === "drafts" && <div><div className="mb-3 flex justify-end"><Link href="/sales/live/review" className="inline-flex min-h-8 items-center text-xs font-semibold text-primary-700 hover:underline">Open Review</Link></div><Drafts drafts={detail.drafts} /></div>}
+          {tab === "drafts" && <div><div className="mb-3 flex justify-end"><Link href="/sales/live/review" className="inline-flex min-h-8 items-center text-xs font-semibold text-primary-700 hover:underline">Open Review</Link></div><Drafts lead={lead} drafts={detail.drafts} session={session} /></div>}
           {tab === "details" && <LeadDetails lead={lead} canEdit={editable} canReassign={isManager(session, lead.ventureId)} canDelete={canDeleteLead(session, lead)} members={members} personName={personName} editingDeal={editingDeal} onEditDeal={editDeal} onSaved={changed} onDeleted={() => { refresh(); onClose(); }} onDirty={setDirty} />}
         </div>
       </div>

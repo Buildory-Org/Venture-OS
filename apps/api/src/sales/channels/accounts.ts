@@ -99,6 +99,8 @@ export async function usableAccounts(ctx: SalesCtx, ventureId: string, kind: Cha
 }
 
 const isDefaultFor = (account: AppDocument, ventureId: string) => Array.isArray(account.defaultFor) && account.defaultFor.includes(ventureId);
+/** Of the accounts a person can use for a venture and channel, the one a send picks by itself: the default for the venture, else the only one. */
+export const chooseSendAccount = (usable: AppDocument[], ventureId: string): AppDocument | undefined => usable.find((account) => isDefaultFor(account, ventureId)) ?? (usable.length === 1 ? usable[0] : undefined);
 
 /**
  * The account a send goes through: the one named (it must be usable), else the sender's default for the venture and channel, else the only
@@ -112,7 +114,7 @@ export async function pickSendAccount(ctx: SalesCtx, ventureId: string, kind: Ch
     return account;
   }
   const usable = await usableAccounts(ctx, ventureId, kind);
-  const chosen = usable.find((account) => isDefaultFor(account, ventureId)) ?? (usable.length === 1 ? usable[0] : undefined);
+  const chosen = chooseSendAccount(usable, ventureId);
   if (chosen) return chosen;
   throw new AppError(409, "CONFLICT", usable.length ? `You have several ${kind} accounts for this venture: choose one` : `No ${kind} account is connected for you in this venture: connect one in Sales > Channels, or send it yourself and mark it sent`);
 }

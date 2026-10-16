@@ -1,6 +1,9 @@
 # Find leads for a venture or play
 
-Finding is not judging: add candidates here, judge them in `steps/research-and-judge.md`.
+"Just find <industry> companies in <city>" (or "only add them"). A request to find leads without "just" is the full run
+(`steps/full-run.md`): it uses steps 2 to 5 below, picks the companies itself instead of asking (step 4), and then hands on to
+`steps/research-and-judge.md` without stopping. Finding is not judging: add candidates here, judge them in
+`steps/research-and-judge.md`.
 
 1. Decide the venture and the offer (ask once if unclear: `start_sales` says which offer to work on, `list_offers` lists them;
    never mix ventures or offers in one batch). Read the offer's packet (`get_offer`) and write the audience in plain words from
@@ -16,7 +19,8 @@ Finding is not judging: add candidates here, judge them in `steps/research-and-j
    Venture OS works the run in the background with that offer's packet (its places and industries when you give no searches,
    its search words and negatives, and its look-for phrases quoted from each site), then the company's own pages, respecting
    robots.txt; the leads it adds get the offer. Set `queue` true only when the person asked to run it.
-4. Show the best few as a compact table (company, domain, what the page says) and ask which to add.
+4. Show the best few as a compact table (company, domain, what the page says) and ask which to add. In a full run, choose the
+   N that best fit the offer's packet yourself (its places, industries and signals; none of its negatives) and add them.
 5. Add the ones picked with `add_leads` (up to 25 per call) and the `offer` they are for (needed when the venture sells
    several active offers): `companyName`, `website` (their own), `city`, `category`,
    `source` (the page you found them on) and `observedSignal` in their words. Contact routes only if the company publishes
@@ -24,6 +28,7 @@ Finding is not judging: add candidates here, judge them in `steps/research-and-j
 6. To have the lead finder fill in published contacts and evidence for leads you added: `enrich_lead` (it queues a run;
    check it later with `list_find_runs`).
 7. Report: how many found, how many added, how many skipped as known or do-not-contact, then the next step ("Shall I judge
-   the first 10?").
+   the first 10?"). In a full run, don't report or ask here: go straight on to `steps/research-and-judge.md` with the leads you
+   added (the summary comes at the end of `steps/full-run.md`).
 
 Never use LinkedIn, Instagram or any logged-in source, never bypass a block, never guess contacts.

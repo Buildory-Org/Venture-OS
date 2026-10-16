@@ -93,8 +93,8 @@ try {
   // 7. Call: yes to WhatsApp → opt-in → WhatsApp can be sent.
   const call1 = await call(SELLER, "POST", `/sales/leads/${id}/activities`, { kind: "call", direction: "out", callOutcome: "yes_whatsapp", body: "QA call" });
   check("call 'yes, WhatsApp me' records opt-in", !!call1.data?.lead?.whatsappOptIn, brief(call1));
-  const wa2 = await call(SELLER, "POST", `/sales/leads/${id}/drafts`, { channel: "whatsapp", purpose: "reply", body: "QA details on WhatsApp" });
-  await call(HEAD, "POST", `/sales/drafts/${wa2.data?.id}/review`, { result: "pass" });
+  const wa2 = await call(SELLER, "POST", `/sales/leads/${id}/drafts`, { channel: "whatsapp", purpose: "reply", inReplyTo: reply.data?.activity?.id, body: "QA details on WhatsApp" });
+  check("a seller's own reply is ready at once (their approval, no review)", wa2.data?.status === "ready" && wa2.data?.personApproval?.own === true, brief(wa2));
   const waSent = await call(SELLER, "POST", `/sales/drafts/${wa2.data?.id}/sent`, {});
   check("WhatsApp allowed after opt-in", waSent.status === 200 || waSent.status === 201, brief(waSent));
 

@@ -210,6 +210,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     // The leads of an offer: the Offer filter, its counts and the offer facet.
     db.collection("opportunities").createIndex({ workspaceId: 1, offerId: 1, stage: 1 }, { partialFilterExpression: { offerId: { $exists: true } } }),
     db.collection("opportunities").createIndex({ workspaceId: 1, suppressKeys: 1 }),
+    // The leads that opted in to WhatsApp, by stage: the Overview counts (and Daybreak lists) their WhatsApp versions to write (sales/queries.ts).
+    db.collection("opportunities").createIndex({ workspaceId: 1, ventureId: 1, stage: 1 }, { partialFilterExpression: { whatsappOptIn: { $type: "object" } }, name: "whatsapp_opted_in_by_stage" }),
     // Imports can be re-run: one lead per external reference in each venture (ensureLeadReferenceIndex, above).
     db.collection("sales_activities").createIndex({ leadId: 1, at: -1 }),
     db.collection("sales_activities").createIndex({ workspaceId: 1, ventureId: 1, direction: 1, handledAt: 1, at: -1 }),
@@ -245,6 +247,9 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_views").createIndex({ workspaceId: 1, userId: 1, page: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
     // Daily send counters (sales/leads.ts claimSendSlot): one row per person, venture, channel and day, gone about 90 days after the day.
     db.collection("sales_send_counters").createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 }),
+    // One row per message of a lead (sales/leads.ts openSiblings): two drafts of one message written at once collide on it. Only needed while
+    // they are written, so it clears itself a week on.
+    db.collection("sales_draft_slots").createIndex({ updatedAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 }),
     // Claude's sales conversations (start_sales): expired sessions clear themselves; lookups are by _id.
     db.collection("mcp_sales_sessions").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     // Connected accounts (docs/sales-channels.md): per venture and kind; one mailbox per person and address (any case); a WhatsApp number or

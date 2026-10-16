@@ -109,14 +109,15 @@ midnight in it). Members only (learners read it too). **Read only: nothing is wr
 | Field | What it holds |
 |---|---|
 | `followUpsDue` | Contacted leads (not on the do-not-contact list) whose `followUpDueAt` is by the end of today and that have **no follow-up draft waiting** (draft, in review, ready, needs changes). Each with the **first touch** (the first-touch draft marked sent: subject and body; else the first logged outbound call or message), its `channel`, and the verdict's `signal` (else the lead's observed signal), so a follow-up can refer back to it. Up to 100. |
+| `whatsappVersions` | Leads that opted in to WhatsApp whose **first message waits as an email only**: an open email `first_touch` draft, no open WhatsApp one (nor one a person vetoed or discarded: their decision against WhatsApp for that lead; one a rule closed doesn't count) and no first message sent, on a lead Claude recommended (not needs-you, not do-not-contact) in a venture that uses WhatsApp, before first contact or at replied after a yes-to-WhatsApp call, with no message sent to it (email, WhatsApp, LinkedIn, Instagram) and nothing from it (a lead that wrote to us gets a reply instead); oldest email first. Each with `optedIn` (`how`, `at`) and `emailDraft` (`draftId`, `status`, `subject`, `body`) to write the WhatsApp version from. Up to 100 (the total is in `counts.whatsappVersions`). |
 | `staleVerdicts` | Leads not contacted yet whose verdict is **older than 30 days** or whose **signal was seen more than 60 days ago** (`signalSeenAt`), oldest verdict first, with `reasons`. `setBy` says whether Claude or a person set it; `claudeCanRejudge` is false for a person's verdict (Claude cannot replace it) and for a lead waiting on a person (needs you). |
 | `needsContacts` | Open leads with no phone, WhatsApp or email route, newest first (100; the total is in `counts`). `enrichPending` marks leads that already have a queued or running enrich run. |
 | `callsToday` | The Overview's calls-due list up to the end of today (approved for contact, or a "call" next action due), each with its phone and WhatsApp numbers and the latest call-opener draft (`callOpenerDraftId`). |
 | `repliesWaiting` | Inbound messages not marked handled, oldest first, with the reply type, how long they have waited, whether they are past the venture's reply time in working hours (`overSla`, `slaDueAt`), and the **last thing we sent** them (the latest outbound message or sent draft). |
 | `approvalsWaiting` | `drafts`: ready drafts that need a person's approval before they can be sent (the first batch of a play, or a venture that approves every message), with why. `needsYou`: leads waiting for a person's decision, with Claude's verdict. |
 | `caps` | Per venture, what the person running Daybreak has sent **today** per channel (counted like the send route: since local midnight, by who logged it) against the venture's daily caps (`sales_settings.dailyCaps`, default 20 email and 20 WhatsApp; calls and LinkedIn have no cap: `null`). |
-| `counts` | Totals for each list (`repliesOverSla` too). |
-| `summary` | One line, e.g. "1 reply waiting over 2h, 3 calls today, 2 follow-ups to draft, 1 draft to approve, 4 verdicts to re-judge, 12 leads without contacts", or "Nothing waiting: a clear morning." |
+| `counts` | Totals for each list (`repliesOverSla` and `whatsappVersions` too). |
+| `summary` | One line, e.g. "1 reply waiting over 2h, 3 calls today, 2 follow-ups to draft, 1 opted-in lead has no WhatsApp version, 1 draft to approve, 4 verdicts to re-judge, 12 leads without contacts", or "Nothing waiting: a clear morning." |
 
 ## 4. Running Daybreak: the `daybreak` skill step
 
@@ -129,11 +130,14 @@ rule in `docs/sales-dealflow.md` §1 and §5 still applies: **nothing is sent, n
    channel unless the venture does not allow it). Refer back to `firstTouch` in one line, keep the verdict's `signal` as the reason for
    writing, ask one question, no price, no links (the review checklist). Skip a lead whose follow-up is already drafted (Daybreak
    leaves those out). Drafts never count against the caps (only sends do); `caps.left` tells the person how many they can send today.
-3. **Queue enrich runs** with `enrich_lead` for leads in `needsContacts` that have `enrichPending: false` (newest first, at most 25 a
+3. **Write the WhatsApp versions** for the leads in `whatsappVersions` with `save_drafts` (`channel: "whatsapp"`, `purpose:
+   "first_touch"`): the offer's WhatsApp rules (short, plain text, the language the offer says), the email version's opening signal
+   and question. The person chooses which version to send; sending one closes the other (`docs/sales-dealflow.md` §5, "Versions").
+4. **Queue enrich runs** with `enrich_lead` for leads in `needsContacts` that have `enrichPending: false` (newest first, at most 25 a
    morning so the office PC is not flooded). The office PC engine fills in published business contacts later.
-4. **Re-judge stale verdicts** where `claudeCanRejudge` is true: fetch the company's pages again, quote fresh evidence with today's
+5. **Re-judge stale verdicts** where `claudeCanRejudge` is true: fetch the company's pages again, quote fresh evidence with today's
    `seenAt`/`signalSeenAt`, and save a new verdict (`save_verdict`). List the others (a person's verdict, or needs-you) for a person.
-5. **Post the summary**: the `summary` line plus what was done ("drafted 3 follow-ups, queued 12 enrich runs, re-judged 4") in the
+6. **Post the summary**: the `summary` line plus what was done ("drafted 3 follow-ups, queued 12 enrich runs, re-judged 4") in the
    conversation, and, when the run is scheduled, in the venture's sales channel through the Venture Studio connector (`post_message`,
    labelled "via Claude"). Replies waiting, calls today and approvals stay with people: the summary points to them (`/sales/live`).
 

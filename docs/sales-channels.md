@@ -5,7 +5,8 @@ ventures and several accounts work at the same time: Buildory's sellers each sen
 one person can have a mailbox per venture, and a venture can have two WhatsApp numbers.
 
 Claude never connects an account, never changes one and never sends: a person clicks **Send** in the app. Claude's drafts still pass the
-separate review (and a person's approval where the venture asks for it) before they can be sent.
+separate review (and a person's approval where the venture asks for it) before they can be sent. A reply a person writes in the app is
+ready at once, approved by them (`docs/sales-dealflow.md` §5, "A person's own reply"), and sends from the Inbox.
 
 | Channel | What the app does | Account belongs to |
 |---|---|---|
@@ -64,10 +65,15 @@ Every change is audited (`sales.channel.create|update|delete|test`) with only th
 
 ## 2. Sending a draft through an account
 
-`POST /v1/sales/drafts/:id/send` with `draftSendThroughInputSchema` `{ accountId?, template?, requestId }` (session only, Claude refused).
+`POST /v1/sales/drafts/:id/send` with `draftSendThroughInputSchema` `{ accountId?, template?, requestId, expectedUpdatedAt? }` (session only,
+Claude refused). `expectedUpdatedAt` is the draft's `updatedAt` the person saw: a draft edited, reviewed or approved since then is refused
+with `409 DRAFT_CHANGED` ("This draft changed since you opened it: read it again before sending"), checked before anything else and again
+in the claim's filter (step 5), so it can't slip in between.
 
 1. The draft passes everything `sendBlocker` checks today (ready, approved where needed, not do-not-contact, the venture allows the channel,
-   WhatsApp opt-in). The channel is email, whatsapp or instagram (linkedin and call openers: 409, "send it yourself and mark it sent").
+   WhatsApp opt-in), and no other version of the same message is being sent or went out since it was written (`versionBlocker`: a lead's
+   first message and its follow-up go out on one channel only, and one reply per message of the lead's; a version that bounced doesn't
+   count; `docs/sales-dealflow.md` §5, "Versions"). The channel is email, whatsapp or instagram (linkedin and call openers: 409, "send it yourself and mark it sent").
 2. The account: `pickSendAccount(ctx, lead.ventureId, channel, accountId)`; its secrets must open (409 "reconnect" otherwise).
 3. The recipient: email, the lead's first email route (the draft reader shows it); WhatsApp, the lead's WhatsApp route, else its phone route,
    normalised with `normalizePhone` (India +91 by default); Instagram, the person's Instagram-scoped id from a conversation linked to this lead
@@ -75,7 +81,8 @@ Every change is audited (`sales.channel.create|update|delete|test`) with only th
 4. Windows: WhatsApp free text only within 24 hours of the lead's last inbound WhatsApp on this account; outside it a `template` is required
    (409 `TEMPLATE_REQUIRED`). Instagram only within 24 hours of their last message (409 otherwise: "send it from the Instagram app and mark it
    sent").
-5. Claim, in this order: the draft (`sendLock: { requestId, by, at }` set only where `status: "ready"` and no `sendLock`), then the day's send
+5. Claim, in this order: the draft (`sendLock: { requestId, by, at }` set only where `status: "ready"`, no `sendLock` and, when given,
+   `updatedAt` equal to `expectedUpdatedAt`), then the day's send
    (`claimSendSlot`, the venture's cap per person and channel). Then the lead, play and settings are read again and `sendBlocker` runs once
    more on the claimed draft (a refusal gives both claims back), and the message is built from the claimed draft. Then the provider call,
    **outside** any transaction, with a 23-second timeout (25 s at most, under the web proxy's 60 s). A reply arriving meanwhile never
@@ -84,13 +91,20 @@ Every change is audited (`sales.channel.create|update|delete|test`) with only th
 6. Outcome (`SendOutcome` from the provider):
    - `sent`: one transaction marks the draft sent (`sentVia` `smtp` / `whatsapp_api` / `instagram_api`, `sentAccountId`, `delivery: {state:
      "sent"}`), logs the outbound activity through `applyActivity` with `message: { accountId, externalId, threadKey, subject, from, to,
-     delivery }` (stage, follow-up date and the rest of the rules run as for a manual send), clears the Inbox item it answers, removes
-     `sendLock`, audits `sales.draft.sent`. 201 `{ draft, activity, lead }`.
+     delivery }` (stage, follow-up date and the rest of the rules run as for a manual send), clears the Inbox item it answers, closes the
+     lead's other open versions of the message (its email or WhatsApp twin, or its other replies to the same message: discarded with
+     `closedReason` and `sentVersion`), removes
+     `sendLock`, audits `sales.draft.sent` (with `closedVersions` when it closed any). 201 `{ draft, activity, lead }`.
+   - A refusal after the claim (the cap used up, a last-moment check) gives both claims back and restores the draft as it was (its
+     `sendAttempts` count stays raised).
    - `failed`: the day's send is given back, `sendLock` removed, `delivery: { state: "failed", error }` kept on the draft (it stays ready).
      502 `SEND_FAILED` with the provider's reason in plain words.
+   - None of the send's own bookkeeping (the claim, "sending", failed, uncertain, "It didn't go", a claim given back) moves the draft's
+     `updatedAt`: a retry, or marking it sent by hand, with the `expectedUpdatedAt` the person read goes through.
    - `uncertain`: the send stays counted, `sendLock` stays, `delivery: { state: "uncertain", error }`. 202 with the draft. A person checks
      their Sent folder or WhatsApp and answers `POST /v1/sales/drafts/:id/delivery` `{ outcome: "sent" | "not_sent" }`: sent records it as sent
-     (no provider id); not_sent removes the lock and gives the send back if it was today's. A bounce that arrives for an unsettled send
+     (no provider id) and closes the other versions; not_sent removes the lock and gives the send back if it was today's. Until then the
+     message's other versions can't be sent (by hand or through an account). A bounce that arrives for an unsettled send
      settles it as sent, then bounced.
    - A send interrupted by a restart (a `sendLock` still "sending" after 2 minutes) reads as `uncertain`: every action on the draft answers
      "We couldn't confirm the last send: say whether it went out" and `/delivery` settles it either way.
@@ -99,7 +113,23 @@ Every change is audited (`sales.channel.create|update|delete|test`) with only th
    "it went out" after "it didn't go" changes nothing (409).
 
 `POST /drafts/:id/sent` (marking a hand-sent message) stays as it is, accepts `sentVia: "manual"` only (others: 400 pointing at `/send`) and
-also takes an optional `accountId` naming the mailbox or LinkedIn profile it went from (recorded in `message.accountId`).
+also takes an optional `accountId` naming the mailbox or LinkedIn profile it went from (recorded in `message.accountId`) and the same optional
+`expectedUpdatedAt` (in its claim's filter too). It follows the same version rule: refused while another version is being sent, and it closes
+the other open versions (or other replies to the same message) in the same transaction.
+
+**Where a send would go** (`sendTarget`): every open email, WhatsApp and Instagram draft the API returns carries `sendTarget: { channel, to }`,
+worked out by the same code as step 3 (`targetFrom`, and `linkedContactsFor` for the conversation linked on the account: every link of the
+listed leads is read, with no cap, so the list and the send always agree) with the account a send would pick by itself (the person's default for the venture, or
+their only one): the email address; for WhatsApp the number the lead wrote from on that account, else its WhatsApp or phone route,
+normalised; for Instagram the linked conversation, shown as its @handle when known. Absent when there is none. It is shown even when the
+person has no account to send through; with several accounts and no default the lead's routes decide (the send's `to` says where it
+went). For a list it costs two queries at most (the venture accounts and the linked conversations); email needs none.
+
+**Versions in the Review screen**: a lead's first message may wait as an email and a WhatsApp version (Claude writes the WhatsApp one once
+the lead opted in). Every open first message and follow-up carries `otherVersions` (`[{ id, channel, status }]`), and the draft lists carry
+the lead's `whatsappOptIn` and `contactRoutes`, so the screen groups a lead's versions by `leadId` + `purpose` and lets the person pick one
+to send; whether they can send it from the app comes from their usable accounts (`GET /channels`: `kind`, `enabled`, `ventureIds`, and the
+owner for a mailbox). A version closed because another went out reads `status: discarded` with `closedReason` and `sentVersion`.
 
 **Daily caps**: `CAPPED_CHANNELS` = email, whatsapp, linkedin, instagram; `dailyCaps` has all four (LinkedIn 15, the rest 20 by default).
 Hand-marked and app-sent messages count the same.
@@ -125,7 +155,9 @@ Files: `apps/api/src/sales/channels/email/*`.
   For each message (mailparser without its HTML conversion, the source cut at 512 KB, HTML-only mail turned into text by a one-pass strip of
   at most 100 KB, attachments ignored):
   1. A failed delivery report (`Action: failed` or `Status: 5.x.x`, or a mailer-daemon bounce with permanent/5xx wording) naming one of our
-     Message-IDs → `delivery: { state: "bounced", error }` on that activity and draft; nothing else. Delay and success notices are skipped.
+     Message-IDs → `delivery: { state: "bounced", error }` on that activity and draft. The message never reached the lead, so the drafts its
+     sending closed (its email or WhatsApp twin, or the other replies to the same message) open again in the status they had, with
+     `reopenedAt` and `reopenedBecause: "bounced"` (`docs/sales-dealflow.md` §5); nothing else changes. Delay and success notices are skipped.
   2. `Auto-Submitted` other than `no`, `X-Autoreply`, `Precedence: bulk|auto_reply|list` → skipped.
   3. Matched to a lead in one of the account's ventures by `In-Reply-To`/`References` against our sent Message-IDs, but only when the sender
      is one of the lead's addresses or on the lead's own (not shared) domain, and never a teammate, a connected mailbox or the mailbox's own
@@ -223,7 +255,11 @@ daily cap (15 by default) counts these. No automation, no logged-in scraping.
   uncertain state with "It went out / It didn't go", the delivery state (sent, delivered, read, failed, bounced). LinkedIn and first Instagram
   messages: Open profile + Copy + Mark sent.
 - **Inbox**: channel icons (email, WhatsApp, Instagram, LinkedIn), "New conversations" (link to a lead, create a lead, dismiss), delivery ticks
-  on our messages in the lead timeline.
+  on our messages in the lead timeline. Answering happens in the Inbox: the reply box offers only the channels the lead can take (email
+  with an address; WhatsApp once they opted in, and when the venture's number is connected only within 24 hours of their last WhatsApp,
+  since outside it the number sends approved templates only; the others named with the reason) and says which account it goes out from
+  (the person's mailbox, the venture's number, or their own app); a ready reply sends inline with the same send box, "Did you send it?"
+  and how-it's-recorded line as the draft reader. Sending it, either way, marks the message it answers handled.
 - **Setup checklist**: "Connect your mailbox" and, for heads, "Connect the venture's WhatsApp number".
 - **Sales settings**: daily caps for LinkedIn and Instagram; Instagram in the channels a venture uses (off by default).
 

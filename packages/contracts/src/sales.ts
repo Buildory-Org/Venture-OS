@@ -158,19 +158,33 @@ export type Verdict = z.infer<typeof verdictSchema>;
 
 // Drafts: written (usually by Claude), reviewed in a separate pass, then sent by a person.
 export const DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes", "sent", "vetoed", "discarded"] as const;
+/** The statuses a draft can still change from (sent, vetoed and discarded end it). */
+export const OPEN_DRAFT_STATUSES = ["draft", "in_review", "ready", "needs_changes"] as const satisfies readonly (typeof DRAFT_STATUSES)[number][];
 export const draftStatusSchema = z.enum(DRAFT_STATUSES);
 export const draftChannelSchema = z.enum(["email", "whatsapp", "call_opener", "linkedin", "instagram"]);
+/**
+ * A new draft. `submit` true sends it to Claude's review (in_review), false keeps it unsubmitted (draft). Exception: a reply a person writes
+ * in the app (purpose "reply", not through Claude, `inReplyTo` an inbound message on the lead) is ready at once, approved by its author
+ * (`personApproval.own`); `checkByClaude: true` sends it to Claude's review instead, like any other draft.
+ */
 export const draftInputSchema = z.object({
   channel: draftChannelSchema, purpose: z.enum(["first_touch", "follow_up", "reply", "proposal", "other"]).default("first_touch"), subject: z.string().trim().max(200).optional(),
   body: z.string().trim().min(1).max(5_000), playId: idSchema.optional(), inReplyTo: idSchema.optional(), sessionId: z.string().trim().max(128).optional(), submit: z.boolean().default(true),
+  checkByClaude: z.boolean().optional(),
 });
 export const draftUpdateSchema = z.object({ subject: z.string().trim().max(200), body: z.string().trim().min(1).max(5_000), sessionId: z.string().trim().max(128) }).partial().refine((value) => value.subject !== undefined || value.body !== undefined);
 export const draftReviewInputSchema = z.object({ result: z.enum(["pass", "fail"]), issues: z.array(z.string().trim().min(1).max(300)).max(20).default([]), notes: z.string().trim().max(2_000).default(""), sessionId: z.string().trim().max(128).optional() });
+/**
+ * The draft's `updatedAt` as the person saw it when they opened it. Given on a send (by hand or through an account), the draft is claimed only
+ * while it is still that version: a draft edited, reviewed or approved meanwhile is refused (409 `DRAFT_CHANGED`, "This draft changed since
+ * you opened it: read it again before sending"). Left out, the send works as before.
+ */
+export const expectedUpdatedAtField = isoDateSchema.optional();
 /** Marks a draft sent by hand (from the person's own mail app, phone or LinkedIn). Sending through a connected account is POST .../send. */
 export const draftSendInputSchema = z.object({
   sentVia: z.enum(["manual", "smtp", "whatsapp_api", "instagram_api"]).default("manual"), at: isoDateSchema.optional(), requestId: z.string().trim().min(8).max(128).optional(),
   /** Optional: the person's mailbox or LinkedIn profile (or the venture's account) it went from, kept on the activity. */
-  accountId: idSchema.optional(),
+  accountId: idSchema.optional(), expectedUpdatedAt: expectedUpdatedAtField,
 });
 /**
  * A person sends a ready draft through one of their connected accounts (docs/sales-channels.md): an email through their mailbox (SMTP), a
@@ -178,18 +192,57 @@ export const draftSendInputSchema = z.object({
  * default account for the venture and channel. `template`: WhatsApp only, required outside the 24-hour window (the lead hasn't messaged in
  * the last 24 hours): an approved template with the values to fill in.
  */
-export const draftSendThroughInputSchema = z.object({ accountId: idSchema.optional(), template: whatsappTemplateRefSchema.optional(), requestId: z.string().trim().min(8).max(128) });
+export const draftSendThroughInputSchema = z.object({ accountId: idSchema.optional(), template: whatsappTemplateRefSchema.optional(), requestId: z.string().trim().min(8).max(128), expectedUpdatedAt: expectedUpdatedAtField });
 export const draftVetoInputSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
+/** Purposes a lead has one message of at a time, possibly written for several channels: sending one version closes the others. */
+export const VERSIONED_DRAFT_PURPOSES = ["first_touch", "follow_up"] as const;
+/**
+ * Why a rule closed a draft: another version of the same message went out (on another channel, or on the same one), or another reply to the
+ * same message of the lead's (`inReplyTo`) was sent.
+ */
+export const DRAFT_CLOSED_REASONS = ["sent_on_other_channel", "other_version_sent", "other_reply_sent"] as const;
+/** Another open version of the same message: its draft id, channel and status. */
+export const draftVersionSchema = z.object({ id: idSchema, channel: draftChannelSchema, status: draftStatusSchema });
+/** Channels the app sends through a connected account (LinkedIn and call openers never are). */
+export const SEND_TARGET_CHANNELS = ["email", "whatsapp", "instagram"] as const;
 export const draftSchema = z.object({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, leadId: idSchema, playId: idSchema.optional(), inReplyTo: idSchema.optional(),
   channel: draftChannelSchema, purpose: draftInputSchema.shape.purpose, subject: z.string().optional(), body: z.string(), status: draftStatusSchema,
   authorId: idSchema, authorVia: z.enum(["app", "claude", "import"]), authorSessionId: z.string().optional(),
   review: draftReviewInputSchema.extend({ by: idSchema, via: z.enum(["app", "claude", "import"]), at: isoDateSchema }).optional(),
-  /** `byHead`: the approver headed the venture (or was an admin); only those approvals count toward a play's first batch. */
-  personApproval: z.object({ by: idSchema, at: isoDateSchema, byHead: z.boolean().optional() }).optional(), veto: draftVetoInputSchema.extend({ by: idSchema, at: isoDateSchema }).optional(),
+  /**
+   * `byHead`: the approver headed the venture (or was an admin); only those approvals count toward a play's first batch. `own`: a reply a
+   * person wrote (or edited) in the app themselves, ready without Claude's review and approved by that person: it lets the reply go in
+   * either approval mode but never counts toward a play's first batch.
+   */
+  personApproval: z.object({ by: idSchema, at: isoDateSchema, byHead: z.boolean().optional(), own: z.boolean().optional() }).optional(), veto: draftVetoInputSchema.extend({ by: idSchema, at: isoDateSchema }).optional(),
   sentAt: isoDateSchema.optional(), sentBy: idSchema.optional(), sentVia: draftSendInputSchema.shape.sentVia.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
   /** Sent through a connected account: which one, and the delivery (an "uncertain" one waits for a person to say whether it went out). */
   sentAccountId: idSchema.optional(), delivery: deliverySchema.optional(),
+  /** A discarded draft: when, by whom (absent when a rule discarded it) and why, in plain words. */
+  discardedAt: isoDateSchema.optional(), discardedBy: idSchema.optional(), discardedReason: z.string().optional(),
+  /**
+   * Versions: a lead's first message (and its one follow-up) may be written for several channels, and only one goes out. When one is sent,
+   * the lead's other open versions of the same purpose are discarded with `closedReason` ("sent_on_other_channel", or "other_version_sent"
+   * when the one sent was on the same channel) and `sentVersion`, the draft that went out.
+   */
+  closedReason: z.enum(DRAFT_CLOSED_REASONS).optional(), sentVersion: z.object({ draftId: idSchema, channel: draftChannelSchema, at: isoDateSchema }).optional(),
+  /**
+   * A version (or a sibling reply) closed because another one went out, opened again because that one bounced: it is back in the status it
+   * had before it was closed, without `closedReason`, `sentVersion` or the discard fields.
+   */
+  reopenedAt: isoDateSchema.optional(), reopenedBecause: z.enum(["bounced"]).optional(),
+  /**
+   * Computed by the server on open email, WhatsApp and Instagram drafts: where a send through a connected account would actually go (the
+   * lead's email address; for WhatsApp the number the lead wrote from on the venture's number, else its WhatsApp or phone route, normalised;
+   * for Instagram the linked conversation, shown as its @handle when known). Absent when there is none.
+   */
+  sendTarget: z.object({ channel: z.enum(SEND_TARGET_CHANNELS), to: z.string() }).optional(),
+  /**
+   * Computed by the server on open first messages and follow-ups: the lead's other open versions of the same purpose (call openers left out),
+   * so a screen can offer "send the email or the WhatsApp version" even when the list it shows holds only one of them.
+   */
+  otherVersions: z.array(draftVersionSchema).optional(),
   /**
    * Computed by the server: the draft passed review but waits for a person's approval before it can be sent. `approvalReason` says why:
    * "every_message" (the venture approves every message: the lead's owner or a head approves) or "first_batch" (a play's first batch nobody
@@ -269,7 +322,13 @@ export const leadDetailSchema = z.object({ lead: opportunitySchema, activities: 
 export const leadCardSchema = opportunitySchema.pick({ id: true, ventureId: true, offerId: true, companyName: true, contactName: true, city: true, stage: true, ownerId: true, nextAction: true, nextActionAt: true, verdict: true, whatsappOptIn: true, contactRoutes: true, doNotContact: true }).extend({ why: z.string() });
 export const inboxItemSchema = z.object({ activity: activitySchema, lead: leadCardSchema });
 export const salesOverviewSchema = z.object({
-  counts: z.object({ replies: z.number().int(), callsDue: z.number().int(), followUpsDue: z.number().int(), toReview: z.number().int(), readyToSend: z.number().int(), needsYou: z.number().int(), wonToHandOver: z.number().int(), openLeads: z.number().int(), totalLeads: z.number().int() }),
+  counts: z.object({
+    replies: z.number().int(), callsDue: z.number().int(), followUpsDue: z.number().int(), toReview: z.number().int(), readyToSend: z.number().int(), needsYou: z.number().int(), wonToHandOver: z.number().int(), openLeads: z.number().int(), totalLeads: z.number().int(),
+    // What Claude can take on next (start_sales offers them in these words): drafts waiting for Claude's review (in_review) and drafts sent
+    // back with fixes (needs_changes), both also inside `toReview`; recommended leads approved for contact with no first message written or
+    // sent; leads that opted in to WhatsApp whose first message waits as an email only (no WhatsApp version yet).
+    inReview: z.number().int().default(0), needsChanges: z.number().int().default(0), firstMessagesToWrite: z.number().int().default(0), whatsappVersionsToWrite: z.number().int().default(0),
+  }),
   replies: z.array(inboxItemSchema), callsDue: z.array(leadCardSchema), followUpsDue: z.array(leadCardSchema), needsYou: z.array(leadCardSchema), wonToHandOver: z.array(leadCardSchema),
   toReview: z.array(draftWithLeadSchema), readyToSend: z.array(draftWithLeadSchema),
   stageCounts: z.record(z.string(), z.number().int()), week: z.object({ contacted: z.number().int(), replied: z.number().int(), meetings: z.number().int(), proposals: z.number().int(), won: z.number().int() }),
@@ -474,12 +533,20 @@ export const daybreakSchema = z.object({
    * `overSla` on each reply uses its own venture's rules (`workRules`). Only warm replies (interested, send_details, price_first) are ever over it.
    */
   replySlaHours: reportCount.nullable(), workRules: z.array(salesWorkRulesSchema),
-  counts: z.object({ followUpsDue: reportCount, staleVerdicts: reportCount, needsContacts: reportCount, callsToday: reportCount, repliesWaiting: reportCount, repliesOverSla: reportCount, draftsToApprove: reportCount, needsYou: reportCount }),
+  counts: z.object({ followUpsDue: reportCount, staleVerdicts: reportCount, needsContacts: reportCount, callsToday: reportCount, repliesWaiting: reportCount, repliesOverSla: reportCount, draftsToApprove: reportCount, needsYou: reportCount, whatsappVersions: reportCount.default(0) }),
   /** Contacted leads whose follow-up is due by the end of today and have no follow-up draft waiting, with the first message (to refer back to). */
   followUpsDue: z.array(daybreakLeadSchema.extend({
     followUpDueAt: isoDateSchema, lastTouchAt: isoDateSchema.optional(), channel: z.string(), signal: z.string(),
     firstTouch: z.object({ draftId: idSchema.optional(), activityId: idSchema.optional(), channel: z.string(), subject: z.string().optional(), body: z.string(), at: isoDateSchema }).optional(),
   })),
+  /**
+   * Leads that opted in to WhatsApp whose first message waits as an email only: Claude writes the WhatsApp version so the person can choose
+   * (sending one closes the other). `emailDraft` is the email version it is written from (its subject and text, to keep the same opening).
+   */
+  whatsappVersions: z.array(daybreakLeadSchema.extend({
+    optedIn: z.object({ how: z.string(), at: isoDateSchema }),
+    emailDraft: z.object({ draftId: idSchema, status: draftStatusSchema, subject: z.string().optional(), body: z.string() }),
+  })).default([]),
   /** Leads not contacted yet whose verdict is older than 30 days or whose signal was seen more than 60 days ago. */
   staleVerdicts: z.array(daybreakLeadSchema.extend({
     verdict: z.object({ id: idSchema, decision: z.enum(["recommend", "hold", "reject"]), confidence: confidenceSchema, at: isoDateSchema, signal: z.string(), signalSeenAt: isoDateSchema.optional(), setBy: z.enum(["claude", "person"]) }),

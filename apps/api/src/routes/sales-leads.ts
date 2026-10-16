@@ -8,14 +8,14 @@ import { jsonValue } from "../json.js";
 import { canWriteIn, forbidClaude, forbidden, isHeadOf, notFound } from "../sales/access.js";
 import { auditSales, salesCtx, settingsFor } from "../sales/ctx.js";
 import { approvalNeed } from "../sales/drafts.js";
-import { shownSendState } from "../sales/channels/dispatch.js";
+import { sendTargetsFor, shownSendState } from "../sales/channels/dispatch.js";
 import { createDeliveryWork } from "../sales/delivery.js";
 import { applyActivity, applyReplyType, createLead, discardOpenDrafts, loadLead, markHandled, payloadHash, requireLeadEditor, stageNote, updateLead } from "../sales/leads.js";
 import { leadJson, present } from "../sales/present.js";
 import { pipelineValue } from "../sales/revenue.js";
 import { notifyNeedsYou } from "../sales/notify.js";
 import { verdictOffer } from "../sales/offers.js";
-import { buildOverview, leadFacets, listInbox, listLeads } from "../sales/queries.js";
+import { buildOverview, leadFacets, listInbox, listLeads, versionsOf } from "../sales/queries.js";
 import { isPreContactStage, normalizeStage, planOverride, planVerdict } from "../sales/rules.js";
 import { SALES_TZ } from "../sales/workdays.js";
 
@@ -66,7 +66,10 @@ export function salesLeadRoutes(database: Database): Router {
     const settings = await settingsFor(ctx, String(lead.ventureId));
     const playIds = [...new Set(drafts.map((draft) => draft.playId).filter((id): id is string => typeof id === "string"))];
     const plays = new Map(playIds.length ? (await db.collection("sales_plays").find({ _id: { $in: playIds }, workspaceId: ctx.workspaceId }).toArray()).map((play) => [String(play._id), play]) : []);
-    res.json(ok({ lead: leadJson(lead), activities: activities.map(present), drafts: drafts.map((draft) => shownSendState({ ...present(draft), ...approvalNeed(draft, plays.get(String(draft.playId)), settings) })), verdicts: verdicts.map(present) }));
+    // ...each open first message or follow-up names its other versions (the email and WhatsApp twins of one message), and each open draft
+    // says where a send through an account would go (`sendTarget`: the Inbox shows it on a reply).
+    const [versions, targets] = await Promise.all([versionsOf(ctx, drafts), sendTargetsFor(ctx, drafts.map((draft) => ({ draft, lead })))]);
+    res.json(ok({ lead: leadJson(lead), activities: activities.map(present), drafts: drafts.map((draft) => shownSendState({ ...present(draft), ...approvalNeed(draft, plays.get(String(draft.playId)), settings), ...versions(draft), ...targets(draft) })), verdicts: verdicts.map(present) }));
   });
 
   router.patch("/leads/:id", async (req, res) => {

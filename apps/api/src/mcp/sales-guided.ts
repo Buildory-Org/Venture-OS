@@ -100,7 +100,9 @@ export const ASK_CLAUDE: Readonly<Record<string, string>> = {
 };
 
 /** `noOffer`: the person's ventures have no offer set up yet (docs/sales-offers.md), so setting one up is offered once nothing more urgent waits. */
-type StartInput = { mode: "work" | "review"; counts: Record<string, number>; stageCounts?: Record<string, number>; cities?: CityCount[]; newLeads?: number; noOffer?: boolean };
+type StartInput = { mode: "work" | "review"; counts: Record<string, number>; stageCounts?: Record<string, number>; cities?: CityCount[]; newLeads?: number; noOffer?: boolean; appReviews?: boolean };
+/** Said instead of "open a new chat" when every venture in scope has its autopilot on with review (docs/sales-autopilot.md). */
+export const APP_REVIEWS = "Drafts waiting for review: the app reviews them itself, usually within a few minutes. No new chat is needed.";
 
 /**
  * The session's three options, tied to what is really waiting. The first is the suggestion. Each starts with the words the app's "Ask Claude"
@@ -108,7 +110,7 @@ type StartInput = { mode: "work" | "review"; counts: Record<string, number>; sta
  * "Write first messages for my recommended leads", "Research and judge…"), so the app and Claude speak the same language; the count follows in
  * brackets (a card's button leaves it out).
  */
-export function startNext({ mode, counts, cities, newLeads, noOffer }: StartInput): string[] {
+export function startNext({ mode, counts, cities, newLeads, noOffer, appReviews }: StartInput): string[] {
   // Drafts waiting for Claude's review: `inReview` (the overview's `toReview` also holds drafts sent back and drafts waiting for a person).
   const toReview = counts.inReview ?? counts.toReview ?? 0;
   if (mode === "review") {
@@ -118,7 +120,8 @@ export function startNext({ mode, counts, cities, newLeads, noOffer }: StartInpu
   const options: string[] = [];
   if (counts.replies) options.push(`Draft replies to my inbox (${batchOf(counts.replies, "reply", "replies")} waiting; warm ones are due within 2 working hours)`);
   if (counts.callsDue) options.push(counts.callsDue > BATCH ? `Plan the first ${BATCH} of today's ${counts.callsDue} calls` : `Plan today's ${plural(counts.callsDue, "call")}`);
-  if (toReview) options.push(`Review drafts: open a new chat and say “review drafts” (${batchOf(toReview, "draft")} waiting)`);
+  // With the autopilot reviewing, the person has nothing to do for these: no option to open a new chat.
+  if (toReview && !appReviews) options.push(`Review drafts: open a new chat and say “review drafts” (${batchOf(toReview, "draft")} waiting)`);
   if (counts.needsChanges) options.push(`Fix the drafts that need changes (${batchOf(counts.needsChanges, "draft")} sent back)`);
   if (counts.followUpsDue) options.push(`Write the one follow-up for ${batchOf(counts.followUpsDue, "lead")} that went quiet`);
   if (counts.whatsappVersionsToWrite) options.push(`Write a WhatsApp version for my opted-in leads (${batchOf(counts.whatsappVersionsToWrite, "lead")} with only an email first message)`);

@@ -130,6 +130,20 @@ export function addWorkingHours(from: Date, hours: number, cal: WorkCalendar = D
   return cursor;
 }
 
+/**
+ * `instant` itself when it falls inside a working window (a working day, 10:00 to 19:00 local, outside blackout days), else the start of the
+ * next one: 10:00 that day when it is earlier, or 10:00 on the next working day. The send queue uses it so messages only go in working hours.
+ */
+export function inWorkingWindow(instant: Date, cal: WorkCalendar = DEFAULT_CALENDAR): Date {
+  const day = localDay(instant, cal);
+  if (isWorkingDay(day, cal)) {
+    const start = localMoment(day, WORK_START_HOUR, 0, cal);
+    if (instant < start) return start;
+    if (instant < localMoment(day, WORK_END_HOUR, 0, cal)) return instant;
+  }
+  return localMoment(nextWorkingDate(day, cal), WORK_START_HOUR, 0, cal);
+}
+
 /** The instant the local calendar day containing `instant` ends (the next local midnight) in an IANA zone. */
 export function endOfLocalDay(instant: Date, timeZone: string): Date {
   const local = new Date(instant.getTime() + offsetMs(instant, timeZone));

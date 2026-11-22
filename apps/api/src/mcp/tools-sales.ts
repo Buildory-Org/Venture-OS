@@ -4,8 +4,9 @@ import { clean, clip, compact, localTime, ToolError, validTimeZone } from "./for
 import { id, type Look, once, READ_ONLY, type Register, requestIdField, timezoneField, type ToolContext, writes } from "./kit.js";
 import { LEGACY_BRAIN_KINDS } from "../sales/offers.js";
 import { CHANNEL_WORDS, PURPOSE_WORDS, channelWithArticle, firstMessageStillDue, isOpenDraft, isWhatsappDecided } from "../sales/drafts.js";
+import { PRICE_IN_TEXT, linkProblem } from "../sales/message-rules.js";
 import { cityKey, sameCity } from "../sales/suppression.js";
-import { ASK_CLAUDE, FULL_RUN_PROMPT, type CityCount, guided, settingsLine, startNext, startSay, theBatch, viewHint, waitingLine } from "./sales-guided.js";
+import { APP_REVIEWS, ASK_CLAUDE, FULL_RUN_PROMPT, type CityCount, guided, settingsLine, startNext, startSay, theBatch, viewHint, waitingLine } from "./sales-guided.js";
 import { newSession, requireSession, salesApi, sessionField, sessionModeOf } from "./sales-session.js";
 import { offerBook, offerLine, offerNameField, usable, type OfferRow } from "./tools-offers.js";
 
@@ -80,19 +81,7 @@ function when(value: string | undefined, field: string, hour = "09:00:00"): stri
 
 // Sessions (start_sales: a work or a review conversation) and the API wrapper live in sales-session.ts, shared with tools-offers.ts.
 
-/** Links in messages: none, except one wa.me line at the end of an email (the way to invite a WhatsApp reply without a cold first WhatsApp). */
-const WA_LINK = /^(?:https:\/\/)?wa\.me\/\d{8,15}$/i;
-const LINKISH = /(?:https?:\/\/|www\.)[^\s)>\]]+|\b(?:bit\.ly|tinyurl\.com|t\.co|goo\.gl|rb\.gy|cutt\.ly|lnkd\.in|calendly\.com|cal\.com)\/\S*|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|in|co|net|org|io|app|dev|me|shop|store|biz|info|ai)\/[^\s)>\]]*/gi;
-function linkProblem(body: string, channel: string | undefined): string | undefined {
-  const found = (body.match(LINKISH) ?? []).map((link) => link.replace(/[.,;:!?]+$/, ""));
-  const other = found.filter((link) => !WA_LINK.test(link));
-  if (other.length) return `The message contains a link (${other[0]}). Messages carry no links, except one wa.me line at the end of an email. Remove it and save again, or ask a person to edit the draft in the app.`;
-  const wa = found.filter((link) => WA_LINK.test(link));
-  if (!wa.length) return undefined;
-  const lastLine = body.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
-  if (channel !== "email" || wa.length > 1 || !lastLine.includes(wa[0]!)) return "A wa.me link is allowed once, on the last line of an email (give the channel as email when revising). Nothing else carries a link.";
-  return undefined;
-}
+// Links in messages (linkProblem) and prices (PRICE_IN_TEXT) follow sales/message-rules.ts, shared with the autopilot on the server.
 
 /** The direct stage steps Claude may make, as the app allows them (assertClaudeMayMove in the API): one step at a time. */
 const CLAUDE_STEPS: Readonly<Record<string, readonly string[]>> = {
@@ -184,7 +173,6 @@ const REPLY_NEXT: Record<string, string> = {
   unclear: "Clarify once with a short question (save_draft, purpose reply). If it is still unclear after that, treat it as silence.",
 };
 
-const PRICE_IN_TEXT = /(?:₹|\$|€|£)\s?\d|\b(?:rs\.?|inr|usd)\s?\d|\b\d[\d,.]*\s?(?:rupees|lakhs?|lacs?|crores?)\b/i;
 
 export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look): void {
   const api = salesApi(ctx, look);
@@ -380,8 +368,11 @@ export function registerSalesTools(tool: Register, ctx: ToolContext, look: Look)
     const scoped = [...session.ventures.values()].filter((venture) => !ventureId || venture.id === ventureId).slice(0, 6);
     const settings = (await Promise.all(scoped.map(async (venture) => { try { return { venture, value: await api<any>("GET", `/settings?ventureId=${enc(venture.id)}`) }; } catch { return undefined; } }))).filter((row): row is { venture: any; value: any } => Boolean(row));
     const say = startSay({ name: session.me.name, timeZone: tz, mode, counts: overview.counts, offers: ready.map((offer) => offer.name) });
-    const next = startNext({ mode, counts: overview.counts, newLeads: fresh.total, cities: fresh.cities, noOffer: !open.length });
+    // Every venture in scope has its autopilot on with review: the app reviews the drafts, so nobody is sent to a new chat for that.
+    const appReviews = settings.length > 0 && settings.length === scoped.length && settings.every((row) => row.value?.autopilot?.enabled === true && row.value.autopilot.review === true);
+    const next = startNext({ mode, counts: overview.counts, newLeads: fresh.total, cities: fresh.cities, noOffer: !open.length, appReviews });
     return guided(say, next, compact({
+      reviews: appReviews && mode === "work" ? APP_REVIEWS : undefined,
       sessionId, mode, you: { name: session.me.name, role: roleLabel(session.role) },
       thisConversation: mode === "review" ? "A review session: use list_drafts (status in_review), get_lead, get_brain and review_draft only. Never write drafts or verdicts here. If you wrote any of these drafts in this conversation, stop: that would be reviewing your own work." : "A work session: research, judge, draft and log. Never review drafts here: a different conversation reviews them (start_sales with mode review).",
       ventures: [...session.ventures.values()].map((venture) => ({ id: venture.id, name: venture.name })),

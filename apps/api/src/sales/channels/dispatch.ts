@@ -54,8 +54,21 @@ const isSendChannel = (channel: unknown): channel is SendChannel => channel === 
 const SEND_FAILED: ErrorCode = "SEND_FAILED";
 const TEMPLATE_REQUIRED: ErrorCode = "TEMPLATE_REQUIRED";
 
-/** `expectedUpdatedAt`: the draft's `updatedAt` the person saw; the draft is claimed only while it is still that version (409 DRAFT_CHANGED). */
-export type SendInput = { accountId?: string | undefined; template?: { name: string; language: string; variables: string[] } | undefined; requestId: string; expectedUpdatedAt?: string | undefined };
+/**
+ * `expectedUpdatedAt`: the draft's `updatedAt` the person saw; the draft is claimed only while it is still that version (409 DRAFT_CHANGED).
+ * `queueEntry`: the send queue's own send (send-queue.ts), the entry's `sendQueue.at`: the draft is claimed only while that entry still
+ * waits (a person who took it out of the queue meanwhile wins), and the entry stays until the outcome is known. Any other send takes a
+ * queued draft out of the queue when it claims it: a person sending it now is sending it by hand.
+ */
+export type SendInput = { accountId?: string | undefined; template?: { name: string; language: string; variables: string[] } | undefined; requestId: string; expectedUpdatedAt?: string | undefined; queueEntry?: Date | undefined };
+
+/**
+ * The day's cap for the sender is used up. The same 409 as claimSendSlot's for people; the send queue tells it apart (it waits for the next
+ * working day instead of failing).
+ */
+export class SendCapReached extends AppError {
+  constructor(message: string) { super(409, "CONFLICT", message); }
+}
 /** `to`: where it went (the lead's address, or the WhatsApp number as normalised), for the app to show. */
 export type SendResult =
   | { outcome: "sent"; draft: AppDocument; activity: AppDocument; lead: AppDocument; to?: string }
@@ -100,7 +113,8 @@ export async function flipStaleSend(db: AppDb, draft: AppDocument, now = new Dat
   const delivery = defined({ state: "uncertain", at: now, accountId: lock.accountId ?? draft.delivery?.accountId, to: draft.delivery?.to, error: UNCONFIRMED });
   const flipped = await db.collection("sales_drafts").findOneAndUpdate(
     { _id: draft._id, "sendLock.requestId": lock.requestId, "delivery.state": "sending" },
-    { $set: { delivery }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
+    // An unclear send leaves the send queue: a person says whether it went out.
+    { $set: { delivery }, $unset: { sendQueue: "", queueClaim: "" }, $push: logPush({ requestId: lock.requestId, outcome: "uncertain", error: UNCONFIRMED, attempt: Number(draft.sendAttempts ?? 1), at: now }) },
     { returnDocument: "after" },
   );
   return flipped ?? (await db.collection("sales_drafts").findOne({ _id: draft._id })) ?? draft;
@@ -294,7 +308,7 @@ async function recordSent(ctx: SalesCtx, record: SentRecord): Promise<AppDocumen
   const sentVia = SENT_VIA[channel];
   const sentSet = { status: "sent", sentAt: at, sentBy: ctx.actor.id, sentVia, sentAccountId: accountId, delivery: defined({ state: "sent", at: now, accountId, to: shownTo(channel, record.to) }), updatedAt: now };
   const hash = payloadHash({ draftId: String(draft._id), sentVia, accountId });
-  const update = { $set: sentSet, $unset: { sendLock: "" }, ...(record.log ? { $push: logPush(record.log) } : {}) };
+  const update = { $set: sentSet, $unset: { sendLock: "", sendQueue: "", queueClaim: "" }, ...(record.log ? { $push: logPush(record.log) } : {}) };
   const recorded = () => ctx.db.collection("sales_activities").findOne({ workspaceId: ctx.workspaceId, draftId: String(draft._id), direction: "out", requestId });
   const write = () => atomic(ctx.database, async (session?: ClientSession) => {
     const before = await drafts.findOneAndUpdate({ _id: draft._id, workspaceId: ctx.workspaceId, "sendLock.requestId": requestId }, update, { session, returnDocument: "before" });
@@ -450,8 +464,8 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   const lock = { requestId: input.requestId, by: ctx.actor.id, at: now, accountId, channel, day };
   const sending = defined({ state: "sending", at: now, accountId, to: shownTo(channel, target.to) });
   const before = await drafts.findOneAndUpdate(
-    { _id: draft._id, workspaceId: ctx.workspaceId, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt) },
-    { $set: { sendLock: lock, delivery: sending }, $inc: { sendAttempts: 1 } },
+    { _id: draft._id, workspaceId: ctx.workspaceId, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt), ...(input.queueEntry ? { "sendQueue.at": input.queueEntry } : {}) },
+    { $set: { sendLock: lock, delivery: sending }, $inc: { sendAttempts: 1 }, ...(input.queueEntry ? {} : { $unset: { sendQueue: "", queueClaim: "" } }) },
     { returnDocument: "before" },
   );
   if (!before) {
@@ -476,6 +490,8 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
     release = await claimSendSlot(ctx, ventureId, channel, now);
   } catch (error) {
     await giveBack();
+    // claimSendSlot's only 409 is the cap: the same answer, recognisable to the send queue.
+    if (error instanceof AppError && error.status === 409 && !(error instanceof SendCapReached)) throw new SendCapReached(error.message);
     throw error;
   }
 
@@ -501,7 +517,8 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
 
   const markUncertain = async (error: string) => {
     await drafts.updateOne({ _id: draft._id, "sendLock.requestId": input.requestId }, {
-      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }) },
+      // An unclear send leaves the send queue: a person says whether it went out, as with any send.
+      $set: { delivery: defined({ state: "uncertain", at, accountId, to, error }) }, $unset: { sendQueue: "", queueClaim: "" },
       $push: logPush({ requestId: input.requestId, outcome: "uncertain", error, attempt, at }),
     });
     await auditSales(ctx, "sales.draft.send_uncertain", "draft", String(draft._id), ventureId, { channel, attempt });

@@ -84,7 +84,7 @@ async function eachAtMost<T>(items: readonly T[], size: number, work: (item: T) 
 }
 
 /** A site's home page and then its contact, about, dealer and products pages (at most 5 in all), within the site's time budget. */
-async function readSite(reader: Reader, homes: readonly string[], signal: AbortSignal): Promise<{ pages: ParsedPage[]; failure?: ReadFailure }> {
+export async function readSite(reader: Reader, homes: readonly string[], signal: AbortSignal): Promise<{ pages: ParsedPage[]; failure?: ReadFailure }> {
   const pages: ParsedPage[] = [];
   try {
     let first: Awaited<ReturnType<Reader["read"]>> | undefined;
@@ -114,7 +114,7 @@ async function readSite(reader: Reader, homes: readonly string[], signal: AbortS
 }
 
 /** The home page addresses to try for a website as found or typed ("acme.in" is tried over https, then http). */
-function homesOf(website: string): string[] {
+export function homesOf(website: string): string[] {
   const value = website.trim();
   try {
     if (/^https?:\/\//i.test(value)) { const url = new URL(value); return [`${url.protocol}//${url.host}/`]; }

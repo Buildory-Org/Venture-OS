@@ -25,6 +25,7 @@ import { salesSearchKeyRoutes } from "./routes/sales-search-keys.js";
 import { salesIoRoutes } from "./routes/sales-io.js";
 import { salesChannelRoutes } from "./routes/sales-channels.js";
 import { salesInboundRoutes } from "./routes/sales-inbound.js";
+import { salesAutopilotRoutes } from "./routes/sales-autopilot.js";
 import { salesWebhookRoutes } from "./routes/sales-webhooks.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { expenseRoutes } from "./routes/expenses.js";
@@ -93,6 +94,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesSearchKeyRoutes(database, config));
   app.use("/v1/sales", salesChannelRoutes(database, config));
   app.use("/v1/sales", salesInboundRoutes(database, config));
+  app.use("/v1/sales", salesAutopilotRoutes(database, config));
   app.use("/v1", leaderboardRoutes(database, config));
   app.use("/v1", expenseRoutes(database, config, store, localStore));
   app.use("/v1", celebrationRoutes(database, config));

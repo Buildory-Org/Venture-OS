@@ -20,9 +20,13 @@ The spec (data, API, the connector's tools, the finder, the screens and the migr
 
 ## 1. Hard rules (never break)
 
-- **Nothing is sent to a real person by the app in v1.** "Mark sent" records what a person sent from their
-  own mail app or phone. `sentVia` other than `manual` is refused with `503 INTEGRATION_UNAVAILABLE` until
-  the email lane (per-person SMTP) and the WhatsApp Cloud API lane are switched on by the owner.
+- **The app sends only what a person approved to send.** A person sends a ready draft through a connected account
+  (`docs/sales-channels.md`), or marks sent what they sent by hand. Since the autopilot (`docs/sales-autopilot.md`) a
+  person can also approve a batch and let the app send those emails from their mailbox, spaced, inside the daily caps.
+  The one case with no tap per message is a venture a head switched to "automatic": emails on a play whose first batch
+  a head approved go out once they pass review, from the mailbox of the person the autopilot works as. Email only:
+  the app never sends WhatsApp, Instagram or LinkedIn by itself, and never answers a reply by itself. Claude through
+  the connector still sends nothing.
 - **No cold first WhatsApp.** A WhatsApp draft can be marked sent only when the lead has `whatsappOptIn`
   (they messaged us, or said yes on a call or by email). First touch is a call, or an email ending with a
   `wa.me` link.
@@ -34,7 +38,8 @@ The spec (data, API, the connector's tools, the finder, the screens and the migr
 - **Stop on reply.** Any inbound reply on a lead discards its pending follow-up drafts.
 - **Claude never approves its own work.** Play approval, offer approval, brain approval and first-batch person approval
   are refused when the request comes through MCP (`via = "claude"`). A Claude review of a Claude draft must
-  come from a different session (`sessionId`) than the one that wrote it.
+  come from a different session (`sessionId`) than the one that wrote it. The autopilot keeps the same rule on the
+  server: its review is a separate call with its own session id, and it never gives a person's approval.
 - Business contact data only (published by the company). No logged-in scraping.
 
 ## 2. Stages (SLS-01)

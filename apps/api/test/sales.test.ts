@@ -2314,7 +2314,9 @@ test("sales settings: defaults for every venture, saved by a head or admin in th
   try {
     const get = (who: Who, ventureId = "venture-a") => h.call(who, "GET", `/sales/settings?ventureId=${ventureId}`);
     const put = (who: Who, body: unknown, ventureId = "venture-a", options?: { via?: "claude" }) => h.call(who, "PUT", `/sales/settings?ventureId=${ventureId}`, body, options);
-    const defaults = { workingDays: [1, 2, 3, 4, 5, 6], blackoutDates: ["2026-10-20", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10", "2026-11-11"], followUpAfterWorkingDays: 4, replySlaHours: 2, dailyCaps: { email: 20, whatsapp: 20, linkedin: 15, instagram: 20 }, approvalMode: "claude_review_enough", allowedChannels: ["call", "email", "whatsapp", "linkedin"], timezone: "Asia/Kolkata" };
+    const defaults = { workingDays: [1, 2, 3, 4, 5, 6], blackoutDates: ["2026-10-20", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10", "2026-11-11"], followUpAfterWorkingDays: 4, replySlaHours: 2, dailyCaps: { email: 20, whatsapp: 20, linkedin: 15, instagram: 20 }, approvalMode: "claude_review_enough", allowedChannels: ["call", "email", "whatsapp", "linkedin"], timezone: "Asia/Kolkata",
+      // The autopilot (docs/sales-autopilot.md) comes with the settings, off until a head switches it on (PUT /sales/autopilot).
+      autopilot: { enabled: false, find: { enabled: false, request: "", places: [], perDay: 10 }, judge: true, write: true, review: true, followUps: true, replies: true, send: "by_hand", dailyLeadLimit: 25 } };
     for (const who of ["admin", "head", "contrib", "learner"] as const) {
       const reply = expectStatus(await get(who), 200);
       assert.deepEqual(salesSettingsViewSchema.parse(reply.data), { ventureId: "venture-a", ...defaults });

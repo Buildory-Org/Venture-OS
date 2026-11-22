@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import { OPEN_DRAFT_STATUSES, draftDeliveryReconcileSchema, draftInputSchema, draftReviewInputSchema, draftSendInputSchema, draftSendThroughInputSchema, draftUpdateSchema, draftVetoInputSchema, idSchema } from "@venture-studio/contracts";
+import { OPEN_DRAFT_STATUSES, draftBatchInputSchema, draftDeliveryReconcileSchema, draftInputSchema, type DraftBatchResult, draftReviewInputSchema, draftSendInputSchema, draftSendThroughInputSchema, draftUpdateSchema, draftVetoInputSchema, idSchema } from "@venture-studio/contracts";
 import { atomic, type AppDocument, type Database } from "../db.js";
 import { AppError } from "../errors.js";
 import { forbidClaude, forbidden, isHeadOf, notFound, requireHead, requireWriter } from "../sales/access.js";
 import { canUseAccount, loadAccount, type ChannelEnv } from "../sales/channels/accounts.js";
 import { flipStaleSend, lockedMessage, sendDraftThrough, sendTargetsFor, settleDelivery, shownSendState } from "../sales/channels/dispatch.js";
+import { enqueueDraft, unqueueDraft } from "../sales/channels/send-queue.js";
 import { auditSales, salesCtx, settingsFor, type SalesCtx } from "../sales/ctx.js";
-import { OWN_REPLY_KINDS, approvalNeed, changedSince, channelOf, draftChanged, expectedVersion, isOpenDraft, isOwnReply, needsPersonApproval, reviewOutcome, sendBlocker, startsAsOwnReply } from "../sales/drafts.js";
+import { DRAFT_CHANGED_MESSAGE, OWN_REPLY_KINDS, approvalNeed, changedSince, channelOf, draftChanged, expectedVersion, isOpenDraft, isOwnReply, needsPersonApproval, reviewOutcome, sendBlocker, startsAsOwnReply } from "../sales/drafts.js";
 import { notifyApprovalNeeded } from "../sales/notify.js";
 import { startOfLocalDay } from "../sales/workdays.js";
 import { REPLACED_BY_OWN_REPLY, applyActivity, claimSendSlot, closeOtherVersions, defined, isCappedChannel, loadLead, markHandled, openSiblings, payloadHash, requireLeadEditor, siblingRefusal, versionBlocker } from "../sales/leads.js";
@@ -41,6 +42,54 @@ async function shownDraft(database: Database, ctx: SalesCtx, draft: AppDocument,
   return shownSendState({ ...present(draft), ...approvalNeed(draft, play, await settingsFor(ctx, String(draft.ventureId))), ...versions(draft), ...targets(draft) });
 }
 
+/**
+ * How many of a play's drafts a venture head or admin approved: only those count toward its first batch. Approvals stored before
+ * `byHead` existed count when the approver heads the play's venture or is an admin. A head's own reply is not a read of the batch.
+ */
+async function headApprovals(ctx: SalesCtx, play: AppDocument, session?: import("mongodb").ClientSession): Promise<number> {
+  const db = ctx.db;
+  const rows = await db.collection("sales_drafts").find({ workspaceId: ctx.workspaceId, playId: String(play._id), personApproval: { $type: "object" }, "personApproval.own": { $ne: true } }, { session, projection: { personApproval: 1 } }).toArray();
+  const legacy = [...new Set(rows.filter((row) => row.personApproval.byHead === undefined).map((row) => String(row.personApproval.by)))];
+  const heads = new Set(legacy.length ? (await db.collection("memberships").find({ workspaceId: ctx.workspaceId, userId: { $in: legacy }, status: "active", $or: [{ role: "admin" }, { role: "venture_head", ventureIds: play.ventureId }] }, { session, projection: { userId: 1 } }).toArray()).map((row) => String(row.userId)) : []);
+  return rows.filter((row) => row.personApproval.byHead === true || (row.personApproval.byHead === undefined && heads.has(String(row.personApproval.by)))).length;
+}
+
+/**
+ * A person's approval on one ready draft, in the app only: POST /drafts/:id/approve and POST /drafts/batch both go through it, so the rules
+ * can't drift. Where every message needs a person, the lead's owner may approve their own messages too (to send them); otherwise a head or
+ * admin. Only a head's or admin's approval (`byHead`) counts toward a play's first batch, and enough of them mark the batch as read. Never
+ * while it is being sent, never a person's own reply. A queued draft stays queued (an approval changes no text: its queue version moves
+ * with it). Throws the refusal. `expectedUpdatedAt`: the version the person read (409 DRAFT_CHANGED when it moved since).
+ */
+export async function approveDraft(ctx: SalesCtx, draft: AppDocument, lead: AppDocument, expectedUpdatedAt?: string, now = new Date()): Promise<void> {
+  const db = ctx.db;
+  forbidClaude(ctx.via, "Approving a draft");
+  if ((await settingsFor(ctx, String(lead.ventureId))).approvalMode === "person_approves_every_message") requireLeadEditor(ctx, lead, "approve a message");
+  else requireHead(ctx.actor, lead.ventureId, "approve a draft");
+  if (draft.status !== "ready") throw new AppError(409, "CONFLICT", "Only a draft that passed review (ready) can be approved");
+  // Not while it is being sent (or its send is unclear): the send was started on the version without this approval.
+  if (draft.sendLock) await refuseLocked(ctx.database, draft);
+  // A person's own reply is approved by its author: a second approval would only turn it into a read of a play's first batch.
+  if (isOwnReply(draft)) throw new AppError(409, "CONFLICT", "A person's own reply is already approved by its author");
+  if (changedSince(draft, expectedUpdatedAt)) throw draftChanged();
+  const byHead = isHeadOf(ctx.actor, lead.ventureId);
+  await atomic(ctx.database, async (session) => {
+    const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: "ready", sendLock: null, "personApproval.own": { $ne: true }, ...expectedVersion(expectedUpdatedAt) }, [
+      { $set: { personApproval: { $literal: { by: ctx.actor.id, at: now, byHead } }, updatedAt: now, sendQueue: { $cond: [{ $eq: [{ $type: "$sendQueue" }, "object"] }, { $mergeObjects: ["$sendQueue", { version: now }] }, "$$REMOVE"] } } },
+    ], { session });
+    if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
+    if (draft.playId && byHead) {
+      const play = await db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }, { session });
+      if (play && !play.firstBatchReviewed && await headApprovals(ctx, play, session) >= Number(play.batchSize ?? 10)) await db.collection("sales_plays").updateOne({ _id: play._id }, { $set: { firstBatchReviewed: true, updatedAt: now } }, { session });
+    }
+    await auditSales(ctx, "sales.draft.approve", "draft", String(draft._id), String(lead.ventureId), { byHead }, session);
+  });
+}
+
+/** Editing, vetoing, discarding or marking sent by hand takes a queued draft out of the send queue. */
+const OUT_OF_QUEUE = { sendQueue: "", queueClaim: "" } as const;
+const unqueuedMeta = (draft: AppDocument): Record<string, boolean> => (draft.sendQueue ? { unqueued: true } : {});
+
 /** Drafts: written (usually by Claude), reviewed in a separate pass, approved for a play's first batch by a head, sent by a person. */
 export function salesDraftRoutes(database: Database): Router {
   const db = database.db;
@@ -49,17 +98,6 @@ export function salesDraftRoutes(database: Database): Router {
   // The lead the caller already loaded (loadDraft, loadLead): where a send would go is worked out from it.
   const shown = (ctx: SalesCtx, draft: AppDocument, lead: AppDocument) => shownDraft(database, ctx, draft, lead);
   const reload = async (ctx: SalesCtx, id: unknown, lead: AppDocument) => shown(ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!, lead);
-
-  /**
-   * How many of a play's drafts a venture head or admin approved: only those count toward its first batch. Approvals stored before
-   * `byHead` existed count when the approver heads the play's venture or is an admin. A head's own reply is not a read of the batch.
-   */
-  async function headApprovals(ctx: SalesCtx, play: AppDocument, session?: import("mongodb").ClientSession): Promise<number> {
-    const rows = await db.collection("sales_drafts").find({ workspaceId: ctx.workspaceId, playId: String(play._id), personApproval: { $type: "object" }, "personApproval.own": { $ne: true } }, { session, projection: { personApproval: 1 } }).toArray();
-    const legacy = [...new Set(rows.filter((row) => row.personApproval.byHead === undefined).map((row) => String(row.personApproval.by)))];
-    const heads = new Set(legacy.length ? (await db.collection("memberships").find({ workspaceId: ctx.workspaceId, userId: { $in: legacy }, status: "active", $or: [{ role: "admin" }, { role: "venture_head", ventureIds: play.ventureId }] }, { session, projection: { userId: 1 } }).toArray()).map((row) => String(row.userId)) : []);
-    return rows.filter((row) => row.personApproval.byHead === true || (row.personApproval.byHead === undefined && heads.has(String(row.personApproval.by)))).length;
-  }
 
   router.get("/drafts", async (req, res) => {
     res.json(ok((await listDrafts(salesCtx(database, req), draftsQuerySchema.parse(req.query))).map((row) => shownSendState(row))));
@@ -136,14 +174,15 @@ export function salesDraftRoutes(database: Database): Router {
       const changed = keepsReady
         ? await db.collection("sales_drafts").updateOne({ _id: draft._id, status: "ready", purpose: "reply", authorVia: "app", "personApproval.own": true, sendLock: null }, {
           $set: { ...text, authorId: ctx.actor.id, authorVia: ctx.via, personApproval: { by: ctx.actor.id, at: now, byHead: isHeadOf(ctx.actor, lead.ventureId), own: true }, updatedAt: now },
-          $unset: { review: "", authorSessionId: "" },
+          $unset: { review: "", authorSessionId: "", ...OUT_OF_QUEUE },
         }, { session })
         : await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, {
           $set: { ...text, status: "in_review", authorId: ctx.actor.id, authorVia: ctx.via, updatedAt: now, ...(input.sessionId ? { authorSessionId: input.sessionId } : {}) },
-          $unset: { review: "", personApproval: "", ...(input.sessionId ? {} : { authorSessionId: "" }) },
+          $unset: { review: "", personApproval: "", ...OUT_OF_QUEUE, ...(input.sessionId ? {} : { authorSessionId: "" }) },
         }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
-      await auditSales(ctx, "sales.draft.update", "draft", String(draft._id), String(lead.ventureId), keepsReady ? { ownReply: true } : undefined, session);
+      const meta: Record<string, boolean> = { ...(keepsReady ? { ownReply: true } : {}), ...unqueuedMeta(draft) };
+      await auditSales(ctx, "sales.draft.update", "draft", String(draft._id), String(lead.ventureId), Object.keys(meta).length ? meta : undefined, session);
     });
     res.json(ok(await reload(ctx, draft._id, lead)));
   });
@@ -173,27 +212,7 @@ export function salesDraftRoutes(database: Database): Router {
   router.post("/drafts/:id/approve", async (req, res) => {
     const ctx = salesCtx(database, req);
     const { draft, lead } = await loadDraft(database, ctx, idSchema.parse(req.params.id));
-    forbidClaude(ctx.via, "Approving a draft");
-    // First-batch approval is for a head or admin; where every message needs a person, the lead's owner may approve their own messages too
-    // (to send them), but only a head's or admin's approval counts toward a play's first batch.
-    if ((await settingsFor(ctx, String(lead.ventureId))).approvalMode === "person_approves_every_message") requireLeadEditor(ctx, lead, "approve a message");
-    else requireHead(ctx.actor, lead.ventureId, "approve a draft");
-    if (draft.status !== "ready") throw new AppError(409, "CONFLICT", "Only a draft that passed review (ready) can be approved");
-    // Not while it is being sent (or its send is unclear): the send was started on the version without this approval.
-    if (draft.sendLock) await refuseLocked(database, draft);
-    // A person's own reply is approved by its author: a second approval would only turn it into a read of a play's first batch.
-    if (isOwnReply(draft)) throw new AppError(409, "CONFLICT", "A person's own reply is already approved by its author");
-    const byHead = isHeadOf(ctx.actor, lead.ventureId);
-    const now = new Date();
-    await atomic(database, async (session) => {
-      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: "ready", sendLock: null, "personApproval.own": { $ne: true } }, { $set: { personApproval: { by: ctx.actor.id, at: now, byHead }, updatedAt: now } }, { session });
-      if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
-      if (draft.playId && byHead) {
-        const play = await db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }, { session });
-        if (play && !play.firstBatchReviewed && await headApprovals(ctx, play, session) >= Number(play.batchSize ?? 10)) await db.collection("sales_plays").updateOne({ _id: play._id }, { $set: { firstBatchReviewed: true, updatedAt: now } }, { session });
-      }
-      await auditSales(ctx, "sales.draft.approve", "draft", String(draft._id), String(lead.ventureId), { byHead }, session);
-    });
+    await approveDraft(ctx, draft, lead);
     res.json(ok(await reload(ctx, draft._id, lead)));
   });
 
@@ -248,7 +267,7 @@ export function salesDraftRoutes(database: Database): Router {
         release = undefined;
         // Claim the draft first: only one request moves it from ready to sent, so a repeated or parallel call never writes a second activity.
         // With `expectedUpdatedAt` it is claimed only while it is still the version the person read.
-        const claimed = await db.collection("sales_drafts").findOneAndUpdate({ _id: draft._id, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt) }, { $set: { status: "sent", sentAt: at, sentBy: ctx.actor.id, sentVia: "manual", ...(input.accountId ? { sentAccountId: input.accountId } : {}), updatedAt: now } }, { session, returnDocument: "before" });
+        const claimed = await db.collection("sales_drafts").findOneAndUpdate({ _id: draft._id, status: "ready", sendLock: null, ...expectedVersion(input.expectedUpdatedAt) }, { $set: { status: "sent", sentAt: at, sentBy: ctx.actor.id, sentVia: "manual", ...(input.accountId ? { sentAccountId: input.accountId } : {}), updatedAt: now }, $unset: OUT_OF_QUEUE }, { session, returnDocument: "before" });
         if (!claimed) {
           const current = input.expectedUpdatedAt ? await db.collection("sales_drafts").findOne({ _id: draft._id }, { session }) : null;
           if (current && current.status !== "sent" && !current.sendLock && changedSince(current, input.expectedUpdatedAt)) throw draftChanged();
@@ -277,7 +296,7 @@ export function salesDraftRoutes(database: Database): Router {
         } catch (error) {
           // Without transactions (local development) the claim is already stored: give the draft back as it was (its `updatedAt` too, so the
           // version the person read can still be sent) so it can be sent again.
-          if (!session) await db.collection("sales_drafts").updateOne({ _id: draft._id, status: "sent", sentBy: ctx.actor.id, sentAt: at }, { $set: { status: "ready", updatedAt: claimed.updatedAt }, $unset: { sentAt: "", sentBy: "", sentVia: "", sentAccountId: "" } }).catch(() => undefined);
+          if (!session) await db.collection("sales_drafts").updateOne({ _id: draft._id, status: "sent", sentBy: ctx.actor.id, sentAt: at }, { $set: { status: "ready", updatedAt: claimed.updatedAt, ...(claimed.sendQueue ? { sendQueue: claimed.sendQueue } : {}) }, $unset: { sentAt: "", sentBy: "", sentVia: "", sentAccountId: "" } }).catch(() => undefined);
           throw error;
         }
       });
@@ -301,9 +320,9 @@ export function salesDraftRoutes(database: Database): Router {
     if (draft.sendLock) await refuseLocked(database, draft);
     const now = new Date();
     await atomic(database, async (session) => {
-      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "vetoed", veto: { reason: input.reason, by: ctx.actor.id, at: now }, updatedAt: now } }, { session });
+      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "vetoed", veto: { reason: input.reason, by: ctx.actor.id, at: now }, updatedAt: now }, $unset: OUT_OF_QUEUE }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
-      await auditSales(ctx, "sales.draft.veto", "draft", String(draft._id), String(lead.ventureId), undefined, session);
+      await auditSales(ctx, "sales.draft.veto", "draft", String(draft._id), String(lead.ventureId), draft.sendQueue ? unqueuedMeta(draft) : undefined, session);
     });
     res.json(ok(await reload(ctx, draft._id, lead)));
   });
@@ -317,9 +336,9 @@ export function salesDraftRoutes(database: Database): Router {
     if (draft.sendLock) await refuseLocked(database, draft);
     const now = new Date();
     await atomic(database, async (session) => {
-      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "discarded", discardedAt: now, discardedBy: ctx.actor.id, updatedAt: now } }, { session });
+      const changed = await db.collection("sales_drafts").updateOne({ _id: draft._id, status: { $in: [...OPEN_DRAFT_STATUSES] }, sendLock: null }, { $set: { status: "discarded", discardedAt: now, discardedBy: ctx.actor.id, updatedAt: now }, $unset: OUT_OF_QUEUE }, { session });
       if (!changed.matchedCount) throw new AppError(409, "CONFLICT", "This draft changed: reload it and try again");
-      await auditSales(ctx, "sales.draft.discard", "draft", String(draft._id), String(lead.ventureId), undefined, session);
+      await auditSales(ctx, "sales.draft.discard", "draft", String(draft._id), String(lead.ventureId), draft.sendQueue ? unqueuedMeta(draft) : undefined, session);
     });
     res.json(ok(await reload(ctx, draft._id, lead)));
   });
@@ -335,6 +354,65 @@ export function salesDraftSendRoutes(database: Database, env: ChannelEnv): Route
   const db = database.db;
   const router = Router();
   const reload = async (ctx: SalesCtx, id: unknown, lead: AppDocument) => shownDraft(database, ctx, (await db.collection("sales_drafts").findOne({ _id: String(id) }))!, lead);
+
+  type BatchRow = DraftBatchResult["results"][number];
+  /** One draft of a batch. Throws only what reads as "skipped" with its message. */
+  async function batchOne(ctx: SalesCtx, input: z.infer<typeof draftBatchInputSchema>, id: string, expected: string | undefined): Promise<BatchRow> {
+    const skip = (reason: string): BatchRow => ({ id, outcome: "skipped", reason });
+    const { draft, lead } = await loadDraft(database, ctx, id);
+    if (draft.status !== "sent" && changedSince(draft, expected)) return skip(DRAFT_CHANGED_MESSAGE);
+    if (input.action === "unqueue") {
+      if (!draft.sendQueue) return skip("This draft is not queued to send");
+      if (draft.sendLock) return skip("This draft is being sent right now: it can't be taken out of the queue");
+      return await unqueueDraft(ctx, draft) ? { id, outcome: "unqueued" } : skip("This draft is not queued to send");
+    }
+    if (input.action === "approve") { await approveDraft(ctx, draft, lead, expected); return { id, outcome: "approved" }; }
+    let current = draft;
+    let approved = false;
+    if (input.action === "approve_and_send" && draft.status === "ready" && !draft.sendLock) {
+      const play = typeof draft.playId === "string" ? await db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }) : null;
+      // Approved only where a person's approval is needed and the caller may give it (the same rule as the approve route); where they may
+      // not, the queue below says what is missing.
+      if (needsPersonApproval(draft, play, await settingsFor(ctx, String(lead.ventureId)))) {
+        try {
+          await approveDraft(ctx, draft, lead, expected);
+          approved = true;
+          current = (await db.collection("sales_drafts").findOne({ _id: draft._id }))!;
+        } catch (error) {
+          if (!(error instanceof AppError && error.status === 403)) throw error;
+        }
+      }
+    }
+    const result = await enqueueDraft(ctx, env, current, lead, input.accountId ? { accountId: input.accountId } : {});
+    if (result.queued) return { id, outcome: approved ? "approved_and_queued" : "queued", notBefore: result.notBefore.toISOString() };
+    return approved ? { id, outcome: "approved", reason: result.reason } : skip(result.reason);
+  }
+
+  // Several drafts at once, a person only: approve, approve and queue to send, queue, or take out of the queue. Each draft answers on its own
+  // (one refused never stops the others). Declared before the /drafts/:id routes so "batch" is never read as an id.
+  router.post("/drafts/batch", async (req, res) => {
+    const ctx = salesCtx(database, req);
+    forbidClaude(ctx.via, "Approving or queueing drafts to send");
+    const input = draftBatchInputSchema.parse(req.body ?? {});
+    const results: BatchRow[] = [];
+    const seen = new Set<string>();
+    for (const { id, expectedUpdatedAt } of input.drafts) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      try { results.push(await batchOne(ctx, input, id, expectedUpdatedAt)); }
+      catch (error) {
+        if (!(error instanceof AppError)) console.warn(JSON.stringify({ level: "warn", event: "sales.drafts.batch_failed", draftId: id, message: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+        results.push({ id, outcome: "skipped", reason: error instanceof AppError ? error.message : "Something went wrong with this draft: try it again" });
+      }
+    }
+    const count = (...outcomes: BatchRow["outcome"][]) => results.filter((row) => outcomes.includes(row.outcome)).length;
+    const times = results.flatMap((row) => (row.notBefore ? [row.notBefore] : [])).sort();
+    const answer: DraftBatchResult = {
+      results, approved: count("approved", "approved_and_queued"), queued: count("queued", "approved_and_queued"), unqueued: count("unqueued"), skipped: count("skipped"),
+      ...(times.length ? { firstSendAt: times[0]!, lastSendAt: times[times.length - 1]! } : {}),
+    };
+    res.json(ok(answer));
+  });
 
   // 201 { draft, activity, lead, to } when it went out; 202 { draft, to } when the result is unclear (a person checks and answers /delivery); 502
   // SEND_FAILED when it didn't go (the draft stays ready). The same requestId repeats the first answer.

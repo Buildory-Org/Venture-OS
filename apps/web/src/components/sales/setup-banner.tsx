@@ -21,11 +21,12 @@ export function SetupBanner({ ventureId, ventureName }: { ventureId: string; ven
   }, [ventureId, data?.at, session]);
 
   if (!ventureId || !data || pathname.startsWith("/sales/live/setup")) return null;
-  const { ready, known, done, total } = readiness(data);
+  const { ready, known, mustDone, mustTotal } = readiness(data);
   if (!known || ready) return null;
   const name = ventureName || shell?.ventureName(ventureId) || "This venture";
+  // The same count as the must-haves on Sales settings.
   return <div role="note" className="mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-warning-surface px-3.5 py-2.5 text-xs font-medium leading-5 text-warning-text">
     <CircleAlert size={15} className="shrink-0" aria-hidden="true" />
-    <p className="min-w-0 flex-1">{name} isn&apos;t set up for sales yet — <span className="tnum">{done} of {total}</span> done · <WorkspaceLink href={`/sales/live/setup?venture=${encodeURIComponent(ventureId)}`} className="font-bold underline underline-offset-2 hover:opacity-80">Set up</WorkspaceLink></p>
+    <p className="min-w-0 flex-1">{name} isn&apos;t ready to sell yet: <span className="tnum">{mustDone} of {mustTotal}</span> must-haves done · <WorkspaceLink href={`/sales/live/setup?venture=${encodeURIComponent(ventureId)}`} className="font-bold underline underline-offset-2 hover:opacity-80">Sales settings</WorkspaceLink></p>
   </div>;
 }

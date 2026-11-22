@@ -12,10 +12,15 @@ import { isLearner, useQueryParam, useSalesLoad } from "@/components/sales/draft
 import { useNow } from "@/components/sales/inbox-sla";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { AskClaude } from "@/components/sales/ask-claude";
+import { AutopilotFindRule } from "@/components/sales/autopilot-find-rule";
+import { useSalesOverview } from "@/components/sales/overview-context";
 
 /** Find leads: two ways to fill the pipeline (search for new companies, or fill in contacts of the ones we have), and what the lead finder is doing about them. */
 export function FindScreen() {
   const { session, ventureId } = useSalesShell();
+  const { autopilot } = useSalesOverview();
+  // The daily rule shows for a picked venture on a server with the autopilot; then the one-off form sits under "Run once".
+  const showRule = Boolean(ventureId) && (autopilot.loading || autopilot.status !== null);
   const [playParam] = useQueryParam("play");
   const writer = !isLearner(session);
   const now = useNow(15_000);
@@ -55,8 +60,12 @@ export function FindScreen() {
     {finder.data ? <FindFinderStrip status={finder.data} runs={everyRun.data ?? []} now={now} setupHref={session?.membership.role === "admin" ? `/sales/live/setup${ventureId ? `?venture=${encodeURIComponent(ventureId)}` : ""}` : undefined} />
       : finder.error && everyRun.data ? <FindEngineStrip runs={everyRun.data} now={now} /> : null}
 
-    {/* Claude finds, judges, drafts and reviews in one go: the leads arrive in Review as ready drafts. */}
-    {writer && <AskClaude prompt="find 10 hardware dealers in Raipur and take them to ready drafts" example note="use your own kind of company and city" className="mb-4" />}
+    {/* The standing rule: the app finds new companies each working day by itself (the venture's autopilot). */}
+    <AutopilotFindRule status={autopilot.status} loading={autopilot.loading} onSaved={autopilot.set} />
+    {showRule && <h2 className="mb-3 mt-6 px-1 text-[11px] font-bold uppercase tracking-[.06em] text-neutral-400">Run once</h2>}
+
+    {/* Claude finds, judges, drafts and reviews in one go: the leads arrive in Review as ready drafts. Not while the app finds by itself. */}
+    {writer && !autopilot.does("find") && <AskClaude prompt="find 10 hardware dealers in Raipur and take them to ready drafts" example note="use your own kind of company and city" className="mb-4" />}
     {writer
       ? <div className="grid items-stretch gap-4 lg:grid-cols-2">
         {waitingForPlay ? <Panel className="space-y-3 p-5"><span className="vso-skeleton block h-4 w-1/3" /><span className="vso-skeleton block h-24 rounded-xl" /></Panel>

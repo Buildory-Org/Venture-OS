@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import clsx from "clsx";
-import { LOST_REASONS, PRE_CONTACT_STAGES, STAGE_PROBABILITY, WON_STAGES, type CALL_OUTCOMES, type ContactRoute, type Lead, type LostReason, type REPLY_TYPES, type SalesStage } from "@venture-studio/contracts";
+import { autopilotStopped, LOST_REASONS, PRE_CONTACT_STAGES, STAGE_PROBABILITY, WON_STAGES, type CALL_OUTCOMES, type ContactRoute, type Draft, type Lead, type LostReason, type REPLY_TYPES, type SalesStage } from "@venture-studio/contracts";
 import { Badge, filterControl } from "@/components/studio/primitives";
 import type { SalesSession } from "@/components/sales/sales-context";
 import { Package } from "@/components/sales/lead-icons";
@@ -57,6 +57,7 @@ export const groupOfStage = (stage: SalesStage) => STAGE_GROUPS.find((group) => 
 export const isWonStage = (stage: SalesStage) => WON_STAGES.includes(stage);
 export const stageList = (group: StageGroup) => group.stages.join(",");
 
+// The words for calls, replies, channels and consent live here and only here (draft-shared.tsx re-exports them under its older names).
 export const CALL_OUTCOME_LABELS: Record<(typeof CALL_OUTCOMES)[number], string> = {
   interested_book: "Interested: book a call", send_details: "Asked for details", call_back: "Call back later", no_answer: "No answer", busy: "Busy",
   not_interested: "Not interested", wrong_person: "Wrong person", wrong_number: "Wrong number", yes_whatsapp: "Said yes to WhatsApp",
@@ -65,13 +66,64 @@ export const REPLY_TYPE_LABELS: Record<(typeof REPLY_TYPES)[number], string> = {
   interested: "Interested", send_details: "Wants details", price_first: "Asks the price first", not_now: "Not now", wrong_person: "Wrong person",
   has_system: "Already has a system", opt_out: "Asked us to stop", silence: "No reply", unclear: "Unclear", hostile: "Hostile",
 };
+const REPLY_TONES: Record<string, Tone> = { interested: "green", send_details: "blue", price_first: "amber", not_now: "amber", wrong_person: "neutral", has_system: "neutral", opt_out: "red", silence: "neutral", unclear: "neutral", hostile: "red" };
+/** What a reply means, as a chip. Not sorted yet: amber, or a quiet "Sorting…" while the app sorts it (`sorting`). */
+export function ReplyTypeChip({ type, sorting = false }: { type?: string; sorting?: boolean }) {
+  if (!type) return sorting ? <Badge>Sorting…</Badge> : <Badge tone="amber">Not sorted yet</Badge>;
+  return <Badge tone={REPLY_TONES[type] ?? "neutral"}>{(REPLY_TYPE_LABELS as Record<string, string>)[type] ?? type}</Badge>;
+}
 export const LOST_REASON_LABELS: Record<LostReason, string> = {
   price: "Price was too high", no_budget: "No budget", no_need: "No real need", timing: "Bad timing", chose_competitor: "Chose a competitor",
   no_response: "Stopped replying", not_a_fit: "Not a fit", wrong_person: "Wrong person", other: "Something else",
 };
 export { LOST_REASONS, STAGE_PROBABILITY };
 export const CHANNEL_LABELS: Record<string, string> = { email: "Email", whatsapp: "WhatsApp", call: "Call", linkedin: "LinkedIn", instagram: "Instagram", meeting: "Meeting", note: "Note", call_opener: "Call script" };
-export const DRAFT_STATUS_LABELS: Record<string, string> = { draft: "Draft", in_review: "In review", ready: "Ready to send", needs_changes: "Needs changes", sent: "Sent", vetoed: "Vetoed", discarded: "Discarded" };
+export const PURPOSE_LABELS: Record<string, string> = { first_touch: "First message", follow_up: "Follow-up", reply: "Reply", proposal: "Proposal", other: "Message" };
+
+// ---- A draft's state: one word per state, everywhere a draft is shown (Review rows and headings, the reader's tabs, the Inbox, the lead). ----
+
+type DraftStateInput = Pick<Draft, "status" | "delivery" | "closedReason"> & { sendQueue?: { notBefore: string } | undefined; autopilot?: { attempts?: number | undefined } | undefined };
+export const DRAFT_STATE_WORDS = {
+  draft: "Not submitted", in_review: "Being checked", not_checked: "Couldn't check", to_approve: "To approve", ready: "Ready to send", queued: "Sending today", sending: "Sending…",
+  uncertain: "Couldn't confirm", failed: "Failed to send", needs_changes: "Needs changes", sent: "Sent", vetoed: "Vetoed", discarded: "Discarded", closed: "Closed",
+} as const;
+const dayStart = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+const clock = new Intl.DateTimeFormat("en-IN", { hour: "numeric", minute: "2-digit" });
+const weekdayDate = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "numeric", month: "short" });
+/** Days from today to that moment, in the viewer's calendar (0 today, 1 tomorrow). */
+const daysFrom = (value: string, now: Date) => Math.round((dayStart(new Date(value)) - dayStart(now)) / 86_400_000);
+/** When a queued message goes: "at 11:40 am", "tomorrow at 10:00 am", "Tue, 25 Nov at 10:00 am". */
+export function goesAt(value: string, now = new Date()): string {
+  const days = daysFrom(value, now);
+  const time = clock.format(new Date(value));
+  if (days <= 0) return `at ${time}`;
+  if (days === 1) return `tomorrow at ${time}`;
+  return `${weekdayDate.format(new Date(value))} at ${time}`;
+}
+/** "Sending today", "Sending tomorrow", "Sending Tue, 25 Nov". */
+export function sendingDay(value: string, now = new Date()): string {
+  const days = daysFrom(value, now);
+  return days <= 0 ? DRAFT_STATE_WORDS.queued : days === 1 ? "Sending tomorrow" : `Sending ${weekdayDate.format(new Date(value))}`;
+}
+/** A draft's state in one or two words, with its tone. `approvalNeeded`: ready, but a person approves it before it can go. */
+export function draftState(draft: DraftStateInput, approvalNeeded: boolean, now = new Date()): { label: string; tone: Tone } {
+  const words = DRAFT_STATE_WORDS;
+  if (draft.status === "discarded" && draft.closedReason) return { label: words.closed, tone: "neutral" };
+  if (draft.status === "ready") {
+    if (draft.delivery?.state === "uncertain") return { label: words.uncertain, tone: "amber" };
+    if (draft.delivery?.state === "sending") return { label: words.sending, tone: "blue" };
+    if (draft.sendQueue) return { label: sendingDay(draft.sendQueue.notBefore, now), tone: "blue" };
+    if (draft.delivery?.state === "failed") return { label: words.failed, tone: "red" };
+    return approvalNeeded ? { label: words.to_approve, tone: "blue" } : { label: words.ready, tone: "green" };
+  }
+  // The app tried its tries on the check and stopped: a person takes it from here.
+  if (draft.status === "in_review" && autopilotStopped(draft)) return { label: words.not_checked, tone: "amber" };
+  const other: Record<string, { label: string; tone: Tone }> = {
+    draft: { label: words.draft, tone: "neutral" }, in_review: { label: words.in_review, tone: "neutral" }, needs_changes: { label: words.needs_changes, tone: "amber" },
+    sent: { label: words.sent, tone: "purple" }, vetoed: { label: words.vetoed, tone: "red" }, discarded: { label: words.discarded, tone: "neutral" },
+  };
+  return other[draft.status] ?? { label: draft.status, tone: "neutral" };
+}
 
 // ---- Money (stored in minor units: paise, cents) ----
 
@@ -126,6 +178,22 @@ export function when(value?: string, now = new Date()): string {
   return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(date);
 }
 
+const dayTime = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+const dayOnly = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" });
+/** "9 Oct, 11:31 am". */
+export const stamp = (value?: string) => value ? dayTime.format(new Date(value)) : "";
+/** Short age for list rows: "now", "12m", "3h", "2d", then a date. (`timeAgo` is the same in a sentence: "12m ago".) */
+export function ago(value?: string, now = Date.now()) {
+  if (!value) return "";
+  const minutes = Math.floor(Math.max(0, now - new Date(value).getTime()) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 7 ? `${days}d` : dayOnly.format(new Date(value));
+}
+
 /** "just now", "5m ago", "3h ago", "2d ago", then "12 Oct". */
 export function timeAgo(value?: string, now = Date.now()): string {
   if (!value) return "";
@@ -176,7 +244,12 @@ const PLAIN_EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za
 const PLAIN_NUMBER = /^[+()\d\s./-]{6,40}$/;
 export const isPlainEmail = (value: string) => PLAIN_EMAIL.test(value.trim());
 export const isDialable = (value: string) => PLAIN_NUMBER.test(value.trim()) && value.replace(/\D/g, "").length >= 6;
-export const routeOf = (lead: Routed, kind: ContactRoute["kind"]) => lead.contactRoutes.find((route) => route.kind === kind);
+/** The first route of the first kind that has one: `routeOf(lead, "email")`, or `routeOf(lead.contactRoutes, "whatsapp", "phone")`. */
+export function routeOf(from: Routed | readonly ContactRoute[], ...kinds: ContactRoute["kind"][]) {
+  const routes = "contactRoutes" in from ? from.contactRoutes : from;
+  for (const kind of kinds) { const found = routes.find((route) => route.kind === kind); if (found) return found; }
+  return undefined;
+}
 /** The first phone route that can be dialled, or undefined. */
 export const phoneOf = (lead: Routed) => lead.contactRoutes.find((route) => route.kind === "phone" && isDialable(route.value))?.value;
 /** The first email route that is one plain address, or undefined. */
@@ -207,6 +280,21 @@ export const contactBlocked = (lead: { stage: SalesStage; doNotContact?: boolean
 /** The number to put behind a Call button: dialable, and never for a lead that must not be contacted. */
 export const callablePhone = (lead: Routed & { stage: SalesStage; doNotContact?: boolean }) => contactBlocked(lead) ? undefined : phoneOf(lead);
 export const OPT_IN_LABELS: Record<string, string> = { they_messaged: "They messaged us first", yes_on_call: "They said yes on a call", yes_by_email: "They said yes by email", form: "They agreed on a form" };
+
+// The draft screens' stricter links (Review, Inbox, calls): they differ from telHref / waDigits / waHref above, and each caller keeps the
+// rule it had. telLink: no letters, 6 to 15 digits, a leading + kept, "" when it can't be dialled. waLinkDigits: leading zeros dropped,
+// a bare 10-digit number taken as Indian, "" unless 11 to 15 digits. waTextHref: a wa.me link with the message filled in.
+export function telLink(value: string) {
+  if (/[A-Za-z]/.test(value)) return "";
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 6 && digits.length <= 15 ? `tel:${value.trim().startsWith("+") ? "+" : ""}${digits}` : "";
+}
+export function waLinkDigits(value: string) {
+  let digits = value.replace(/\D/g, "").replace(/^0+/, "");
+  if (digits.length === 10) digits = `91${digits}`;
+  return digits.length >= 11 && digits.length <= 15 ? digits : "";
+}
+export const waTextHref = (digits: string, text: string) => `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
 export const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
 export const safeUrl = (url?: string) => { if (!url) return undefined; try { return ["http:", "https:"].includes(new URL(url).protocol) ? url : undefined; } catch { return undefined; } };
 
@@ -216,7 +304,17 @@ export type SalesPermissionSession = Pick<NonNullable<SalesSession>, "user" | "m
 export const isManager = (session: SalesPermissionSession, ventureId: string) => session.membership.role === "admin" || (session.membership.role === "venture_head" && session.membership.ventureIds.includes(ventureId));
 export const canCreateLeads = (session: SalesPermissionSession) => session.membership.role !== "learner";
 export const canEditLead = (session: SalesPermissionSession, lead: Pick<Lead, "ventureId" | "ownerId">) => isManager(session, lead.ventureId) || (["contributor", "reviewer"].includes(session.membership.role) && lead.ownerId === session.user.id);
-export const canDeleteLead = (session: SalesPermissionSession, lead: Pick<Lead, "ventureId" | "ownerId" | "stage" | "lastTouchAt">) => isManager(session, lead.ventureId) || (canEditLead(session, lead) && PRE_CONTACT_STAGES.includes(lead.stage) && !lead.lastTouchAt);
+/** Venture head of that venture, or admin (`isManager` for a session that may be missing). */
+export const canHead = (session: SalesSession | null, ventureId: string) => !!session && isManager(session, ventureId);
+/** Writes in that venture: anyone but a learner who can open it (admins open every venture). */
+export const canWriteIn = (session: SalesSession | null, ventureId: string) => !!session && session.membership.role !== "learner" && (session.membership.role === "admin" || session.membership.ventureIds.includes(ventureId));
+/**
+ * Works a lead as the draft and reply screens decide it (Review, Inbox, Calls): the venture head or an admin, or a writer in the lead's
+ * venture who owns it. `canEditLead` above is the Leads screens' rule (any contributor or reviewer who owns it); the two are kept apart
+ * because they differ for an owner who is not a member of the lead's venture.
+ */
+export const canWorkLead = (session: SalesSession | null, lead: { ventureId: string; ownerId: string }) => canHead(session, lead.ventureId) || (canWriteIn(session, lead.ventureId) && lead.ownerId === session?.user.id);
+export const canDeleteLead =(session: SalesPermissionSession, lead: Pick<Lead, "ventureId" | "ownerId" | "stage" | "lastTouchAt">) => isManager(session, lead.ventureId) || (canEditLead(session, lead) && PRE_CONTACT_STAGES.includes(lead.stage) && !lead.lastTouchAt);
 
 // ---- Hooks and small controls ----
 

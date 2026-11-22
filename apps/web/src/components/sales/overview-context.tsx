@@ -1,6 +1,7 @@
 "use client";
 import { createContext, useContext } from "react";
 import type { SalesOverview } from "@/lib/sales-api";
+import type { useAutopilot } from "./use-autopilot";
 
 export type SalesMember = { id: string; name: string; role: string };
 export type OverviewScope = "me" | "all";
@@ -20,7 +21,10 @@ export type SalesLive = {
   scope: OverviewScope;
   setScope: (scope: OverviewScope) => void;
   members: SalesMember[];
+  /** The picked venture's autopilot, read once for every tab (status null without a venture or on a server without it). */
+  autopilot: SalesAutopilot;
 };
+export type SalesAutopilot = ReturnType<typeof useAutopilot>;
 
 export const SalesLiveContext = createContext<SalesLive | null>(null);
 

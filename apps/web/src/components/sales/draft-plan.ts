@@ -1,7 +1,7 @@
 import { OPEN_DRAFT_STATUSES, VERSIONED_DRAFT_PURPOSES, type ChannelAccount, type ContactRoute, type Draft } from "@venture-studio/contracts";
 import { accountLine, emailSettingsOf } from "./channel-model";
-import { CHANNEL_LABEL, instagramHref, linkedinHref, mailtoHref, PURPOSE_LABEL, routeOf, waDigits, waHref } from "./draft-shared";
-import type { Tone } from "./sales-ui";
+import { instagramHref, linkedinHref, mailtoHref } from "./draft-shared";
+import { CHANNEL_LABELS as CHANNEL_LABEL, draftState, PURPOSE_LABELS as PURPOSE_LABEL, routeOf, waLinkDigits as waDigits, waTextHref as waHref, type Tone } from "./sales-ui";
 
 // What a person does next with one draft, worked out the same way in Review and in the lead drawer (docs/sales-channels.md sections 2, 3,
 // 4, 7): send it through a connected account, send it by hand and say so, approve it, fix it, or wait. The API enforces every rule; this
@@ -90,9 +90,9 @@ export function nextStepLabel(plan: SendPlan, channel: string): string {
     case "through": return sendFromLabel(channel, plan.accounts[0]);
     case "hand": return handLabel(plan);
     case "no_route": return noRouteLabel(plan);
-    case "approve": return "Approve it first";
+    case "approve": return "Approve it";
     case "needs_changes": return "Fix it";
-    case "waiting_review": return plan.submitted ? "Waiting for Claude's review" : "Not submitted yet";
+    case "waiting_review": return plan.submitted ? "Being checked" : "Not submitted";
     case "call_script": return "Use it on a call";
     case "whatsapp_locked": return "Locked until they opt in";
     case "do_not_contact": return "Do not contact";
@@ -221,18 +221,9 @@ export function answeredBy(draft: DetailDraft, detail: { activities: readonly De
   return out ? { at: out.at, by: out.actorId, channel: out.kind } : null;
 }
 
-/** A version's state in one or two words, for its tab and its list row. */
-export function versionStatus(draft: Pick<Draft, "status" | "delivery" | "closedReason">, approvalNeeded: boolean): { label: string; tone: Tone } {
-  if (draft.status === "discarded" && draft.closedReason) return { label: "Closed", tone: "neutral" };
-  if (draft.status === "ready" && draft.delivery?.state === "uncertain") return { label: "Check it", tone: "amber" };
-  if (draft.status === "ready" && draft.delivery?.state === "sending") return { label: "Sending", tone: "blue" };
-  if (draft.status === "ready" && draft.delivery?.state === "failed") return { label: "Didn't send", tone: "red" };
-  if (draft.status === "ready") return approvalNeeded ? { label: "To approve", tone: "blue" } : { label: "Ready", tone: "green" };
-  const words: Record<string, { label: string; tone: Tone }> = {
-    in_review: { label: "In review", tone: "blue" }, draft: { label: "Not submitted", tone: "neutral" }, needs_changes: { label: "Needs changes", tone: "amber" },
-    sent: { label: "Sent", tone: "purple" }, vetoed: { label: "Vetoed", tone: "red" }, discarded: { label: "Discarded", tone: "neutral" },
-  };
-  return words[draft.status] ?? { label: draft.status, tone: "neutral" };
+/** A version's state in one or two words, for its tab and its list row: the same words as everywhere else (`draftState` in sales-ui). */
+export function versionStatus(draft: Pick<Draft, "status" | "delivery" | "closedReason"> & { sendQueue?: { notBefore: string } | undefined; autopilot?: { attempts?: number | undefined } | undefined }, approvalNeeded: boolean): { label: string; tone: Tone } {
+  return draftState(draft, approvalNeeded);
 }
 export const TONE_TEXT: Record<Tone, string> = { neutral: "text-neutral-500", blue: "text-primary-700", green: "text-success-text", amber: "text-warning-text", red: "text-danger-text", purple: "text-ai-text" };
 export const TONE_DOT: Record<Tone, string> = { neutral: "bg-neutral-300", blue: "bg-primary-500", green: "bg-success", amber: "bg-warning", red: "bg-danger", purple: "bg-ai" };

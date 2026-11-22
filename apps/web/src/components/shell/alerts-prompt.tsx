@@ -58,7 +58,9 @@ export function AlertsPrompt() {
   }
 
   if (!show) return null;
-  return <section role="dialog" aria-labelledby="alerts-prompt-title" className="vso-fade-enter fixed bottom-4 right-4 z-[60] w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-neutral-200 bg-white p-4 shadow-e3">
+  // On a phone it sits under the top bar, not at the bottom: the bottom edge is where screens keep their action bars (Review's "Approve and
+  // send", a draft's Send), and the prompt must never cover the button a person is about to press.
+  return <section role="dialog" aria-labelledby="alerts-prompt-title" className="vso-fade-enter fixed bottom-4 right-4 z-[60] w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-neutral-200 bg-white p-4 shadow-e3 max-sm:bottom-auto max-sm:top-20">
     <div className="flex items-start gap-3">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary-50 text-primary-700"><BellRing size={18} /></span>
       <div className="min-w-0 flex-1">

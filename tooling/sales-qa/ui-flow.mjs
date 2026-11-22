@@ -2,17 +2,15 @@
 // Seeds one clearly labelled QA lead + draft through the API, drives the screens, then soft-deletes it.
 //
 //   node tooling/sales-qa/ui-flow.mjs [--base http://localhost:3000] [--phone] [--keep]
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const require = createRequire(join(homedir(), ".claude/skills/gstack/node_modules/"));
-const { chromium } = require("playwright");
+import { chromium, qaOut } from "./pw.mjs";
 const argv = process.argv.slice(2);
 const base = argv.includes("--base") ? argv[argv.indexOf("--base") + 1] : "http://localhost:3000";
 const phone = argv.includes("--phone"), keep = argv.includes("--keep");
-const out = join(process.env.QA_OUT ?? join(homedir(), "AppData/Local/Temp/claude/vso-qa"), `ui-flow-${phone ? "phone" : "desktop"}-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+const out = qaOut(`ui-flow-${phone ? "phone" : "desktop"}-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
 mkdirSync(out, { recursive: true });
 const run = Date.now().toString(36), ME = "user-divyansh", HEAD = "user-adarsh";
 let step = 0, failed = 0;

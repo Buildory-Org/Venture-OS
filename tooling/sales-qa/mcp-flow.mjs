@@ -51,8 +51,11 @@ try {
   const workSession = work.data?.sessionId;
   check("start_sales (work) returns a session and today's counts", !!workSession && !!work.data?.today, work.error ?? work.text.slice(0, 200));
 
-  const found = await tool("find_leads", { q: "jain", limit: 5 });
-  check("find_leads works", !found.error && /jain/i.test(found.text), found.error ?? found.text.slice(0, 200));
+  // Search for a word from a lead that exists in this database (the demo data and the dev data name different companies).
+  const anyLead = (await api(USER, "GET", "/sales/leads?limit=1"))?.body?.data?.items?.[0]?.companyName ?? "";
+  const word = anyLead.split(/\s+/).find((part) => /^[a-z]{4,}$/i.test(part)) ?? "jain";
+  const found = await tool("find_leads", { q: word, limit: 5 });
+  check("find_leads works", !found.error && found.text.toLowerCase().includes(word.toLowerCase()), found.error ?? found.text.slice(0, 200));
 
   const added = await tool("add_leads", { sessionId: workSession, ventureId: "venture-buildory", leads: [{ companyName: `QA MCP Lead ${run}`, city: "Raipur", category: "QA test record", source: "https://example.invalid/qa-listing", website: `https://qa-${run}.example.invalid`,
     observedSignal: "QA: dealer enquiry form on their site", contactRoutes: [{ kind: "phone", value: "+91 90000 00002", sourceUrl: `https://qa-${run}.example.invalid/contact` }] }] });

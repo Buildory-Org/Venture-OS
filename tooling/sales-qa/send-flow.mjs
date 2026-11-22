@@ -12,17 +12,15 @@
 // Overview and Find. Also: a draft changed since it was opened (409 DRAFT_CHANGED: edited through the API, then marked sent by hand; and a
 // send through a fake mailbox answered with it in the browser), a version whose send is unconfirmed holding the other version, a version
 // reopened after a bounce, keyboard focus (More and Tab, the confirms), the version tabs' aria. Desktop 1440x900, phone 375x812, light and dark.
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const require = createRequire(join(homedir(), ".claude/skills/gstack/node_modules/"));
-const { chromium } = require("playwright");
+import { chromium, qaOut } from "./pw.mjs";
 const argv = process.argv.slice(2);
 const arg = (name, fallback) => argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : fallback;
 const base = arg("base", "http://localhost:3000"), apiBase = arg("api", "http://localhost:4000"), keep = argv.includes("--keep");
-const out = join(process.env.QA_OUT ?? join(homedir(), "AppData/Local/Temp/claude/vso-qa"), `send-flow-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+const out = qaOut(`send-flow-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
 mkdirSync(out, { recursive: true });
 const run = Date.now().toString(36), ME = "user-divyansh", HEAD = "user-adarsh";
 let failed = 0, passed = 0;
@@ -160,7 +158,7 @@ try {
     check("one first message note shows", await visible(page.getByText(/sending one version closes the others/)).isVisible().catch(() => false));
     check("email with a mailbox: Send from <address>", await visible(page.getByRole("button", { name: /^Send from .+@/ })).isVisible().catch(() => false));
     check("says how it is recorded (mailbox)", await visible(page.getByText(/Goes from your mailbox/)).isVisible().catch(() => false));
-    check("Claude's review is one strip", await visible(page.getByText("Passed Claude's review")).isVisible().catch(() => false));
+    check("Claude's review is one strip", await visible(page.getByText("Passed the check")).isVisible().catch(() => false));
     check("list has one row for the lead", await page.locator(`[data-lead-row="${both.id}"]`).count() === 1);
     await shot(page, "review-desktop-email-mailbox");
     await visible(page.getByRole("button", { name: /^Read notes|^Details/ })).click(); await page.waitForTimeout(300);
@@ -289,7 +287,7 @@ try {
     await go(page, `/sales/live/review?draft=${emailOnlyDraft.id}`);
     check("email without a mailbox: Copy and open mail app", await visible(page.getByRole("link", { name: /Copy and open mail app/ })).isVisible().catch(() => false));
     check("connect-your-mailbox card links to Channels", await visible(page.getByRole("link", { name: /Connect a mailbox/ })).getAttribute("href").then((href) => href?.includes("/sales/live/channels")).catch(() => false));
-    check("email only, no phone: no WhatsApp tab", await page.getByRole("tab").count() === 1);
+    check("email only, no phone: no WhatsApp tab", await page.getByRole("tab", { name: /WhatsApp/ }).count() === 0 && await page.getByRole("tab", { name: /Email/ }).count() === 1);
     await shot(page, "review-desktop-email-no-mailbox");
     // The mail app link: keep the browser from leaving for a mailto: handler, then click it as a person would.
     await page.evaluate(() => document.addEventListener("click", (event) => { const link = event.target instanceof Element ? event.target.closest("a[href^='mailto:']") : null; if (link) event.preventDefault(); }, true));
@@ -316,8 +314,8 @@ try {
     await visible(page.getByRole("button", { name: /Yes, mark it sent/ })).click(); await page.waitForTimeout(2200);
     allowConflict = false;
     check("DRAFT_CHANGED: says it changed and to read it again, in the send row", await visible(page.getByRole("region", { name: "Send" }).getByText(CHANGED_SINCE)).isVisible().catch(() => false));
-    check("DRAFT_CHANGED: the draft is read again (back in review, with the edit)", await visible(page.getByText(/It can be sent once Claude's review passes/)).isVisible().catch(() => false) && await visible(page.getByText(/edited in another tab/)).isVisible().catch(() => false));
-    check("the review strip waits for a new review (the old one was of the old text)", await visible(page.getByText("Waiting for Claude's review")).isVisible().catch(() => false) && await visible(page.getByText(/edited after its last review/)).isVisible().catch(() => false) && await page.getByText("Passed Claude's review").count() === 0);
+    check("DRAFT_CHANGED: the draft is read again (back in review, with the edit)", await visible(page.getByText(/It can be sent once it passes the check/)).isVisible().catch(() => false) && await visible(page.getByText(/edited in another tab/)).isVisible().catch(() => false));
+    check("the review strip waits for a new review (the old one was of the old text)", await visible(page.getByText("Being checked")).isVisible().catch(() => false) && await visible(page.getByText(/edited after its last check/)).isVisible().catch(() => false) && await page.getByText(/Passed the check/).count() === 0);
     check("DRAFT_CHANGED: nothing recorded, no automatic retry", (await api(ME, "GET", `/sales/leads/${changing.id}`))?.drafts?.find((d) => d.id === changingDraft.id)?.status === "in_review");
     await shot(page, "review-desktop-draft-changed-by-hand");
     await context.close();

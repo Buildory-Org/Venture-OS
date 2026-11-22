@@ -8,7 +8,8 @@ import { describeError } from "@/lib/errors";
 import { WorkspaceLink } from "@/components/shell/workspace-link";
 import { ActionLabel, Field, inputClass, Notice, primaryClass, secondaryClass } from "@/components/studio/primitives";
 import { createDraft, discardDraft, type ReviewDraft } from "@/lib/sales-api";
-import { CHANNEL_LABEL, ChannelTile, routeOf, useVentureSettings } from "./draft-shared";
+import { ChannelTile, useVentureSettings } from "./draft-shared";
+import { CHANNEL_LABELS as CHANNEL_LABEL, routeOf } from "./sales-ui";
 import { usableAccounts, useChannelAccounts } from "./channel-model";
 import { replyWindow } from "./channel-send";
 import { closedLabel, replyFromLine, replyOptions, sendPlanOf, TONE_DOT, TONE_TEXT, versionStatus, type ReplyChannel } from "./draft-plan";
@@ -36,8 +37,10 @@ function replySubject(activity: Activity, activities: readonly Activity[] | null
  * Claude's review in another chat. `pending`: this message's drafts still waiting for a review, replaced by the new one: the API discards the
  * replies to this message in the same step (one open reply per message), and this box discards the older ones that name no message.
  */
-export function ReplyComposer({ lead, activity, activities, pending, onSaved, onCancel }: {
+export function ReplyComposer({ lead, activity, activities, pending, appChecks = false, onSaved, onCancel }: {
   lead: ComposerLead; activity: Activity; activities: readonly Activity[] | null; pending: readonly Draft[];
+  /** The app checks drafts itself: "check it first" needs no chat. */
+  appChecks?: boolean;
   onSaved: (draft: Draft, send: boolean) => void; onCancel: () => void;
 }) {
   const { session } = useSalesShell();
@@ -102,11 +105,11 @@ export function ReplyComposer({ lead, activity, activities, pending, onSaved, on
       className={clsx(inputClass, "py-3 leading-7")} /></Field>
     {fromLine && <p className="flex items-start gap-1.5 text-xs font-medium leading-5 text-neutral-600"><Send size={13} aria-hidden="true" className="mt-1 shrink-0 text-primary-700" /><span className="min-w-0 [overflow-wrap:anywhere]">{fromLine}</span></p>}
     {offLine && <p className="text-[11px] leading-4 text-neutral-400 [overflow-wrap:anywhere]">Not offered: {offLine}.</p>}
-    {pending.length > 0 && <p className="text-xs leading-5 text-neutral-500">Saving this replaces the draft above that waits for a review.</p>}
+    {pending.length > 0 && <p className="text-xs leading-5 text-neutral-500">Saving this replaces the draft above that waits for the check.</p>}
     <Notice tone="error" message={error} onDismiss={() => setError("")} />
     <div className="flex flex-wrap items-center gap-2">
       <button type="submit" disabled={busy !== ""} className={clsx(primaryClass, "max-sm:w-full")}><ActionLabel busy={busy === "send"} idle={<><Send size={16} aria-hidden="true" />Save and send</>} /></button>
-      <button type="button" onClick={() => void save(true)} disabled={busy !== ""} className={clsx(secondaryClass, "max-sm:w-full")}><ActionLabel busy={busy === "check"} idle={<><Sparkles size={15} aria-hidden="true" className="text-ai" />Ask Claude to check it first</>} /></button>
+      <button type="button" onClick={() => void save(true)} disabled={busy !== ""} className={clsx(secondaryClass, "max-sm:w-full")}><ActionLabel busy={busy === "check"} idle={<><Sparkles size={15} aria-hidden="true" className="text-ai" />{appChecks ? "Have it checked first" : "Ask Claude to check it first"}</>} /></button>
     </div>
   </form>;
 }

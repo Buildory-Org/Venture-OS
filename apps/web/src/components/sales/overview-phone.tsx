@@ -14,14 +14,16 @@ import { CalendarClock, isManager, Phone, number, waiting, type Tone } from "@/c
 
 type Section = { key: string; label: string; icon: Icon; tone: Tone; count: number; kinds: QueueKind[]; hint: string; empty: string; href?: string };
 
-function sections(overview: SalesOverview): Section[] {
+function sections(overview: SalesOverview, appReviews: boolean): Section[] {
   const { counts } = overview;
+  // Drafts still in review are the app's work when it checks them itself: the person's count leaves them out (as the sidebar does).
+  const toReview = Math.max(0, counts.toReview - (appReviews ? counts.inReview : 0));
   const oldest = [...overview.replies].sort((a, b) => a.activity.at.localeCompare(b.activity.at))[0];
   const list: Section[] = [
     { key: "replies", label: "Replies", icon: MessageCircle, tone: "amber", count: counts.replies, kinds: ["reply"], hint: oldest ? `Oldest waiting ${waiting(oldest.activity.at)}` : "Nobody is waiting on you", empty: "No replies waiting." },
     { key: "calls", label: "Calls today", icon: Phone, tone: "blue", count: counts.callsDue, kinds: ["call"], hint: counts.callsDue ? "Open the call list" : "No calls due", empty: "No calls due.", href: "/sales/live/calls" },
-    { key: "send", label: "Ready to send", icon: Send, tone: "green", count: counts.readyToSend, kinds: ["send"], hint: counts.readyToSend ? "Passed Claude's review" : "Nothing to send", empty: "Nothing is ready to send." },
-    { key: "review", label: "To review", icon: ShieldCheck, tone: "purple", count: counts.toReview, kinds: ["review"], hint: counts.toReview ? "Claude's drafts to check" : "Nothing to check", empty: "No drafts to review." },
+    { key: "send", label: "Ready to send", icon: Send, tone: "green", count: counts.readyToSend, kinds: ["send"], hint: counts.readyToSend ? "Passed the check" : "Nothing to send", empty: "Nothing is ready to send." },
+    { key: "review", label: "Messages", icon: ShieldCheck, tone: "purple", count: toReview, kinds: ["review"], hint: !toReview ? "Nothing to check" : counts.toApprove ? `${number(counts.toApprove)} to approve` : appReviews ? "Messages to fix" : "Claude's drafts to check", empty: "No drafts to review." },
     { key: "decide", label: "Needs you", icon: CircleAlert, tone: "red", count: counts.needsYou + counts.wonToHandOver, kinds: ["decide", "won"], hint: counts.wonToHandOver ? `${counts.wonToHandOver} won to hand over` : counts.needsYou ? "Claude wants your call" : "Nothing to decide", empty: "Nothing needs a decision." },
   ];
   if (counts.followUpsDue > 0) list.push({ key: "follow", label: "Follow-ups due", icon: CalendarClock, tone: "purple", count: counts.followUpsDue, kinds: ["follow"], hint: "No reply since the first touch", empty: "No follow-ups due." });
@@ -74,9 +76,9 @@ function QueueCard({ item, onDone }: { item: QueueItem; onDone: () => void }) {
 }
 
 /** The phone Overview: a few big rows with counts; each opens a focused list with big buttons. */
-export function OnTheGo({ overview, queue, onChanged }: { overview: SalesOverview; queue: QueueItem[]; onChanged: () => void }) {
+export function OnTheGo({ overview, queue, onChanged, appReviews = false }: { overview: SalesOverview; queue: QueueItem[]; onChanged: () => void; appReviews?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
-  const all = sections(overview);
+  const all = sections(overview, appReviews);
   const current = all.find((section) => section.key === open);
 
   if (current) {

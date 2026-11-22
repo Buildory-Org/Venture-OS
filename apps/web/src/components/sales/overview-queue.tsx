@@ -7,6 +7,7 @@ import type { DraftWithLead, SalesOverview } from "@/lib/sales-api";
 import { useSalesShell } from "@/components/sales/sales-context";
 import { useDeliveryWork } from "@/components/sales/lead-actions";
 import { callablePhone, CalendarClock, CHANNEL_LABELS, Phone, plural, snippet, telHref, waiting, when, type Tone } from "@/components/sales/sales-ui";
+import { reviewWaiting, todayWaiting } from "@/components/shell/use-sales-nav-counts";
 
 // The "Needs you now" queue: everything in the Overview payload that waits on a person, in one list, each with its one action.
 
@@ -21,10 +22,14 @@ export const KIND_META: Record<QueueKind, { label: string; plural: string; icon:
   won: { label: "Won", plural: "Won deals", icon: Check, tone: "green", action: "Create delivery work" },
   call: { label: "Call", plural: "Calls", icon: Phone, tone: "blue", action: "Call" },
   send: { label: "Send", plural: "Ready to send", icon: Send, tone: "green", action: "Open" },
-  review: { label: "Review", plural: "To review", icon: ShieldCheck, tone: "purple", action: "Review" },
+  review: { label: "Message", plural: "Messages", icon: ShieldCheck, tone: "purple", action: "Open" },
   decide: { label: "Decide", plural: "Needs you", icon: CircleAlert, tone: "red", action: "Decide" },
   follow: { label: "Follow up", plural: "Follow-ups", icon: CalendarClock, tone: "purple", action: "Open" },
 };
+/** What a draft in Review asks of the person, in the words Review itself uses (sales-ui's draft state words). */
+const reviewStep = (draft: { status: string; needsPersonApproval?: boolean | undefined }) => draft.status === "needs_changes" ? "fix" : draft.status === "ready" && draft.needsPersonApproval ? "approve" : "check";
+const REVIEW_VERB = { approve: "Approve", fix: "Fix", check: "Get a check on" } as const;
+const REVIEW_WORD = { approve: "To approve", fix: "Needs changes", check: "Being checked" } as const;
 const ORDER: QueueKind[] = ["reply", "won", "call", "send", "follow", "review", "decide"];
 
 const TILE: Record<Tone, string> = {
@@ -36,7 +41,8 @@ export const tileClass = (tone: Tone) => TILE[tone];
 const channelName = (channel: string) => CHANNEL_LABELS[channel] ?? channel;
 export const draftSummary = (draft: DraftWithLead) => `${channelName(draft.channel)} · ${draft.subject ? `${draft.subject} · ` : ""}${snippet(draft.body, 90)}`;
 
-export function buildQueue(overview: SalesOverview): QueueItem[] {
+/** `appReviews`: the venture's autopilot checks drafts itself, so drafts still in review are the app's work and stay off the person's list. */
+export function buildQueue(overview: SalesOverview, { appReviews = false }: { appReviews?: boolean } = {}): QueueItem[] {
   const items: QueueItem[] = [];
   for (const { activity, lead } of overview.replies) {
     items.push({ key: `reply-${activity.id}`, kind: "reply", leadId: lead.id, company: lead.companyName, title: `Reply to ${lead.companyName}`, detail: `${channelName(activity.kind)}${activity.body ? ` · “${snippet(activity.body, 110)}”` : ""}`, badge: { label: `Waiting ${waiting(activity.at)}`, tone: "amber" }, phone: callablePhone(lead), href: `/sales/live/inbox?reply=${encodeURIComponent(activity.id)}`, at: activity.at });
@@ -45,27 +51,31 @@ export function buildQueue(overview: SalesOverview): QueueItem[] {
   for (const lead of overview.callsDue) items.push({ key: `call-${lead.id}`, kind: "call", leadId: lead.id, company: lead.companyName, title: `Call ${lead.companyName}`, detail: lead.why || lead.nextAction || "Due for a call.", badge: { label: lead.nextActionAt ? when(lead.nextActionAt) : "Due", tone: "blue" }, phone: callablePhone(lead), at: lead.nextActionAt });
   for (const draft of overview.readyToSend) items.push({ key: `send-${draft.id}`, kind: "send", leadId: draft.lead.id, company: draft.lead.companyName, title: `Send to ${draft.lead.companyName}`, detail: draftSummary(draft), badge: { label: "Ready", tone: "green" }, phone: callablePhone(draft.lead), href: `/sales/live/review?draft=${encodeURIComponent(draft.id)}`, at: draft.updatedAt, draft });
   for (const lead of overview.followUpsDue) items.push({ key: `follow-${lead.id}`, kind: "follow", leadId: lead.id, company: lead.companyName, title: `Follow up ${lead.companyName}`, detail: lead.why || "No reply since the first touch.", badge: { label: lead.nextActionAt ? when(lead.nextActionAt) : "Due", tone: "purple" }, phone: callablePhone(lead), at: lead.nextActionAt });
-  for (const draft of overview.toReview) items.push({ key: `review-${draft.id}`, kind: "review", leadId: draft.lead.id, company: draft.lead.companyName, title: `Review the draft for ${draft.lead.companyName}`, detail: draftSummary(draft), badge: { label: "To review", tone: "purple" }, phone: callablePhone(draft.lead), href: `/sales/live/review?draft=${encodeURIComponent(draft.id)}`, at: draft.updatedAt, draft });
+  for (const draft of overview.toReview) if (!(appReviews && draft.status === "in_review")) items.push({ key: `review-${draft.id}`, kind: "review", leadId: draft.lead.id, company: draft.lead.companyName, title: `${REVIEW_VERB[reviewStep(draft)]} the message for ${draft.lead.companyName}`, detail: draftSummary(draft), badge: { label: REVIEW_WORD[reviewStep(draft)], tone: "purple" }, phone: callablePhone(draft.lead), href: `/sales/live/review?draft=${encodeURIComponent(draft.id)}`, at: draft.updatedAt, draft });
   for (const lead of overview.needsYou) items.push({ key: `decide-${lead.id}`, kind: "decide", leadId: lead.id, company: lead.companyName, title: `Decide on ${lead.companyName}`, detail: lead.verdict?.summary || lead.why || "Claude wants your call on this one.", badge: { label: "Needs you", tone: "red" }, phone: callablePhone(lead) });
   // Kind first (most urgent kinds on top), then oldest first inside a kind.
   return items.map((item, index) => ({ item, index })).sort((a, b) => ORDER.indexOf(a.item.kind) - ORDER.indexOf(b.item.kind) || (a.item.at ?? "").localeCompare(b.item.at ?? "") || a.index - b.index).map(({ item }) => item);
 }
 
-/** The one line under the greeting. */
-export function summarize(counts: SalesOverview["counts"]): string {
+/**
+ * The one line under the Today title. Its number is the sidebar's Today badge (`todayWaiting`): everything that waits for a person,
+ * with drafts still in review left out when the app checks them itself.
+ */
+export function summarize(counts: SalesOverview["counts"], appReviews = false): string {
+  const total = todayWaiting(counts, appReviews);
+  const review = reviewWaiting(counts, appReviews);
   const parts = [
-    counts.replies > 0 && `${plural(counts.replies, "reply", "replies")} waiting`,
+    counts.replies > 0 && `${plural(counts.replies, "reply", "replies")}`,
     counts.callsDue > 0 && `${plural(counts.callsDue, "call")} due`,
-    counts.readyToSend > 0 && `${plural(counts.readyToSend, "draft")} ready to send`,
-    counts.toReview > 0 && `${plural(counts.toReview, "draft")} to review`,
-    counts.needsYou > 0 && `${counts.needsYou} for you to decide`,
+    review > 0 && `${plural(review, "message")} in Review`,
+    counts.needsYou > 0 && `${plural(counts.needsYou, "lead")} to decide on`,
     counts.wonToHandOver > 0 && `${plural(counts.wonToHandOver, "won deal")} to hand over`,
     counts.followUpsDue > 0 && `${plural(counts.followUpsDue, "follow-up")} due`,
   ].filter((part): part is string => !!part);
-  if (!parts.length) return counts.totalLeads > 0 ? "Nothing is waiting on you. Time to find the next leads." : "No leads yet. Find some, or add one by hand.";
+  if (!total) return counts.totalLeads > 0 ? "Nothing waits for you. Time to find the next leads." : "No leads yet. Find some, or add one by hand.";
   const shown = parts.slice(0, 4); const rest = parts.length - shown.length;
-  const list = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
-  return `${list}${rest ? `, plus ${plural(rest, "other thing")}` : ""}.`;
+  const list = rest ? `${shown.join(", ")} and more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+  return `${plural(total, "thing")} ${total === 1 ? "waits" : "wait"} for you: ${list}.`;
 }
 
 /** The buttons for one queue item. `big` makes them phone-sized and spells out "Call". */

@@ -152,9 +152,16 @@ export function evaluateSetup(data: SetupData, now = Date.now()): SetupItem[] {
   ];
 }
 
-/** A venture is sales-ready when leads have a pipeline and Claude has an approved, active offer to sell. */
+/** What a venture can't sell without: a pipeline (only listed while it is missing), an approved offer, and the viewer's mailbox. */
+export const MUST_HAVE: readonly SetupKey[] = ["pipeline", "offer", "mailbox"];
+export const isMustHave = (item: SetupItem) => MUST_HAVE.includes(item.key);
+/** The steps the settings page lists: a pipeline that exists is not a step any more. */
+export const visibleSetup = (items: readonly SetupItem[]) => items.filter((item) => !(item.key === "pipeline" && item.done));
+
+/** A venture is sales-ready when leads have a pipeline and Claude has an approved, active offer to sell. `mustDone` of `mustTotal`: the must-haves. */
 export function readiness(data: SetupData) {
   const items = evaluateSetup(data);
   const get = (key: SetupKey) => items.find((item) => item.key === key)!;
-  return { items, done: setupDone(items), total: setupTotal(items), ready: get("pipeline").done && get("offer").done, known: !get("pipeline").unknown && !get("offer").unknown };
+  const must = items.filter(isMustHave);
+  return { items, done: setupDone(items), total: setupTotal(items), mustDone: must.filter((item) => item.done).length, mustTotal: must.length, ready: get("pipeline").done && get("offer").done, known: !get("pipeline").unknown && !get("offer").unknown };
 }

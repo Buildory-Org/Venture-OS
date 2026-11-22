@@ -6,8 +6,8 @@ import { Badge } from "@/components/studio/primitives";
 import type { SetupItem } from "./setup-checks";
 
 /** One line of the checklist. Done items fold to a single row; to-do items open with why it matters and the action that completes it. */
-export function SetupItemCard({ number, item, children }: { number: number; item: SetupItem; children?: React.ReactNode }) {
-  const [open, setOpen] = useState(!item.done && !item.optional);
+export function SetupItemCard({ number, item, defaultOpen = !item.done && !item.optional, children }: { number: number; item: SetupItem; defaultOpen?: boolean; children?: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
   const panelId = `setup-${item.key}`;
   return <li className={clsx("rounded-2xl border bg-white shadow-card transition-colors duration-150", item.done ? "border-neutral-100" : "border-neutral-200")}>
     <h3>

@@ -5,20 +5,18 @@
 //
 // Writes one JPEG per page and variant plus report.json / report.md (console errors, failed API calls,
 // horizontal overflow, small tap targets on phones, Next.js error overlays).
-import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const require = createRequire(join(homedir(), ".claude/skills/gstack/node_modules/"));
-const { chromium } = require("playwright");
+import { chromium, qaOut } from "./pw.mjs";
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => (value.startsWith("--") ? [...pairs, [value.slice(2), all[index + 1]?.startsWith("--") || all[index + 1] === undefined ? "true" : all[index + 1]]] : pairs), []));
 const base = args.base ?? "http://localhost:3000";
 const api = args.api ?? "http://localhost:4000";
 const as = args.as ?? "user-divyansh";
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const out = args.out ?? join(process.env.QA_OUT ?? join(homedir(), "AppData/Local/Temp/claude/vso-qa"), `${stamp}-${as}`);
+const out = args.out ?? qaOut(`${stamp}-${as}`);
 mkdirSync(out, { recursive: true });
 
 const VARIANTS = {

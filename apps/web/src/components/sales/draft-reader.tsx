@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Activity, ChannelAccount, Draft, Play } from "@venture-studio/contracts";
+import { autopilotStopped, type Activity, type ChannelAccount, type Draft, type Play } from "@venture-studio/contracts";
 import { ArrowLeft, ArrowUpRight, Check, ChevronDown, CircleAlert, CircleCheck, Clock3, Copy, Edit, Info, Mail, RotateCcw, Send, ShieldCheck, Sparkles, X, type Icon } from "@/components/ui/icons";
 import { SlidingTabs, tabDomId } from "@/components/ui/sliding-tabs";
 import { toast } from "@/components/ui/toast";
@@ -12,20 +12,17 @@ import { approveDraft, discardDraft, getDraft, getLead, markDraftSent, updateDra
 import { errorCode, type SendResult } from "@/lib/sales-channels-api";
 import { Instagram, Linkedin, Phone, Trash, UserX, Whatsapp } from "./draft-icons";
 import { approvalOf, canApprove, canEditLead, canWriteIn, CHANNEL_ICON, copyText, CHANNEL_LABEL, kickerClass, OPT_IN_LABEL, PURPOSE_LABEL, routeOf, shortSession, stamp, telHref, useSalesLoad, wordCount, type ApprovalReason } from "./draft-shared";
-import { accountLabel, usableAccounts, useChannelAccounts } from "./channel-model";
+import { accountLabel, accountLine, usableAccounts, useChannelAccounts } from "./channel-model";
 import { DeliveryReconcile, replyWindow, SendBox, SentFromPicker } from "./channel-send";
 import { DeliveryTicks } from "./channel-delivery";
 import { ActionMenu, type MenuAction } from "./action-menu";
 import { AskClaude } from "./ask-claude";
 import { answeredBy, closedLabel, handLabel, heldLine, heldSibling, isOpenDraft, isOwnReply, isVersioned, noRouteLabel, reachableOnWhatsapp, recordedLine, sendFromLabel, sendPlanOf, TONE_DOT, TONE_TEXT, versionLabels, versionStatus, type HandApp } from "./draft-plan";
 import { useSalesShell } from "./sales-context";
-import { StageChip, VerdictChip, when } from "./sales-ui";
-
-type Tone = "neutral" | "blue" | "green" | "amber" | "red" | "purple";
-export const DRAFT_STATUS: Record<Draft["status"], { label: string; tone: Tone }> = {
-  draft: { label: "Not submitted", tone: "neutral" }, in_review: { label: "To review", tone: "blue" }, ready: { label: "Ready to send", tone: "green" },
-  needs_changes: { label: "Needs changes", tone: "amber" }, sent: { label: "Sent", tone: "purple" }, vetoed: { label: "Vetoed", tone: "red" }, discarded: { label: "Discarded", tone: "neutral" },
-};
+import { canHead, goesAt, StageChip, VerdictChip, when } from "./sales-ui";
+import { useAutopilot } from "./use-autopilot";
+import { batchDrafts } from "@/lib/sales-autopilot-api";
+import { isRouteMissing } from "@/lib/sales-channels-api";
 
 /**
  * "delivery": the draft stays open with a new delivery state (a send that could not be confirmed, or one a person said didn't go).
@@ -151,7 +148,7 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
   const [editing, setEditing] = useState(false);
   const [subject, setSubject] = useState(draft.subject ?? "");
   const [body, setBody] = useState(draft.body);
-  const [confirm, setConfirm] = useState<"sent" | "veto" | "discard" | null>(null);
+  const [confirm, setConfirm] = useState<"sent" | "veto" | "discard" | "queue" | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -212,6 +209,18 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
   const sendable = plan.kind === "through" || plan.kind === "hand" || plan.kind === "no_route";
   const mayMarkSent = editor && sendable && !heldBy && !answered;
 
+  // The app (docs/sales-autopilot.md): whether it checks drafts itself, rewrites its own drafts, and sends approved emails from the queue.
+  // Read only for drafts where it changes what is shown.
+  const needAutopilot = open && (draft.status === "in_review" || draft.status === "needs_changes" || (draft.status === "ready" && isEmail));
+  const autopilot = useAutopilot(needAutopilot ? draft.ventureId : null);
+  const queue = draft.status === "ready" && !held ? draft.sendQueue : undefined;
+  const queueAccount = queue?.accountId ? channelAccounts?.find((account) => account.id === queue.accountId) : undefined;
+  const queueFrom = queueAccount ? accountLine(queueAccount) : queue ? (queue.by === session?.user.id ? "your mailbox" : `${personName(queue.by)}'s mailbox`) : "";
+  const mayTakeBack = Boolean(queue) && (queue?.by === session?.user.id || canHead(session, draft.ventureId));
+  // "Approve and send": an email this person may approve and send, on a server that sends from the queue.
+  const approveAndSend = plan.kind === "approve" && mayApprove && editor && isEmail && autopilot.canQueue && !answered;
+  const myMailbox = isEmail ? usableAccounts(channelAccounts, draft.ventureId, "email", session?.user.id)[0] : undefined;
+
   const startEdit = useCallback(() => { setSubject(draft.subject ?? ""); setBody(draft.body); setConfirm(null); setError(""); setStale(false); setEditing(true); }, [draft.subject, draft.body]);
   const seenNonce = useRef(editNonce);
   useEffect(() => {
@@ -231,7 +240,7 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
     confirmBox.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     confirmBox.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
   }, [confirm]);
-  function openConfirm(kind: "sent" | "veto" | "discard") {
+  function openConfirm(kind: "sent" | "veto" | "discard" | "queue") {
     const from = document.activeElement;
     if (!confirm) returnFocus.current = from instanceof HTMLElement && from !== document.body ? from : null;
     setConfirm(kind); setError("");
@@ -273,11 +282,45 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
     if (!change.body && change.subject === undefined) { setEditing(false); return; }
     void run("save", () => updateDraft(draft.id, change), (updated) => {
       setEditing(false);
-      toast({ title: updated.status === "ready" ? "Saved. Still ready to send." : "Saved. It goes back to review.", body: lead.companyName });
+      toast({ title: updated.status === "ready" ? "Saved. Still ready to send." : "Saved. It goes back to the check.", body: lead.companyName });
       onChanged({ kind: "edited", draft: updated }); refresh();
     });
   }
   const approve = () => void run("approve", () => approveDraft(draft.id), (updated) => { toast({ title: "Approved", body: `${lead.companyName}. You can send it now.` }); onChanged({ kind: "approved", draft: updated }); refresh(); });
+  // Approve and hand it to the app to send from the person's mailbox, a few minutes apart and inside today's limit (one draft of a batch).
+  async function approveSend() {
+    setBusy("queue"); setError(""); setStale(false);
+    try {
+      const result = await batchDrafts({ action: "approve_and_send", drafts: [{ id: draft.id, expectedUpdatedAt: draft.updatedAt }] });
+      const answer = result.results.find((item) => item.id === draft.id);
+      if (!answer || answer.outcome === "skipped") { setError(answer?.reason ? `It wasn't approved: ${answer.reason}` : "It wasn't approved. Read it again and try once more."); refresh(); return; }
+      closeConfirm();
+      const now = new Date().toISOString();
+      const approved: Draft = { ...draft, personApproval: { by: session?.user.id ?? draft.authorId, at: now } };
+      if (answer.notBefore) {
+        toast({ title: "Approved and queued", body: `${lead.companyName}. It goes ${goesAt(answer.notBefore)} from ${myMailbox ? accountLine(myMailbox) : "your mailbox"}.` });
+        onChanged({ kind: "approved", draft: { ...approved, sendQueue: { at: now, by: session?.user.id ?? draft.authorId, version: draft.updatedAt, notBefore: answer.notBefore, attempts: 0 } } });
+      } else {
+        toast({ tone: "info", title: "Approved, not sent", body: `${lead.companyName}. ${answer.reason ?? "Send it from here when you are ready."}` });
+        onChanged({ kind: "approved", draft: approved });
+      }
+      refresh();
+    } catch (cause) {
+      setError(isRouteMissing(cause) ? "This server can't send from the queue yet. Approve it, then send it." : describeError(cause, "That did not work. Nothing changed. Try again."));
+    } finally { setBusy(""); }
+  }
+  async function takeBack() {
+    setBusy("unqueue"); setError("");
+    try {
+      const result = await batchDrafts({ action: "unqueue", drafts: [{ id: draft.id, expectedUpdatedAt: draft.updatedAt }] });
+      if (!result.unqueued) { setError(result.results[0]?.reason ?? "It could not be taken back. It may have gone already."); refresh(); return; }
+      toast({ title: "Taken back", body: `${lead.companyName}. It stays ready to send.` });
+      const { sendQueue: _gone, ...rest } = draft;
+      void _gone;
+      onChanged({ kind: "edited", draft: rest }); refresh();
+    } catch (cause) { setError(describeError(cause, "It could not be taken back. Try again.")); }
+    finally { setBusy(""); }
+  }
   function askSent() {
     if (!sentRequestId.current) sentRequestId.current = crypto.randomUUID();
     openConfirm("sent");
@@ -323,7 +366,9 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
   let note: React.ReactNode = null;
   if (answered && plan.kind !== "held") main = row(quiet("Already answered: nothing to send.", CircleCheck));
   else if (plan.kind === "approve") {
-    main = row(mayApprove ? <button type="button" onClick={approve} disabled={busy === "approve"} className={mainButton}><ActionLabel busy={busy === "approve"} busyText="Approving…" idle={<><Check size={16} aria-hidden="true" />Approve this message</>} /></button> : quiet(`Waits for ${approver} to approve it.`, ShieldCheck));
+    main = row(approveAndSend
+      ? <><button type="button" onClick={() => openConfirm("queue")} disabled={busy !== ""} className={mainButton}><Send size={16} aria-hidden="true" />Approve and send</button><button type="button" onClick={approve} disabled={busy !== ""} className={clsx(secondaryClass, "!min-h-11 min-w-0 max-sm:flex-1")}><ActionLabel busy={busy === "approve"} busyText="Approving…" idle={<><Check size={16} aria-hidden="true" />Approve this message</>} /></button></>
+      : mayApprove ? <button type="button" onClick={approve} disabled={busy === "approve"} className={mainButton}><ActionLabel busy={busy === "approve"} busyText="Approving…" idle={<><Check size={16} aria-hidden="true" />Approve this message</>} /></button> : quiet(`Waits for ${approver} to approve it.`, ShieldCheck));
     note = approval.reason === "every_message" ? `${ventureName(draft.ventureId)} has a person approve every message before it goes out (its sales settings).` : `${play?.name ? `${play.name} is` : "Its play is"} still in its first batch, so a venture head reads each message before it goes out.`;
   } else if (!editor && (plan.kind === "through" || plan.kind === "hand" || plan.kind === "no_route" || plan.kind === "needs_changes")) main = row(quiet(`Only the lead's owner or a venture head can ${plan.kind === "needs_changes" ? "fix" : "send"} this draft.`));
   else if (heldBy && sendable) {
@@ -341,8 +386,8 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
       ? <a href={plan.href} {...(plan.app === "mail" ? {} : { target: "_blank", rel: "noopener noreferrer" })} onClick={onHand} className={mainButton}><HandIcon size={16} aria-hidden="true" className="shrink-0" /><span className={labelWrap}>{handLabel(plan)}</span></a>
       : <button type="button" onClick={onHand} className={mainButton}><HandIcon size={16} aria-hidden="true" className="shrink-0" /><span className={labelWrap}>{handLabel(plan)}</span></button>);
   } else if (plan.kind === "no_route") main = row(<button type="button" disabled className={mainButton}>{plan.app === "whatsapp" ? <Whatsapp size={16} aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}<span className={labelWrap}>{noRouteLabel(plan)}</span></button>);
-  else if (plan.kind === "needs_changes") { main = row(<button type="button" onClick={startEdit} className={mainButton}><Edit size={16} aria-hidden="true" />Edit the message</button>); note = "Saving sends it back to Claude's review."; }
-  else if (plan.kind === "waiting_review") main = row(quiet(plan.submitted ? "It can be sent once Claude's review passes." : "Edit it and save to send it for review."));
+  else if (plan.kind === "needs_changes") { main = row(<button type="button" onClick={startEdit} className={mainButton}><Edit size={16} aria-hidden="true" />Edit the message</button>); note = "Saving sends it back to the check."; }
+  else if (plan.kind === "waiting_review") main = row(quiet(plan.submitted ? "It can be sent once it passes the check." : "Edit it and save to send it for the check."));
   else if (plan.kind === "call_script") main = row(<>{editor && <WorkspaceLink href={`/sales/live/calls?call=${encodeURIComponent(lead.id)}`} className={mainButton}><Phone size={16} aria-hidden="true" />Start the call</WorkspaceLink>}{editor && phoneLink && <a href={phoneLink} className={clsx(secondaryClass, "!min-h-11 max-sm:hidden")}>Call {phoneRoute?.value}</a>}{!editor && quiet("A script to read on the call.")}</>);
   else if (plan.kind === "whatsapp_locked" || plan.kind === "do_not_contact") main = row(quiet(plan.kind === "do_not_contact" ? "Nothing can be sent to them." : "Nothing can be sent on WhatsApp yet."));
   else if (plan.kind === "held") main = row(quiet("Waiting to hear whether it went out."));
@@ -350,7 +395,7 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
   const connectMailbox = editor && isEmail && channelsOn && (plan.kind === "hand" || plan.kind === "no_route");
 
   return <div className={clsx("space-y-4", !inline && "p-4 sm:p-5")}>
-    {(open || draft.review) && <ReviewStrip draft={draft} approval={approval} />}
+    {(open || draft.review) && <ReviewStrip draft={draft} approval={approval} appChecks={autopilot.does("review")} appFixes={autopilot.does("write") && Boolean(draft.authorSessionId?.startsWith("auto-w:"))} />}
     {writer && open && !editing && connectMailbox && confirm !== "sent" && <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary-200 bg-primary-50 p-3.5">
         <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white text-primary-700"><Mail size={17} /></span>
         <div className="min-w-0 flex-1 basis-56"><p className="text-[13px] font-bold text-primary-900">Send straight from here: connect your mailbox once</p><p className="mt-0.5 text-xs leading-5 text-primary-800">Then this button sends it from your own address, keeps a copy in your Sent folder and brings replies into Sales &gt; Inbox.</p></div>
@@ -367,8 +412,8 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
     {editing ? <form onSubmit={(event) => { event.preventDefault(); save(); }} className="space-y-3 rounded-2xl border border-primary-300 bg-white p-4 ring-2 ring-primary-100">
       {isEmail && <Field label="Subject"><input value={subject} onChange={(event) => setSubject(event.target.value)} maxLength={200} className={inputClass} /></Field>}
       <Field label="Message"><textarea value={body} onChange={(event) => setBody(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditing(false); } else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); save(); } }} maxLength={5000} autoFocus rows={10} className={clsx(inputClass, "min-h-48 py-3 leading-7")} /></Field>
-      <p className="text-xs text-neutral-500">{wordCount(body)} words. {keepsReady ? "A reply a person writes needs no review: it stays ready to send, approved by you." : "Saving sends it back for Claude to review again, and clears any approval."}</p>
-      <div className="flex flex-wrap gap-2"><button type="submit" disabled={busy === "save"} className={clsx(primaryClass, "max-sm:flex-1")}><ActionLabel busy={busy === "save"} idle={keepsReady ? "Save" : "Save and send back to review"} /></button><button type="button" onClick={() => setEditing(false)} className={clsx(secondaryClass, "max-sm:flex-1")}>Cancel</button></div>
+      <p className="text-xs text-neutral-500">{wordCount(body)} words. {keepsReady ? "A reply a person writes needs no review: it stays ready to send, approved by you." : "Saving sends it back to the check, and clears any approval."}</p>
+      <div className="flex flex-wrap gap-2"><button type="submit" disabled={busy === "save"} className={clsx(primaryClass, "max-sm:flex-1")}><ActionLabel busy={busy === "save"} idle={keepsReady ? "Save" : "Save and send to the check"} /></button><button type="button" onClick={() => setEditing(false)} className={clsx(secondaryClass, "max-sm:flex-1")}>Cancel</button></div>
     </form> : <DraftMessage draft={draft} />}
 
     <Notice tone="error" message={error || (stale && !(writer && open && main) ? CHANGED_SINCE : "")} onDismiss={() => { setError(""); setStale(false); }} />
@@ -393,8 +438,14 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
 
     {writer && open && !editing && main && <section aria-label="Send" className={inline ? "space-y-1.5" : "sticky bottom-0 z-[5] -mx-4 space-y-1.5 border-t border-neutral-100 bg-white px-4 pb-3 pt-3 sm:-mx-5 sm:px-5"}>
       {stale && <p role="alert" className="vso-fade-enter flex items-start gap-2 rounded-xl bg-warning-surface py-1.5 pl-3 pr-1 text-xs font-semibold leading-5 text-warning-text"><CircleAlert size={14} aria-hidden="true" className="mt-[3px] shrink-0" /><span className="min-w-0 flex-1 py-0.5">{CHANGED_SINCE}</span><button type="button" onClick={() => setStale(false)} aria-label="Dismiss" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-colors duration-150 hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><X size={14} aria-hidden="true" /></button></p>}
+      {queue && <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-primary-50 py-1.5 pl-3 pr-1.5">
+        <Clock3 size={15} aria-hidden="true" className="shrink-0 text-primary-700" />
+        <p className="min-w-0 flex-1 text-[13px] font-semibold leading-5 text-primary-900 [overflow-wrap:anywhere]">Goes {goesAt(queue.notBefore)} from {queueFrom}{queue.lastError && <span className="block text-xs font-medium text-warning-text">The last try didn&apos;t go: {queue.lastError}. It tries again then.</span>}</p>
+        {mayTakeBack && <button type="button" onClick={() => void takeBack()} disabled={busy !== ""} className={clsx(secondaryClass, "!min-h-9 shrink-0 !px-3")}><ActionLabel busy={busy === "unqueue"} busyText="Taking back…" idle={<><RotateCcw size={14} aria-hidden="true" />Take back</>} /></button>}
+      </div>}
+      {queue && plan.kind === "through" && <p className="text-xs leading-5 text-neutral-500">Or send it now:</p>}
       {main}
-      {(recorded || note) && <p id={noteId} className={clsx("text-xs leading-5", heldBy && sendable ? "font-semibold text-warning-text" : "text-neutral-500")}>{note ?? recorded}</p>}
+      {(recorded || note) &&<p id={noteId} className={clsx("text-xs leading-5", heldBy && sendable ? "font-semibold text-warning-text" : "text-neutral-500")}>{note ?? recorded}</p>}
     </section>}
     {writer && open && !editing && confirm && <div ref={confirmBox} className="scroll-mt-4" onKeyDown={(event) => { if (event.key === "Escape" && !busy) { event.preventDefault(); event.stopPropagation(); closeConfirm(); } }}>
       {confirm === "sent" && <div role="alertdialog" aria-labelledby={questionId} className="vso-fade-enter rounded-2xl border border-primary-200 bg-primary-50 p-4">
@@ -402,6 +453,11 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
         <p className="mt-1 text-xs leading-5 text-primary-800">Saying yes records that it went from your own {OWN_APP[draft.channel] ?? "account"}: {lead.companyName} moves to Contacted and the follow-up clock starts. Nothing is sent from here.{draft.channel === "linkedin" ? " It counts toward today's LinkedIn limit." : ""}</p>
         <SentFromPicker accounts={handAccounts} value={sentFromId} onChange={setSentFrom} />
         <div className="mt-3 flex flex-wrap gap-2"><button type="button" data-autofocus onClick={markSent} disabled={busy === "sent"} className={clsx(primaryClass, "max-sm:flex-1")}><ActionLabel busy={busy === "sent"} busyText="Saving…" idle={<><Check size={16} aria-hidden="true" />Yes, mark it sent</>} /></button><button type="button" onClick={closeConfirm} className={clsx(secondaryClass, "max-sm:flex-1")}>Not yet</button></div>
+      </div>}
+      {confirm === "queue" && <div role="alertdialog" aria-labelledby={questionId} className="vso-fade-enter rounded-2xl border border-primary-200 bg-primary-50 p-4">
+        <p id={questionId} className="text-sm font-bold text-primary-900 [overflow-wrap:anywhere]">Approve and send this email to {toLine || lead.companyName}?</p>
+        <p className="mt-1 text-xs leading-5 text-primary-800">It goes from {myMailbox ? accountLine(myMailbox) : "your mailbox"}, a few minutes after the emails already waiting, inside today&apos;s sending limit (over it, on the next working day). You can take it back until it goes.</p>
+        <div className="mt-3 flex flex-wrap gap-2"><button type="button" data-autofocus onClick={() => void approveSend()} disabled={busy === "queue"} className={clsx(primaryClass, "max-sm:flex-1")}><ActionLabel busy={busy === "queue"} busyText="Approving…" idle={<><Send size={16} aria-hidden="true" />Approve and send</>} /></button><button type="button" onClick={closeConfirm} disabled={busy === "queue"} className={clsx(secondaryClass, "max-sm:flex-1")}>Not yet</button></div>
       </div>}
       {confirm === "veto" && <form aria-label="Veto this draft" onSubmit={(event) => { event.preventDefault(); veto(); }} className="vso-fade-enter rounded-2xl border border-danger-surface bg-danger-surface p-4">
         <Field label="Why veto it?"><textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} rows={2} data-autofocus placeholder="For example: wrong person to write to, or the claim is not true." className={clsx(inputClass, "py-3")} /></Field>
@@ -419,8 +475,11 @@ export function DraftReader({ draft, play, settings, editNonce, onChanged, inlin
   </div>;
 }
 
-/** Claude's review as one line on top of the draft, with its notes a tap away (open by default when it asks for changes). */
-function ReviewStrip({ draft, approval }: { draft: ReviewDraft; approval: Approval }) {
+/**
+ * Claude's review as one line on top of the draft, with its notes a tap away (open by default when it asks for changes). `appChecks`: the
+ * app checks drafts itself, so nobody needs to open a chat; `appFixes`: the app wrote this one and rewrites it with the check's notes.
+ */
+function ReviewStrip({ draft, approval, appChecks, appFixes }: { draft: ReviewDraft; approval: Approval; appChecks: boolean; appFixes: boolean }) {
   const { session, personName } = useSalesShell();
   const review = draft.review;
   const changes = draft.status === "needs_changes" || review?.result === "fail";
@@ -438,9 +497,16 @@ function ReviewStrip({ draft, approval }: { draft: ReviewDraft; approval: Approv
   const outdated = Boolean(review) && (draft.status === "in_review" || draft.status === "draft");
   if (!review || outdated) {
     const submitted = draft.status === "in_review";
+    // The app tried its tries and stopped: back to a person, with the chat prompt, even while the app checks other drafts.
+    if (submitted && autopilotStopped(draft)) return <div className="space-y-2.5 rounded-2xl bg-warning-surface p-3">
+      <div className="flex items-start gap-2.5 px-0.5"><CircleAlert size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-warning-text" /><p className="min-w-0 text-[13px] font-bold text-warning-text">The app couldn&apos;t check this<span className="block text-xs font-medium leading-5 opacity-90">It tried 3 times. Ask Claude to check it, or read and edit it yourself.</span></p></div>
+      <AskClaude prompt="review drafts" note="in a new chat" className="!border-warning-text/30 !bg-transparent" />
+    </div>;
     return <div className="space-y-2.5 rounded-2xl bg-neutral-50 p-3">
-      <div className="flex items-start gap-2.5 px-0.5"><Clock3 size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-neutral-400" /><p className="min-w-0 text-[13px] font-bold text-neutral-800">{submitted ? "Waiting for Claude's review" : "Not submitted for review yet"}<span className="block text-xs font-medium leading-5 text-neutral-500">{outdated ? "It was edited after its last review, so " : ""}{submitted ? `${outdated ? "a" : "A"} different chat from the one that wrote it checks it against the message rules.` : outdated ? "save it to send it for review again." : "Edit it and save to send it for review."}</span></p></div>
-      {submitted && <AskClaude prompt="review drafts" note="in a new chat" />}
+      <div className="flex items-start gap-2.5 px-0.5"><Clock3 size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-neutral-400" /><p className="min-w-0 text-[13px] font-bold text-neutral-800">{submitted ? "Being checked" : "Not submitted"}<span className="block text-xs font-medium leading-5 text-neutral-500">{outdated ? "It was edited after its last check, so " : ""}{submitted
+        ? appChecks ? `${outdated ? "the app checks it again" : "The app checks it"} against the message rules, separately from the pass that wrote it. It moves on when it passes.` : `${outdated ? "a" : "A"} different chat from the one that wrote it checks it against the message rules.`
+        : outdated ? "save it to send it for the check again." : "Edit it and save to send it for the check."}</span></p></div>
+      {submitted && !appChecks && <AskClaude prompt="review drafts" note="in a new chat" />}
     </div>;
   }
   const pass = review.result === "pass" && !changes;
@@ -452,7 +518,7 @@ function ReviewStrip({ draft, approval }: { draft: ReviewDraft; approval: Approv
   return <div className={clsx("rounded-2xl", pass ? "bg-success-surface" : "bg-warning-surface")}>
     <div className="flex min-h-11 items-center gap-2.5 py-1 pl-3 pr-1">
       <StripIcon size={16} aria-hidden="true" className={clsx("shrink-0", pass ? "text-success-text" : "text-warning-text")} />
-      <p className={clsx("min-w-0 flex-1 text-[13px] font-bold leading-5", pass ? "text-success-text" : "text-warning-text")}>{pass ? "Passed Claude's review" : "Needs changes"}{detail && <span className="font-medium opacity-90"><span className="max-sm:hidden"> · </span><span className="max-sm:block max-sm:text-xs">{detail}</span></span>}</p>
+      <p className={clsx("min-w-0 flex-1 text-[13px] font-bold leading-5", pass ? "text-success-text" : "text-warning-text")}>{pass ? "Passed the check" : "Needs changes"}{detail && <span className="font-medium opacity-90"><span className="max-sm:hidden"> · </span><span className="max-sm:block max-sm:text-xs">{detail}</span></span>}</p>
       <button type="button" aria-expanded={expanded} aria-controls={notesId} onClick={() => setExpanded(!expanded)} className={clsx("inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600", pass ? "text-success-text" : "text-warning-text")}>
         {expanded ? "Hide notes" : noteCount ? "Read notes" : "Details"}<ChevronDown size={14} aria-hidden="true" className={clsx("transition-transform duration-150", expanded && "rotate-180")} />
       </button>
@@ -463,7 +529,9 @@ function ReviewStrip({ draft, approval }: { draft: ReviewDraft; approval: Approv
       {pass && noteCount === 0 && <p className="text-neutral-600">No issues found against the message rules.</p>}
       <p className="text-[11px] leading-4 text-neutral-500">{review.via === "claude" ? `Claude, for ${personName(review.by)}` : personName(review.by)} · {stamp(review.at)}{draft.authorSessionId && review.sessionId ? ` · written in session ${shortSession(draft.authorSessionId)}, reviewed in session ${shortSession(review.sessionId)}` : ""}</p>
     </div>}
-    {!pass && draft.status === "needs_changes" && <div className="px-2 pb-2"><AskClaude prompt="fix the drafts that need changes" className="!border-warning-text/30 !bg-transparent" /></div>}
+    {!pass && draft.status === "needs_changes" && (appFixes
+      ? <p className="px-3 pb-3 text-xs leading-5 text-warning-text">The app rewrites it with these notes, up to twice, and it is checked again. You can also edit it yourself.</p>
+      : <div className="px-2 pb-2"><AskClaude prompt="fix the drafts that need changes" className="!border-warning-text/30 !bg-transparent" /></div>)}
   </div>;
 }
 

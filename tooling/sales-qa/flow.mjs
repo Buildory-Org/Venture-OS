@@ -33,8 +33,10 @@ try {
   for (const user of [ADMIN, HEAD, SELLER, LEARNER]) { const r = await call(user, "GET", "/sales/overview"); check(`overview loads as ${user}`, r.status === 200 && r.data?.counts, brief(r)); }
   const list = await call(ADMIN, "GET", "/sales/leads?limit=5&ventureId=venture-buildory");
   check("lead list pages and counts", list.status === 200 && list.data?.total > 0 && list.data.items.length <= 5, brief(list));
-  const search = await call(ADMIN, "GET", "/sales/leads?q=jain&limit=5");
-  check("lead search finds Jain", search.status === 200 && search.data?.items?.some((lead) => /jain/i.test(lead.companyName)), brief(search));
+  // Search for a word from a lead that exists in this database (the demo data and the dev data name different companies).
+  const word = (list.data?.items?.[0]?.companyName ?? "").split(/\s+/).find((part) => /^[a-z]{4,}$/i.test(part)) ?? "jain";
+  const search = await call(ADMIN, "GET", `/sales/leads?q=${encodeURIComponent(word)}&limit=5`);
+  check(`lead search finds "${word}"`, search.status === 200 && search.data?.items?.some((lead) => lead.companyName.toLowerCase().includes(word.toLowerCase())), brief(search));
 
   // 1. A seller creates a lead they own.
   const email = `qa-${run}@example.invalid`;

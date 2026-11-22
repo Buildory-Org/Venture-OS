@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
-import type { Draft, Lead } from "@venture-studio/contracts";
+import { AUTOPILOT_MAX_TRIES, autopilotStopped, type Draft, type Lead } from "@venture-studio/contracts";
 import { ArrowUpRight, Check, Info, LinkIcon } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SlidingTabs, useTabMotion } from "@/components/ui/sliding-tabs";
@@ -19,7 +19,7 @@ import { LeadLog, LeadLogBar, type LogMode } from "@/components/sales/lead-log";
 import { LeadNextAction } from "@/components/sales/lead-manage";
 import { LeadTimeline } from "@/components/sales/lead-timeline";
 import { useVentureOffers } from "@/components/sales/offer-model";
-import { AskClaude } from "@/components/sales/ask-claude";
+import { AppDoesLine, AskClaude } from "@/components/sales/ask-claude";
 import { useChannelAccounts, usableAccounts } from "@/components/sales/channel-model";
 import { ChannelTile, PURPOSE_LABEL, useVentureSettings } from "@/components/sales/draft-shared";
 import { closedLabel, heldSibling, isOpenDraft, isVersioned, nextStepLabel, sendPlanOf, sortVersions, TONE_DOT, TONE_TEXT, versionStatus } from "@/components/sales/draft-plan";
@@ -76,12 +76,22 @@ function Drafts({ lead, drafts, session }: { lead: Lead; drafts: Draft[]; sessio
   </div>;
 }
 
-/** Where Claude can help with this lead next: judge it when nobody has, write the first message once it is recommended. */
-function leadPrompt(lead: Lead, drafts: Draft[]): string {
-  if (lead.doNotContact || ["lost", "disqualified"].includes(lead.stage) || isWonStage(lead.stage)) return "";
-  if (!lead.verdict) return `research and judge ${lead.companyName}`;
-  if (lead.verdict.decision === "recommend" && !drafts.some((draft) => isOpenDraft(draft) || draft.status === "sent")) return `write the first message for ${lead.companyName}`;
-  return "";
+/**
+ * Where Claude can help with this lead next: judge it when nobody has, write the first message once it is recommended. `appDoes` is the
+ * quiet line shown instead when the venture's autopilot does that step for this lead by itself (docs/sales-autopilot.md §4: it judges
+ * new leads with a website, and writes the first email for a recommended lead approved for contact that has an email and doesn't wait
+ * for a person). Otherwise the chip stays.
+ */
+function leadPrompt(lead: Lead, drafts: Draft[], does: (step: "judge" | "write") => boolean): { prompt: string; appDoes?: string; stopped?: boolean } {
+  if (lead.doNotContact || ["lost", "disqualified"].includes(lead.stage) || isWonStage(lead.stage)) return { prompt: "" };
+  // The app gave up on this lead after its tries: the chip comes back, with a line saying why.
+  if (autopilotStopped(lead)) return { ...leadPrompt(lead, drafts, () => false), stopped: true };
+  if (!lead.verdict) return { prompt: `research and judge ${lead.companyName}`, ...(does("judge") && lead.stage === "identified" && lead.website?.trim() ? { appDoes: "The app judges new leads itself." } : {}) };
+  if (lead.verdict.decision === "recommend" && !drafts.some((draft) => isOpenDraft(draft) || draft.status === "sent")) {
+    const appWrites = does("write") && lead.stage === "approved_for_contact" && !lead.needsYou && lead.contactRoutes.some((route) => route.kind === "email");
+    return { prompt: `write the first message for ${lead.companyName}`, ...(appWrites ? { appDoes: "The app writes the first email itself." } : {}) };
+  }
+  return { prompt: "" };
 }
 
 /**
@@ -90,7 +100,7 @@ function leadPrompt(lead: Lead, drafts: Draft[]): string {
  */
 export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () => void }) {
   const { session, ventureId, ventureName, personName, refresh, refreshKey } = useSalesShell();
-  const { members } = useSalesOverview();
+  const { members, autopilot } = useSalesOverview();
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
@@ -125,7 +135,8 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
   const dial = lead ? callablePhone(lead) : undefined;
   const tel = dial ? telHref(dial) : undefined;
   const won = !!lead && isWonStage(lead.stage);
-  const prompt = lead && detail ? leadPrompt(lead, detail.drafts) : "";
+  // The autopilot status is the picked venture's: a lead of another venture keeps its chip.
+  const help = lead && detail ? leadPrompt(lead, detail.drafts, (step) => autopilot.status?.ventureId === lead.ventureId && autopilot.does(step)) : { prompt: "" };
 
   const openTab = (key: LeadTab, scroll = false) => {
     update({ tab: key === "activity" ? null : key });
@@ -147,7 +158,10 @@ export function LeadDrawer({ leadId, onClose }: { leadId: string; onClose: () =>
         <div className="flex flex-wrap items-center gap-2"><StageChip stage={lead.stage} /><VerdictChip verdict={lead.verdict} />{lead.needsYou && <Badge tone="amber">Needs you</Badge>}{lead.doNotContact && <Badge tone="red">Do not contact</Badge>}{offerName && <OfferChip name={offerName} />}{!ventureId && <Badge>{ventureName(lead.ventureId)}</Badge>}</div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="inline-flex items-center gap-1.5"><span className="text-xs font-medium text-neutral-400">Owner</span><PersonChip name={personName(lead.ownerId)} /></span>{lead.contactName && <span className="text-xs font-medium text-neutral-500">Contact: <strong className="font-semibold text-neutral-700">{lead.contactName}</strong></span>}</div>
         <LeadNextAction lead={lead} canEdit={editable} onSaved={changed} onDirty={setDirty} />
-        {session.membership.role !== "learner" && prompt && <AskClaude prompt={prompt} />}
+        {session.membership.role !== "learner" && help.prompt && <>
+          {help.stopped && <AppDoesLine text={`The app tried ${AUTOPILOT_MAX_TRIES} times and stopped.`} />}
+          <AskClaude prompt={help.prompt} appDoes={help.appDoes} />
+        </>}
       </div>
 
       {!editable && <p className="rounded-xl bg-neutral-50 px-3 py-2.5 text-xs leading-5 text-neutral-500">{session.membership.role === "learner" ? "You can read this lead. Learners cannot change leads." : "You can read this lead. Only its owner and the venture heads can change it."}</p>}

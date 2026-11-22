@@ -256,18 +256,19 @@ export async function removeSuppression(entryId: string, reason: string) {
 }
 
 // ---- Per-venture sales settings (working days, caps, approval mode...). Anyone who can open the venture reads; a venture head or admin saves, in the app.
-import { salesSettingsSchema, salesSettingsViewSchema } from "@venture-studio/contracts";
+import { salesSettingsInputSchema, salesSettingsViewSchema } from "@venture-studio/contracts";
 
 export type SalesSettingsView = z.infer<typeof salesSettingsViewSchema>;
-export type SalesSettingsInput = z.input<typeof salesSettingsSchema>;
+/** Everything but the autopilot, which has its own save (lib/sales-autopilot-api.ts) and is never changed from here. */
+export type SalesSettingsInput = z.input<typeof salesSettingsInputSchema>;
 
 /** The venture's settings (defaults when none were saved; `updatedAt` is set only once someone saved them). */
 export async function getSalesSettings(ventureId: string) {
   return successEnvelope(salesSettingsViewSchema).parse(await request(`/v1/sales/settings${query({ ventureId })}`)).data;
 }
-/** Replaces the venture's settings: whatever the body leaves out takes its default. */
+/** Replaces the venture's settings: whatever the body leaves out takes its default. The venture's autopilot is not sent and stays as it is. */
 export async function putSalesSettings(ventureId: string, input: SalesSettingsInput) {
-  return successEnvelope(salesSettingsViewSchema).parse(await request(`/v1/sales/settings${query({ ventureId })}`, { method: "PUT", body: JSON.stringify(salesSettingsSchema.parse(input)) })).data;
+  return successEnvelope(salesSettingsViewSchema).parse(await request(`/v1/sales/settings${query({ ventureId })}`, { method: "PUT", body: JSON.stringify(salesSettingsInputSchema.parse(input)) })).data;
 }
 
 // ---- Reports and Daybreak (docs/sales-reports-and-daybreak.md): read-only numbers for the Reports tab and the morning work list.

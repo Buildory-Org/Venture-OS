@@ -16,14 +16,16 @@ import { SalesLiveContext, type OverviewScope, type SalesLive, type SalesMember 
 import { LeadDrawer } from "@/components/sales/lead-drawer";
 import { SetupBanner } from "@/components/sales/setup-banner";
 import { summarize } from "@/components/sales/overview-queue";
-import { SALES_CHANGED_EVENT } from "@/components/shell/use-sales-nav-counts";
-import { firstName, Phone, useUrlParams } from "@/components/sales/sales-ui";
+import { reviewWaiting, SALES_CHANGED_EVENT } from "@/components/shell/use-sales-nav-counts";
+import { useAutopilot } from "@/components/sales/use-autopilot";
+import { Phone, useUrlParams } from "@/components/sales/sales-ui";
 
+// The phone tab strip: the day's work first, then the leads; the names match the sidebar and each page's title.
 const TABS = [
-  { key: "overview", label: "Overview", href: "/sales/live" },
-  { key: "leads", label: "Leads", href: "/sales/live/leads" },
+  { key: "overview", label: "Today", href: "/sales/live" },
   { key: "review", label: "Review", href: "/sales/live/review" },
   { key: "inbox", label: "Inbox", href: "/sales/live/inbox" },
+  { key: "leads", label: "Leads", href: "/sales/live/leads" },
   { key: "pipeline", label: "Pipeline", href: "/sales/live/pipeline" },
   { key: "plays", label: "Plays", href: "/sales/live/plays" },
   { key: "brain", label: "Offers", href: "/sales/live/brain" },
@@ -32,10 +34,10 @@ const TABS = [
 /** Reached from buttons, not tabs. */
 const TOOLS: Record<string, { title: string; description: string }> = {
   calls: { title: "Calls", description: "One lead at a time: the opener, the number, and the outcome buttons." },
-  find: { title: "Find leads", description: "Describe who to find; Claude plans the search and the lead finder runs it." },
+  find: { title: "Find leads", description: "A standing search for new companies every working day, or one search now." },
   "do-not-contact": { title: "Do not contact", description: "People and companies we never message or call again." },
   reports: { title: "Reports", description: "How the pipeline is doing, and how good Claude's judgement has been." },
-  setup: { title: "Set up sales", description: "Make this venture ready for Claude to research leads and write drafts." },
+  setup: { title: "Sales settings", description: "What the app does by itself, and what a venture needs before it can sell." },
   channels: { title: "Channels", description: "The mailbox, WhatsApp number, Instagram account and LinkedIn profile you send from. Connect them once, then send from Review." },
 };
 const DESCRIPTIONS: Record<string, string> = {
@@ -145,22 +147,27 @@ function SalesLiveShell({ children }: { children: React.ReactNode }) {
 
   const shell = useMemo<SalesShell>(() => ({ ventureId, session, openLead, refreshKey, refresh, ventureName, personName }), [ventureId, session, openLead, refreshKey, refresh, ventureName, personName]);
   const current = result?.key === key ? result : null;
-  const live = useMemo<SalesLive>(() => ({ overview: current?.data ?? null, loading: !!session && !current, busy, error: current?.error ?? "", scope, setScope, members }), [current, session, busy, scope, members]);
+  // The picked venture's autopilot, read once here for every tab (it reloads after any change in Sales).
+  const { status: autopilotStatus, loading: autopilotLoading, reload: autopilotReload, does: autopilotDoesStep, set: autopilotSet, canQueue } = useAutopilot(ventureId || null);
+  const autopilot = useMemo(() => ({ status: autopilotStatus, loading: autopilotLoading, reload: autopilotReload, does: autopilotDoesStep, set: autopilotSet, canQueue }), [autopilotStatus, autopilotLoading, autopilotReload, autopilotDoesStep, autopilotSet, canQueue]);
+  const live = useMemo<SalesLive>(() => ({ overview: current?.data ?? null, loading: !!session && !current, busy, error: current?.error ?? "", scope, setScope, members, autopilot }), [current, session, busy, scope, members, autopilot]);
 
   const tab = tabOf(pathname);
   const tool = TOOLS[pathname.split("/")[3] ?? ""];
   const counts = live.overview?.counts;
+  const appReviews = autopilot.does("review");
+  const reviewBadge = counts ? reviewWaiting(counts, appReviews) : 0;
   const tabs = TABS.map((item) => ({
     key: item.key, label: item.label,
-    ...(item.key === "review" && counts && counts.toReview + counts.readyToSend > 0 ? { badge: counts.toReview + counts.readyToSend } : {}),
+    ...(item.key === "review" && reviewBadge > 0 ? { badge: reviewBadge } : {}),
     ...(item.key === "inbox" && counts && counts.replies > 0 ? { badge: counts.replies } : {}),
   }));
 
   if (sessionError && !session) return <Frame><Panel><EmptyState variant="error" title="Could not open Sales" body={sessionError} action={{ label: "Try again", onClick: () => setAttempt((value) => value + 1) }} /></Panel></Frame>;
   if (!session) return <ShellSkeleton />;
 
-  const title = tab?.key === "overview" ? `Sales today, ${firstName(session.user.name)}.` : tab?.label ?? tool?.title ?? "Sales";
-  const description = tab?.key === "overview" && counts ? summarize(counts) : tab ? DESCRIPTIONS[tab.key]! : tool?.description ?? "Dealflow for your ventures.";
+  const title = tab?.label ?? tool?.title ?? "Sales";
+  const description = tab?.key === "overview" && counts ? summarize(counts, appReviews) : tab ? DESCRIPTIONS[tab.key]! : tool?.description ?? "Dealflow for your ventures.";
   return <SalesShellContext.Provider value={shell}><SalesLiveContext.Provider value={live}>
     <Frame>
       <Heading title={title} description={description} action={<HeaderActions>
@@ -172,7 +179,7 @@ function SalesLiveShell({ children }: { children: React.ReactNode }) {
       {/* On laptops the sidebar is the navigation; below lg it is a drawer, so the compact tabs stay. */}
       <div className="lg:hidden">{tab
         ? <SlidingTabs label="Sales sections" tabs={tabs} active={tab.key} className="mb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" onChange={(next) => { const target = TABS.find((item) => item.key === next); if (target) router.push(target.href); }} />
-        : <Link href="/sales/live" className="mb-4 inline-flex min-h-10 items-center gap-1.5 rounded-xl px-2 text-sm font-semibold text-neutral-500 transition-colors duration-150 hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><ArrowLeft size={15} />Sales overview</Link>}</div>
+        : <Link href="/sales/live" className="mb-4 inline-flex min-h-10 items-center gap-1.5 rounded-xl px-2 text-sm font-semibold text-neutral-500 transition-colors duration-150 hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600"><ArrowLeft size={15} />Today</Link>}</div>
       {children}
       {leadId && <LeadDrawer key={leadId} leadId={leadId} onClose={closeLead} />}
     </Frame>

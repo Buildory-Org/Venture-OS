@@ -6,11 +6,15 @@ import { Check, Inbox, MessageSquareText } from "@/components/ui/icons";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Panel } from "@/components/studio/primitives";
 import { listInbox, type InboxItem } from "@/lib/sales-api";
-import { InboxReader } from "@/components/sales/inbox-reader";
+import { SlidingTabs } from "@/components/ui/sliding-tabs";
+import { appSorting, InboxReader } from "@/components/sales/inbox-reader";
 import { NewConversations } from "@/components/sales/channel-inbound";
 import { isWarm, SlaChip, slaOf, useNow, useSlaCalendars } from "@/components/sales/inbox-sla";
-import { ago, ChannelTile, kbdClass, ReplyTypeChip, Segmented, typingTarget, useIsDesktop, useQueryParam, useSalesLoad } from "@/components/sales/draft-shared";
+import { ChannelTile, kbdClass, typingTarget, useIsDesktop, useQueryParam, useSalesLoad } from "@/components/sales/draft-shared";
+import { ago, ReplyTypeChip } from "@/components/sales/sales-ui";
 import { useSalesShell } from "@/components/sales/sales-context";
+import { useSalesOverview } from "@/components/sales/overview-context";
+import { useAutopilot } from "@/components/sales/use-autopilot";
 
 const preview = (item: InboxItem) => item.activity.body.replace(/\s+/g, " ").trim() || "(no text)";
 /** Replies that reach someone's phone or own mailbox never arrive here by themselves: a person logs them on the lead. */
@@ -20,7 +24,9 @@ const OUTSIDE_REPLY = "Got a reply on your phone or in your own mail? Log it wit
 export function InboxScreen() {
   const { session, ventureId, ventureName } = useSalesShell();
   const desktop = useIsDesktop();
-  const [mine, setMine] = useState(false);
+  // Mine or Everyone: the same choice, control and default as Today (kept by the Sales layout for every work page).
+  const { scope, setScope } = useSalesOverview();
+  const mine = scope === "me";
   const [showHandled, setShowHandled] = useState(false);
   const [replyParam, setSelectedId] = useQueryParam("reply");
   // Links name a reply as ?reply=<activity id>; older links (the Today queue, notifications) say ?activity=. Both open it, and the
@@ -37,12 +43,14 @@ export function InboxScreen() {
     if (!query.get("reply")) query.set("reply", legacyId);
     router.replace(`${pathname}?${query}`, { scroll: false });
   }, [legacyId, params, router, pathname]);
-  const scope = { ...(ventureId ? { ventureId } : {}), ...(mine ? { owner: "me" as const } : {}) };
+  const query = { ...(ventureId ? { ventureId } : {}), ...(mine ? { owner: "me" as const } : {}) };
 
-  const open = useSalesLoad(`inbox|${ventureId}|${mine}`, () => listInbox({ ...scope, handled: "false", limit: 100 }));
-  const done = useSalesLoad(`inbox-done|${ventureId}|${mine}|${showHandled}`, () => showHandled ? listInbox({ ...scope, handled: "true", limit: 50 }) : Promise.resolve([] as InboxItem[]));
+  const open = useSalesLoad(`inbox|${ventureId}|${mine}`, () => listInbox({ ...query, handled: "false", limit: 100 }));
+  const done = useSalesLoad(`inbox-done|${ventureId}|${mine}|${showHandled}`, () => showHandled ? listInbox({ ...query, handled: "true", limit: 50 }) : Promise.resolve([] as InboxItem[]));
 
   const now = useNow();
+  // The app sorts replies itself for the picked venture: a new unsorted reply reads "Sorting…" for its first minutes, not "Not sorted yet".
+  const appSorts = useAutopilot(ventureId || null).does("replies");
   // Each reply runs on its venture's clock (reply time, working days, blackout days, time zone).
   const calendarOf = useSlaCalendars([...(open.data ?? []), ...(done.data ?? [])].map((item) => item.lead.ventureId));
   const groups = useMemo(() => {
@@ -116,8 +124,8 @@ export function InboxScreen() {
   const overdueLabel = lateHours.length === 1 ? `${overdue} over ${lateHours[0]}h` : `${overdue} late`;
   const waitingCount = (open.data ?? []).filter((item) => !item.activity.handledAt).length;
   const toolbar = <div className="mb-4 flex flex-wrap items-center gap-2">
-    <Segmented label="Which replies" value={showHandled ? "all" : "waiting"} onChange={(value) => { setShowHandled(value === "all"); if (selectedId) setSelectedId("", { replace: true }); }} options={[{ value: "waiting", label: loaded ? `Needs a reply · ${waitingCount}` : "Needs a reply" }, { value: "all", label: "Include handled" }]} />
-    {session && <Segmented label="Whose replies" value={mine ? "mine" : "all"} onChange={(value) => setMine(value === "mine")} options={[{ value: "all", label: "Everyone" }, { value: "mine", label: "Mine" }]} />}
+    <SlidingTabs fitContent label="Which replies" className="!p-0.5 bg-neutral-100 shadow-none" active={showHandled ? "all" : "waiting"} onChange={(key) => { setShowHandled(key === "all"); if (selectedId) setSelectedId("", { replace: true }); }} tabs={[{ key: "waiting", label: loaded ? `Needs a reply · ${waitingCount}` : "Needs a reply" }, { key: "all", label: "Include handled" }]} />
+    {session && <SlidingTabs fitContent label="Whose replies" className="!p-0.5 bg-neutral-100 shadow-none" active={scope} onChange={(key) => setScope(key as "me" | "all")} tabs={[{ key: "me", label: "Mine" }, { key: "all", label: "Everyone" }]} />}
     <span className="ml-auto flex items-center gap-3">
       <span className="flex items-center gap-1.5 text-[11px] text-neutral-400 max-lg:hidden"><kbd className={kbdClass}>j</kbd><kbd className={kbdClass}>k</kbd>move</span>
     </span>
@@ -125,7 +133,7 @@ export function InboxScreen() {
 
   if (open.error && !loaded) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="error" title="Could not load the replies" body={open.error} action={{ label: open.busy ? "Trying again…" : "Try again", onClick: open.reload, disabled: open.busy }} /></Panel></>;
   if (!loaded) return <>{toolbar}<div role="status" aria-label="Loading replies" className="grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)]"><Panel className="space-y-3 p-4">{[0, 1, 2, 3].map((index) => <div key={index} className="flex items-center gap-3"><span className="vso-skeleton h-9 w-9 shrink-0 rounded-xl" /><span className="grid min-w-0 flex-1 gap-2"><span className="vso-skeleton h-3" style={{ width: `${70 - (index % 3) * 12}%` }} /><span className="vso-skeleton h-2.5 w-3/4" /></span></div>)}</Panel><Panel className="space-y-4 p-5 max-lg:hidden"><span className="vso-skeleton block h-5 w-1/3" /><span className="vso-skeleton block h-32 rounded-2xl" /></Panel></div></>;
-  if (flat.length === 0) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="card" tone="green" icon={mine ? Check : Inbox} title={showHandled ? "No replies yet" : mine ? "None of your leads are waiting on you" : "No replies waiting"} body={<>{showHandled ? "When someone answers a message or a call-back request, it lands here." : "Every reply has been handled. New ones from email, WhatsApp, Instagram and LinkedIn show up here, sorted by what they mean."}<span className="mt-2 block">{OUTSIDE_REPLY}</span></>} action={mine ? { label: "Show everyone's replies", onClick: () => setMine(false) } : !showHandled ? { label: "Show handled replies", onClick: () => setShowHandled(true) } : undefined} /></Panel></>;
+  if (flat.length === 0) return <>{toolbar}<NewConversations /><Panel><EmptyState variant="card" tone="green" icon={mine ? Check : Inbox} title={showHandled ? "No replies yet" : mine ? "None of your leads are waiting on you" : "No replies waiting"} body={<>{showHandled ? "When someone answers a message or a call-back request, it lands here." : "Every reply has been handled. New ones from email, WhatsApp, Instagram and LinkedIn show up here, sorted by what they mean."}<span className="mt-2 block">{OUTSIDE_REPLY}</span></>} action={mine ? { label: "Show everyone's replies", onClick: () => setScope("all") } : !showHandled ? { label: "Show handled replies", onClick: () => setShowHandled(true) } : undefined} /></Panel></>;
 
   return <>
     {!(selected && !desktop) && toolbar}
@@ -144,7 +152,7 @@ export function InboxScreen() {
               <span className="min-w-0 flex-1">
                 <span className="flex items-baseline justify-between gap-2"><span className={clsx("truncate text-[13px] text-neutral-900", waiting ? "font-extrabold" : "font-semibold")}>{item.lead.companyName}</span><span className="flex shrink-0 items-center gap-1.5"><time dateTime={item.activity.at} className="tnum text-[11px] text-neutral-400">{ago(item.activity.at)}</time>{waiting && <span role="img" aria-label="Needs a reply" className="h-2 w-2 rounded-full bg-primary-600" />}</span></span>
                 <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-neutral-500 [overflow-wrap:anywhere]">{preview(item)}</span>
-                <span className="mt-1.5 flex flex-wrap items-center gap-1.5"><ReplyTypeChip {...(item.activity.replyType ? { type: item.activity.replyType } : {})} /><SlaChip activity={item.activity} now={now} calendar={calendarOf(item.lead.ventureId)} />{!ventureId && <span className="truncate text-[11px] text-neutral-400">{ventureName(item.lead.ventureId)}</span>}</span>
+                <span className="mt-1.5 flex flex-wrap items-center gap-1.5"><ReplyTypeChip sorting={appSorting(item.activity, appSorts, now)} {...(item.activity.replyType ? { type: item.activity.replyType } : {})} /><SlaChip activity={item.activity} now={now} calendar={calendarOf(item.lead.ventureId)} />{!ventureId && <span className="truncate text-[11px] text-neutral-400">{ventureName(item.lead.ventureId)}</span>}</span>
               </span>
             </button></li>;
           })}</ul>

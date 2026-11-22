@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { idSchema, salesSettingsSchema } from "@venture-studio/contracts";
+import { idSchema, salesSettingsInputSchema } from "@venture-studio/contracts";
 import { atomic, type Database } from "../db.js";
 import { forbidClaude, loadVenture, requireHead } from "../sales/access.js";
 import { auditSales, salesCtx } from "../sales/ctx.js";
@@ -30,14 +30,15 @@ export function salesSettingsRoutes(database: Database): Router {
     res.json(ok(await view(ctx.workspaceId, ventureId)));
   });
 
-  // Replaces the venture's settings: whatever the body leaves out takes its default.
+  // Replaces the venture's settings: whatever the body leaves out takes its default. The autopilot is not part of it: it keeps what is
+  // stored (PUT /sales/autopilot saves it), so saving the working days never switches a venture's autopilot off.
   router.put("/settings", async (req, res) => {
     const ctx = salesCtx(database, req);
     const { ventureId } = querySchema.parse({ ventureId: req.query.ventureId ?? (req.body as { ventureId?: unknown } | undefined)?.ventureId });
     await loadVenture(db, ctx.actor, ventureId);
     forbidClaude(ctx.via, "Changing a venture's sales settings");
     requireHead(ctx.actor, ventureId, "change the sales settings");
-    const input = salesSettingsSchema.parse(req.body ?? {});
+    const input = salesSettingsInputSchema.parse(req.body ?? {});
     const before = await loadSettings(db, ctx.workspaceId, ventureId);
     const changed = (Object.keys(input) as (keyof typeof input)[]).filter((key) => JSON.stringify(input[key]) !== JSON.stringify(before[key]));
     const now = new Date();

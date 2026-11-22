@@ -44,20 +44,29 @@ const pick = (...hrefs: string[]) => hrefs.map((href) => byHref.get(href)!);
 // Connected mode has two modes: Studio (today's tasks and communication) and Sales, with a Shared group in both.
 const studioSections = pick("/dashboard", "/today", "/ventures", "/tasks", "/board", "/leaderboard", "/channels", "/decisions", "/classes", "/timeline", "/requests");
 const sharedSections = pick("/calendar", "/knowledge", "/messages", "/notifications");
-const salesSections: NavItem[] = [
-  { label: "Today", href: "/sales/live", icon: Home },
-  { label: "Leads", href: "/sales/live/leads", icon: Users },
-  { label: "Review", href: "/sales/live/review", icon: ShieldCheck },
-  { label: "Inbox", href: "/sales/live/inbox", icon: Inbox },
-  { label: "Pipeline", href: "/sales/live/pipeline", icon: Kanban },
-  { label: "Calls", href: "/sales/live/calls", icon: Phone },
-  { label: "Plays", href: "/sales/live/plays", icon: Target },
-  { label: "Find leads", href: "/sales/live/find", icon: Sparkles },
-  { label: "Reports", href: "/sales/live/reports", icon: TrendingUp },
-  { label: "Offers", href: "/sales/live/brain", icon: BookOpenText },
-  { label: "Channels", href: "/sales/live/channels", icon: Plug },
-  { label: "Do not contact", href: "/sales/live/do-not-contact", icon: UserLock },
-  { label: "Sales settings", href: "/sales/live/setup", icon: Settings },
+// Sales in four groups: the day's work, the leads, the plan, and the setup. The names match each page's title and its phone tab.
+const salesGroups: { label: string; items: NavItem[] }[] = [
+  { label: "Work", items: [
+    { label: "Today", href: "/sales/live", icon: Home },
+    { label: "Review", href: "/sales/live/review", icon: ShieldCheck },
+    { label: "Inbox", href: "/sales/live/inbox", icon: Inbox },
+    { label: "Calls", href: "/sales/live/calls", icon: Phone },
+  ] },
+  { label: "Leads", items: [
+    { label: "Leads", href: "/sales/live/leads", icon: Users },
+    { label: "Pipeline", href: "/sales/live/pipeline", icon: Kanban },
+    { label: "Find leads", href: "/sales/live/find", icon: Sparkles },
+  ] },
+  { label: "Plan", items: [
+    { label: "Offers", href: "/sales/live/brain", icon: BookOpenText },
+    { label: "Plays", href: "/sales/live/plays", icon: Target },
+    { label: "Reports", href: "/sales/live/reports", icon: TrendingUp },
+  ] },
+  { label: "Setup", items: [
+    { label: "Channels", href: "/sales/live/channels", icon: Plug },
+    { label: "Do not contact", href: "/sales/live/do-not-contact", icon: UserLock },
+    { label: "Sales settings", href: "/sales/live/setup", icon: Settings },
+  ] },
 ];
 const press = "transition-[color,background-color,transform] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 active:scale-[0.97]";
 // Scope-menu entry that opens venture creation instead of changing the scope.
@@ -115,13 +124,16 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
   // Expenses shows only to people the tracker's access list lets see it.
   const seesExpenses = useExpenseAccess(mode === "connected");
   // The leaderboard and expenses need live data: the demo leaves them out.
-  const mainItems = mode === "demo" ? sections.filter(({ href }) => href !== "/leaderboard" && href !== "/expenses") : salesMode ? salesSections : seesExpenses ? [...studioSections, byHref.get("/expenses")!] : studioSections;
+  const mainItems = mode === "demo" ? sections.filter(({ href }) => href !== "/leaderboard" && href !== "/expenses") : salesMode ? salesGroups[0]!.items : seesExpenses ? [...studioSections, byHref.get("/expenses")!] : studioSections;
+  // Sales' other groups follow the first under their own headings, inside the same list so the active pill glides across them.
+  const moreGroups = salesMode ? salesGroups.slice(1) : [];
   const sharedItems = mode === "demo" ? [] : sharedSections;
   const badgeFor = (href: string): number => {
     if (href === "/notifications") return unread;
     if (!salesMode || !salesCounts) return 0;
-    return href === "/sales/live" ? salesCounts.needsYou : href === "/sales/live/review" ? salesCounts.toReview : href === "/sales/live/inbox" ? salesCounts.replies : href === "/sales/live/calls" ? salesCounts.callsDue : 0;
+    return href === "/sales/live" ? salesCounts.today : href === "/sales/live/review" ? salesCounts.review : href === "/sales/live/inbox" ? salesCounts.replies : href === "/sales/live/calls" ? salesCounts.callsDue : 0;
   };
+  const heading = (label: string) => <p key={`heading-${label}`} className={clsx("px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-[.1em] text-neutral-400", collapsed && "lg:text-center")}><span className="lg:hidden">{label}</span><span className="hidden lg:inline">{collapsed ? "•••" : label}</span></p>;
   // Studio goes back to the last Studio page visited; Sales opens its Today. Clicking the mode you are already in does nothing.
   const switchMode = (next: AppMode) => {
     if (next === appMode && fromRoute === next) return;
@@ -129,7 +141,7 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
     onCloseMobile();
     router.push(workspaceHref(next === "sales" ? "/sales/live" : lastStudioPath(), "connected"));
   };
-  const groupLabel = salesMode ? "Sales" : "Workspace";
+  const groupLabel = salesMode ? salesGroups[0]!.label : "Workspace";
   const canCreateVenture = mode === "connected" && role === "admin";
   // Only admins can use People & access in a connected workspace.
   const showAccess = mode === "demo" || role === "admin";
@@ -223,7 +235,7 @@ export function Sidebar({ collapsed, instant = false, mobileOpen, immersive, onC
         {mode === "connected" && <ModeSwitch mode={appMode} collapsed={collapsed} onSwitch={switchMode} />}
         <div className={clsx("mb-4 flex min-h-11 items-center gap-2 rounded-xl bg-neutral-50 px-2", collapsed && "lg:justify-center lg:px-1")}><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white text-[10px] font-semibold text-neutral-700 shadow-sm">{(data.ventures.find((venture) => venture.id === activeVentureId)?.short ?? workspaceName.slice(0, 2)).toUpperCase()}</span><span className={clsx("vso-nav-label min-w-0 flex-1", collapsed && "lg:hidden")}><Select aria-label="Active venture scope" value={activeVentureId} onChange={(event) => event.target.value === NEW_VENTURE ? setCreatingVenture(true) : setActiveVentureId(event.target.value)} className="!min-h-9 !w-full !border-0 !bg-transparent !px-1 !text-xs !shadow-none"><option value="">All ventures</option>{data.ventures.map((venture) => <option key={venture.id} value={venture.id}>{venture.name}</option>)}{canCreateVenture && <option value={NEW_VENTURE}><span className="flex items-center gap-1.5 text-primary-700"><Plus size={14} aria-hidden="true" />New venture</span></option>}</Select></span></div>
         <p className={clsx("mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.1em] text-neutral-400", collapsed && "lg:text-center")}><span className="lg:hidden">{groupLabel}</span><span className="hidden lg:inline">{collapsed ? "•••" : groupLabel}</span></p>
-        <div ref={navList} className="vso-nav-list relative space-y-0.5"><span ref={pill} aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 rounded-xl bg-primary-700 opacity-0" />{mainItems.map(renderItem)}{sharedItems.length > 0 && <p className={clsx("px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-[.1em] text-neutral-400", collapsed && "lg:text-center")}><span className="lg:hidden">Shared</span><span className="hidden lg:inline">{collapsed ? "•••" : "Shared"}</span></p>}{sharedItems.map(renderItem)}</div>
+        <div ref={navList} className="vso-nav-list relative space-y-0.5"><span ref={pill} aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 rounded-xl bg-primary-700 opacity-0" />{mainItems.map(renderItem)}{moreGroups.flatMap((group) => [heading(group.label), ...group.items.map(renderItem)])}{sharedItems.length > 0 && heading("Shared")}{sharedItems.map(renderItem)}</div>
         {quickGroup && !salesMode && <div className={clsx("mt-4 rounded-xl bg-neutral-50 p-2", collapsed && "lg:hidden")}><div className="mb-1 flex items-center gap-2 px-2 py-1"><Users size={14} className="text-neutral-400" /><p className="truncate text-[10px] font-semibold uppercase tracking-[.08em] text-neutral-500">{data.ventures.find((item) => item.id === quickGroup.ventureId)?.name} · {quickGroup.name}</p></div>{data.channels.filter((channel) => channel.groupId === quickGroup.id).map((channel) => <Link key={channel.id} href={`/channels?channel=${channel.id}`} onClick={(event) => { onCloseMobile(); onOpenChat(`/channels?channel=${channel.id}`, event); }} className={clsx("flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-neutral-500 hover:bg-white", press)}><Hash size={14} /><span className="flex-1">{channel.name}</span>{channel.unread > 0 && <span className="h-1.5 w-1.5 rounded-full bg-primary-600" />}</Link>)}</div>}
       </nav>
       <div className="border-t border-neutral-100 p-3">{mode === "demo" && <Link href="/settings" onClick={onCloseMobile} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold text-neutral-500 hover:bg-neutral-100", press)}><Settings size={16} /><span className={clsx(collapsed && "lg:hidden")}>Settings</span></Link>}{showAccess && <Link href="/admin" onClick={onCloseMobile} data-tip={collapsed ? "People & access" : undefined} aria-label={collapsed ? "People & access" : undefined} aria-current={path === "/admin" ? "page" : undefined} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold", press, path === "/admin" ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-100")}><Users size={16} /><span className={clsx("vso-nav-label", collapsed && "lg:hidden")}>People & access</span></Link>}{mode === "connected" && <Link href="/connect" onClick={onCloseMobile} data-tip={collapsed ? "Connect Claude" : undefined} aria-label={collapsed ? "Connect Claude" : undefined} aria-current={path.startsWith("/connect") ? "page" : undefined} className={clsx("mb-1 flex min-h-9 items-center gap-2.5 rounded-xl px-2.5 text-xs font-semibold", press, path.startsWith("/connect") ? "bg-primary-700 text-white" : "text-neutral-500 hover:bg-neutral-100")}><KeyRound size={16} /><span className={clsx("vso-nav-label", collapsed && "lg:hidden")}>Connect Claude</span></Link>}<div className={clsx("flex min-h-11 items-center gap-2.5 rounded-xl bg-neutral-50 px-2.5", collapsed && "lg:flex-col lg:justify-center lg:gap-1 lg:px-1 lg:py-1.5")}><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-primary-400 to-primary-700 text-[10px] font-semibold text-white">{currentUser.initials}</span><span className={clsx("vso-nav-label min-w-0", collapsed && "lg:hidden")}><span className="block truncate text-xs font-semibold text-neutral-800">{currentUser.name}</span><span className="block truncate text-[10px] font-medium text-neutral-400">{role}</span></span>{mode === "connected" && <button type="button" onClick={signOut} disabled={signingOut} aria-label="Sign out" data-tip={collapsed ? "Sign out" : undefined} title={collapsed ? undefined : "Sign out"} className={clsx("ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-neutral-400 hover:bg-white hover:text-neutral-700 disabled:opacity-50", press, collapsed && "lg:ml-0")}><LogOut size={16} /></button>}</div></div>

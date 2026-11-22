@@ -10,17 +10,15 @@
 // "qa" and soft-deleted at the end; `apps/api/scripts/clean-sales-dev.ts --qa` removes them for good.
 //
 //   node tooling/sales-qa/inbox-flow.mjs [--base http://localhost:3000] [--api http://localhost:4000] [--keep]
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const require = createRequire(join(homedir(), ".claude/skills/gstack/node_modules/"));
-const { chromium } = require("playwright");
+import { chromium, qaOut } from "./pw.mjs";
 const argv = process.argv.slice(2);
 const arg = (name, fallback) => argv.includes(`--${name}`) ? argv[argv.indexOf(`--${name}`) + 1] : fallback;
 const base = arg("base", "http://localhost:3000"), apiBase = arg("api", "http://localhost:4000"), keep = argv.includes("--keep");
-const out = join(process.env.QA_OUT ?? join(homedir(), "AppData/Local/Temp/claude/vso-qa"), `inbox-flow-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
+const out = qaOut(`inbox-flow-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`);
 mkdirSync(out, { recursive: true });
 const run = Date.now().toString(36), ME = "user-divyansh", HEAD = "user-adarsh";
 const FAKE_MAILBOX = "qa-fake-mailbox@example.invalid";
@@ -198,7 +196,7 @@ try {
     // Claude's reply, reviewed in another session: sent from the Inbox the same way, with Open in Review as a link.
     await go(page, `/sales/live/inbox?reply=${claudeIn.id}`);
     const claudeCard = page.getByRole("region", { name: "Claude's reply" });
-    check("Claude's ready reply shows inline", await seen(claudeCard.getByText("Passed Claude's review")) && await seen(claudeCard.getByText(/one place for your catalog/)));
+    check("Claude's ready reply shows inline", await seen(claudeCard.getByText("Passed the check")) && await seen(claudeCard.getByText(/one place for your catalog/)));
     check("Claude's reply: the main action is Send from the mailbox", await seen(claudeCard.getByRole("button", { name: `Send from ${FAKE_MAILBOX}` })));
     check("Claude's reply: no confirm opens by itself", await page.getByRole("alertdialog", { name: "Confirm sending" }).count() === 0);
     await visible(claudeCard).scrollIntoViewIfNeeded().catch(() => {}); await page.waitForTimeout(300);
@@ -211,7 +209,7 @@ try {
     await page.getByRole("button", { name: "Ask Claude to check it first" }).click(); await page.waitForTimeout(2000);
     const checked = (await detailOf(checkLead.id))?.drafts?.find((draft) => draft.purpose === "reply");
     check("Ask Claude to check it first: waits for Claude's review", checked?.status === "in_review" && !checked?.personApproval);
-    check("the card says it waits for Claude's review, with the prompt for a new chat", await seen(page.getByText("Waiting for Claude's review")) && await seen(page.getByText("review drafts", { exact: true })));
+    check("the card says it waits for Claude's review, with the prompt for a new chat", await seen(page.getByText("Being checked")) && await seen(page.getByText("review drafts", { exact: true })));
     check("you can still write your own instead", await seen(page.getByRole("button", { name: "Write my own reply" })));
     await shot(page, "inbox-desktop-check-first");
     await context.close();
@@ -312,7 +310,7 @@ try {
     await shot(page, "inbox-desktop-dark-claude-reply");
     await go(page, `/sales/live/inbox?reply=${checkIn.id}`);
     await visible(page.getByRole("button", { name: "Write my own reply" })).click(); await page.waitForTimeout(500);
-    check("dark: writing your own says it replaces the draft waiting for review", await seen(page.getByText("Saving this replaces the draft above that waits for a review.")));
+    check("dark: writing your own says it replaces the draft waiting for review", await seen(page.getByText("Saving this replaces the draft above that waits for the check.")));
     await shot(page, "inbox-desktop-dark-composer");
     // Saved: the API replaces the reply waiting for Claude's check in the same step (no discard from the browser), and only yours shows.
     const waitingBefore = (await detailOf(checkLead.id))?.drafts?.find((draft) => draft.purpose === "reply" && draft.status === "in_review");

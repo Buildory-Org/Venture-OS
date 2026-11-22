@@ -230,6 +230,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("mcp_search_usage").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     db.collection("sales_drafts").createIndex({ leadId: 1, createdAt: -1 }),
     db.collection("sales_drafts").createIndex({ workspaceId: 1, ventureId: 1, status: 1, updatedAt: -1 }),
+    // The send queue's worker (sales/channels/send-queue.ts) looks across workspaces for what is due; only queued drafts are in it.
+    db.collection("sales_drafts").createIndex({ "sendQueue.notBefore": 1 }, { partialFilterExpression: { "sendQueue.notBefore": { $exists: true } } }),
     db.collection("sales_plays").createIndex({ workspaceId: 1, ventureId: 1, status: 1 }),
     db.collection("sales_find_runs").createIndex({ workspaceId: 1, ventureId: 1, createdAt: -1 }),
     db.collection("sales_find_runs").createIndex({ workspaceId: 1, status: 1, createdAt: 1 }),
@@ -276,5 +278,8 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_inbound").createIndex({ workspaceId: 1, accountId: 1, from: 1 }, { unique: true, partialFilterExpression: { open: true } }),
     db.collection("sales_inbound").createIndex({ workspaceId: 1, ventureIds: 1, open: 1, at: -1 }),
     db.collection("sales_inbound").createIndex({ workspaceId: 1, accountId: 1, "items.externalId": 1 }),
+    // The autopilot's days (docs/sales-autopilot.md section 3): by _id per venture and day; the status reads the latest earlier day.
+    // Its state (`sales_autopilot_state`) is one row per venture, read by _id.
+    db.collection("sales_autopilot_days").createIndex({ workspaceId: 1, ventureId: 1, day: -1 }),
   ]);
 }

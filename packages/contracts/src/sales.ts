@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { idSchema, isoDateSchema, timezoneSchema } from "./common.js";
 import { deliverySchema, whatsappTemplateRefSchema } from "./sales-channels.js";
+import { autopilotItemSchema, autopilotSettingsSchema, draftSendQueueSchema } from "./sales-autopilot.js";
 
 // Sales (Dealflow). One lead record ("opportunity") moves through the founders' SLS-01 stages; see docs/sales-dealflow.md.
 
@@ -70,6 +71,8 @@ export const opportunitySchema = opportunityInputSchema.extend({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,
   verdict: verdictSummarySchema.optional(), needsYou: z.boolean().default(false), whatsappOptIn: whatsappOptInSchema.optional(), doNotContact: z.boolean().default(false),
   lastTouchAt: isoDateSchema.optional(), followUpDueAt: isoDateSchema.optional(), wonAt: isoDateSchema.optional(), deliveryTaskId: idSchema.optional(),
+  /** The autopilot's tries on this lead (judging it, writing its first message or follow-up); a value it can't read never breaks a list. */
+  autopilot: autopilotItemSchema.optional().catch(undefined),
   /** A stored code that is not three letters (written before the check existed) reads as no currency instead of failing the whole list. */
   currency: currencyCodeSchema.optional().catch(undefined),
 });
@@ -135,6 +138,8 @@ export const activitySchema = activityInputSchema.extend({
   id: idSchema, workspaceId: idSchema, ventureId: idSchema, leadId: idSchema, actorId: idSchema, via: z.enum(["app", "claude", "import", "system"]), createdAt: isoDateSchema, at: isoDateSchema,
   handledAt: isoDateSchema.optional(), handledBy: idSchema.optional(), stageFrom: salesStageSchema.optional(), stageTo: salesStageSchema.optional(),
   message: activityMessageSchema.optional(),
+  /** The autopilot's tries at sorting this reply; a value it can't read never breaks a list. */
+  autopilot: autopilotItemSchema.optional().catch(undefined),
 });
 export type Activity = z.infer<typeof activitySchema>;
 
@@ -219,6 +224,10 @@ export const draftSchema = z.object({
   sentAt: isoDateSchema.optional(), sentBy: idSchema.optional(), sentVia: draftSendInputSchema.shape.sentVia.optional(), createdAt: isoDateSchema, updatedAt: isoDateSchema,
   /** Sent through a connected account: which one, and the delivery (an "uncertain" one waits for a person to say whether it went out). */
   sentAccountId: idSchema.optional(), delivery: deliverySchema.optional(),
+  /** Waiting in the send queue (docs/sales-autopilot.md): the app sends it through `by`'s mailbox at or after `notBefore`. Only a ready draft has one. */
+  sendQueue: draftSendQueueSchema.optional(),
+  /** The autopilot's tries on this draft (its review, its rewrite); a value it can't read never breaks a list. */
+  autopilot: autopilotItemSchema.optional().catch(undefined),
   /** A discarded draft: when, by whom (absent when a rule discarded it) and why, in plain words. */
   discardedAt: isoDateSchema.optional(), discardedBy: idSchema.optional(), discardedReason: z.string().optional(),
   /**
@@ -328,6 +337,9 @@ export const salesOverviewSchema = z.object({
     // back with fixes (needs_changes), both also inside `toReview`; recommended leads approved for contact with no first message written or
     // sent; leads that opted in to WhatsApp whose first message waits as an email only (no WhatsApp version yet).
     inReview: z.number().int().default(0), needsChanges: z.number().int().default(0), firstMessagesToWrite: z.number().int().default(0), whatsappVersionsToWrite: z.number().int().default(0),
+    // Ready drafts split by what a person does next: waiting for a person's approval (inside `toReview`), and already in the send queue
+    // (the app sends them: they are in neither `toReview` nor `readyToSend`).
+    toApprove: z.number().int().default(0), queuedToSend: z.number().int().default(0),
   }),
   replies: z.array(inboxItemSchema), callsDue: z.array(leadCardSchema), followUpsDue: z.array(leadCardSchema), needsYou: z.array(leadCardSchema), wonToHandOver: z.array(leadCardSchema),
   toReview: z.array(draftWithLeadSchema), readyToSend: z.array(draftWithLeadSchema),
@@ -402,8 +414,12 @@ export const salesSettingsSchema = z.object({
   approvalMode: z.enum(["claude_review_enough", "person_approves_every_message"]).default("claude_review_enough"),
   allowedChannels: z.array(z.enum(SALES_CHANNELS)).min(1).default([...DEFAULT_SALES_CHANNELS]).transform((channels) => [...new Set(channels)]),
   timezone: timezoneSchema.default("Asia/Kolkata"),
+  /** The autopilot (docs/sales-autopilot.md): off until a head switches it on. Saved through PUT /sales/autopilot, never through PUT /sales/settings. */
+  autopilot: autopilotSettingsSchema.prefault({}),
 });
 export type SalesSettings = z.infer<typeof salesSettingsSchema>;
+/** What PUT /sales/settings takes: everything but the autopilot, which keeps what is stored. */
+export const salesSettingsInputSchema = salesSettingsSchema.omit({ autopilot: true });
 export const salesSettingsViewSchema = salesSettingsSchema.extend({ ventureId: idSchema, updatedAt: isoDateSchema.optional(), updatedBy: idSchema.optional() });
 
 // ---- Revenue (docs/sales-dealflow.md section 11): the chance a deal closes, by stage, unless a person sets one on the lead.

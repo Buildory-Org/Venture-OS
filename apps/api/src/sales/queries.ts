@@ -330,7 +330,9 @@ async function firstMessagesToWrite(ctx: SalesCtx, base: Document): Promise<numb
 
 // ---- Overview -------------------------------------------------------------------------------------------------------------
 
-const emptyCounts = { replies: 0, callsDue: 0, followUpsDue: 0, toReview: 0, readyToSend: 0, needsYou: 0, wonToHandOver: 0, openLeads: 0, totalLeads: 0, inReview: 0, needsChanges: 0, firstMessagesToWrite: 0, whatsappVersionsToWrite: 0 };
+const emptyCounts = { replies: 0, callsDue: 0, followUpsDue: 0, toReview: 0, readyToSend: 0, needsYou: 0, wonToHandOver: 0, openLeads: 0, totalLeads: 0, inReview: 0, needsChanges: 0, firstMessagesToWrite: 0, whatsappVersionsToWrite: 0, toApprove: 0, queuedToSend: 0 };
+/** A ready draft waiting in the send queue: the app sends it, so it is in neither "to review" nor "ready to send". */
+const isQueued = (draft: AppDocument) => draft.status === "ready" && Boolean(draft.sendQueue);
 
 /** Today for one person or venture (optionally one offer, or `none`): what needs a person now, the stage counts and the last seven days. */
 export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string | undefined; owner?: string | undefined; offerId?: string | undefined; tz?: string | undefined }, now = new Date()) {
@@ -404,8 +406,9 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
 
   // Each draft follows its own venture's approval mode and allowed channels.
   const { plays, settings: settingsByVenture, approval } = await approvalContext(ctx, draftRows);
-  const toReview = draftRows.filter((row) => row.status === "in_review" || row.status === "needs_changes" || needsPersonApproval(row, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
-  const readyToSend = draftRows.filter((row) => canSendNow(row, row.lead, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
+  const waiting = draftRows.filter((row) => !isQueued(row));
+  const toReview = waiting.filter((row) => row.status === "in_review" || row.status === "needs_changes" || needsPersonApproval(row, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
+  const readyToSend = waiting.filter((row) => canSendNow(row, row.lead, plays.get(String(row.playId)), settingsByVenture.get(String(row.ventureId))));
   const shownRows = [...toReview.slice(0, LIST_LIMIT), ...readyToSend.slice(0, LIST_LIMIT)];
   const [versions, targets] = await Promise.all([versionsOf(ctx, shownRows), targetsOf(ctx, shownRows)]);
 
@@ -416,6 +419,8 @@ export async function buildOverview(ctx: SalesCtx, query: { ventureId?: string |
     counts: {
       replies: replies?.total[0]?.n ?? 0, callsDue: callCount, followUpsDue: followCount, toReview: toReview.length, readyToSend: readyToSend.length, needsYou: needsCount, wonToHandOver: wonCount, openLeads, totalLeads,
       inReview: draftRows.filter((row) => row.status === "in_review").length, needsChanges: draftRows.filter((row) => row.status === "needs_changes").length, firstMessagesToWrite: firstMessages, whatsappVersionsToWrite: whatsappVersions.total,
+      // Ready drafts that wait for a person's approval (inside toReview), and those the send queue holds.
+      toApprove: toReview.filter((row) => row.status === "ready").length, queuedToSend: draftRows.filter(isQueued).length,
     },
     replies: (replies?.items ?? []).map(({ lead, ...activity }) => ({ activity: present(activity as AppDocument), lead: leadCard(lead, whyFor(lead, { kind: "reply", activity: activity as AppDocument, now })) })),
     callsDue: callRows.map((lead) => leadCard(lead, whyFor(lead, { kind: "call", now, dayStart }))),

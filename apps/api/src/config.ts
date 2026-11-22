@@ -34,6 +34,12 @@ const schema = z.object({
   SALES_FINDER: z.enum(["on", "off"]).default("on"),
   // Reads connected mailboxes (IMAP) every few minutes in this API process and files replies from leads (sales/channels/email). Never under tests.
   SALES_MAIL_SYNC: z.enum(["on", "off"]).default("on"),
+  // The sales autopilot and the send queue (docs/sales-autopilot.md), in this API process, never under tests. OFF unless the server's owner
+  // sets it to on: a server that can open saved mailbox passwords must never start sending by default. On top of it each venture switches
+  // its own autopilot on (off by default), and Claude's steps need ANTHROPIC_API_KEY. off: nothing is judged, written, reviewed or sent by the app.
+  SALES_AUTOPILOT: z.enum(["on", "off"]).default("off"),
+  // The Claude model the autopilot judges, writes and reviews with.
+  SALES_AUTOPILOT_MODEL: z.string().trim().min(1).default("claude-opus-5-5"),
   // The Meta Graph API version the WhatsApp and Instagram connections call.
   META_GRAPH_VERSION: z.string().trim().regex(/^v\d+\.\d+$/, "META_GRAPH_VERSION looks like v25.0").default("v25.0"),
   FILE_STORAGE: z.enum(["local", "r2"]).default("local"),

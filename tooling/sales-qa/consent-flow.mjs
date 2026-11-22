@@ -3,19 +3,17 @@
 // Creates a QA lead and a 1-day token for a venture head, cleans both up. Dev database only; the token is never printed.
 //
 //   node tooling/sales-qa/consent-flow.mjs [--base http://localhost:3000] [--phone]
-import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const require = createRequire(join(homedir(), ".claude/skills/gstack/node_modules/"));
-const { chromium } = require("playwright");
+import { chromium, qaOut } from "./pw.mjs";
 const argv = process.argv.slice(2);
 const base = argv.includes("--base") ? argv[argv.indexOf("--base") + 1] : "http://localhost:3000";
 const phone = argv.includes("--phone");
 const USER = "user-adarsh"; // venture head of Buildory: owns the QA lead, holds the token, confirms in the app
 const run = Date.now().toString(36);
-const out = join(process.env.QA_OUT ?? join(homedir(), "AppData/Local/Temp/claude/vso-qa"), `consent-flow-${phone ? "phone" : "desktop"}-${run}`);
+const out = qaOut(`consent-flow-${phone ? "phone" : "desktop"}-${run}`);
 mkdirSync(out, { recursive: true });
 let failed = 0, total = 0, rpcId = 0;
 function check(name, ok, detail = "") { total++; if (!ok) failed++; console.log(`${ok ? "PASS" : "FAIL"}  ${name}${!ok && detail ? `  -> ${String(detail).slice(0, 300)}` : ""}`); return ok; }

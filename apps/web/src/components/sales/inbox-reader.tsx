@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { REPLY_TYPES, type Activity } from "@venture-studio/contracts";
+import { autopilotStopped, REPLY_TYPES, type Activity } from "@venture-studio/contracts";
 import { ArrowLeft, ArrowUpRight, Check, Clock3, Reply } from "@/components/ui/icons";
 import { Select } from "@/components/ui/select";
 import { toast } from "@/components/ui/toast";
@@ -18,6 +18,16 @@ import { SlaChip, useNow, useSlaCalendars } from "./inbox-sla";
 import { useSalesShell } from "./sales-context";
 import { StageChip, VerdictChip, when } from "./sales-ui";
 import { DeliveryTicks } from "./channel-delivery";
+import { useAutopilot } from "./use-autopilot";
+
+/** How long a reply may wait for the app to sort it before the person is asked to (the app runs about once a minute). */
+const SORTING_MS = 10 * 60_000;
+/**
+ * A reply the app is still sorting: unsorted, waiting, arrived in the last few minutes, the app sorts replies for its venture, and it has
+ * not given up on this one (after its tries the person sorts it, at once).
+ */
+export const appSorting = (activity: Pick<Activity, "replyType" | "handledAt" | "at" | "autopilot">, appSorts: boolean, now: number) =>
+  appSorts && !activity.replyType && !activity.handledAt && !autopilotStopped(activity) && now - Date.parse(activity.at) < SORTING_MS;
 
 /** What the team's rules do with each kind of reply (docs/sales-dealflow.md section 5), in plain words. */
 const NEXT_STEP: Record<string, string> = {
@@ -58,8 +68,15 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
   const [typePick, setTypePick] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // The person chose to sort it themselves while the app was still sorting it.
+  const [sortSelf, setSortSelf] = useState(false);
 
   const now = useNow();
+  // The app (docs/sales-autopilot.md): it sorts replies and drafts the answer, and checks drafts, so the screen stops asking for a chat.
+  const autopilot = useAutopilot(lead.ventureId);
+  const appSorts = autopilot.does("replies");
+  const appChecks = autopilot.does("review");
+  const sorting = appSorting(activity, appSorts, now) && !sortSelf;
   const handled = Boolean(activity.handledAt);
   const full = detail.data?.lead;
   const context = detail.data;
@@ -91,7 +108,7 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
   function saved(draft: { id: string; status: string }, send: boolean) {
     setComposing(false); setError("");
     setJustSaved(send && draft.status === "ready" ? draft.id : "");
-    toast(draft.status === "ready" ? { title: "Reply saved, ready to send", body: lead.companyName } : { title: "Saved for Claude to check", body: `${lead.companyName}. In a new chat, ask Claude: review drafts. Then send it from here.` });
+    toast(draft.status === "ready" ? { title: "Reply saved, ready to send", body: lead.companyName } : appChecks ? { title: "Saved for the check", body: `${lead.companyName}. The app checks it, then you send it from here.` } : { title: "Saved for Claude to check", body: `${lead.companyName}. In a new chat, ask Claude: review drafts. Then send it from here.` });
     detail.reload(); refresh();
   }
   // A reply went out (through an account, or marked sent by hand): the API marks the message handled when the reply names it; one that
@@ -113,7 +130,7 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
         <h2 className="text-lg font-extrabold tracking-[-.02em] text-neutral-900 [overflow-wrap:anywhere]">{lead.companyName}{lead.city ? <span className="whitespace-nowrap font-semibold text-neutral-400"> · {lead.city}</span> : null}</h2>
         <p className="mt-0.5 text-xs font-medium text-neutral-500">{CHANNEL_LABEL[activity.kind] ?? activity.kind} reply{lead.contactName ? ` from ${lead.contactName}` : ""} · <span className="whitespace-nowrap">{stamp(activity.at)}</span></p>
       </div>
-      {handled ? <Badge tone="green">Handled</Badge> : <span className="flex flex-wrap items-center justify-end gap-1.5"><SlaChip activity={activity} now={now} calendar={calendar} /><ReplyTypeChip {...(activity.replyType ? { type: activity.replyType } : {})} /></span>}
+      {handled ? <Badge tone="green">Handled</Badge> : <span className="flex flex-wrap items-center justify-end gap-1.5"><SlaChip activity={activity} now={now} calendar={calendar} /><ReplyTypeChip sorting={sorting} {...(activity.replyType ? { type: activity.replyType } : {})} /></span>}
     </div>
 
     <div className="grid gap-5 p-4 sm:p-5 xl:grid-cols-[minmax(0,1fr)_280px]">
@@ -133,7 +150,7 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
         {full && context && replyDrafts.map((draft) => <ReplyCard key={draft.id} draft={draft} lead={full} autoSend={draft.id === justSaved} heldBy={heldSibling(replyDrafts, draft)} detail={context} onChanged={(change) => void replyChanged(change)} />)}
         {closedReplies.length > 0 && <div className="space-y-1.5">{closedReplies.map((draft) => <ClosedReplyLine key={draft.id} draft={draft} />)}</div>}
 
-        {composing && writer && !doNotContact && <ReplyComposer lead={full ?? lead} activity={activity} activities={detail.data ? history : null} pending={pendingReplies} onSaved={saved} onCancel={() => setComposing(false)} />}
+        {composing && writer && !doNotContact && <ReplyComposer lead={full ?? lead} activity={activity} activities={detail.data ? history : null} pending={pendingReplies} appChecks={appChecks} onSaved={saved} onCancel={() => setComposing(false)} />}
 
         <div className="flex flex-wrap items-center gap-2">
           {writer && !doNotContact && !composing && !readyReply && <button type="button" onClick={() => { setComposing(true); setError(""); }} className={replyDrafts.length ? secondaryClass : primaryClass}><Reply size={16} />{replyDrafts.length ? "Write my own reply" : "Write a reply"}</button>}
@@ -143,9 +160,14 @@ export function InboxReader({ item, onBack, onChanged }: { item: InboxItem; onBa
         </div>
         {teammate && <p className="text-xs text-neutral-500">{OWNER_ONLY_NOTE}</p>}
         {!writer && !teammate && <p className="text-xs text-neutral-500">You can read replies. The lead&apos;s owner or a venture head answers them.</p>}
-        {writer && !handled && !doNotContact && replyDrafts.length === 0 && !composing && <AskClaude prompt="draft replies to my inbox" note="reviewed in a new chat, then sent from here" />}
+        {writer && !handled && !doNotContact && replyDrafts.length === 0 && !composing && !appSorts && <AskClaude prompt="draft replies to my inbox" note="reviewed in a new chat, then sent from here" />}
 
-        {!activity.replyType && writer && !doNotContact && <div className="space-y-2 rounded-2xl border border-warning-surface bg-warning-surface p-4">
+        {sorting && writer && !doNotContact && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl bg-neutral-50 py-2 pl-3.5 pr-2">
+          <Clock3 size={15} aria-hidden="true" className="shrink-0 text-neutral-400" />
+          <p className="min-w-0 flex-1 text-xs leading-5 text-neutral-600"><b className="font-semibold text-neutral-800">The app is sorting this reply.</b> What it means, and a draft of your answer, appear here in a few minutes.</p>
+          <button type="button" onClick={() => setSortSelf(true)} className="inline-flex min-h-9 shrink-0 items-center rounded-lg px-2.5 text-xs font-semibold text-primary-700 transition-colors duration-150 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600">Sort it myself</button>
+        </div>}
+        {!activity.replyType && !sorting && writer && !doNotContact && <div className="space-y-2 rounded-2xl border border-warning-surface bg-warning-surface p-4">
           <p className="text-[13px] font-bold text-warning-text">What kind of reply is this?</p>
           <p className="text-xs leading-5 text-warning-text opacity-90">Nobody has sorted it yet. The kind decides the next step (and an opt-out puts them on the do-not-contact list), so pick one.</p>
           <div className="flex flex-wrap items-center gap-2"><div className="w-56 max-w-full"><Select aria-label="Reply type" className={inputClass} value={typePick} onChange={(event) => setTypePick(event.target.value)}><option value="">Choose…</option>{SORTABLE_TYPES.map((type) => <option key={type} value={type}>{REPLY_LABEL[type]}</option>)}</Select></div><button type="button" onClick={saveType} disabled={!typePick || busy === "type"} className={secondaryClass}><ActionLabel busy={busy === "type"} idle="Save" /></button></div>

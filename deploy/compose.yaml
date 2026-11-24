@@ -77,6 +77,12 @@ services:
       SALES_FINDER: ${SALES_FINDER:-on}
       # Reads connected mailboxes for replies from leads (docs/sales-channels.md); on unless set to off.
       SALES_MAIL_SYNC: ${SALES_MAIL_SYNC:-on}
+      # The send queue ("Approve and send" in Review) and the sales autopilot (docs/sales-autopilot.md); on unless set to off. Each
+      # venture's autopilot still stays off until a head switches it on in Sales settings, and an email only goes out after a person
+      # approved it, or from the mailbox of a person who chose automatic sending themselves.
+      SALES_AUTOPILOT: ${SALES_AUTOPILOT:-on}
+      # The Claude model for the autopilot's own steps. They need ANTHROPIC_API_KEY; without it those steps stay with Claude chats.
+      SALES_AUTOPILOT_MODEL: ${SALES_AUTOPILOT_MODEL:-claude-opus-5-5}
       # The Meta Graph API version the WhatsApp and Instagram connections call.
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v25.0}
     healthcheck:

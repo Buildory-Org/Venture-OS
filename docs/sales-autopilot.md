@@ -23,7 +23,8 @@ Server: `apps/api/src/sales/autopilot/*`, `apps/api/src/sales/channels/send-queu
 The connector's rules for Claude live in `apps/api/src/mcp/tools-sales.ts`, not in the API routes. The autopilot does not go through the
 connector, so it applies the same rules itself (share the functions where they can be exported; never copy a rule in a weaker form).
 
-1. **Off until switched on.** `SALES_AUTOPILOT=on` on the server (the default is **off**, and it never runs under tests),
+1. **Off until switched on.** `SALES_AUTOPILOT=on` on the server (the API's own default is **off**, and it never runs under tests; the
+   production stack in `deploy/compose.yaml` sets it on unless `deploy/.env` says `off`),
    `sales_settings.autopilot.enabled` per venture (default false), and `ANTHROPIC_API_KEY` for Claude's steps. Without any of the three,
    that part does nothing and says why (§6 blockers).
 2. **It works as a named person, who agreed.** `autopilot.runAsUserId`, an active member who can write in the venture. Leads it adds are
@@ -212,6 +213,8 @@ them, for example:
 - `apps/api/test/sales-autopilot.test.ts`, `apps/api/test/sales-send-queue.test.ts`: a fake model, a fake page reader and a fake mail
   provider; never a real network call, never a real send.
 - `SALES_AUTOPILOT=on|off` (default **off**; never under tests). `SALES_AUTOPILOT_MODEL` (default `claude-opus-5-5`).
+- Production (`deploy/compose.yaml`) passes both to the API and sets `SALES_AUTOPILOT` on unless `deploy/.env` says `off`, so "Approve and
+  send" works there without a setting. Each venture's autopilot is still off until a head switches it on.
 - The local demo server runs with `SALES_AUTOPILOT=on`, no Claude key, and one mailbox on a `.example` mail server, which can never be
   reached: it shows the screens and can send nothing.
 

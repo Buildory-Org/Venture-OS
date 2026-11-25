@@ -7,8 +7,11 @@
 //   `expectedUpdatedAt`. Editing, vetoing, discarding or sending it by hand takes it out of the queue (the routes unset `sendQueue`).
 // - Never twice: a worker claims a draft (`queueClaim`, one at a time) before it sends, the requestId is fixed per draft, queue entry and
 //   attempt (a retry of the same attempt replays the first answer), and sendDraftThrough's own lock stops a second send.
-// - Spaced per sender and venture (3 to 5 minutes), in the venture's working window, and never past the day's cap (claimSendSlot): a cap
-//   reached waits for the next working day, quietly.
+// - Spaced per sender and venture (4 to 10 minutes, never like clockwork), in the venture's working window, and never past the day's cap
+//   (claimSendSlot): a cap reached waits for the next working day, quietly.
+// - The sender's mailbox and domain are protected (mailbox-guard.ts): a warm-up limit per mailbox, spacing per mailbox across ventures, no
+//   mail to an address that bounced or whose domain takes no mail, a pause when emails bounce or the mail server pushes back (the emails
+//   stay queued), and no automatic sending from a domain without SPF and DMARC records.
 // - Whatever takes a draft out of the queue without a person asking (a changed draft, a blocker, no mailbox, three failures, an unclear send)
 //   is audited with the reason and told to the sender, with a link to the draft.
 import { randomUUID } from "node:crypto";
@@ -25,7 +28,8 @@ import { loadLead, requireLeadEditor, versionBlocker } from "../leads.js";
 import { calendarOf, loadSettings } from "../settings.js";
 import { WORK_START_HOUR, inWorkingWindow, localDay, localMoment, nextWorkingDate } from "../workdays.js";
 import { chooseSendAccount, missingSecrets, pickSendAccount, usableAccounts, type ChannelEnv } from "./accounts.js";
-import { STALE_SEND_MS, SendCapReached, flipStaleSend, sendDraftThrough } from "./dispatch.js";
+import { STALE_SEND_MS, SendCapReached, SendFailed, flipStaleSend, sendDraftThrough } from "./dispatch.js";
+import { DNS_RECHECK_MS, PASSWORD_PAUSE_MS, SLOW_DOWN_PAUSE_MS, addressBlocker, canReceiveMail, guardOf, noteBadAddress, pauseMailbox, pausedNow, recordsProblem, senderRecordsFor, spaceMailbox } from "./mailbox-guard.js";
 
 /** The queue worker runs in the API process when SALES_AUTOPILOT is on, never under the test runner. */
 export const sendQueueEnabled = (config: { SALES_AUTOPILOT: "on" | "off"; NODE_ENV: string }) => config.SALES_AUTOPILOT === "on" && config.NODE_ENV !== "test";
@@ -38,10 +42,15 @@ export const QUEUE_POLL_MS = 60_000;
 /** A provider failure is tried again this much later, three tries in all. */
 export const RETRY_MS = 15 * 60_000;
 export const MAX_ATTEMPTS = 3;
+/**
+ * How often one email may be put off because the mail server's answer to it paused its mailbox ("slow down", a block). Past it the answer
+ * counts as that email's own failed try: an answer only this email keeps getting is about this email, not about the mailbox.
+ */
+export const MAX_WAITS = 2;
 /** How long a worker holds a draft it is sending (a worker that died lets go after this). */
 const CLAIM_MS = 5 * 60_000;
-/** 3 minutes between one sender's messages in a venture, plus up to 2 minutes so they don't go out like clockwork. */
-export const defaultGapMs = () => 3 * 60_000 + Math.floor(Math.random() * 2 * 60_000);
+/** 4 minutes between one sender's messages, plus up to 6 more so they don't go out like clockwork: a day's 20 emails take over two hours. */
+export const defaultGapMs = () => 4 * 60_000 + Math.floor(Math.random() * 6 * 60_000);
 
 /** Why a draft on another channel isn't queued, in the words the person sees. */
 const NOT_EMAIL: Readonly<Record<string, string>> = {
@@ -60,11 +69,17 @@ const QUEUED_PURPOSES = ["first_touch", "follow_up"] as const;
 /** One sender's sends in one venture: a lock row per `workspace:venture:sender`, so two API processes never send for them at once. */
 const SENDER_LOCKS = "sales_send_queue_senders";
 
-type QueueEntry = { at: Date; by: string; auto?: boolean; accountId?: string; version: Date; notBefore: Date; attempts: number; lastError?: string };
+/** `waits`: how often a send of it was put off because its mailbox was paused by the mail server's answer (not a failed try: `attempts` stays). */
+type QueueEntry = { at: Date; by: string; auto?: boolean; accountId?: string; version: Date; notBefore: Date; attempts: number; waits?: number; lastError?: string };
 const entryOf = (draft: AppDocument): QueueEntry | undefined => (draft.sendQueue && typeof draft.sendQueue === "object" ? draft.sendQueue as QueueEntry : undefined);
 const time = (value: unknown) => (value instanceof Date ? value.getTime() : Date.parse(String(value)));
 const hasEmail = (lead: AppDocument) => Array.isArray(lead.contactRoutes) && lead.contactRoutes.some((route: { kind?: unknown; value?: unknown }) => route?.kind === "email" && typeof route.value === "string" && route.value.trim().length > 0);
 const reasonOf = (error: unknown) => (error instanceof AppError ? error.message : "Something went wrong with this draft: try it again").slice(0, 300);
+/** The address an email to this lead goes to: its first email route (as dispatch.ts picks it). */
+const emailOf = (lead: AppDocument): string | undefined => {
+  const route = Array.isArray(lead.contactRoutes) ? lead.contactRoutes.find((item: { kind?: unknown; value?: unknown }) => item?.kind === "email" && typeof item.value === "string" && item.value.trim().length > 0) : undefined;
+  return route ? String(route.value).trim() : undefined;
+};
 
 /**
  * When the sender's next message in this venture may go: the later of now and their last queued message plus the gap, moved into the next
@@ -78,7 +93,7 @@ async function nextSlot(ctx: SalesCtx, ventureId: string, now: Date, gapMs: numb
 
 /**
  * Puts a ready email draft in the queue to go from `ctx.actor`'s mailbox. Refuses, with the reason in plain words, what a send would refuse.
- * `gapMs` (tests) fixes the spacing; it defaults to 3 to 5 minutes.
+ * `gapMs` (tests) fixes the spacing; it defaults to 4 to 10 minutes.
  */
 export async function enqueueDraft(ctx: SalesCtx, env: ChannelEnv, draft: AppDocument, lead: AppDocument, options: { auto?: boolean; accountId?: string; now?: Date; gapMs?: () => number } = {}): Promise<EnqueueResult> {
   const now = options.now ?? new Date();
@@ -99,6 +114,9 @@ export async function enqueueDraft(ctx: SalesCtx, env: ChannelEnv, draft: AppDoc
   const blocker = sendBlocker(draft, lead, play, await settingsFor(ctx, ventureId)) ?? await versionBlocker(ctx, draft);
   if (blocker) return refuse(blocker);
   if (!hasEmail(lead)) return refuse("This lead has no email address: add one to the lead first");
+  // An address that bounced, was refused or takes no mail is never queued again (mailbox-guard.ts).
+  const badAddress = await addressBlocker(ctx, draft, lead);
+  if (badAddress) return refuse(badAddress);
   // The mailbox it would go from: the one named, else the sender's default for the venture (or their only one). Checked now so the person
   // hears at once; the worker picks it again when it sends.
   let account: AppDocument | undefined;
@@ -203,6 +221,20 @@ export function createSendQueue(options: SendQueueOptions): SendQueue {
     } }, { upsert: true });
   }
 
+  /** A notice to the sender that isn't about one draft leaving the queue (the mailbox's domain needs something): once per `key`. It opens Channels. */
+  async function tellSender(draft: AppDocument, entry: QueueEntry, accountId: string, key: string, title: string, body: string, at: Date) {
+    await db.collection("notification_outbox").updateOne({ idempotencyKey: key }, { $setOnInsert: {
+      _id: randomUUID(), workspaceId: String(draft.workspaceId), userId: entry.by, type: "sales_needs_you", title: title.slice(0, 200), body: body.slice(0, 500), resourceType: "channel_account", resourceId: accountId,
+      idempotencyKey: key, state: "pending", attempts: 0, nextAttemptAt: at, createdAt: at, updatedAt: at,
+    } }, { upsert: true });
+  }
+
+  /** The mailbox a queued email would go from: the one named when it was queued, else the sender's default for the venture (or their only one). */
+  async function mailboxOf(ctx: SalesCtx, ventureId: string, entry: QueueEntry): Promise<AppDocument | undefined> {
+    try { return entry.accountId ? await pickSendAccount(ctx, ventureId, "email", entry.accountId) : chooseSendAccount(await usableAccounts(ctx, ventureId, "email"), ventureId); }
+    catch { return undefined; }
+  }
+
   /** Held: the autopilot's automatic step never queues it again (a person still can, which lifts the hold). */
   const holdOf = (reason: string, at: Date) => ({ at, reason: reason.slice(0, 300) });
 
@@ -291,7 +323,33 @@ export function createSendQueue(options: SendQueueOptions): SendQueue {
     try { lead = await loadLead(ctx, String(draft.leadId)); }
     catch { return remove(draft, entry, "The lead was deleted, or the sender can no longer open it", at); }
     if (time(draft.updatedAt) !== time(entry.version)) return remove(draft, entry, CHANGED, at);
-    const requestId = `queue-${String(draft._id)}-${time(entry.at)}-${entry.attempts}`;
+    // The mailbox it goes from (mailbox-guard.ts). Not found or not usable: the send below refuses in its own words.
+    const mailbox = await mailboxOf(ctx, ventureId, entry);
+    if (mailbox) {
+      // Paused (bounces, the mail server's push-back, a refused password): the sender's emails stay queued and wait for the pause to end.
+      const paused = pausedNow(mailbox, at);
+      if (paused) { await holdSender(draft, entry, inWorkingWindow(paused.until, cal), false); return "waiting"; }
+      // This mailbox's last message (for any venture) went less than the gap ago.
+      const turn = guardOf(mailbox).nextAt;
+      if (turn && turn.getTime() > at.getTime()) { await holdSender(draft, entry, inWorkingWindow(turn, cal), false); return "waiting"; }
+      // Nobody reads an automatic email before it goes, so it only goes from a domain that publishes SPF and DMARC records.
+      if (entry.auto) {
+        const problem = recordsProblem(mailbox, await senderRecordsFor(db, mailbox, at));
+        if (problem) {
+          await holdSender(draft, entry, inWorkingWindow(new Date(at.getTime() + DNS_RECHECK_MS), cal), false);
+          await tellSender(draft, entry, String(mailbox._id), `mailbox:${String(mailbox._id)}:records:${localDay(at, cal)}`, "Automatic sending is waiting", `${problem}. Until then nothing is sent without a person's approval; approved emails still go.`, at);
+          return "waiting";
+        }
+      }
+      // The lead's domain takes no mail at all: sending would only bounce.
+      const to = emailOf(lead);
+      if (to && !await canReceiveMail(to)) {
+        await noteBadAddress(db, { workspaceId, email: to, kind: "no_mail_server", reason: "Its domain has no mail server", leadId: String(lead._id), accountId: String(mailbox._id), at });
+        return remove(draft, entry, `${to} can't receive mail (its domain has no mail server): put another address on the lead`, at);
+      }
+    }
+    // Fixed per draft, queue entry and try, so a repeated call replays the first answer; a try after a pause is a new one.
+    const requestId = `queue-${String(draft._id)}-${time(entry.at)}-${entry.attempts}${entry.waits ? `-w${entry.waits}` : ""}`;
     const started = Date.now();
     const line = (outcome: string) => log({ level: "info", event: "sales.send_queue.send", draftId: String(draft._id), ventureId, attempt: entry.attempts + 1, outcome, ms: Date.now() - started });
     try {
@@ -305,8 +363,11 @@ export function createSendQueue(options: SendQueueOptions): SendQueue {
         return "uncertain";
       }
       line("sent");
-      const next = inWorkingWindow(new Date(at.getTime() + gap()), cal);
+      const spaced = new Date(at.getTime() + gap());
+      const next = inWorkingWindow(spaced, cal);
       await db.collection(SENDER_LOCKS).updateOne({ _id: senderKey(draft, entry) as never }, { $set: { lastSentAt: at, nextAt: next } });
+      // The mailbox's own turn is the bare gap: another venture it sends for has its own working days.
+      if (mailbox) await spaceMailbox(db, String(mailbox._id), spaced);
       await holdSender(draft, entry, next, true);
       const day = localDay(at, cal);
       // The day's `sent` (autopilot/days.ts keeps the same row shape, with $inc so no count is lost).
@@ -319,6 +380,25 @@ export function createSendQueue(options: SendQueueOptions): SendQueue {
         await holdSender(draft, entry, localMoment(nextWorkingDate(localDay(at, cal), cal), WORK_START_HOUR, 0, cal), false);
         return "waiting";
       }
+      // What the mail server said decides what happens to the mailbox (mailbox-guard.ts). In each case this email stays queued, untried.
+      const kind = error instanceof SendFailed ? error.kind : undefined;
+      // A refused password is never about the email. "Slow down" or a block usually isn't either, but an email that alone keeps getting
+      // that answer (the others go) has used its waits: from then on the answer is its own failed try, below.
+      const pauses = kind === "password" || ((kind === "slow_down" || kind === "blocked") && (entry.waits ?? 0) < MAX_WAITS);
+      if (mailbox && pauses) {
+        line(kind!);
+        const until = kind === "password" ? new Date(at.getTime() + PASSWORD_PAUSE_MS) : kind === "slow_down" ? new Date(at.getTime() + SLOW_DOWN_PAUSE_MS) : localMoment(nextWorkingDate(localDay(at, cal), cal), WORK_START_HOUR, 0, cal);
+        const reason = kind === "password" ? "The mailbox refused its password: enter it again in Sales > Channels" : kind === "slow_down" ? "The mail server asked to slow down" : "The mail server limited or blocked sending from this mailbox";
+        await pauseMailbox(db, mailbox, { kind: kind as "password" | "slow_down" | "blocked", reason, until }, at);
+        const resume = inWorkingWindow(until, cal);
+        await holdSender(draft, entry, resume, false);
+        // Nothing went out: it keeps its tries, and its next send is a new request (not a replay of this answer). After a "slow down" or a
+        // block it goes to the back of the sender's line, so the other emails show whether the answer was about the mailbox or about this one.
+        await drafts.updateOne({ _id: draft._id, "sendQueue.at": entry.at }, { $inc: { "sendQueue.waits": 1 }, ...(kind === "password" ? {} : { $set: { "sendQueue.notBefore": new Date(resume.getTime() + 1_000) } }) });
+        return "waiting";
+      }
+      // The lead's address was refused (dispatch.ts remembered it): trying again would only be refused again.
+      if (kind === "address") { line("refused"); return remove(draft, entry, (error as SendFailed).message, at); }
       const providerFailed = !(error instanceof AppError) || error.code === "SEND_FAILED";
       if (!providerFailed) {
         // A refusal (a blocker, the draft changed, no mailbox, someone else sending it): it leaves the queue unsent.

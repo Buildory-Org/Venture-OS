@@ -4,6 +4,7 @@
 import type { ChannelAccountTest, ChannelKind } from "@venture-studio/contracts";
 import type { AppDocument } from "../../db.js";
 import { emailProvider } from "./email/provider.js";
+import type { FailureKind } from "./mailbox-guard.js";
 import { instagramProvider } from "./meta/instagram.js";
 import { whatsappProvider } from "./meta/whatsapp.js";
 
@@ -26,12 +27,13 @@ export type SendRequest = {
 
 /**
  * `sent`: the provider accepted it (with its message id). `failed`: it certainly did not go out (bad password, refused recipient, Meta said
- * no) and may be tried again after fixing `error`. `uncertain`: the call broke after it may have gone out (a timeout, a dropped connection): a
- * person checks and says whether it went.
+ * no) and may be tried again after fixing `error`; `kind` names the failures the sender protection acts on (mailbox-guard.ts): a refused
+ * password, the mail server asking to slow down, a policy or rate block, a refused address. `uncertain`: the call broke after it may have
+ * gone out (a timeout, a dropped connection): a person checks and says whether it went.
  */
 export type SendOutcome =
   | { state: "sent"; externalId?: string; threadKey?: string; from?: string; to?: string }
-  | { state: "failed"; error: string }
+  | { state: "failed"; error: string; kind?: FailureKind }
   | { state: "uncertain"; error: string };
 
 export type ChannelProvider = {

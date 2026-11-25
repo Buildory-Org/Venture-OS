@@ -249,6 +249,11 @@ export async function ensureIndexes(db: AppDb): Promise<void> {
     db.collection("sales_views").createIndex({ workspaceId: 1, userId: 1, page: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
     // Daily send counters (sales/leads.ts claimSendSlot): one row per person, venture, channel and day, gone about 90 days after the day.
     db.collection("sales_send_counters").createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 }),
+    // Sender protection (sales/channels/mailbox-guard.ts): one row per mailbox and day for the warm-up limit (the days it sent on are counted,
+    // and the rows clear themselves after about 90 days), and the addresses that don't take mail (looked up by _id).
+    db.collection("sales_mailbox_days").createIndex({ accountId: 1, day: 1 }),
+    db.collection("sales_mailbox_days").createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 }),
+    db.collection("sales_bad_addresses").createIndex({ workspaceId: 1, createdAt: -1 }),
     // One row per message of a lead (sales/leads.ts openSiblings): two drafts of one message written at once collide on it. Only needed while
     // they are written, so it clears itself a week on.
     db.collection("sales_draft_slots").createIndex({ updatedAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 }),

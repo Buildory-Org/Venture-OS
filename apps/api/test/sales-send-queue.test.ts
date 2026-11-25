@@ -409,7 +409,7 @@ test("POST /drafts/batch: a person only; each draft on its own; approve follows 
       const times = [result.results[0]!.notBefore!, result.results[1]!.notBefore!];
       assert.deepEqual([result.firstSendAt, result.lastSendAt], times);
       const spacing = Date.parse(times[1]!) - Date.parse(times[0]!);
-      assert.ok(spacing >= 3 * MIN && spacing <= 5 * MIN, `spaced 3 to 5 minutes (${spacing} ms)`);
+      assert.ok(spacing >= 4 * MIN && spacing <= 10 * MIN, `spaced 4 to 10 minutes (${spacing} ms)`);
       const queuedA = await stored(a.id);
       assert.deepEqual([queuedA.sendQueue.by, queuedA.personApproval.by, queuedA.sendQueue.version.getTime()], ["user-member", "user-member", queuedA.updatedAt.getTime()]);
       assert.equal((await stored(wa.id)).personApproval.by, "user-member", "the WhatsApp draft stays approved");

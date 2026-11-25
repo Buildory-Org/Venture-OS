@@ -24,6 +24,7 @@ export function notificationHref(item: Linkable): { href: string; label: string 
   if (item.resourceType === "member") return { href: "/admin/live", label: "Open People & access" };
   if (item.resourceType === "opportunity") return { href: `/sales/live/leads?lead=${encodeURIComponent(item.resourceId)}`, label: "Open lead" };
   if (item.resourceType === "draft" || item.resourceType === "sales_draft") return { href: `/sales/live/review?draft=${encodeURIComponent(item.resourceId)}`, label: "Open draft" };
+  if (item.resourceType === "channel_account") return { href: "/sales/live/channels", label: "Open Channels" };
   if (item.resourceType === "activity") return { href: `/sales/live/inbox?reply=${encodeURIComponent(item.resourceId)}`, label: "Open reply" };
   if (item.resourceType === "event") return { href: `/calendar/live?event=${encodeURIComponent(item.resourceId)}`, label: "Open event" };
   if (item.resourceType === "document") return { href: `/knowledge/live?doc=${encodeURIComponent(item.resourceId)}`, label: "Open document" };

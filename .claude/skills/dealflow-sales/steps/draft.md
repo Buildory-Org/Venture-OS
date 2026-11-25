@@ -24,6 +24,10 @@ Only for a lead whose latest verdict says recommend (or an answer to a reply the
 A lead has one waiting draft per channel for its first message and for its follow-up: a second one on the same channel is
 refused ("already has an email first message waiting"); change the waiting one with `revise_draft` instead.
 
+An email to an address that bounced, was refused by the mail server or whose domain takes no mail is refused too ("Not drafted:
+… so the app won't email it again"). Don't try again and never guess another address: look for one the company publishes
+(`enrich_lead`), and if there is none say so and leave the lead for a call.
+
 ## First messages for the recommended leads
 
 "Write first messages for my recommended leads": `find_leads` (verdict `recommend`, stage `approved_for_contact`, owner `me`,

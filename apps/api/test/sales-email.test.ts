@@ -17,7 +17,7 @@ const smtp = { smtp: { host: "smtp.gmail.com", port: 465, security: "ssl" as con
 const err = (fields: Record<string, unknown>) => Object.assign(new Error(String(fields.message ?? "failed")), fields);
 
 test("SMTP failures in plain words: refused before the message is nothing sent, a connection lost while it is on its way is unclear", () => {
-  assert.deepEqual(smtpFailure(err({ code: "EAUTH", responseCode: 535, command: "AUTH PLAIN" }), "login", smtp), { state: "failed", error: "Gmail refused the password: use an app password (Google Account > Security > App passwords), not your normal Gmail password" });
+  assert.deepEqual(smtpFailure(err({ code: "EAUTH", responseCode: 535, command: "AUTH PLAIN" }), "login", smtp), { state: "failed", kind: "password", error: "Gmail refused the password: use an app password (Google Account > Security > App passwords), not your normal Gmail password" });
   assert.match(smtpFailure(err({ code: "EAUTH" }), "login", { smtp: { host: "smtp.zoho.in", port: 465, security: "ssl" } }).error, /^Zoho refused the password: use an app-specific password/);
   assert.match(smtpFailure(err({ code: "EAUTH" }), "login", { smtp: { host: "smtp.office365.com", port: 587, security: "starttls" } }).error, /^Outlook refused the password/);
   assert.match(passwordAdvice("mail.hostinger.com"), /^The mailbox refused the username or password/);
@@ -39,8 +39,10 @@ test("SMTP failures in plain words: refused before the message is nothing sent, 
   assert.match(smtpFailure(err({ code: "ETLS", message: "wrong version number" }), "connect", smtp).error, /secure connection .* failed: check the security setting \(SSL for port 465, STARTTLS for 587\)/);
   assert.equal(smtpFailure(err({ code: "ETIMEDOUT" }), "login", smtp).state, "failed");
   // The server refused the message (5xx or 4xx on MAIL FROM, RCPT TO or DATA): it didn't go out.
-  assert.deepEqual(smtpFailure(err({ code: "EENVELOPE", responseCode: 550, command: "RCPT TO", response: "550 5.1.1 User unknown" }), "send", smtp), { state: "failed", error: "The mail server refused the lead's address (550 5.1.1 User unknown): check that it is right" });
-  assert.match(smtpFailure(err({ code: "EMESSAGE", responseCode: 554, command: "DATA", response: "554 5.7.1 Message rejected as spam" }), "send", smtp).error, /^The mail server refused the message \(554 5\.7\.1 Message rejected as spam\)$/);
+  assert.deepEqual(smtpFailure(err({ code: "EENVELOPE", responseCode: 550, command: "RCPT TO", response: "550 5.1.1 User unknown" }), "send", smtp), { state: "failed", kind: "address", error: "The mail server refused the lead's address (550 5.1.1 User unknown): check that it is right" });
+  assert.match(smtpFailure(err({ code: "EMESSAGE", responseCode: 554, command: "DATA", response: "554 5.3.0 Message content rejected" }), "send", smtp).error, /^The mail server refused the message \(554 5\.3\.0 Message content rejected\)$/);
+  // The server's own limit or spam policy is about the sender: the send queue pauses the mailbox on it (mailbox-guard.ts).
+  assert.deepEqual(smtpFailure(err({ code: "EMESSAGE", responseCode: 554, command: "DATA", response: "554 5.7.1 Message rejected as spam" }), "send", smtp), { state: "failed", kind: "blocked", error: "The mail server refused to send it (554 5.7.1 Message rejected as spam): it has limited or blocked sending from this mailbox for now" });
   assert.match(smtpFailure(err({ code: "EENVELOPE", responseCode: 553, command: "MAIL FROM", response: "553 not owned" }), "send", smtp).error, /refused to send from your address/);
   assert.match(smtpFailure(err({ code: "EMESSAGE", responseCode: 451, command: "DATA", response: "451 try later" }), "send", smtp).error, /asked to try again later/);
   assert.equal(smtpFailure(err({ code: "EENVELOPE", message: "No recipients defined" }), "send", smtp).state, "failed");

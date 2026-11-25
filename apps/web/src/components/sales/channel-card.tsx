@@ -39,6 +39,9 @@ export function ChannelCard({ account, mine, onEdit, onChanged }: { account: Cha
   const email = emailSettingsOf(account);
   const meta = account.kind === "whatsapp" || account.kind === "instagram" ? account.kind : null;
   const note = account.status === "needs_attention" ? account.statusNote || account.lastError : "";
+  // What the sender protection is doing for this mailbox: a pause of its send queue, a record its domain lacks, its warm-up limit.
+  const protection = account.enabled ? account.protection : undefined;
+  const protectionNotes = [protection?.pauseNote, protection?.domainNote].filter((text): text is string => Boolean(text));
 
   async function run(name: NonNullable<typeof busy>, action: () => Promise<void>) {
     setBusy(name); setError("");
@@ -60,6 +63,7 @@ export function ChannelCard({ account, mine, onEdit, onChanged }: { account: Cha
     account.lastCheckedAt ? `Tested ${timeAgo(account.lastCheckedAt)}` : "",
     email ? (email.syncInbox ? `Reads replies${account.lastSyncAt ? ` · checked ${timeAgo(account.lastSyncAt)}` : ""}` : "Doesn't read replies") : "",
     email?.saveToSent ? "Saves a copy in Sent" : "",
+    protection?.dayLimit !== undefined && protection.dayCap !== undefined ? `Warming up: the queue sends up to ${protection.dayLimit} a day for now (${protection.dayCap} later)` : "",
   ].filter(Boolean);
 
   return <li className={clsx("min-w-0 rounded-2xl border bg-white p-4 transition-colors duration-150", account.enabled ? "border-neutral-200" : "border-dashed border-neutral-200 bg-neutral-50")}>
@@ -75,6 +79,7 @@ export function ChannelCard({ account, mine, onEdit, onChanged }: { account: Cha
     </div>
 
     {note && !result && <p className="mt-3 flex items-start gap-2 rounded-xl bg-danger-surface p-3 text-xs font-semibold leading-5 text-danger-text"><CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">{note}</span></p>}
+    {protectionNotes.map((text) => <p key={text} className="mt-3 flex items-start gap-2 rounded-xl bg-warning-surface p-3 text-xs font-semibold leading-5 text-warning-text"><CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span className="min-w-0 [overflow-wrap:anywhere]">{text}</span></p>)}
     {owner && unreadable.length > 0 && <p className="mt-3 flex items-start gap-2 rounded-xl bg-warning-surface p-3 text-xs font-semibold leading-5 text-warning-text"><CircleAlert size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span>The saved {unreadable.join(" and ")} can&apos;t be read any more. Choose Edit and enter {unreadable.length > 1 ? "them" : "it"} again.</span></p>}
     {account.status === "not_tested" && owner && account.enabled && !linkedin && <p className="mt-3 text-xs leading-5 text-neutral-500">Not checked yet. Press Test: it {email ? "signs in to the mailbox" : "checks it with Meta"} without sending anything.</p>}
 

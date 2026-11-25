@@ -4,7 +4,8 @@ import { AUTOPILOT_STEPS, autopilotStatusSchema, type AutopilotSettings, type Au
 import type { AppDb, AppDocument } from "../../db.js";
 import { actorFor } from "../../middleware.js";
 import { canWriteIn, isHeadOf, type Actor } from "../access.js";
-import { ACCOUNTS, canUseAccount, type ChannelEnv } from "../channels/accounts.js";
+import { ACCOUNTS, canUseAccount, chooseSendAccount, type ChannelEnv } from "../channels/accounts.js";
+import { guardOf, pauseWords, recordsProblem } from "../channels/mailbox-guard.js";
 import { needsPersonApproval } from "../drafts.js";
 import { usableOffers } from "../offers.js";
 import { resolveSearchKeys, type SearchKeyEnv } from "../search-keys.js";
@@ -36,10 +37,10 @@ export function stepsOn(settings: AutopilotSettings): Step[] {
 }
 const MODEL_STEPS: readonly Step[] = ["judge", "write", "review", "followUps", "replies"];
 
-/** Whether the person has an enabled mailbox they may send from for this venture. */
-async function hasMailbox(db: AppDb, actor: Actor, ventureId: string): Promise<boolean> {
+/** The enabled mailboxes the person may send from for this venture. */
+async function mailboxesOf(db: AppDb, actor: Actor, ventureId: string): Promise<AppDocument[]> {
   const rows = await db.collection(ACCOUNTS).find({ workspaceId: actor.membership.workspaceId, kind: "email", ventureIds: ventureId, enabled: { $ne: false } }).limit(50).toArray();
-  return rows.some((account) => canUseAccount(actor, account, ventureId));
+  return rows.filter((account) => canUseAccount(actor, account, ventureId));
 }
 
 /**
@@ -67,7 +68,8 @@ export async function autopilotBlockers(db: AppDb, env: AutopilotEnv, workspaceI
   const keys = await resolveSearchKeys(db, workspaceId, env);
   const finderReady = env.SALES_FINDER === "on" && (keys.tinyfish.length > 0 || keys.exa.length > 0);
   const who = await runAsActor(db, workspaceId, ventureId, settings.runAsUserId);
-  const mailboxReady = "actor" in who ? await hasMailbox(db, who.actor, ventureId) : false;
+  const mailboxes = "actor" in who ? await mailboxesOf(db, who.actor, ventureId) : [];
+  const mailboxReady = mailboxes.length > 0;
   if (!serverOn) blockers.push({ text: "Autopilot is switched off on this server." });
   if (settings.enabled && "problem" in who) blockers.push({ text: who.problem });
   if (!modelReady) for (const step of MODEL_STEPS.filter((item) => on.includes(item))) blockers.push({ step, text: NO_KEY });
@@ -80,6 +82,14 @@ export async function autopilotBlockers(db: AppDb, env: AutopilotEnv, workspaceI
     else if (!finderReady) blockers.push({ step: "find", text: "Company search has no key: an admin adds one in Sales settings." });
   }
   if (settings.send !== "by_hand" && "actor" in who && !mailboxReady) blockers.push({ step: "send", text: `${who.name} has no mailbox connected: connect one in Channels.` });
+  // The sender protection (channels/mailbox-guard.ts) on the mailbox the queue would pick: a pause, and for automatic sending the domain's records.
+  const mailbox = settings.send !== "by_hand" ? chooseSendAccount(mailboxes, ventureId) : undefined;
+  if (mailbox) {
+    const paused = pauseWords(mailbox, new Date());
+    if (paused) partial.push({ step: "send", text: paused });
+    const records = settings.send === "automatic" ? recordsProblem(mailbox, guardOf(mailbox).dns) : undefined;
+    if (records) partial.push({ step: "send", text: `Automatic sending waits: ${records}.` });
+  }
   if (day) {
     const cap = callBudget(settings.dailyLeadLimit);
     if (await callsMade(db, ventureId, day) >= cap) blockers.push({ text: budgetText(cap) });

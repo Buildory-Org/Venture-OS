@@ -2,7 +2,8 @@
 //
 // Order of a send: every check that can refuse without side effects (the draft, the account, the recipient, WhatsApp/Instagram's 24-hour
 // windows), then the claims (the draft's `sendLock`, set only on a ready draft without one; then one of the day's sends under the venture's
-// cap), then the same checks once more against what is stored now (the lead may have been put on the do-not-contact list, the approval or
+// cap; then, for a first message or a follow-up by email, one of its mailbox's sends for the day: the warm-up limit of mailbox-guard.ts,
+// counted for every send and a limit for the send queue only), then the same checks once more against what is stored now (the lead may have been put on the do-not-contact list, the approval or
 // the channel withdrawn meanwhile: the claims are given back and nothing goes out), then the provider call outside any transaction with a
 // 25-second limit, then the outcome:
 //   sent      the draft is marked sent and the outbound activity logged through applyActivity (stage, follow-up date and the other rules),
@@ -30,6 +31,7 @@ import { hasCountryCode, normalizePhone } from "../suppression.js";
 import { localDay } from "../workdays.js";
 import { ACCOUNTS, canUseAccount, chooseSendAccount, missingSecrets, openSecrets, pickSendAccount, type ChannelEnv } from "./accounts.js";
 import { emailMessageId } from "./email/provider.js";
+import { MailboxLimitReached, addressBlocker, claimMailboxSlot, isCold, noteBadAddress, releaseMailboxSlot, type FailureKind } from "./mailbox-guard.js";
 import { providerFor, type SendOutcome, type SendRequest } from "./provider.js";
 
 /**
@@ -78,7 +80,11 @@ type LogEntry = { requestId: string; outcome: "sent" | "failed" | "uncertain"; e
 type SendLock = { requestId?: string; by?: string; at?: Date; accountId?: string; channel?: string; day?: string; to?: string; subject?: string; externalId?: string; threadKey?: string; template?: SendInput["template"] };
 // The driver's update types don't know these fields: the value is cast.
 const logPush = (entry: LogEntry) => ({ sendLog: { $each: [defined(entry)], $slice: -LOG_KEEP } }) as never;
-const failedSend = (error: string) => new AppError(502, SEND_FAILED, error);
+/** 502 SEND_FAILED: it certainly did not go out. `kind` tells the send queue what to do next (pause the mailbox, drop the address). */
+export class SendFailed extends AppError {
+  constructor(message: string, readonly kind?: FailureKind) { super(502, SEND_FAILED, message); }
+}
+const failedSend = (error: string, kind?: FailureKind) => new SendFailed(error, kind);
 const lockOf = (draft: AppDocument) => (draft.sendLock ?? undefined) as SendLock | undefined;
 /** The recipient as the app shows it on the draft: the address or number (an Instagram id means nothing to people). */
 const shownTo = (channel: SendChannel, to: string | undefined) => (channel === "instagram" ? undefined : to);
@@ -405,7 +411,7 @@ async function prepareSend(ctx: SalesCtx, env: ChannelEnv, claimed: AppDocument,
   const play = claimed.playId ? await db.collection("sales_plays").findOne({ _id: claimed.playId, workspaceId: ctx.workspaceId }) : null;
   const settings = await settingsFor({ ...ctx, settings: new Map() }, ventureId);
   // ...and only one version of a message goes out: another one being sent now (or sent meanwhile) stops this one.
-  const blocker = sendBlocker(claimed, lead, play, settings) ?? await versionBlocker(ctx, claimed);
+  const blocker = sendBlocker(claimed, lead, play, settings) ?? await versionBlocker(ctx, claimed) ?? await addressBlocker(ctx, claimed, lead);
   if (blocker) throw new AppError(409, "CONFLICT", blocker);
   const target = await recipientFor(ctx, account, lead, channel);
   const replied = claimed.inReplyTo ? await db.collection("sales_activities").findOne({ _id: String(claimed.inReplyTo), workspaceId: ctx.workspaceId }) : null;
@@ -449,7 +455,8 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   const ventureId = String(lead.ventureId);
   const play = draft.playId ? await db.collection("sales_plays").findOne({ _id: draft.playId, workspaceId: ctx.workspaceId }) : null;
   const settings = await settingsFor(ctx, ventureId);
-  const blocker = sendBlocker(draft, lead, play, settings) ?? await versionBlocker(ctx, draft);
+  // ...and a first message or a follow-up never goes to an address that bounced or takes no mail (mailbox-guard.ts).
+  const blocker = sendBlocker(draft, lead, play, settings) ?? await versionBlocker(ctx, draft) ?? await addressBlocker(ctx, draft, lead);
   if (blocker) throw new AppError(409, "CONFLICT", blocker);
   const account = await pickSendAccount(ctx, ventureId, channel, input.accountId);
   const accountId = String(account._id);
@@ -495,11 +502,26 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
     throw error;
   }
 
+  // A first message or a follow-up by email also takes one of its mailbox's sends for the day. Only the send queue is held to the
+  // mailbox's warm-up limit: reached, it waits for the next working day like the venture's cap.
+  let releaseMailbox: () => Promise<void> = async () => undefined;
+  if (channel === "email" && isCold(draft.purpose)) {
+    try {
+      releaseMailbox = await claimMailboxSlot(db, account, { cap: settings.dailyCaps.email, cal: calendarOf(settings), now, enforce: Boolean(input.queueEntry) });
+    } catch (error) {
+      await release();
+      await giveBack();
+      if (error instanceof MailboxLimitReached) throw new SendCapReached(error.message);
+      throw error;
+    }
+  }
+
   let prepared: Prepared;
   try {
     prepared = await prepareSend(ctx, env, claimed, String(lead._id), account, channel, input, attempt);
   } catch (error) {
-    // Refused at the last moment (or the bookkeeping broke): nothing went out, so both claims are given back.
+    // Refused at the last moment (or the bookkeeping broke): nothing went out, so every claim is given back.
+    await releaseMailbox();
     await release();
     await giveBack();
     throw error;
@@ -509,10 +531,13 @@ export async function sendDraftThrough(ctx: SalesCtx, env: ChannelEnv, draft: Ap
   const to = shownTo(channel, prepared.to);
 
   if (outcome.state === "failed") {
+    await releaseMailbox();
     await release();
     await unlock({ delivery: defined({ state: "failed", at, accountId, to, error: outcome.error }) }, { $push: logPush({ requestId: input.requestId, outcome: "failed", error: outcome.error, attempt, at }) });
-    await auditSales(ctx, "sales.draft.send_failed", "draft", String(draft._id), ventureId, { channel, attempt });
-    throw failedSend(outcome.error);
+    await auditSales(ctx, "sales.draft.send_failed", "draft", String(draft._id), ventureId, { channel, attempt, ...(outcome.kind ? { kind: outcome.kind } : {}) });
+    // The mail server refused the lead's address: no first message or follow-up goes to it again.
+    if (channel === "email" && outcome.kind === "address") await noteBadAddress(db, { workspaceId: ctx.workspaceId, email: prepared.to, kind: "refused", reason: outcome.error, leadId: String(lead._id), accountId, at }).catch(() => undefined);
+    throw failedSend(outcome.error, outcome.kind);
   }
 
   const markUncertain = async (error: string) => {
@@ -598,6 +623,8 @@ export async function settleDelivery(ctx: SalesCtx, draft: AppDocument, lead: Ap
     const settings = await settingsFor(ctx, String(lead.ventureId));
     if (lock.day && lock.by && lock.day === localDay(now, calendarOf(settings))) {
       await ctx.db.collection("sales_send_counters").updateOne({ _id: `${ctx.workspaceId}:${String(lead.ventureId)}:${lock.by}:${channel}:${lock.day}`, count: { $gt: 0 } }, { $inc: { count: -1 }, $set: { updatedAt: now } });
+      // ...and to its mailbox's day, when it was a first message or a follow-up by email.
+      if (channel === "email" && accountId && isCold(current.purpose)) await releaseMailboxSlot(ctx.db, accountId, lock.day);
     }
     await auditSales(ctx, "sales.draft.delivery", "draft", String(current._id), String(lead.ventureId), { channel, outcome });
     return { draft: changed };

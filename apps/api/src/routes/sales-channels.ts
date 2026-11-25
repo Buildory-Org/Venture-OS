@@ -12,6 +12,7 @@ import { AppError } from "../errors.js";
 import { overLimit } from "../middleware.js";
 import { canSeeVenture, canWriteIn, forbidClaude, forbidden, isHeadOf, loadVenture } from "../sales/access.js";
 import { ACCOUNTS, SECRET_NAMES, accountJson, canManageAccount, canSeeAccount, isPersonalKind, loadAccount, missingSecrets, newVerifyToken, openSecrets, sealSecret } from "../sales/channels/accounts.js";
+import { clearPause, recordsProblem, senderRecordsFor } from "../sales/channels/mailbox-guard.js";
 import { providerFor } from "../sales/channels/provider.js";
 import { auditSales, salesCtx, type SalesCtx } from "../sales/ctx.js";
 import { salesDraftSendRoutes } from "./sales-drafts.js";
@@ -185,6 +186,8 @@ export function salesChannelRoutes(database: Database, config: AppConfig): Route
       if (isDuplicate(error)) throw new AppError(409, "CONFLICT", DUPLICATE[kind]);
       throw error;
     }
+    // A mailbox whose queue waited for its password tries again with the new one (mailbox-guard.ts).
+    if (reconnect && kind === "email") await clearPause(db, account, "password", now);
     res.json(ok(json(ctx, await fresh(String(account._id)))));
   });
 
@@ -235,6 +238,16 @@ export function salesChannelRoutes(database: Database, config: AppConfig): Route
       // A passing test also lets a mailbox whose inbox sign-in failed be read again.
       ...(result.ok ? { $unset: { lastError: "", "mailSync.authFailedAt": "" } } : {}),
     });
+    if (kind === "email") {
+      // A mailbox that signs in again sends again: the pause a refused password put on its queue is lifted (mailbox-guard.ts).
+      if (result.ok) await clearPause(db, account, "password", now);
+      // The domain's SPF and DMARC records, looked up now: shown as one more check (it never fails the test: the mailbox itself works).
+      const records = await senderRecordsFor(db, account, now, true);
+      if (records && (records.spf !== "unknown" || records.dmarc !== "unknown")) {
+        const problem = recordsProblem(account, records);
+        result = { ...result, checks: [...result.checks, { name: "Domain records (SPF, DMARC)", ok: !problem, detail: problem ?? "Found: mail servers can tell this domain's mail is really yours" }] };
+      }
+    }
     await auditSales(ctx, "sales.channel.test", "channel_account", String(account._id), String((account.ventureIds as string[])[0] ?? ""), { kind, ok: result.ok });
     res.json(ok(result));
   });

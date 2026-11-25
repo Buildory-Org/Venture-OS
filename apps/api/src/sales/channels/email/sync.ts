@@ -27,6 +27,7 @@ import { auditSales, type SalesCtx } from "../../ctx.js";
 import { applyActivity, loadLead, reopenClosedBy } from "../../leads.js";
 import { isSharedDomain, leadContacts, normalizeEmail, suppressionKey } from "../../suppression.js";
 import { settleSentByBounce } from "../dispatch.js";
+import { noteBounce } from "../mailbox-guard.js";
 import { connectImap, domainOf, imapFailure, settingsOf } from "./provider.js";
 
 export const MAIL_SYNC_POLL_MS = 3 * 60_000;
@@ -299,8 +300,9 @@ export function createMailSync(options: MailSyncOptions): MailSync {
   /**
    * A bounce naming our messages: the delivery on that message's activity and its draft reads bounced. A send whose result was still unclear
    * is first recorded as sent (the bounce proves it went out). The message never reached the lead, so the drafts its sending closed (the
-   * lead's other versions of that first message or follow-up, or its other replies to the same message) open again (reopenClosedBy). Nothing
-   * else is stored.
+   * lead's other versions of that first message or follow-up, or its other replies to the same message) open again (reopenClosedBy). The
+   * sender protection then remembers the address (it is never mailed again), tells the sender and counts the mailbox's bounces
+   * (mailbox-guard.ts noteBounce). Nothing else is stored.
    */
   async function markBounced(ctx: SalesCtx, account: AppDocument, ids: { id: string; draftId: string }[], reason: string, now: Date): Promise<number> {
     const accountId = String(account._id);
@@ -320,7 +322,12 @@ export function createMailSync(options: MailSyncOptions): MailSync {
           log({ level: "warn", event: "sales.mail_sync.reopen_failed", draftId: String(draft._id), message: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
         });
       }
-      if (activity || draft) marked++;
+      if (activity || draft) {
+        marked++;
+        await noteBounce(db, { account, activity, draft, reason, now }).catch((error: unknown) => {
+          log({ level: "warn", event: "sales.mail_sync.bounce_not_noted", accountId, message: error instanceof Error ? error.message.slice(0, 200) : "unknown" });
+        });
+      }
     }
     return marked;
   }

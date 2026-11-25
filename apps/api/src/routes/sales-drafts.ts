@@ -7,6 +7,7 @@ import { AppError } from "../errors.js";
 import { forbidClaude, forbidden, isHeadOf, notFound, requireHead, requireWriter } from "../sales/access.js";
 import { canUseAccount, loadAccount, type ChannelEnv } from "../sales/channels/accounts.js";
 import { flipStaleSend, lockedMessage, sendDraftThrough, sendTargetsFor, settleDelivery, shownSendState } from "../sales/channels/dispatch.js";
+import { addressBlocker } from "../sales/channels/mailbox-guard.js";
 import { enqueueDraft, unqueueDraft } from "../sales/channels/send-queue.js";
 import { auditSales, salesCtx, settingsFor, type SalesCtx } from "../sales/ctx.js";
 import { DRAFT_CHANGED_MESSAGE, OWN_REPLY_KINDS, approvalNeed, changedSince, channelOf, draftChanged, expectedVersion, isOpenDraft, isOwnReply, needsPersonApproval, reviewOutcome, sendBlocker, startsAsOwnReply } from "../sales/drafts.js";
@@ -116,6 +117,10 @@ export function salesDraftRoutes(database: Database): Router {
     if (lead.doNotContact) throw new AppError(409, "CONFLICT", "This lead is on the do-not-contact list: no drafts can be written for it");
     const settings = await settingsFor(ctx, String(lead.ventureId));
     if (!settings.allowedChannels.includes(channelOf(input) as never)) throw new AppError(409, "CONFLICT", `This venture does not use ${channelOf(input)} for outreach (see its sales settings)`);
+    // A first message or a follow-up by email to an address that bounced, was refused or takes no mail is not written at all: it could
+    // never be sent from the app (channels/mailbox-guard.ts). Another address on the lead, or another channel, is the way on.
+    const badAddress = await addressBlocker(ctx, { channel: input.channel, purpose: input.purpose }, lead);
+    if (badAddress) throw new AppError(409, "CONFLICT", `Not drafted: ${badAddress}`);
     // A lead that belongs to a play brings its drafts into that play (and its first-batch approval).
     const playId = input.playId ?? (typeof lead.playId === "string" ? lead.playId : undefined);
     if (playId && !await db.collection("sales_plays").findOne({ _id: playId, workspaceId: ctx.workspaceId, ventureId: lead.ventureId }, { projection: { _id: 1 } })) throw new AppError(400, "BAD_REQUEST", "That play does not belong to this lead's venture");

@@ -11,6 +11,7 @@ import { AppError } from "../../errors.js";
 import { canSeeVenture, canWriteIn, isHeadOf, notFound, type Actor } from "../access.js";
 import type { SalesCtx } from "../ctx.js";
 import { present } from "../present.js";
+import { protectionOf } from "./mailbox-guard.js";
 import { secretBox, type SealedSecret } from "../secret-box.js";
 
 export const ACCOUNTS = "sales_channel_accounts";
@@ -131,7 +132,9 @@ export function accountJson(account: AppDocument, actor: Actor, env: Pick<Channe
     return { ...(last4 ? { last4 } : {}), ...(setAt instanceof Date ? { setAt: setAt.toISOString() } : {}) };
   };
   const secrets = Object.fromEntries((SECRET_NAMES[account.kind as ChannelKind] ?? []).map((name) => [name, opened[name] !== undefined ? { set: true, ...shown(name) } : { set: false }]));
-  const { secrets: _sealed, verifyToken, mailSync: _sync, ...rest } = account;
+  const { secrets: _sealed, verifyToken, mailSync: _sync, guard: _guard, ...rest } = account;
+  // What the sender protection is doing for a mailbox (a pause, a missing domain record, the warm-up limit), in words (mailbox-guard.ts).
+  const protection = protectionOf(account);
   const webhook = manage && (account.kind === "whatsapp" || account.kind === "instagram") && typeof verifyToken === "string" ? { url: `${env.APP_ORIGIN.replace(/\/$/, "")}${META_WEBHOOK_PATH}`, verifyToken } : undefined;
-  return present({ ...rest, ventureIds: ventureIdsOf(account), defaultFor: Array.isArray(account.defaultFor) ? account.defaultFor : [], enabled: account.enabled !== false, status: account.status ?? "not_tested", secrets, ...(webhook ? { webhook } : {}), canManage: manage }) as unknown as ChannelAccount;
+  return present({ ...rest, ventureIds: ventureIdsOf(account), defaultFor: Array.isArray(account.defaultFor) ? account.defaultFor : [], enabled: account.enabled !== false, status: account.status ?? "not_tested", secrets, ...(webhook ? { webhook } : {}), ...(protection ? { protection } : {}), canManage: manage }) as unknown as ChannelAccount;
 }

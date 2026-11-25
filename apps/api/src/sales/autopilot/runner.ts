@@ -17,6 +17,7 @@ import { AppError } from "../../errors.js";
 import { isHeadOf } from "../access.js";
 import { auditSales, type SalesCtx } from "../ctx.js";
 import { MESSAGE_KINDS, needsPersonApproval } from "../drafts.js";
+import { addressBlocker } from "../channels/mailbox-guard.js";
 import { enqueueDraft } from "../channels/send-queue.js";
 import { createReader, type FetchImpl, type LookupImpl, type Reader } from "../finder/fetch.js";
 import { isNotCompanyHost } from "../finder/extract.js";
@@ -316,6 +317,8 @@ export function createAutopilot(options: AutopilotOptions): Autopilot {
           if (written >= most || paused || !(await room())) break;
           await each(purpose, leads, lead, async (on) => {
             if (messageBlocker(lead, await leadDrafts(lead._id), purpose, settings)) return;
+            // Its address bounced, was refused or takes no mail (channels/mailbox-guard.ts): nothing is written until a person adds another.
+            if (await addressBlocker(ctx, { channel: "email", purpose }, lead)) return;
             const offer = await offerContext(db, workspaceId, lead);
             if (!offer) return;
             const verdict = await verdictOf(lead);

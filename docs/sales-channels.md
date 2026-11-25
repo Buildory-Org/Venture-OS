@@ -157,7 +157,9 @@ Files: `apps/api/src/sales/channels/email/*`.
   1. A failed delivery report (`Action: failed` or `Status: 5.x.x`, or a mailer-daemon bounce with permanent/5xx wording) naming one of our
      Message-IDs → `delivery: { state: "bounced", error }` on that activity and draft. The message never reached the lead, so the drafts its
      sending closed (its email or WhatsApp twin, or the other replies to the same message) open again in the status they had, with
-     `reopenedAt` and `reopenedBecause: "bounced"` (`docs/sales-dealflow.md` §5); nothing else changes. Delay and success notices are skipped.
+     `reopenedAt` and `reopenedBecause: "bounced"` (`docs/sales-dealflow.md` §5). The sender protection then remembers the address (no first
+     message or follow-up goes to it again), tells the sender and counts the mailbox's bounces (`docs/sales-autopilot.md` §5a). Delay and
+     success notices are skipped.
   2. `Auto-Submitted` other than `no`, `X-Autoreply`, `Precedence: bulk|auto_reply|list` → skipped.
   3. Matched to a lead in one of the account's ventures by `In-Reply-To`/`References` against our sent Message-IDs, but only when the sender
      is one of the lead's addresses or on the lead's own (not shared) domain, and never a teammate, a connected mailbox or the mailbox's own

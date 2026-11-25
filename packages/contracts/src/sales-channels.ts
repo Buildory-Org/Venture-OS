@@ -84,6 +84,15 @@ export const channelAccountSchema = z.object({
   /** WhatsApp and Instagram: what to paste into the Meta app's webhook settings. */
   webhook: z.object({ url: z.string(), verifyToken: z.string() }).optional(),
   lastCheckedAt: isoDateSchema.optional(), lastSyncAt: isoDateSchema.optional(), lastError: z.string().optional(),
+  /**
+   * A mailbox only, and only while there is something to say (docs/sales-autopilot.md section 5a): the send queue is paused for it
+   * (`pauseNote` says until when and why), its domain lacks a record mail servers look for (`domainNote`), or it is still warming up
+   * (`dayLimit` first messages and follow-ups a day from the queue for now, on the way to `dayCap`).
+   */
+  protection: z.object({
+    pausedUntil: isoDateSchema.optional(), pauseKind: z.enum(["bounces", "slow_down", "blocked", "password"]).optional(), pauseNote: z.string().optional(),
+    domainNote: z.string().optional(), dayLimit: z.number().int().nonnegative().optional(), dayCap: z.number().int().nonnegative().optional(),
+  }).optional(),
   /** True when the person reading may change it (its owner, or for a venture account a head of every venture it serves, or an admin). */
   canManage: z.boolean(),
   createdBy: idSchema, createdAt: isoDateSchema, updatedAt: isoDateSchema,

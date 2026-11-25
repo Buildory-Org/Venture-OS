@@ -51,9 +51,13 @@ connector, so it applies the same rules itself (share the functions where they c
    do-not-contact, approval, the channel, the version, the cap.
 8. **A draft that changed is not sent.** The queue keeps the draft's `updatedAt` from when it was queued (`sendQueue.version`); any
    edit, review or other change since takes it out of the queue.
-9. **Spaced, in working hours, inside the caps.** Sends go on the venture's working days between 10:00 and 19:00 (its time zone), at
-   least 3 minutes apart per sender and venture (with a little jitter), and never past `dailyCaps.email`: the rest waits for the next
+9. **Spaced, in working hours, inside the caps.** Sends go on the venture's working days between 10:00 and 19:00 (its time zone), 4 to
+   10 minutes apart per sender and per mailbox (never like clockwork), and never past `dailyCaps.email`: the rest waits for the next
    working day.
+9a. **The sender's mailbox and domain are protected** (section 5a). A mailbox warms up (5 cold emails a day from the queue at first, 5
+   more after every 5 days it sent on, up to the cap). An address that bounced, was refused or whose domain takes no mail is never
+   mailed again. Three bounces among a mailbox's last 50 emails pause its queue for three days; the mail server's own push-back pauses
+   it too. Nothing goes out automatically from a domain without SPF and DMARC records.
 10. **Stop on reply, and opt-outs at once.** A reply discards the pending follow-up (already so). A reply Claude sorts as opt-out or
     hostile puts the company on the do-not-contact list at once, as when a person sorts it. Replies are **never** answered
     automatically: the answer is a draft a person sends.
@@ -169,11 +173,43 @@ export function createSendQueue(options: { database: Database; env: ChannelEnv; 
   out of the queue (the person says whether it went, as today).
 - One sender and venture is claimed at a time (a lock per sender and venture), and the worker checks the sender's last send before each
   one, so two API processes can't send a sender's messages closer together than the gap.
+- Before each send the worker asks the sender protection (section 5a) about the mailbox it would go from: paused → the sender's entries
+  wait for the pause to end; the mailbox's last message was less than the gap ago (for any venture) → it waits its turn; an `auto` entry
+  from a domain without SPF or DMARC → it waits 6 hours and the sender is told once a day; the lead's domain takes no mail → out of the
+  queue, the address remembered. A mail server's answer that is about the mailbox (a refused password, "slow down", a block) pauses the
+  mailbox instead of counting as a failed try: `attempts` stays, `sendQueue.waits` goes up (the next send is a new request, not a replay).
+  A refused address leaves the queue at once.
 - An `auto` entry is sent only while the venture is still on, still "automatic", and still works as the same person; otherwise it is
   dropped. `dropAutoQueued(scope, ventureId, reason)` drops them all when the settings change.
 - Editing, vetoing, discarding or sending a queued draft by hand takes it out of the queue (the routes unset `sendQueue`).
 - Lists: a queued draft is in neither `toReview` nor `readyToSend`; `counts.queuedToSend` counts them and `counts.toApprove` counts ready
   drafts that wait for a person's approval. Draft rows carry `sendQueue`.
+
+## 5a. Sender protection (`sales/channels/mailbox-guard.ts`)
+
+Receiving mail servers rate a sender by how it behaves. These rules keep a mailbox, and the domain behind it, in good standing while
+the app sends for it. They need no setting and no key. "Cold" means a first message or a follow-up; an answer to a reply is never cold.
+
+| Rule | What happens | Where |
+|---|---|---|
+| Warm-up limit | The queue sends at most 5 cold emails a day from a mailbox at first, and 5 more after every 5 days the mailbox sent on (counted over the last 30 days), up to the venture's `dailyCaps.email`: 5, 10, 15, 20. The rest waits for the next working day, quietly. Every cold email sent through the app counts (one row per mailbox and day in `sales_mailbox_days`); a person's own "Send now" is counted but never held. | `claimMailboxSlot` in `sendDraftThrough` |
+| Spacing | 4 to 10 minutes between one mailbox's queued emails, whichever venture they are for (`guard.nextAt`). | the worker |
+| Bad addresses | An address that bounced, that the mail server refused as wrong (a 5xx to RCPT TO with a 5.1.x, 5.2.1 or 5.4.1 status, or none), or whose domain has no mail server is kept in `sales_bad_addresses`. No cold email goes to it again from the app, by hand or from the queue, and none is written for it (the app, Claude's `save_draft` and the autopilot's own writer are refused); the refusal says so and what to do (another address, or send it yourself and mark it sent). An answer to a reply still goes: they wrote from somewhere. | `addressBlocker` in `POST /leads/:id/drafts`, the autopilot's write step, enqueue, and both checks of `sendDraftThrough` |
+| The lead's mail server | Before a queued send the lead's domain is looked up (MX, else an IPv4 or IPv6 address). A definite "no" takes the email out of the queue; a lookup that fails lets it go. | `canReceiveMail` in the worker |
+| Bounces | The inbox sync tells the protection about every bounce (`noteBounce`): the address is remembered, the sender is told once ("Bounced: email to Acme"), and the mailbox's last 50 emails of the last two weeks are counted. Three bounces pause its queue for three days and start the warm-up again at 5 a day. | `email/sync.ts` markBounced |
+| The mail server's push-back | A 4xx answer about us ("try again later" at MAIL FROM or DATA, or a rate or limit anywhere) pauses the mailbox for an hour. A 5xx answer about the sender (a sending limit, a rate or quota, spam, a block list, reputation, a suspended account, relaying refused, or a 5.7.x policy status at MAIL FROM or DATA) pauses it until the next working day at 10:00. A refused password pauses it until the password is entered again or a test passes (it is tried again every 6 hours). The emails stay queued, untried. An answer about the lead's side (greylisting, a full mailbox, a server that only takes mail from certain senders) pauses nothing and blames no address: that email is tried again like any failure. | `refusalKind` in `email/provider.ts` names the `kind`; the worker pauses |
+| One email, not the mailbox | The email whose answer paused the mailbox goes to the back of its sender's line. If it alone keeps getting that answer while the others go, its third one counts as its own failed try (`MAX_WAITS` = 2), so one lead can never stall a sender's queue. | the worker |
+| SPF and DMARC | The sending domain's records are looked up at most once a day (once an hour while something is missing; the Test button looks at once). Missing SPF or DMARC holds **automatic** entries only: nobody reads those before they go. Emails a person approved still go; the mailbox's card, its Test result and the Autopilot card say what is missing. A shared mail domain (gmail.com) is not looked up. | `senderRecordsFor`, `recordsProblem` |
+
+- The state lives on the mailbox's row as `guard` (`pausedUntil`, `pauseKind`, `pauseReason`, `rampSince`, `nextAt`, `dns`, `dayLimit`).
+  The API never returns it raw: a mailbox carries `protection` (`pauseNote`, `domainNote`, `dayLimit`, `dayCap`) only while there is
+  something to say.
+- Every pause is audited (`sales.channel.pause`) and told to the mailbox's owner once a day per kind, with a link to Channels. A pause
+  that already lasts longer is never shortened by a shorter one.
+- A lookup that fails (DNS down, a timeout) never holds or drops anything: only a definite answer does.
+- What it does not do: it does not judge the text (the review does), it does not warm a mailbox up with made-up mail, it does not look
+  at DKIM (the selector is not public knowledge), and it does not hold a person's own "Send now" except for a bad address.
+- Under the test runner nothing is looked up unless a test hands in a resolver (`useGuardDnsForTests`).
 
 ### Several drafts at once: `POST /v1/sales/drafts/batch`
 
@@ -193,6 +229,8 @@ them, for example:
 - "Claude isn't set up on this server yet: an admin adds the key." (judge, write, review, followUps, replies)
 - "Pick an offer for the daily search." / "Company search has no key: an admin adds one in Sales settings." (find)
 - "{name} has no mailbox connected: connect one in Channels." (send)
+- "The send queue is paused for {address} until {when}: {why}." (send; the rest of the work goes on)
+- "Automatic sending waits: {domain} has no SPF or DMARC record, …" (send, mode "automatic" only)
 - "The offer has no approved packet yet." (judge, write)
 
 ## 7. Screens (web)
@@ -206,12 +244,16 @@ them, for example:
 - **Inbox**: when the autopilot sorts replies, the reply type arrives filled in and the answer is drafted.
 - **Find leads**: the standing rule on top ("Every working day, find 10 …"), the one-off form under "Run once".
 - **Sales settings**: an Autopilot card (switch, who it works as, the steps, the three sending levels, the daily limit, blockers).
+- **Channels**: a mailbox's card says what the sender protection is doing (section 5a): a paused queue and why, a record its domain
+  lacks, and the warm-up limit while it is below the cap. Test adds a "Domain records (SPF, DMARC)" check.
 - **"Ask Claude" chips** stay only where the app does not do the step itself (the autopilot off, or the step switched off).
 
 ## 8. Tests and switches
 
 - `apps/api/test/sales-autopilot.test.ts`, `apps/api/test/sales-send-queue.test.ts`: a fake model, a fake page reader and a fake mail
   provider; never a real network call, never a real send.
+- `apps/api/test/sales-sender-protection.test.ts`: the warm-up, bad addresses, the pauses and the domain's records (section 5a), with a
+  fake mail provider and a fake DNS resolver.
 - `SALES_AUTOPILOT=on|off` (default **off**; never under tests). `SALES_AUTOPILOT_MODEL` (default `claude-opus-5-5`).
 - Production (`deploy/compose.yaml`) passes both to the API and sets `SALES_AUTOPILOT` on unless `deploy/.env` says `off`, so "Approve and
   send" works there without a setting. Each venture's autopilot is still off until a head switches it on.

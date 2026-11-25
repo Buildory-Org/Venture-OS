@@ -15,6 +15,7 @@ import SMTPConnection from "nodemailer/lib/smtp-connection";
 import type { AppDocument } from "../../../db.js";
 import { safeAddress, systemLookup, type LookupImpl } from "../../finder/fetch.js";
 import type { ChannelProvider, SendOutcome, SendRequest } from "../provider.js";
+import type { FailureKind } from "../mailbox-guard.js";
 
 /** "plain" may still sit on an account saved before mail had to be encrypted: it is treated as STARTTLS (required), never as clear text. */
 export type MailServer = { host: string; port: number; security: "ssl" | "starttls" | "plain" };
@@ -129,6 +130,31 @@ export function connectionAdvice(error: unknown, server: MailServer, what: "SMTP
 
 /** Our commands whose refusal the server explains in words worth showing (the lead's address, the sender, the message). */
 const REPLIED_COMMAND = /^(MAIL FROM|RCPT TO|DATA)\b/i;
+/**
+ * What a refusal (a 4xx or 5xx answer to MAIL FROM, RCPT TO or DATA) means for the sender protection (mailbox-guard.ts), or undefined when
+ * it is only about this one message (it is then tried again a few times, and nothing else changes):
+ * - "slow_down": a 4xx that is about us (anything at MAIL FROM or DATA; at RCPT TO only when it speaks of a rate or a limit). A 4xx about
+ *   the lead's side (a 4.1.x to 4.3.x status, greylisting) is this message's own delay.
+ * - "blocked": a 5xx that speaks of the sender (a sending limit, a rate or quota, spam, a block list, reputation, a suspended account, or
+ *   relaying refused: the mailbox's own set-up, so every message would be refused), or a 5.7.x policy status at MAIL FROM or DATA.
+ * - "address": a 5xx to RCPT TO that says the address itself is wrong (5.1.x, a disabled mailbox 5.2.1, no route to it 5.4.1, or no
+ *   status at all). A 5.7.x at
+ *   RCPT TO without a word about the sender (the lead's server only takes mail from certain senders), a full mailbox (5.2.2) or a message
+ *   problem (5.3.x) is neither: nobody's address is remembered as bad for it, and no mailbox is paused.
+ */
+const SENDER_WORDS = /\b(?:rate|limit(?:s|ed)?|quota|too many|exceed(?:s|ed)?|spam\w*|block ?list(?:ed)?|black ?list(?:ed)?|blocked|banned|reputation|suspend(?:ed)?|abuse|throttl\w*|relay\w*)\b/i;
+const ABOUT_THE_LEAD = /\b[45]\.[123]\.\d{1,3}\b|greylist/i;
+const POLICY_STATUS = /\b5\.7\.\d{1,3}\b/;
+const BAD_ADDRESS_STATUS = /\b5\.(?:1\.\d{1,3}|2\.1|4\.1)\b/;
+const ANY_STATUS = /\b[245]\.\d{1,3}\.\d{1,3}\b/;
+export function refusalKind(responseCode: number, command: string, words: string): FailureKind | undefined {
+  const atRcpt = /^RCPT/i.test(command);
+  const aboutUs = SENDER_WORDS.test(words) && !ABOUT_THE_LEAD.test(words);
+  if (responseCode < 500) return aboutUs || (!atRcpt && !ABOUT_THE_LEAD.test(words)) ? "slow_down" : undefined;
+  if (aboutUs) return "blocked";
+  if (!atRcpt) return POLICY_STATUS.test(words) ? "blocked" : undefined;
+  return BAD_ADDRESS_STATUS.test(words) || !ANY_STATUS.test(words) ? "address" : undefined;
+}
 
 /**
  * What a failed SMTP step means for the message. Before `send` nothing can have gone out (failed). During `send`, a refusal from the server
@@ -139,17 +165,21 @@ export function smtpFailure(error: unknown, phase: SmtpPhase, settings: Pick<Ema
   const failure = (error ?? {}) as ErrorLike;
   const code = codeOf(failure);
   const responseCode = typeof failure.responseCode === "number" ? failure.responseCode : undefined;
-  if (code === "EAUTH" || responseCode === 535 || responseCode === 534) return { state: "failed", error: passwordAdvice(settings.smtp.host) };
+  if (code === "EAUTH" || responseCode === 535 || responseCode === 534) return { state: "failed", kind: "password", error: passwordAdvice(settings.smtp.host) };
   if (phase !== "send") return { state: "failed", error: connectionAdvice(failure, settings.smtp, "SMTP") };
   const command = typeof failure.command === "string" ? failure.command : "";
   const replied = responseCode !== undefined && responseCode >= 400 && responseCode < 600 && REPLIED_COMMAND.test(command);
   const words = replied ? serverWords(failure) : "";
   const quoted = words ? ` (${words})` : "";
-  if (replied && responseCode! < 500) return { state: "failed", error: `The mail server asked to try again later${quoted}: send it again in a few minutes` };
-  if (replied && /^RCPT/i.test(command)) return { state: "failed", error: `The mail server refused the lead's address${quoted}: check that it is right` };
+  const kind = replied ? refusalKind(responseCode!, command, words) : undefined;
+  const named = kind ? { kind } : {};
+  if (replied && responseCode! < 500) return { state: "failed", ...named, error: `The mail server asked to try again later${quoted}: send it again in a few minutes` };
+  // The server's own limit or policy (too many messages, the sender blocked or rated as spam): more sends would make it worse.
+  if (kind === "blocked") return { state: "failed", kind, error: `The mail server refused to send it${quoted}: it has limited or blocked sending from this mailbox for now` };
+  if (replied && /^RCPT/i.test(command)) return { state: "failed", ...named, error: `The mail server refused the lead's address${quoted}: check that it is right` };
   if (replied && /^MAIL FROM/i.test(command)) return { state: "failed", error: `The mail server refused to send from your address${quoted}: the address must belong to the mailbox you signed in with` };
   if (replied) return { state: "failed", error: `The mail server refused the message${quoted}` };
-  if (code === "EENVELOPE") return { state: "failed", error: "The mail server refused the lead's address: check that it is right" };
+  if (code === "EENVELOPE") return { state: "failed", kind: "address", error: "The mail server refused the lead's address: check that it is right" };
   if (code === "EMESSAGE" || code === "ESTREAM") return { state: "failed", error: "The mail server refused the message" };
   return { state: "uncertain", error: "The mail server stopped answering while the message was being sent, so it may or may not have gone out: check your Sent folder, then say whether it went" };
 }

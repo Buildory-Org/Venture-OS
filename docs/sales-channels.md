@@ -10,7 +10,7 @@ ready at once, approved by them (`docs/sales-dealflow.md` §5, "A person's own r
 
 | Channel | What the app does | Account belongs to |
 |---|---|---|
-| Email | Sends from the person's own mailbox (SMTP), reads the inbox (IMAP) and files replies, bounces and opt-outs on the lead | the person (personal) |
+| Email | Sends from the person's own mailbox (SMTP), reads the inbox (IMAP) and files replies, bounces and opt-outs on the lead; **Mail** opens the whole mailbox for its owner (section 3a) | the person (personal) |
 | WhatsApp | Sends from the venture's WhatsApp Business number (Meta Cloud API) to leads who opted in; replies, delivery ticks and STOP arrive by webhook | the venture(s) |
 | Instagram | Receives DMs to the venture's professional account by webhook and answers within 24 hours of the person's last message | the venture(s) |
 | LinkedIn | No sending API exists for this use: the app opens the profile and copies the message, the person sends it, marks it sent, and the daily cap counts it | the person (personal) |
@@ -171,6 +171,51 @@ Files: `apps/api/src/sales/channels/email/*`.
   5. Duplicate guard: unique `(workspaceId, message.accountId, message.externalId)` for inbound activities.
   Errors set `lastError` and status `needs_attention` (auth) without stopping the other accounts.
 
+## 3a. Mail: the person's own mailbox as a webmail
+
+Files: `apps/api/src/routes/sales-mail.ts`, `apps/api/src/sales/channels/email/mailbox.ts`, `packages/contracts/src/sales-mail.ts`,
+`apps/web/src/screens/sales/mail.tsx`, `apps/web/src/components/sales/mail-parts.tsx`. Page: **Sales > Mail** (`/sales/live/mail`).
+
+The connected mailbox read live over IMAP the way a webmail reads it: every folder (Inbox, Sent, Drafts, Archive, Spam, Trash first, then the
+person's own), every message, not only mail from leads. **Only the mailbox's owner** opens it: an admin, a head or a teammate gets "not found",
+and Claude is refused (`forbidClaude`; MCP never reaches `/v1/sales/mail`). **Nothing read here is stored.** The inbox sync (section 3) still
+files only replies from leads.
+
+Routes (`/v1/sales/mail`, session only): `GET accounts` (the person's own mailboxes), `GET :accountId/folders` (with total and unread),
+`GET :accountId/messages?folder&before&q&limit` (newest first, 50 a page; `before` is a UID; `q` searches sender, recipients, subject and
+text), `GET :accountId/messages/:uid?folder` (one message; opening it sets `\Seen`), `PATCH :accountId/messages/:uid?folder`
+(`seen`, `flagged`), `POST :accountId/messages/:uid/move?folder` (`inbox`, `trash`, `junk`, `archive`: the folder with that role),
+`GET :accountId/messages/:uid/parts/:part?folder` (an attachment by its MIME part number, always `application/octet-stream` as a download,
+25 MB at most) and `POST :accountId/send`.
+
+- **Connections.** One IMAP connection per mailbox is kept for 90 seconds unused and the mailbox's requests take turns on it (a changed
+  password or server opens a new one). A connection the server dropped while unused is replaced once. Each request has 45 seconds (a
+  download 120); past it the connection is closed and the person reads "Your mail server took too long". Errors are the provider's plain
+  words (`imapFailure`), never what the server said.
+- **Showing a message.** Its first 8 MB is read and parsed (pictures inside the HTML become data: links). `cleanHtml` makes one pass over
+  the HTML (no parser, linear on any input): comments, scripts, frames, objects, embedded SVG and MathML, forms and their fields, meta, base
+  and link tags go; event attributes, `target`, `srcdoc` and `srcset` go; script, data and file links go (a data: picture stays); CSS
+  expressions go; links get `rel="noopener noreferrer"`. The web app shows it in a frame with `sandbox="allow-popups
+  allow-popups-to-escape-sandbox"` (no script, no same-origin, no forms) and a CSP of `default-src 'none'` with inline styles and data:
+  pictures only. **Pictures from the internet stay blocked** until the reader presses "Show pictures" (a picture can tell the sender the
+  message was opened). "Show as plain text" shows the text part.
+- **Writing.** New, Reply, Reply to all, Forward: plain text from the person's name and address (no tracking), threaded with In-Reply-To and
+  References, the message answered quoted under the text ("On …, … wrote:" in the writer's time zone), a forward carrying the message and its
+  attachments (left out, with a note, when they are too big). Attachments added in the browser: 10 files, 10 MB in all (the send route alone
+  takes a 15 MB body). Recipients: 30 at most. 20 sends a minute per person. A copy goes to Sent as for Sales sends (`saveToSent`), and a
+  reply sets `\Answered` on the message it answers.
+- **The same request twice sends once.** `requestId` is kept a week in `sales_mail_sends` (key: a hash of the mailbox and the request id). A
+  send that failed before the mail server accepted it can be tried again with the same id; an answer that came back unclear says so and is
+  not retried.
+- **Do not contact.** A new message or a forward to an address or domain on the do-not-contact list is refused. The person who wrote can
+  always be answered.
+- **Noted on leads.** After it went out, the message is noted on each lead it went to (one lead per address, in the mailbox's ventures, a
+  lead the sender may edit) as an outbound email (`applyActivity`, via app, `sendClaimed`: a person's own message is never held by a cap),
+  so the lead's history, stage and follow-up date are right. A reply to a message the sync filed marks that Inbox item handled. What can't be
+  noted comes back as a sentence; the message was still sent.
+- **What Sales sent.** Rows whose Message-ID is one the app sent (the activity's `message.externalId`) carry `track`: no reply yet,
+  replied (an inbound activity on the lead after it), bounced or unclear. Rows from or to one lead's address carry `lead`.
+
 ## 4. WhatsApp (Meta WhatsApp Business Cloud API)
 
 Files: `apps/api/src/sales/channels/meta/*`. Graph base `https://graph.facebook.com/<META_GRAPH_VERSION>`; every call sends the access token
@@ -262,6 +307,8 @@ daily cap (15 by default) counts these. No automation, no logged-in scraping.
   since outside it the number sends approved templates only; the others named with the reason) and says which account it goes out from
   (the person's mailbox, the venture's number, or their own app); a ready reply sends inline with the same send box, "Did you send it?"
   and how-it's-recorded line as the draft reader. Sending it, either way, marks the message it answers handled.
+- **Mail** (section 3a): folders, the message list with the lead and what became of each sales email, the open message, Write, Reply,
+  Reply to all, Forward, Star, Unread, Archive, Spam, Delete, attachments. On a phone the list and the message take turns.
 - **Setup checklist**: "Connect your mailbox" and, for heads, "Connect the venture's WhatsApp number".
 - **Sales settings**: daily caps for LinkedIn and Instagram; Instagram in the channels a venture uses (off by default).
 

@@ -104,6 +104,8 @@ export const messageIds = (value: unknown): string[] => (Array.isArray(value) ? 
 export function ourMessageIds(text: string): { id: string; draftId: string }[] {
   const found = new Map<string, string>();
   for (const match of text.matchAll(/<(draft-([A-Za-z0-9_-]{1,128})-(\d{1,6}))@([A-Za-z0-9.-]{1,255})>/g)) found.set(match[0], match[2]!);
+  // A message written in Mail (routes/sales-mail.ts) has no draft: its bounce is found by the message it was noted as on the lead.
+  for (const match of text.matchAll(/<mail-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@[A-Za-z0-9.-]{1,255}>/g)) found.set(match[0], "");
   return [...found].map(([id, draftId]) => ({ id, draftId }));
 }
 
@@ -312,10 +314,10 @@ export function createMailSync(options: MailSyncOptions): MailSync {
     let marked = 0;
     for (const entry of ids) {
       let activity = await bounce(entry.id);
-      if (!activity && await settleSentByBounce(ctx, entry.draftId, accountId, entry.id)) activity = await bounce(entry.id);
+      if (!activity && entry.draftId && await settleSentByBounce(ctx, entry.draftId, accountId, entry.id)) activity = await bounce(entry.id);
       // A draft whose send is still unclear keeps waiting for a person (its lock and "uncertain" stay): only sent drafts take the bounce.
       const draftId = typeof activity?.draftId === "string" ? activity.draftId : entry.draftId;
-      const draft = await db.collection("sales_drafts").findOneAndUpdate({ _id: draftId, workspaceId: ctx.workspaceId, sentAccountId: accountId, sendLock: null }, { $set: { delivery, updatedAt: now } }, { returnDocument: "after" });
+      const draft = draftId ? await db.collection("sales_drafts").findOneAndUpdate({ _id: draftId, workspaceId: ctx.workspaceId, sentAccountId: accountId, sendLock: null }, { $set: { delivery, updatedAt: now } }, { returnDocument: "after" }) : null;
       // The bounce is recorded either way; a reopen that fails is logged and the next message of the bounce goes on.
       if (draft?.status === "sent") {
         await atomic(database, (session) => reopenClosedBy(ctx, draft, now, session)).catch((error: unknown) => {

@@ -234,7 +234,7 @@ export class SmtpStepError extends Error {
  * One SMTP session: resolve and check the server, connect, sign in, and (with `message`) send it, then QUIT. An abort closes the connection.
  * Throws SmtpStepError naming the step that broke.
  */
-export async function smtpSession(settings: EmailSettings, password: string, signal: AbortSignal, message?: { from: string; to: string; raw: Buffer }): Promise<{ response?: string }> {
+export async function smtpSession(settings: EmailSettings, password: string, signal: AbortSignal, message?: { from: string; to: string | string[]; raw: Buffer }): Promise<{ response?: string; rejected?: string[] }> {
   let target: MailTarget;
   try { target = await resolveMailServer(settings.smtp, "SMTP", signal); }
   catch (error) { throw new SmtpStepError("connect", error); }
@@ -257,8 +257,9 @@ export async function smtpSession(settings: EmailSettings, password: string, sig
     await step<boolean>((callback) => connection.login({ user: settings.username, pass: password }, callback));
     if (!message) return {};
     phase = "send";
-    const info = await step<{ response: string }>((callback) => connection.send({ from: message.from, to: [message.to] }, message.raw, callback));
-    return { response: info.response };
+    const info = await step<{ response: string; rejected?: string[] }>((callback) => connection.send({ from: message.from, to: Array.isArray(message.to) ? message.to : [message.to] }, message.raw, callback));
+    // With several recipients the server may refuse some and take the rest: the message went, to the others.
+    return { response: info.response, ...(info.rejected?.length ? { rejected: info.rejected.map(String) } : {}) };
   } catch (error) {
     throw new SmtpStepError(phase, error);
   } finally {
@@ -286,7 +287,7 @@ export async function buildMessage(settings: Pick<EmailSettings, "address" | "se
  * Puts a copy of a sent message in the mailbox's Sent folder (\Seen), for providers that don't do it themselves. Best effort, in the
  * background, and never longer than a minute: past it the connection is closed.
  */
-async function saveToSent(settings: EmailSettings, password: string, raw: Buffer): Promise<void> {
+export async function saveToSent(settings: EmailSettings, password: string, raw: Buffer): Promise<void> {
   const signal = AbortSignal.timeout(SAVE_TO_SENT_TIMEOUT_MS);
   const client = await connectImap(settings, password, signal);
   const onAbort = () => client.close();

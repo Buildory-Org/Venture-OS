@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent, type MouseEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { prefersReducedMotion } from "@/lib/motion";
-import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, Trophy, UserLock, Users, Wallet, X, type Icon } from "@/components/ui/icons";
+import { Bell, BookOpenText, Calendar, CalendarDays, ChevronDown, Columns3, FileQuestion, FolderOpen, Hash, Home, Inbox, Kanban, Mail, LayoutDashboard, KeyRound, Layers3, ListTodo, LogOut, MessageSquareText, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, TrendingUp, Trophy, UserLock, Users, Wallet, X, type Icon } from "@/components/ui/icons";
 import clsx from "clsx";
 import { useStudio } from "@/lib/studio-store";
 import { Select } from "@/components/ui/select";
@@ -50,6 +50,7 @@ const salesGroups: { label: string; items: NavItem[] }[] = [
     { label: "Today", href: "/sales/live", icon: Home },
     { label: "Review", href: "/sales/live/review", icon: ShieldCheck },
     { label: "Inbox", href: "/sales/live/inbox", icon: Inbox },
+    { label: "Mail", href: "/sales/live/mail", icon: Mail },
     { label: "Calls", href: "/sales/live/calls", icon: Phone },
   ] },
   { label: "Leads", items: [

@@ -24,6 +24,7 @@ import { salesFinderRoutes } from "./routes/sales-finder.js";
 import { salesSearchKeyRoutes } from "./routes/sales-search-keys.js";
 import { salesIoRoutes } from "./routes/sales-io.js";
 import { salesChannelRoutes } from "./routes/sales-channels.js";
+import { salesMailRoutes } from "./routes/sales-mail.js";
 import { salesInboundRoutes } from "./routes/sales-inbound.js";
 import { salesAutopilotRoutes } from "./routes/sales-autopilot.js";
 import { salesWebhookRoutes } from "./routes/sales-webhooks.js";
@@ -52,7 +53,9 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   // A CSV import carries a file of up to 5 MB: those two routes read their larger body only after the person is signed in (below).
   const jsonBody = express.json({ limit: "2mb" });
   // Meta's webhook is checked against the exact bytes Meta signed, so its router reads the raw body itself.
-  app.use((req, res, next) => (req.path.startsWith("/v1/sales/leads/import/") || req.path.startsWith("/v1/webhooks/") ? next() : jsonBody(req, res, next)));
+  // A message sent from Mail carries its attachments (10 MB at most, base64): its own larger limit, read only after the sign-in check below.
+  const mailSend = /^\/v1\/sales\/mail\/[^/]+\/send$/;
+  app.use((req, res, next) => (req.path.startsWith("/v1/sales/leads/import/") || req.path.startsWith("/v1/webhooks/") || mailSend.test(req.path) ? next() : jsonBody(req, res, next)));
   // Hosted MCP authenticates with personal access tokens, so it sits before the /v1 session gate.
   app.use(mcpRouter(database.db, config));
   // MCP tools act as the token owner, but only on the routes the tools use; everything else (tokens, admin, invitations,
@@ -75,6 +78,8 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1", requireActor(resolveActor, rateLimit(database.db, 60, 60_000, "anonymous-ip")));
   app.use("/v1", (req, res, next) => (req.method === "GET" || req.method === "HEAD" ? readLimit : writeLimit)(req, res, next));
   app.use("/v1/sales/leads/import", express.json({ limit: "12mb" }));
+  const mailBody = express.json({ limit: "15mb" });
+  app.use((req, res, next) => (mailSend.test(req.path) ? mailBody(req, res, next) : next()));
   app.use("/v1", hierarchyRoutes(database.db));
   app.use("/v1", workRoutes(database));
   app.use("/v1", collaborationRoutes(database));
@@ -93,6 +98,7 @@ export function createApp(database: Database, config: AppConfig, auth: Auth, sto
   app.use("/v1/sales", salesFinderRoutes(database, config));
   app.use("/v1/sales", salesSearchKeyRoutes(database, config));
   app.use("/v1/sales", salesChannelRoutes(database, config));
+  app.use("/v1/sales", salesMailRoutes(database, config));
   app.use("/v1/sales", salesInboundRoutes(database, config));
   app.use("/v1/sales", salesAutopilotRoutes(database, config));
   app.use("/v1", leaderboardRoutes(database, config));

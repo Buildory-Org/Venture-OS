@@ -99,6 +99,9 @@ import {
   ArrowDown01Icon,
   Wallet01Icon,
   Delete02Icon,
+  StarIcon,
+  ArrowTurnForwardIcon,
+  MailReplyAll01Icon,
   Camera01Icon,
   CameraRotated01Icon,
 } from "@hugeicons/core-free-icons";
@@ -217,3 +220,6 @@ export const Wallet = icon(Wallet01Icon);
 export const Trash = icon(Delete02Icon);
 export const Camera = icon(Camera01Icon);
 export const CameraSwitch = icon(CameraRotated01Icon);
+export const Star = icon(StarIcon);
+export const Forward = icon(ArrowTurnForwardIcon);
+export const ReplyAll = icon(MailReplyAll01Icon);

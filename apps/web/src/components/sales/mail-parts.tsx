@@ -15,12 +15,12 @@ import { attachmentOf, sendMail, type MailAccount, type MailMessage, type MailRo
  * the internet: pictures only when the reader asks (`pictures`), since a picture can tell the sender the message was opened. Links open in
  * a new tab.
  */
-export function MailFrame({ html, pictures }: { html: string; pictures: boolean }) {
+export function MailFrame({ html, pictures, className }: { html: string; pictures: boolean; className?: string | undefined }) {
   const doc = useMemo(() => {
     const policy = `default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data: cid:${pictures ? " https: http:" : ""}; media-src 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'`;
     return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"><base target="_blank"><style>html,body{margin:0;background:#fff;color:#111827;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}body{padding:16px}img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}</style></head><body>${html}</body></html>`;
   }, [html, pictures]);
-  return <iframe title="Message" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={doc} className="block h-[62dvh] min-h-[320px] w-full rounded-xl border border-neutral-100 bg-white lg:h-[calc(100dvh-22rem)]" />;
+  return <iframe title="Message" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" srcDoc={doc} className={clsx("block w-full rounded-xl border border-neutral-100 bg-white", className ?? "h-[70dvh] min-h-[320px]")} />;
 }
 
 const TRACK = {
